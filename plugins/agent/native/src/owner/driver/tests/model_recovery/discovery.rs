@@ -1741,9 +1741,10 @@ async fn discovery_desktop_lists_only_its_plans_and_tracks_the_original_worker()
     let mut f = Fixture::new(&listener).await;
     let task = f.create("Desktop plan").await;
     let schedule = f.detail(&task).await["task"]["schedule"].clone();
-    let reminder = f.query("schedule", json!({"kind":"create","input":{"task":{
-        "title":"Unrelated reminder","intentBody":"Other task","schedule":schedule,"effect":{"kind":"reminder"},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
-    assert_eq!(reminder["kind"], "committed");
+    let target = f.detail(&task).await["task"]["effect"]["target"].clone();
+    let automation = f.query("schedule", json!({"kind":"create","input":{"task":{
+        "title":"Unrelated automation","intentBody":"Other task","schedule":schedule,"effect":{"kind":"session","target":target,"model":f.model},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
+    assert_eq!(automation["kind"], "committed");
     let page = f
         .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
         .await;

@@ -19,7 +19,7 @@
 
 import { textTooltip } from './ui';
 import { tr } from './locale';
-import { cleanup, computed, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { cleanup, computed, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
 import { Button, DiffView } from 'nsh/base';
 import { Clipboard } from 'nsh';
 import type { ToolSource } from './ToolSource';
@@ -33,6 +33,12 @@ import {
   controlStyle,
 } from './ui';
 import { Icon } from './Icon';
+import { codePieces } from './codePieces';
+
+const desktop = platform.idiom !== 'terminal';
+
+/** What a tool printed, or what a change added, removed or warns about. */
+type Tone = 'added' | 'removed' | 'warning' | 'output';
 
 function Copy(props: { text(): string; label: string; source: ToolSource }) {
   const feedback = signal<{ text: string; error: string } | null>(null);
@@ -97,7 +103,8 @@ function ToolText(props: {
   source: ToolSource;
   userScroll(): void;
   gutter?: string;
-  tone?: 'added' | 'removed' | 'warning';
+  tone?: Tone;
+  wrap?: boolean;
 }) {
   return (
     <View style={{ minWidth: 0 }}>
@@ -116,6 +123,7 @@ function ToolText(props: {
         text={props.text}
         gutter={props.gutter}
         tone={props.tone}
+        wrap={props.wrap}
         userScroll={props.userScroll}
       />
     </View>
@@ -126,17 +134,64 @@ function CodeText(props: {
   text: string;
   userScroll(): void;
   gutter?: string;
-  tone?: 'added' | 'removed' | 'warning';
+  tone?: Tone;
   prompt?: boolean;
+  /** Long lines wrap at the column instead of scrolling sideways. */
+  wrap?: boolean;
 }) {
-  const color =
+  // Read when drawn: the theme can change after the text is made.
+  const color = () =>
     props.tone === 'removed'
       ? C.danger
       : props.tone === 'added'
         ? C.success
         : props.tone === 'warning'
           ? C.warning
-          : C.text;
+          : // What a command printed reads a step under the command, as in a terminal app.
+            props.tone === 'output' && desktop
+            ? C.secondary
+            : C.text;
+  const width = signal(0);
+  const pieces = () => (
+    <Each of={codePieces(props.text, props.gutter, props.wrap ? width() : undefined)} key="index">
+      {(piece) => (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+          <If when={piece().gutter !== undefined}>
+            <Text
+              accessibilityElementsHidden
+              style={[
+                { ...codeTextStyle, color: C.muted, textAlign: 'right' },
+                { pointerEvents: 'none', userSelect: 'none' },
+              ]}
+            >
+              {piece().gutter}
+            </Text>
+            <View
+              style={[
+                { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
+                { pointerEvents: 'none' },
+              ]}
+            />
+          </If>
+          <Text
+            style={[
+              {
+                ...codeTextStyle,
+                color: color(),
+                ...(props.wrap ? { flex: 1, minWidth: 0 } : {}),
+              },
+              { userSelect: 'text' },
+            ]}
+          >
+            <If when={props.prompt && piece().index === 0}>
+              <Text style={[{ color: C.muted }, { userSelect: 'none' }]}>$ </Text>
+            </If>
+            {piece().text}
+          </Text>
+        </View>
+      )}
+    </Each>
+  );
   return (
     <If
       when={props.text !== ''}
@@ -146,33 +201,15 @@ function CodeText(props: {
         </Text>
       }
     >
-      <Scroll horizontal onScrollIntent={props.userScroll}>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-          <If when={props.gutter !== undefined}>
-            <Text
-              accessibilityElementsHidden
-              style={[
-                { ...codeTextStyle, color: C.muted, textAlign: 'right' },
-                { pointerEvents: 'none', userSelect: 'none' },
-              ]}
-            >
-              {props.gutter}
-            </Text>
-            <View
-              style={[
-                { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
-                { pointerEvents: 'none' },
-              ]}
-            />
-          </If>
-          <Text style={[{ ...codeTextStyle, color }, { userSelect: 'text' }]}>
-            <If when={props.prompt}>
-              <Text style={[{ color: C.muted }, { userSelect: 'none' }]}>$ </Text>
-            </If>
-            {props.text}
-          </Text>
+      {props.wrap ? (
+        <View style={{ minWidth: 0 }} onLayout={({ bounds }) => width.set(bounds.size.width)}>
+          <If when={width() > 0}>{pieces()}</If>
         </View>
-      </Scroll>
+      ) : (
+        <Scroll horizontal onScrollIntent={props.userScroll}>
+          <View style={{ minWidth: 0 }}>{pieces()}</View>
+        </Scroll>
+      )}
     </If>
   );
 }
@@ -233,23 +270,31 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
   const output = value.output;
   return (
     <View style={{ gap: 8 }}>
-      <View style={{ minWidth: 0 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      {/* A wider gap under the command tells it apart from what it printed. */}
+      <View style={{ minWidth: 0, gap: 4, marginBottom: desktop ? 4 : 0 }}>
+        <View style={{ flexDirection: 'row', minWidth: 0 }}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Shell')} · </Text>
           <Text
             style={[
               { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
-              { numberOfLines: 1, textOverflow: 'ellipsis', userSelect: 'text' },
+              // A long working folder keeps its last folders in view.
+              { numberOfLines: 1, textOverflow: 'ellipsis-start', userSelect: 'text' },
             ]}
           >
-            {tr('Shell')} · {value.cwd}
+            {value.cwd}
           </Text>
+        </View>
+        {/* Each copy button stands beside the first line of what it copies. */}
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <CodeText text={value.command} prompt wrap={desktop} userScroll={props.userScroll} />
+          </View>
           <Copy
             label={tr('Copy recorded command')}
             text={() => value.command}
             source={props.source}
           />
         </View>
-        <CodeText text={value.command} prompt userScroll={props.userScroll} />
       </View>
       <If when={value.status !== 'completed' || exited}>
         <Text
@@ -280,7 +325,12 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
           <If when={output.stdout !== '' || output.stderr === ''}>
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <CodeText text={output.stdout} userScroll={props.userScroll} />
+                <CodeText
+                  text={output.stdout}
+                  tone="output"
+                  wrap={desktop}
+                  userScroll={props.userScroll}
+                />
               </View>
               <If when={output.stdout !== ''}>
                 <Copy label={tr('Copy stdout')} text={() => output.stdout} source={props.source} />
@@ -295,6 +345,7 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
               source={props.source}
               userScroll={props.userScroll}
               tone="warning"
+              wrap={desktop}
             />
           </If>
           <If when={output.stdoutTruncated || output.stderrTruncated}>

@@ -18,12 +18,15 @@
  */
 
 import net from 'node:net';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-if (process.argv.slice(2).join(' ') !== 'app-server --listen stdio://')
-  throw Error('Only the real foreground app-server JSONL invocation is supported');
+const invocation = process.argv.slice(2).join(' ');
+const antigravity =
+  invocation === 'acp --process-per-session --dangerously-skip-permissions --agent maka';
+if (!antigravity && invocation !== 'app-server --listen stdio://')
+  throw Error('Unexpected external agent invocation');
 const address = new URL(process.env.FAKE_CONTROL);
 if (address.hostname !== '127.0.0.1') throw Error('Controller must be owned loopback');
 const rootPid = Number(process.env.FAKE_ROOT_PID);
@@ -67,48 +70,7 @@ const diagnosticText = (value, limit = 256) => {
     )
     .slice(0, limit);
 };
-function sessionCreateError(result) {
-  const stage = 'SessionCreate tools/call isError';
-  const content = result.content?.find((part) => part.type === 'text');
-  if (!content) return Error(`${stage}: missing error text`);
-  let error;
-  try {
-    error = JSON.parse(content.text);
-  } catch {
-    return Error(`${stage}: invalid error JSON`);
-  }
-  const receipt = error?.observation?.receipt;
-  const outcome = receipt?.outcome;
-  const returned = outcome?.result;
-  const value = returned?.value;
-  const cleanup = receipt?.cleanup;
-  return Error(
-    JSON.stringify({
-      stage,
-      message: diagnosticText(error?.message),
-      operationId: diagnosticText(error?.operationId),
-      receipt: {
-        kind: diagnosticText(receipt?.kind),
-        diagnostic: diagnosticText(receipt?.diagnostic),
-      },
-      outcome: {
-        kind: diagnosticText(outcome?.kind),
-        diagnostic: diagnosticText(outcome?.diagnostic),
-      },
-      result: {
-        kind: diagnosticText(returned?.kind),
-        diagnostic: diagnosticText(returned?.diagnostic),
-        valueKind: diagnosticText(value?.kind),
-        rejectionReason: value?.kind === 'rejected' ? diagnosticText(value.reason) : undefined,
-        childSessionId: value?.kind === 'created' ? diagnosticText(value.session?.id) : undefined,
-      },
-      cleanup: {
-        kind: diagnosticText(cleanup?.kind),
-        diagnostic: diagnosticText(cleanup?.diagnostic),
-      },
-    }),
-  );
-}
+
 const fail = async (error) => {
   const message =
     error instanceof SyntaxError
@@ -188,6 +150,51 @@ async function rpc(method, params, id) {
   }
   return answer.result;
 }
+let callId = 104;
+async function callTool(name, args) {
+  const result = await rpc('tools/call', { name, arguments: args }, callId++);
+  if (result.isError) throw Error(diagnosticText(JSON.stringify(result.content), 1500));
+  return result;
+}
+async function codeResult(code) {
+  let result = await callTool('exec', { code: '// @exec: {"yield_time_ms": 1}\n' + code });
+  const emitted = [];
+  for (;;) {
+    const output = result.content.filter((part) => part.type === 'text');
+    const [header, ...lines] = output[0].text.split('\n');
+    const summary = JSON.parse(header);
+    if (lines.length) emitted.push(lines.join('\n'));
+    if (summary.state === 'completed') {
+      if (summary.result?.ok !== true || !emitted[0])
+        throw Error(diagnosticText(JSON.stringify({ summary, emitted }), 1800));
+      return JSON.parse(emitted.join('\n'));
+    }
+    if (summary.state !== 'running') throw Error(JSON.stringify(summary));
+    result = await callTool('wait', { cell_id: summary.cell_id });
+  }
+}
+async function readArchivedResult() {
+  const tail = 'end of archived output';
+  const result = await callTool('exec', {
+    code: `text('x'.repeat(10000) + ${JSON.stringify(tail)});`,
+    yield_time_ms: 10000,
+  });
+  const archived = JSON.parse(result.content[0].text);
+  if (archived.kind !== 'maka.archived_tool_result' || !archived.page.next)
+    throw Error('Expected a continuation for the large tool result');
+  const suffix = await codeResult(`
+    let request = ${JSON.stringify(archived.page.next)};
+    let content = '';
+    while (request) {
+      const page = await tools.Read(request);
+      if (page.kind !== 'completed') throw Error(page.message);
+      content += page.value.content;
+      request = page.value.next;
+    }
+    text({ suffix: content.slice(-${tail.length}) });
+  `);
+  if (suffix.suffix !== tail) throw Error('Archive continuation did not reach the original output');
+}
 async function hostEffect() {
   await rpc(
     'initialize',
@@ -200,25 +207,40 @@ async function hostEffect() {
   );
   await rpc('notifications/initialized', {});
   const tools = await rpc('tools/list', {}, 102);
-  if (!tools.tools.some((tool) => tool.name === 'SessionCreate'))
-    throw Error('Real SessionCreate unavailable');
+  const names = tools.tools.map((tool) => tool.name);
+  if (
+    !names.includes('exec') ||
+    !names.includes('wait') ||
+    !names.includes('cua_repl') ||
+    names.includes('Shell') ||
+    names.includes('SendUser') ||
+    names.includes('sleep')
+  )
+    throw Error('Authorized Maka tools unavailable');
+  if (antigravity) return;
+  const path = 'host-patch-' + job.label;
+  await codeResult(
+    'text(await tools.ApplyPatch(' +
+      JSON.stringify({
+        callId: 'external-edit-fixture',
+        operation: { type: 'create_file', path, diff: '+written through Maka\n+' },
+      }) +
+      '))',
+  );
+  if ((await readFile(path, 'utf8')) !== 'written through Maka\n')
+    throw Error('ApplyPatch did not write the expected file');
   await record('host_call', { name: 'SessionCreate' });
-  const result = await rpc(
-    'tools/call',
-    {
-      name: 'SessionCreate',
-      arguments: {
+  const created = await codeResult(
+    'text(await tools.SessionCreate(' +
+      JSON.stringify({
         title: job.title,
         automaticTitle: false,
         labels: [],
         backend: null,
         workspace: { kind: 'session', sessionId: job.session },
-      },
-    },
-    103,
+      }) +
+      '))',
   );
-  if (result.isError) throw sessionCreateError(result);
-  const created = JSON.parse(result.content.find((part) => part.type === 'text').text);
   if (created?.kind !== 'created')
     throw Error(
       JSON.stringify({
@@ -260,12 +282,73 @@ async function terminal(status) {
   await record('terminal', { thread, turn, status });
   socket.end(() => process.exit(0));
 }
+async function acp(id, method, params) {
+  if (method === 'initialize')
+    return reply(id, {
+      protocolVersion: 1,
+      agentCapabilities: { mcpCapabilities: { http: true } },
+    });
+  if (method === 'session/new' || method === 'session/resume') {
+    thread = params.sessionId ?? randomUUID();
+    const server = params.mcpServers[0];
+    mcp = {
+      url: server.url,
+      http_headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
+    };
+    await hostEffect();
+    return reply(id, { sessionId: thread });
+  }
+  if (method === 'session/prompt' && params.sessionId === thread) {
+    const text = params.prompt[0].text;
+    const start = text.indexOf('MAKA_EXTERNAL_CASE ');
+    if (start === -1) return reply(id, { stopReason: 'end_turn' });
+    if (job) throw Error('Duplicate ACP task prompt');
+    job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length));
+    const checkpoint = `ACP checkpoint ${job.label}`;
+    await event('session/update', {
+      sessionId: thread,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: checkpoint } },
+    });
+    await record('ready', { thread, checkpoint, promptId: id });
+    if (job.label === 'ACP-schedule') {
+      const task = await codeResult(
+        'text(await tools.ScheduledTask(' +
+          JSON.stringify({
+            request: {
+              mode: 'create',
+              title: 'ACP wake-up',
+              intentBody: `MAKA_EXTERNAL_CASE ${JSON.stringify({ label: 'ACP-wake', session: job.session })}`,
+              timezone: 'UTC',
+              schedule: { kind: 'once', runAt: Date.now() + 4000 },
+            },
+          }) +
+          '))',
+      );
+      if (!task.taskId) throw Error('ScheduledTask omitted the automation ID');
+      await record('scheduled', { thread, taskId: task.taskId, promptId: id });
+      return;
+    }
+    if (job.label === 'ACP-followup') await readArchivedResult();
+    if (job.label === 'ACP-followup' || job.label === 'ACP-wake')
+      return reply(id, { stopReason: 'end_turn' });
+    return;
+  }
+  if (method === 'session/close' && params.sessionId === thread) {
+    await reply(id, {});
+    finished = true;
+    socket.end(() => process.exit(0));
+    return;
+  }
+  throw Error(`Unexpected ACP request ${method}`);
+}
+
 let requests = Promise.resolve();
 createInterface({ input: process.stdin }).on('line', (line) => {
   requests = requests
     .then(async () => {
       const { id, method, params = {} } = JSON.parse(line);
       await record('method', { method });
+      if (antigravity) return acp(id, method, params);
       if (method === 'initialize') return reply(id, { userAgent: 'owned-codex-upstream' });
       if (method === 'initialized') return;
       if (method === 'thread/start' || method === 'thread/resume') {
@@ -329,17 +412,20 @@ createInterface({ input: socket }).on('line', (line) => {
       }
       if (
         command.action === 'root_reaped' &&
-        job?.label === 'C' &&
+        (job?.label === 'C' || job?.label === 'ACP-original') &&
         command.pid === rootPid &&
         !finished
       ) {
         finished = true;
         await record('root_gone', { thread, turn });
+        if (antigravity) process.kill(process.pid, 'SIGKILL');
         socket.end(() => process.exit(0));
         return;
       }
       if (command.action === 'challenge' && job && !finished)
         return record('challenge', { nonce: command.nonce, thread, turn });
+      if (command.action === 'complete' && job?.label === 'ACP-schedule')
+        return reply(command.promptId, { stopReason: 'end_turn' });
       if (command.action === 'complete' && ['B', 'D'].includes(job?.label))
         return terminal('completed');
       throw Error('Invalid controller action');

@@ -142,7 +142,7 @@ export function MessageCopy(props: {
     } catch (reason) {
       if (owns(original)) {
         failed.set(true);
-        notice.set(errorText(reason));
+        notice.set(errorText(reason, 'Could not copy to the clipboard.'));
       }
     } finally {
       if (owns(original)) busy.set(false);

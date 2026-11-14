@@ -6388,8 +6388,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -6397,7 +6398,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -6432,21 +6433,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
             },
           },
@@ -9923,8 +9909,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -9932,7 +9919,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -9967,21 +9954,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
               WorkspacePath: {
                 type: 'object',
@@ -12543,8 +12515,24 @@ export const contracts: {
               HistoryView: {
                 description:
                   'Tool output is available through source reads in both views. Conversation\nwindows carry tool metadata only, keeping large results out of chat paging.',
-                type: 'string',
-                enum: ['text', 'conversation'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['text', 'conversation'],
+                  },
+                  {
+                    description:
+                      'Visible chat rows. Completed work can be read separately at the same fence.',
+                    type: 'string',
+                    const: 'chat',
+                  },
+                  {
+                    description:
+                      'All conversation rows belonging to the live history Run at the anchor.',
+                    type: 'string',
+                    const: 'turn',
+                  },
+                ],
               },
             },
           },
@@ -12689,6 +12677,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryTurnTiming',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  foldedWork: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryFoldedWork',
                       },
                       {
                         type: 'null',
@@ -12875,6 +12873,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -13099,48 +13114,54 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['inputTokens', 'readTokens'],
               },
-              HistoryField: {
-                description: 'A readable field in a conversation window, in presentation order.',
-                type: 'string',
-                enum: ['thinking', 'body'],
-              },
-              Role: {
-                description:
-                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
-                type: 'string',
-                enum: [
-                  'system',
-                  'context',
-                  'tool',
-                  'compaction',
-                  'failure',
-                  'user',
-                  'assistant',
-                  'tool_call',
-                  'tool_result',
-                ],
-              },
-              HistoryOrder: {
-                description:
-                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+              HistoryFoldedWork: {
+                description: 'Completed activity available on demand at the same history fence.',
                 type: 'object',
                 properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                  },
-                  itemIndex: {
+                  thoughts: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
                   },
+                  tools: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messages: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  imageCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  images: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryWorkImage',
+                    },
+                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'itemIndex'],
+                required: ['thoughts', 'tools', 'messages', 'imageCount', 'images'],
+              },
+              HistoryWorkImage: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  image: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position'],
               },
               HistoryRowAddress: {
                 description:
@@ -13240,6 +13261,49 @@ export const contracts: {
               FactId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              Role: {
+                description:
+                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
+                type: 'string',
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
               },
               HistoryTool: {
                 description:
@@ -14424,6 +14488,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -14890,8 +14971,11 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              runTerminated: {
+                type: 'boolean',
+              },
             },
-            required: ['requests'],
+            required: ['requests', 'runTerminated'],
             $defs: {
               AgentHistoryRequest: {
                 type: 'object',
@@ -14925,6 +15009,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/AgentHistoryRequestFinished',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  retry: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentHistoryRequestRetry',
                       },
                       {
                         type: 'null',
@@ -15052,6 +15146,45 @@ export const contracts: {
                     minimum: 0,
                   },
                 },
+              },
+              AgentHistoryRequestRetry: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'scheduled',
+                      },
+                      at: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'at'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'started',
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                ],
               },
             },
           },
@@ -20549,8 +20682,24 @@ export const contracts: {
               HistoryView: {
                 description:
                   'Tool output is available through source reads in both views. Conversation\nwindows carry tool metadata only, keeping large results out of chat paging.',
-                type: 'string',
-                enum: ['text', 'conversation'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['text', 'conversation'],
+                  },
+                  {
+                    description:
+                      'Visible chat rows. Completed work can be read separately at the same fence.',
+                    type: 'string',
+                    const: 'chat',
+                  },
+                  {
+                    description:
+                      'All conversation rows belonging to the live history Run at the anchor.',
+                    type: 'string',
+                    const: 'turn',
+                  },
+                ],
               },
             },
           },
@@ -20695,6 +20844,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryTurnTiming',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  foldedWork: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryFoldedWork',
                       },
                       {
                         type: 'null',
@@ -20881,6 +21040,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -21105,48 +21281,54 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['inputTokens', 'readTokens'],
               },
-              HistoryField: {
-                description: 'A readable field in a conversation window, in presentation order.',
-                type: 'string',
-                enum: ['thinking', 'body'],
-              },
-              Role: {
-                description:
-                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
-                type: 'string',
-                enum: [
-                  'system',
-                  'context',
-                  'tool',
-                  'compaction',
-                  'failure',
-                  'user',
-                  'assistant',
-                  'tool_call',
-                  'tool_result',
-                ],
-              },
-              HistoryOrder: {
-                description:
-                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+              HistoryFoldedWork: {
+                description: 'Completed activity available on demand at the same history fence.',
                 type: 'object',
                 properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                  },
-                  itemIndex: {
+                  thoughts: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
                   },
+                  tools: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messages: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  imageCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  images: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryWorkImage',
+                    },
+                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'itemIndex'],
+                required: ['thoughts', 'tools', 'messages', 'imageCount', 'images'],
+              },
+              HistoryWorkImage: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  image: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position'],
               },
               HistoryRowAddress: {
                 description:
@@ -21246,6 +21428,49 @@ export const contracts: {
               FactId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              Role: {
+                description:
+                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
+                type: 'string',
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
               },
               HistoryTool: {
                 description:
@@ -21948,6 +22173,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -26143,8 +26385,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -26152,7 +26395,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -26187,21 +26430,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
             },
           },
@@ -27637,6 +27865,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -31519,51 +31764,6 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
-                    const: 'snooze',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  delayMs: {
-                    type: 'integer',
-                    format: 'int64',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision', 'delayMs'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'acknowledge',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  fireId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision', 'fireId'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
                     const: 'clear_history',
                   },
                   taskId: {
@@ -31652,6 +31852,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -31731,18 +31955,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -31763,6 +31980,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
                   },
                   {
                     type: 'object',
@@ -31821,6 +32055,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -31973,6 +32211,48 @@ export const contracts: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
               Misfire: {
                 type: 'string',
                 enum: ['skip', 'latest'],
@@ -32033,57 +32313,6 @@ export const contracts: {
                 required: ['kind', 'reason'],
               },
             ],
-          },
-          resources: {},
-        },
-        scheduleAlerts: {
-          mode: 'subscription',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentScheduleAlertsRead',
-            type: 'object',
-            additionalProperties: false,
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentScheduleAlerts',
-            type: 'object',
-            properties: {
-              pending: {
-                type: 'integer',
-                format: 'uint32',
-                minimum: 0,
-              },
-              reminders: {
-                type: 'array',
-                items: {
-                  $ref: '#/$defs/AgentScheduledReminder',
-                },
-              },
-            },
-            additionalProperties: false,
-            required: ['pending', 'reminders'],
-            $defs: {
-              AgentScheduledReminder: {
-                type: 'object',
-                properties: {
-                  taskId: {
-                    type: 'string',
-                  },
-                  fireId: {
-                    type: 'string',
-                  },
-                  title: {
-                    type: 'string',
-                  },
-                  body: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['taskId', 'fireId', 'title', 'body'],
-              },
-            },
           },
           resources: {},
         },
@@ -32232,8 +32461,11 @@ export const contracts: {
                   title: {
                     type: 'string',
                   },
-                  status: {
-                    $ref: '#/$defs/Status',
+                  sessionId: {
+                    type: 'string',
+                  },
+                  script: {
+                    type: 'boolean',
                   },
                   approved: {
                     type: 'boolean',
@@ -32242,6 +32474,9 @@ export const contracts: {
                     description: 'A Bot-created one-time discovery that no longer needs approval.',
                     type: 'boolean',
                   },
+                  status: {
+                    $ref: '#/$defs/Status',
+                  },
                   nextFireAt: {
                     type: ['integer', 'null'],
                     format: 'int64',
@@ -32249,15 +32484,12 @@ export const contracts: {
                   pendingFire: {
                     type: ['string', 'null'],
                   },
-                  reminder: {
-                    type: 'boolean',
-                  },
                   lastError: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'status', 'approved', 'reminder'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
               },
               Status: {
                 type: 'string',
@@ -32424,6 +32656,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -32503,18 +32759,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -32535,6 +32784,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
                   },
                   {
                     type: 'object',
@@ -32593,6 +32859,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -32744,6 +33014,48 @@ export const contracts: {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               Creator: {
                 oneOf: [
@@ -34156,7 +34468,7 @@ export const contracts: {
             properties: {
               onComplete: {
                 description:
-                  'Best-effort notification to the native model caller when this message finishes,\nfails or is cancelled, and once per pending interaction or authority blocker\nthat needs attention. An attention notification keeps the completion watch.\nWhen registration is confirmed, the caller can yield rather than poll.\nThe watch and task admission commit together;\ncheck the completion field of the send receipt.',
+                  'Best-effort notification to the caller when this message finishes,\nfails or is cancelled, and once per pending interaction or authority blocker\nthat needs attention. An attention notification keeps the completion watch.\nWhen registration is confirmed, the caller can yield rather than poll.\nThe watch and task admission commit together;\ncheck the completion field of the send receipt.',
                 anyOf: [
                   {
                     $ref: '#/$defs/AgentOnComplete',
@@ -36361,8 +36673,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -36370,7 +36683,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -36405,21 +36718,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
               AgentBackendPreference: {
                 description:
@@ -37150,6 +37448,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -39424,6 +39739,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -40438,8 +40770,11 @@ export const contracts: {
                   title: {
                     type: 'string',
                   },
-                  status: {
-                    $ref: '#/$defs/Status',
+                  sessionId: {
+                    type: 'string',
+                  },
+                  script: {
+                    type: 'boolean',
                   },
                   approved: {
                     type: 'boolean',
@@ -40448,6 +40783,9 @@ export const contracts: {
                     description: 'A Bot-created one-time discovery that no longer needs approval.',
                     type: 'boolean',
                   },
+                  status: {
+                    $ref: '#/$defs/Status',
+                  },
                   nextFireAt: {
                     type: ['integer', 'null'],
                     format: 'int64',
@@ -40455,15 +40793,12 @@ export const contracts: {
                   pendingFire: {
                     type: ['string', 'null'],
                   },
-                  reminder: {
-                    type: 'boolean',
-                  },
                   lastError: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'status', 'approved', 'reminder'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
               },
               Status: {
                 type: 'string',
@@ -40630,6 +40965,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -40709,18 +41068,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -40741,6 +41093,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
                   },
                   {
                     type: 'object',
@@ -40799,6 +41168,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -40950,6 +41323,48 @@ export const contracts: {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               Creator: {
                 oneOf: [
@@ -46220,119 +46635,6 @@ export const contracts: {
             },
             required: ['path', 'old_string', 'new_string'],
             title: 'EditInput',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {},
-        },
-        glob: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              pattern: {
-                type: 'string',
-                minLength: 1,
-              },
-              cwd: {
-                type: 'string',
-                minLength: 1,
-                default: '.',
-              },
-            },
-            required: ['pattern'],
-            title: 'Input',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {},
-        },
-        grep: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              pattern: {
-                type: 'string',
-              },
-              path: {
-                type: 'string',
-                default: '.',
-              },
-              glob: {
-                type: 'string',
-              },
-            },
-            required: ['pattern'],
-            title: 'Input',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           output: {
@@ -59018,6 +59320,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'external',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalEffectKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run', 'key'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'standalone',
                       },
                       session: {
@@ -59028,6 +59347,20 @@ export const contracts: {
                     required: ['kind', 'session'],
                   },
                 ],
+              },
+              ExternalEffectKey: {
+                type: 'object',
+                properties: {
+                  task: {
+                    $ref: '#/$defs/ExternalTaskId',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['task', 'operation'],
               },
               ExternalTaskId: {
                 type: 'string',

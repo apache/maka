@@ -139,7 +139,7 @@ impl DriverModel {
         }
         let model = tokio::select! {biased;_=self.cancellation.cancelled()=>return Err(RunError::Cancelled),value=self.source.capture()=>value?};
         let adapter = self.executor.binding(&model.provider)?;
-        if !same_adapter_revision(adapter.source(), &frozen.adapter)
+        if !same_adapter(adapter.source(), &frozen.adapter)
             || preparation::route_identity(&model.provider)? != frozen.route_identity
         {
             return Err(unsupported("summary-source-adapter-changed"));

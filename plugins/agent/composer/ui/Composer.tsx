@@ -201,7 +201,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     !!props.blocked?.() ||
     !!props.session()?.continuing() ||
     !!blocked() ||
-    !props.session()?.editable();
+    !props.session()?.editable() ||
+    props.session()?.modelDetails().kind !== 'ready';
   const primaryDisabled = () =>
     stopPrimary()
       ? props.session()!.stopping()

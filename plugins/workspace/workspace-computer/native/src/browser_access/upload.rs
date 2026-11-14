@@ -20,7 +20,7 @@
 //! Upload consent and file reading remain on the original embedding Host.
 
 use super::{Access, access, api, failed};
-use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
+use maka_agent_api::session::ResolvedConfiguration;
 use maka_agent_facts::{
     interaction::{Decision, GrantCapability, GrantScope, GrantTarget},
     tools::ToolError,
@@ -204,7 +204,8 @@ impl Access {
             failed("Browser file upload requires original Host resource capture custody")
         })?;
         let configuration = self.approve_upload(&request, &cancellation).await?;
-        let reader = capture_reader(&self.owner.store, &configuration).await?;
+        let floor = self.call.authority.file_sandbox_floor().await?;
+        let reader = capture_reader(&configuration, floor).await?;
         let current = self.current_upload(&request, &cancellation).await?;
         if current.workspace != configuration.workspace {
             return Err(failed(
@@ -345,15 +346,10 @@ impl Access {
 }
 
 async fn capture_reader(
-    store: &maka_event_log::RootStore,
     configuration: &ResolvedConfiguration,
+    sandbox: Sandbox,
 ) -> Result<ReadExecutor, ToolError> {
-    let root = store.owned_root().map_err(failed)?;
-    let state = PathBuf::from(
-        maka_fs_tools::workspace::project::host_path(root.canonical_path()).map_err(failed)?,
-    );
     let workspace = configuration.workspace.clone();
-    let access = configuration.permissions.access;
     tokio::task::spawn_blocking(move || {
         let path = PathBuf::from(&workspace.path);
         let directory =
@@ -367,13 +363,6 @@ async fn capture_reader(
         {
             return Err(failed("Browser upload workspace marker identity changed"));
         }
-        let sandbox = if access == WorkspaceAccess::DangerFullAccess {
-            Sandbox::Disabled
-        } else {
-            maka_workspace_support::sandbox(&workspace, access, &state)
-                .map_err(failed)?
-                .0
-        };
         // Same directory identity, private state rules and compiled filesystem
         // policy as the existing workspace Files service; no ambient fs::read.
         maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;

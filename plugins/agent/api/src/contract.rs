@@ -344,7 +344,7 @@ pub enum WorkspaceSelection {
     },
     /// A registered Project at one of its locations.
     Project {
-        project: ProjectRef,
+        project_id: uuid::Uuid,
         #[schemars(length(min = 1))]
         path: String,
     },
@@ -674,7 +674,7 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
-    /// Best-effort notification to the native model caller when this message finishes,
+    /// Best-effort notification to the caller when this message finishes,
     /// fails or is cancelled, and once per pending interaction or authority blocker
     /// that needs attention. An attention notification keeps the completion watch.
     /// When registration is confirmed, the caller can yield rather than poll.
@@ -1420,6 +1420,8 @@ pub struct HistoryChunk {
     pub attachments: Vec<HistoryAttachment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<maka_agent_ports::session::history::TurnTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded_work: Option<maka_agent_ports::session::history::FoldedWork>,
     pub field: maka_agent_ports::session::history::HistoryField,
     pub message_id: Option<String>,
     pub turn_id: Option<String>,
@@ -1526,6 +1528,7 @@ pub struct HistoryRequestsRead {
 pub struct HistoryRequests {
     pub requests: Vec<HistoryRequest>,
     pub next: Option<u64>,
+    pub run_terminated: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -1540,6 +1543,7 @@ pub struct HistoryRequest {
     pub started_at: Option<u64>,
     pub first_token_at: Option<u64>,
     pub finished: Option<HistoryRequestFinished>,
+    pub retry: Option<HistoryRequestRetry>,
     pub estimated_input_tokens: u64,
     pub context_window: Option<u64>,
     pub input_limit: Option<u64>,
@@ -1554,6 +1558,15 @@ pub struct HistoryRequestFinished {
     pub usage: maka_agent_facts::model::ModelUsage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[schemars(rename = "AgentHistoryRequestRetry")]
+pub enum HistoryRequestRetry {
+    Scheduled { at: u64 },
+    Started,
+    Cancelled,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1667,6 +1680,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                         })
                         .collect(),
                     timing: chunk.timing,
+                    folded_work: chunk.folded_work,
                     field: chunk.field,
                     message_id: chunk.message_id,
                     turn_id: chunk.turn_id,
@@ -1976,10 +1990,6 @@ pub fn contract() -> Contract {
                 (
                     "watchSchedules".into(),
                     method::<ScheduleRead, Schedules>(MethodMode::Subscription),
-                ),
-                (
-                    "scheduleAlerts".into(),
-                    method::<ScheduleAlertsRead, ScheduleAlerts>(MethodMode::Subscription),
                 ),
                 (
                     "schedule".into(),

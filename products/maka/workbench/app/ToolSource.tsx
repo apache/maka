@@ -115,7 +115,7 @@ export function createToolSource(
       format.set(source.format);
       content.set(content() + source.text);
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not read the tool details.'));
     } finally {
       if (alive) {
         busy.set(false);

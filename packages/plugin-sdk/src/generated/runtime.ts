@@ -190,7 +190,6 @@ export type RuntimeProtocol =
   | AgentSchedules
   | AgentScheduleChange
   | AgentScheduleResult
-  | AgentScheduleAlerts
   | RecallQuery
   | AgentRecallPage
   | AgentImportsRead
@@ -1436,6 +1435,11 @@ export type CellOwner =
       call: string;
     }
   | {
+      kind: 'external';
+      run: RunId;
+      key: ExternalEffectKey;
+    }
+  | {
       kind: 'standalone';
       session: string;
     };
@@ -2349,7 +2353,7 @@ export type AgentWorkspaceSelection =
     }
   | {
       kind: 'project';
-      project: AgentProjectRef;
+      projectId: string;
       path: string;
     }
   | {
@@ -2468,6 +2472,12 @@ export type Intent = {
 };
 export type Schedule =
   | {
+      kind: 'script';
+      source: string;
+      everySeconds?: number;
+      startAt: number;
+    }
+  | {
       kind: 'once';
       runAt: number;
     }
@@ -2489,13 +2499,16 @@ export type Schedule =
 export type Recurrence = 'daily' | 'weekly' | 'monthly';
 export type AgentScheduledEffect =
   | {
-      kind: 'reminder';
-    }
-  | {
       kind: 'session';
+      delivery?: AutomationDelivery & string;
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor_session';
+      target: AgentScheduledTarget;
+      selection: AgentExecutorSelection;
     }
   | {
       kind: 'agent_run';
@@ -2509,6 +2522,7 @@ export type AgentScheduledEffect =
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
     };
+export type AutomationDelivery = 'steering' | 'followup';
 export type Creator =
   | {
       kind: 'user';
@@ -2552,18 +2566,6 @@ export type AgentScheduleChange =
       kind: 'trigger_now';
       taskId: string;
       revision: number;
-    }
-  | {
-      kind: 'snooze';
-      taskId: string;
-      revision: number;
-      delayMs: number;
-    }
-  | {
-      kind: 'acknowledge';
-      taskId: string;
-      revision: number;
-      fireId: string;
     }
   | {
       kind: 'clear_history';
@@ -4304,7 +4306,7 @@ export type HistoryField = 'thinking' | 'body';
  * Tool output is available through source reads in both views. Conversation
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
-export type HistoryView = 'text' | 'conversation';
+export type HistoryView = ('text' | 'conversation') | 'chat' | 'turn';
 /**
  * Trusted producer attribution, preserved independently of editable content.
  */
@@ -4317,6 +4319,11 @@ export type MessageOrigin =
   | {
       kind: 'session';
       execution: ExecutionIdentity;
+    }
+  | {
+      kind: 'automation';
+      automationId: string;
+      title: string;
     }
   | {
       kind: 'goal';
@@ -6229,6 +6236,10 @@ export interface ToolCallIdentity {
   origin: ToolOrigin;
   [k: string]: unknown | undefined;
 }
+export interface ExternalEffectKey {
+  task: ExternalTaskId;
+  operation: string;
+}
 export interface RunOwner {
   deployment: string;
   namespace: InstanceId;
@@ -7058,10 +7069,6 @@ export interface AgentCreate {
   labels: string[];
   workspace: AgentWorkspaceSelection;
 }
-export interface AgentProjectRef {
-  id: string;
-  revision: string;
-}
 export interface AgentGoalRead {
   sessionId: string;
 }
@@ -7150,15 +7157,16 @@ export interface AgentScheduledSummary {
   id: string;
   revision: number;
   title: string;
-  status: Status;
+  sessionId: string;
+  script: boolean;
   approved: boolean;
   /**
    * A Bot-created one-time discovery that no longer needs approval.
    */
   backgroundFollowup?: boolean;
+  status: Status;
   nextFireAt?: number | null;
   pendingFire?: string | null;
-  reminder: boolean;
   lastError?: string | null;
 }
 export interface AgentScheduledDetail {
@@ -7213,16 +7221,6 @@ export interface Create {
   effect: AgentScheduledEffect;
   maxFires?: number | null;
   expiresAt?: number | null;
-}
-export interface AgentScheduleAlerts {
-  pending: number;
-  reminders: AgentScheduledReminder[];
-}
-export interface AgentScheduledReminder {
-  taskId: string;
-  fireId: string;
-  title: string;
-  body: string;
 }
 export interface RecallQuery {
   /**
@@ -7416,6 +7414,10 @@ export interface AgentProject {
    */
   path: string | null;
 }
+export interface AgentProjectRef {
+  id: string;
+  revision: string;
+}
 export interface AgentProjectLocation {
   path: string;
   name: string;
@@ -7477,7 +7479,7 @@ export interface AgentChangeSession {
 }
 export interface AgentSend {
   /**
-   * Best-effort notification to the native model caller when this message finishes,
+   * Best-effort notification to the caller when this message finishes,
    * fails or is cancelled, and once per pending interaction or authority blocker
    * that needs attention. An attention notification keeps the completion watch.
    * When registration is confirmed, the caller can yield rather than poll.
@@ -8295,6 +8297,7 @@ export interface AgentHistoryChunk {
    */
   attachments?: AgentHistoryAttachment[];
   timing?: HistoryTurnTiming | null;
+  foldedWork?: HistoryFoldedWork | null;
   field: HistoryField;
   messageId?: string | null;
   turnId?: string | null;
@@ -8355,6 +8358,20 @@ export interface HistoryTurnFinished {
 export interface PromptCacheUsage {
   inputTokens: number;
   readTokens: number;
+}
+/**
+ * Completed activity available on demand at the same history fence.
+ */
+export interface HistoryFoldedWork {
+  thoughts: number;
+  tools: number;
+  messages: number;
+  imageCount: number;
+  images: HistoryWorkImage[];
+}
+export interface HistoryWorkImage {
+  position: HistoryRowAddress;
+  image?: number | null;
 }
 /**
  * Canonical references at the requested fence, never execution authority.

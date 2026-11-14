@@ -15,10 +15,42 @@
       "source": "https://github.com/denoland/deno_native_certs/blob/af63bfbea7d761ab286fa357bc38350b39ad2df0/Cargo.toml"
     }
   ],
+  "deno_tunnel@0.8.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/denoland/deno_tunnel/blob/c0572b46beac220e105e69317ff9e207babc7f09/Cargo.toml"
+    }
+  ],
+  "derive-io@0.4.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/mmastrac/derive-io/blob/69a023098378b66e8f8852173b65ca5762b201e2/crates/derive-io/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "derive-io-macros@0.4.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/mmastrac/derive-io/blob/69a023098378b66e8f8852173b65ca5762b201e2/crates/derive-io-macros/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "fqdn@0.5.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/Orange-OpenSource/fqdn/blob/a23fef8570522a3b98a79afc45322d6487166cd9/Cargo.toml"
+    }
+  ],
   "intl_pluralrules@7.0.2": [
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
       "source": "https://github.com/zbraniecki/pluralrules/blob/d0715d5b7cca72e228d6e6c4de154bd30dfdd06a/intl_pluralrules/Cargo.toml"
+    }
+  ],
+  "rustls-tokio-stream@0.8.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/denoland/rustls-tokio-stream/blob/c8a9239c987dbfa7b1eaed78d27935fe8272319c/Cargo.toml"
     }
   ],
   "sys_traits_macros@0.1.0": [
@@ -172,5 +204,42 @@
       "file": "scripts/rust/licenses/declared-cc0-1.0.txt",
       "source": "https://github.com/lifthrasiir/hexf/blob/4225763d744183d720f575ae96d04161b4d08ea0/parse/Cargo.toml ; https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt"
     }
-  ]
+  ],
+  "ast_node@5.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "better_scoped_tls@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "from_variant@3.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "node_shim@0.35.0": [
+    "https://raw.githubusercontent.com/denoland/deno/fe7ed012d92c642fd8e5607ac5a45d517538b5c5/LICENSE.md"
+  ],
+  "swc_atoms@9.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_config_macro@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_ast@18.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_loader@17.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_macros@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_eq_ignore_macros@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_macros_common@1.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_visit@2.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "sptr@0.3.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/Gankra/sptr/blob/e59792814876b4948279ec3121921fbe827b1077/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "swc_allocator@4.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "string_enum@1.0.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_codegen_macros@2.0.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_common@17.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_config@3.1.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_codegen@20.0.2": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_lexer@26.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_parser@27.0.7": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_base@30.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_classes@30.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_proposal@30.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_react@33.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_transforms_typescript@33.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_utils@24.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ecma_visit@18.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "swc_ts_fast_strip@36.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"]
 }

@@ -138,7 +138,8 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
         nextOffset.set(next.nextOffset);
       });
     } catch (reason) {
-      if (alive && currentGeneration === generation) error.set(errorText(reason));
+      if (alive && currentGeneration === generation)
+        error.set(errorText(reason, 'Could not load the checklist.'));
     } finally {
       if (alive && currentGeneration === generation) loading.set(false);
     }
@@ -185,7 +186,7 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
               commitHead(expanded);
             } catch (reason) {
               if (!alive) return;
-              commitHead(page, errorText(reason));
+              commitHead(page, errorText(reason, 'Could not load the checklist.'));
             }
           } else {
             commitHead(page);
@@ -207,7 +208,7 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
       }
     }
   })().catch((reason) => {
-    if (alive) error.set(errorText(reason));
+    if (alive) error.set(errorText(reason, 'Could not load the checklist.'));
   });
 
   const isDismissed = () => {

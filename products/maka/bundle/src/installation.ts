@@ -53,8 +53,6 @@ export function installation(
     });
   add('files', 'readText', 'Read', 'Read text from a file in the selected workspace.');
   add('files', 'readImage', 'ReadImage', 'Read an image in the selected workspace.', 'image');
-  add('files', 'glob', 'Glob', 'Find files in the selected workspace.');
-  add('files', 'grep', 'Grep', 'Search file contents in the selected workspace.');
   add('files', 'write', 'Write', 'Write a file in the selected workspace.');
   add('files', 'edit', 'Edit', 'Edit a file in the selected workspace.');
   add('files', 'applyPatch', 'ApplyPatch', 'Apply a patch in the selected workspace.');

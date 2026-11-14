@@ -29,7 +29,7 @@ use wire::{SourceField, SourceFormat, SourcePosition, SourceSegment};
 
 use maka_agent_state::session_history::{
     snapshot::Snapshot,
-    source_tree::{SourceItem, SourceTree},
+    source_tree::{CompletedWork, RunRows, SourceItem, SourceTree},
 };
 
 pub(super) struct Selected {
@@ -46,9 +46,13 @@ pub(super) struct Cache {
     )>,
     source: Option<maka_agent_state::session_history::RunSource>,
     timing: Option<wire::TurnTiming>,
+    final_attempt: Option<maka_agent_facts::durable::ModelAttemptId>,
     executor: Option<maka_agent_state::session_history::ExecutorTranscript>,
     views: std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
     tools: std::collections::BTreeMap<ToolScope, Option<wire::Tool>>,
+    completed: std::collections::BTreeMap<RunId, Option<CompletedWork>>,
+    folded_work: std::collections::BTreeMap<RunId, wire::FoldedWork>,
+    pub chat: bool,
 }
 pub(super) fn snapshot_id(
     address: &wire::HistoryRowAddress,
@@ -59,9 +63,42 @@ pub(super) fn snapshot_id(
         | wire::HistoryRowAddress::Imported { snapshot, .. } => Some(*snapshot),
     }
 }
-async fn unpaired(
+async fn completed_work(
     tree: &SourceTree,
     address: &wire::HistoryRowAddress,
+    run: RunId,
+    cache: &mut Cache,
+) -> Result<Option<CompletedWork>, String> {
+    if !cache.chat || !matches!(address, wire::HistoryRowAddress::Live { .. }) {
+        return Ok(None);
+    }
+    if let std::collections::btree_map::Entry::Vacant(entry) = cache.completed.entry(run) {
+        let source = tree
+            .source_for_path(address.path(), None)
+            .await
+            .map_err(|error| error.to_string())?;
+        let original = source
+            .run_source(run)
+            .await
+            .map_err(|error| error.to_string())?;
+        entry.insert(
+            if matches!(original.spec.backend, BackendSpec::Model { .. }) {
+                source
+                    .completed_work(run, &original.spec.turn_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+            } else {
+                None
+            },
+        );
+    }
+    Ok(cache.completed[&run].clone())
+}
+
+pub(super) async fn unpaired(
+    tree: &SourceTree,
+    address: &wire::HistoryRowAddress,
+    order: Option<wire::HistoryOrder>,
     cache: &mut Cache,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Selected, String> {
@@ -77,15 +114,20 @@ async fn unpaired(
         .item(address)
         .await
         .map_err(|error| error.to_string())?;
-    let qualified = tree
-        .positions(Some(address.clone()), false, true, 1)
-        .await
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|row| row.address == *address)
-        .ok_or("agent_history_source_missing")?;
+    let order = if let Some(order) = order {
+        order
+    } else {
+        tree.positions(Some(address.clone()), false, true, 1)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|row| row.address == *address)
+            .ok_or("agent_history_source_missing")?
+            .order
+    };
     let mut row = match &item {
         SourceItem::Canonical(item) => {
+            let completed = completed_work(tree, address, item.recorded.run, cache).await?;
             let key = (snapshot_id(address), item.recorded.run);
             if cache.key.as_ref() != Some(&key) {
                 let source = data
@@ -114,6 +156,20 @@ async fn unpaired(
                     cache.views.insert(source.run, view);
                     cache.executor = Some(transcript);
                 }
+                cache.final_attempt = if let Some(work) = completed.as_ref() {
+                    Some(work.attempt)
+                } else if timing
+                    .finished
+                    .as_ref()
+                    .is_some_and(|finished| finished.outcome == wire::TurnOutcome::Completed)
+                    && matches!(&source.spec.backend, BackendSpec::Model { .. })
+                {
+                    data.final_attempt(source.run)
+                        .await
+                        .map_err(|error| error.to_string())?
+                } else {
+                    None
+                };
                 cache.timing = Some(timing);
                 cache.source = Some(source);
                 cache.key = Some(key);
@@ -125,6 +181,11 @@ async fn unpaired(
                 address,
                 &mut cache.views,
                 cache.executor.as_ref(),
+                cache.final_attempt,
+                cache
+                    .timing
+                    .as_ref()
+                    .is_some_and(|timing| timing.finished.is_some()),
                 stop,
             )
             .await?
@@ -132,6 +193,49 @@ async fn unpaired(
             .find(|row| row.chunk.position == *address)
             .ok_or("agent_history_source_missing")?;
             row.chunk.timing = cache.timing.clone();
+            if let Some(work) = completed {
+                let run = item.recorded.run;
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    cache.folded_work.entry(run)
+                {
+                    let mut images = Vec::new();
+                    for position in work.image_sources {
+                        let SourceItem::Canonical(image) = tree
+                            .item(&position)
+                            .await
+                            .map_err(|error| error.to_string())?
+                        else {
+                            continue;
+                        };
+                        if let Some((content, count, _)) =
+                            stream::media_metadata_from(&data, &image, stop).await?
+                        {
+                            if content {
+                                images.push(wire::WorkImage {
+                                    position: position.clone(),
+                                    image: None,
+                                });
+                            }
+                            images.extend((count.saturating_sub(4)..count).map(|index| {
+                                wire::WorkImage {
+                                    position: position.clone(),
+                                    image: Some(index),
+                                }
+                            }));
+                        }
+                    }
+                    let retained = images.len().saturating_sub(4);
+                    images.drain(..retained);
+                    entry.insert(wire::FoldedWork {
+                        thoughts: work.thoughts,
+                        messages: work.messages,
+                        tools: work.tools,
+                        image_count: work.image_count,
+                        images,
+                    });
+                }
+                row.chunk.folded_work = Some(cache.folded_work[&run].clone());
+            }
             row
         }
         SourceItem::Imported {
@@ -148,7 +252,7 @@ async fn unpaired(
                 *message_ordinal,
                 *part_ordinal,
                 address.clone(),
-                qualified.order.clone(),
+                order.clone(),
                 stop,
             )
             .await?
@@ -163,7 +267,7 @@ async fn unpaired(
     {
         media::describe_imported(snapshot, *message_ordinal, &mut row, stop).await?;
     }
-    row.chunk.order = qualified.order;
+    row.chunk.order = order;
     Ok(Selected { data, item, row })
 }
 /// A Turn is one Run: it starts at admission and ends at termination.
@@ -248,12 +352,12 @@ pub(super) async fn search_anchor(
         }
         SourceItem::Imported { .. } => return Ok(Some((address.clone(), order))),
     }
-    let row = unpaired(tree, address, cache, stop).await?.row;
+    let row = unpaired(tree, address, Some(order), cache, stop).await?.row;
     if row.visible {
         return Ok(Some((row.chunk.position, row.chunk.order)));
     }
     if let Some(position) = row.continuation {
-        let first = unpaired(tree, &position, cache, stop).await?.row;
+        let first = unpaired(tree, &position, None, cache, stop).await?.row;
         return Ok(Some((first.chunk.position, first.chunk.order)));
     }
     Ok(None)
@@ -264,7 +368,7 @@ pub(super) async fn selected(
     cache: &mut Cache,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Selected, String> {
-    let mut row = unpaired(tree, address, cache, stop).await?;
+    let mut row = unpaired(tree, address, None, cache, stop).await?;
     pair(tree, &mut row, cache, stop).await?;
     Ok(row)
 }
@@ -277,25 +381,54 @@ pub(super) async fn window(
     include_thinking: bool,
     limit: usize,
     cache: &mut Cache,
+    turn: Option<RunRows>,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<Selected>, String> {
     let mut bound = anchor;
     let mut exclude_anchor = false;
     let mut rows = Vec::new();
-    loop {
+    let mut folded = None;
+    let mut first = true;
+    'pages: loop {
+        let filter = match turn {
+            Some(RunRows::Only { run, start }) => Some(RunRows::Only {
+                run,
+                start: if first { start } else { None },
+            }),
+            Some(selection) => Some(selection),
+            None => folded.map(|(run, attempt)| RunRows::Folded { run, attempt }),
+        };
         let positions = tree
-            .positions(bound.clone(), reverse, include_thinking, 32)
+            .positions_filtered(bound.clone(), reverse, include_thinking, 32, filter)
             .await
             .map_err(|error| error.to_string())?;
+        first = false;
         let full = positions.len() == 32;
         let last = positions.last().map(|row| row.address.clone());
         for qualified in positions {
             if exclude_anchor && Some(&qualified.address) == bound.as_ref() {
                 continue;
             }
-            let row = selected(tree, &qualified.address, cache, stop).await?;
+            let work = match qualified.run {
+                Some(run) => completed_work(tree, &qualified.address, run, cache)
+                    .await?
+                    .map(|work| (run, work.attempt)),
+                None => None,
+            };
+            if work.is_some() && work != folded {
+                // Re-seek in the index before loading any of this Run's activity.
+                bound = Some(qualified.address);
+                exclude_anchor = false;
+                folded = work;
+                continue 'pages;
+            }
+            let row =
+                unpaired(tree, &qualified.address, Some(qualified.order), cache, stop).await?;
             if !row.row.visible
                 || (!include_thinking && row.row.chunk.field == wire::HistoryField::Thinking)
+                || (work.is_some()
+                    && row.row.chunk.role == wire::Role::Assistant
+                    && !row.row.chunk.final_output)
             {
                 continue;
             }
@@ -311,7 +444,7 @@ pub(super) async fn window(
         exclude_anchor = true;
     }
 }
-async fn pair(
+pub(super) async fn pair(
     tree: &SourceTree,
     row: &mut Selected,
     cache: &mut Cache,
@@ -356,7 +489,8 @@ async fn pair(
             {
                 continue;
             }
-            let selected = unpaired(tree, &position.address, cache, stop).await?;
+            let selected =
+                unpaired(tree, &position.address, Some(position.order), cache, stop).await?;
             if !selected.row.visible {
                 continue;
             }
@@ -426,7 +560,7 @@ pub(super) async fn display(
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<(SourceFormat, u64, u64, String), String> {
     let row = &selected.row;
-    if view == wire::HistoryView::Conversation && row.chunk.role == wire::Role::Compaction {
+    if view != wire::HistoryView::Text && row.chunk.role == wire::Role::Compaction {
         return excerpt_ref(&Field::Text(TextBody::default()), None, position, limit);
     }
     let field = if view == wire::HistoryView::Text

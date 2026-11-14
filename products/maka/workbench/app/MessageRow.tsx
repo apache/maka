@@ -21,7 +21,7 @@ import { tr } from './locale';
 import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
-import { platform } from 'nsh';
+import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
 import type { MessageSenders } from './messageSenders';
@@ -59,8 +59,11 @@ import { createText, errorText } from './text';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
+  // One line: an objective written on several lines reads on as far as there is room.
   return origin?.kind === 'goal'
-    ? tr('Pursuing Goal: {objective}', { objective: origin.objective })
+    ? tr('Pursuing Goal: {objective}', {
+        objective: origin.objective.replace(/\s+/g, ' ').trim(),
+      })
     : null;
 }
 
@@ -87,7 +90,12 @@ function SenderLink(props: { sessionId(): string; senders?: MessageSenders }) {
   );
 }
 
-function FullAgentMessage(props: { original: OriginalMessage; sourceId: string }) {
+function FullAgentMessage(props: {
+  original: OriginalMessage;
+  sourceId: string;
+  /** How the text reads once it is here; plain text when absent. */
+  render?(text: () => string): JSX.Element;
+}) {
   const host = useHost();
   const body = signal<string | null>(null);
   const failure = createText();
@@ -100,7 +108,7 @@ function FullAgentMessage(props: { original: OriginalMessage; sourceId: string }
       if (alive) body.set(text);
     },
     (reason) => {
-      if (alive) failure.set(errorText(reason));
+      if (alive) failure.set(errorText(reason, 'Message is unavailable'));
     },
   );
   return (
@@ -108,16 +116,23 @@ function FullAgentMessage(props: { original: OriginalMessage; sourceId: string }
       when={body() !== null || !!failure()}
       else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
     >
-      <Text
-        style={{
-          ...secondaryTextStyle,
-          color: failure() ? C.danger : C.text,
-          userSelect: 'text',
-        }}
-        textSource={failure() ? undefined : { id: props.sourceId, offset: 0 }}
+      <If
+        when={!failure() && props.render}
+        else={
+          <Text
+            style={{
+              ...secondaryTextStyle,
+              color: failure() ? C.danger : C.text,
+              userSelect: 'text',
+            }}
+            textSource={failure() ? undefined : { id: props.sourceId, offset: 0 }}
+          >
+            {failure() || body()}
+          </Text>
+        }
       >
-        {failure() || body()}
-      </Text>
+        {props.render!(() => body() ?? '')}
+      </If>
     </If>
   );
 }
@@ -136,6 +151,7 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  highlighted,
   repeats,
   sessionId,
   through,
@@ -156,6 +172,7 @@ export function MessageRow({
   failureActions,
 }: {
   item: () => Row;
+  highlighted?: () => boolean;
   /** How many identical failures this row stands for. */
   repeats?: () => number;
   sessionId: string;
@@ -223,8 +240,17 @@ export function MessageRow({
         const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${rowKey(row())}`;
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
-        if (sender()) {
-          const title = () => senderLabel(sender()!, senders);
+        const automation = () => {
+          const origin = row().origin;
+          return row().role === 'user' && origin?.kind === 'automation' ? origin : null;
+        };
+        if (sender() || automation()) {
+          const title = () => {
+            const origin = automation();
+            return origin
+              ? tr('Automation: {title}', { title: origin.title })
+              : senderLabel(sender()!, senders);
+          };
           const preview = computed(() => {
             if (expanded()) return '';
             const value = row();
@@ -254,12 +280,25 @@ export function MessageRow({
               through: value.metadataThrough ?? through(),
             };
           });
+          // An agent writes Markdown; an Automation's prompt is the user's own text.
+          const agentMarkdown = (text?: () => string) => (
+            <MarkdownBody
+              sessionId={sessionId}
+              row={row}
+              sourceId={sourceId()}
+              compact
+              fullColor
+              text={text}
+              openLink={openLink}
+              userScroll={userScroll}
+            />
+          );
           return (
             <View style={{ width: '100%', minWidth: 0 }}>
               <Disclosure
                 label={preview() ? `${title()} · ${preview()}` : title()}
                 tooltip={title()}
-                icon="split"
+                icon={automation() ? 'activity' : 'split'}
                 open={expanded()}
                 terminalInset={controlStyle.paddingHorizontal}
                 onPress={inputAction(setExpanded, {
@@ -270,7 +309,9 @@ export function MessageRow({
                 trailing={
                   <If when={expanded()}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <SenderLink sessionId={() => sender()!} senders={senders} />
+                      <If when={sender()}>
+                        <SenderLink sessionId={() => sender()!} senders={senders} />
+                      </If>
                       <MessageCopy
                         row={row}
                         ownerKey={() => rowKey(row())}
@@ -330,12 +371,25 @@ export function MessageRow({
                   <If
                     when={original()}
                     else={
-                      <Text style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}>
-                        <SourceText row={row} sourceId={sourceId()} />
-                      </Text>
+                      <If
+                        when={sender()}
+                        else={
+                          <Text
+                            style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}
+                          >
+                            <SourceText row={row} sourceId={sourceId()} />
+                          </Text>
+                        }
+                      >
+                        {agentMarkdown()}
+                      </If>
                     }
                   >
-                    <FullAgentMessage original={original()!} sourceId={sourceId()} />
+                    <FullAgentMessage
+                      original={original()!}
+                      sourceId={sourceId()}
+                      render={sender() ? agentMarkdown : undefined}
+                    />
                   </If>
                   <If when={(row().attachments?.length ?? 0) > 0}>
                     <HistoryAttachments
@@ -590,13 +644,18 @@ export function MessageRow({
                 else={
                   <>
                     <View
+                      class={
+                        highlighted && !reduceMotion()
+                          ? 'transition-colors duration-300'
+                          : undefined
+                      }
                       style={{
                         alignSelf: 'flex-end',
                         maxWidth: '78%',
                         paddingHorizontal: 16,
                         paddingVertical: 16,
                         borderRadius: 20,
-                        backgroundColor: C.card,
+                        backgroundColor: highlighted?.() ? C.cardRaised : C.card,
                         gap: 8,
                       }}
                     >

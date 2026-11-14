@@ -25,6 +25,7 @@ import {
   effect,
   Image,
   keymap,
+  host as shell,
   platform,
   Scroll,
   signal,
@@ -44,6 +45,7 @@ import {
   quickToolView,
   type QuickIcon,
   type QuickPreview,
+  type QuickTextEditor,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { matchOf } from '../../../../plugins/shared/quick-search';
 import { Icon } from './Icon';
@@ -60,7 +62,9 @@ import {
   quickInputStyle,
 } from './QuickBar';
 import { tr } from './locale';
-import type { ToolEntry } from './QuickCommands';
+import { SettingsEditor } from './SettingsField';
+import { SettingsButton } from './SettingsPage';
+import { toolStoragePath, type ToolEntry } from './QuickCommands';
 import { entryMatch } from './quick-commands';
 import { createToolNavigation, QuickToolSettings, type QuickTools } from './QuickTools';
 import {
@@ -82,6 +86,11 @@ const USAGE_KEY = 'maka.quick-launcher.usage';
 
 type BotOutbox = Output<'agent', 'botOutbox'>;
 
+type ToolScope = {
+  entry: ToolEntry;
+  previous: { query: string; selection: number };
+};
+
 type Navigation = {
   openBot(): Promise<string>;
   /** Takes the conversation out of the panes showing it, which saves their draft. */
@@ -90,13 +99,14 @@ type Navigation = {
   open(sessionId: string, message?: string): void;
 };
 
-const frameStyle = {
-  backgroundColor: C.surface,
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: C.line,
-  overflow: 'hidden',
-} as const;
+const frameStyle = () =>
+  ({
+    backgroundColor: C.panel,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: C.line,
+    overflow: 'hidden',
+  }) as const;
 
 const clock = (at: number) => {
   const date = new Date(at);
@@ -135,21 +145,31 @@ function watchUnread(fail: (reason: unknown) => void) {
   return unread;
 }
 
-type UsageStore = { current(): Usage; record(key: string): void };
+type UsageStore = {
+  current(): Usage;
+  record(key: string): void;
+  failure(): ReturnType<typeof errorText> | null;
+};
 
-function createUsageStore(report: (reason: unknown) => void): UsageStore {
+function createUsageStore(): UsageStore {
   const usage = signal<Usage>({});
+  const failure = signal<ReturnType<typeof errorText> | null>(null);
+  const report = (reason: unknown) =>
+    failure.set(errorText(reason, 'Could not load or save launcher history.'));
   Storage.getItem(USAGE_KEY)
     .then((stored) => usage.set(parseUsage(stored)))
     .catch(report);
   let saving: Promise<void> = Promise.resolve();
   return {
     current: usage,
+    failure,
     record(key) {
       const next = recordUse(usage(), key, Date.now());
       usage.set(next);
       const value = JSON.stringify(next);
-      saving = saving.then(() => Storage.setItem(USAGE_KEY, value)).catch(report);
+      saving = saving
+        .then(() => Storage.setItem(USAGE_KEY, value))
+        .then(() => failure.set(null), report);
     },
   };
 }
@@ -174,6 +194,7 @@ type Section = { key: string; title: string | null; rows: readonly Row[]; start:
 
 function LauncherRow(props: {
   row: Row;
+  shortcut?: string | undefined;
   selected: boolean;
   select?: (() => void) | undefined;
   pressed(): void;
@@ -183,8 +204,8 @@ function LauncherRow(props: {
       label={`${props.row.action} ${props.row.title}`}
       title={props.row.title}
       detail={props.select ? undefined : props.row.detail}
-      trailing={props.select ? undefined : props.row.trailing}
-      badge={props.row.badge}
+      trailing={props.select || props.shortcut ? undefined : props.row.trailing}
+      badge={props.shortcut ?? props.row.badge}
       icon={props.row.icon}
       image={props.row.image?.()}
       unread={props.row.unread === true}
@@ -324,17 +345,39 @@ function Launcher(
     /** The tool whose settings show in place of the results. */
     page: Signal<UiContributionRef | null>;
     /** The tool entered by choosing its entry, searched with what is typed. */
-    scope: Signal<ToolEntry | null>;
-    /** Whether the query is inside a tool, entered or typed with its keyword. */
-    inside(): boolean;
-    /** Back from inside a tool to every tool. */
+    scope(): ToolEntry | null;
+    selection: Signal<number>;
+    enter(item: ToolEntry, text: string): void;
     leave(): void;
   },
 ) {
   // A window that does not activate leaves the keyboard with the app in use until focused.
   currentWindow().focus();
-  const { query, failure } = props;
-  const unread = watchUnread((reason) => failure.set(errorText(reason)));
+  const commandHeld = signal(false);
+  if (platform.os === 'macos') {
+    let awaitingInitial = true;
+    const off = shell.on('quickLauncher.commandChanged', (held: boolean) => {
+      awaitingInitial = false;
+      commandHeld.set(held);
+    });
+    void shell
+      .call<boolean>('quickLauncher.commandHeld', {})
+      .then((held) => {
+        if (awaitingInitial) commandHeld.set(held);
+      })
+      .catch(() => {});
+    cleanup(() => {
+      awaitingInitial = false;
+      off();
+    });
+  }
+  const shortcut = (index: number) =>
+    commandHeld() && index < 9 ? keymap.label(`mod+${index + 1}`) : undefined;
+  const { query, failure, selection } = props;
+  const problem = () => failure() ?? props.usage.failure();
+  const unread = watchUnread((reason) =>
+    failure.set(errorText(reason, 'Could not check Maka Bot messages.')),
+  );
   const { quick } = props;
   const candidates = computed(() =>
     quick
@@ -342,7 +385,7 @@ function Launcher(
       .filter(({ tool }) => !props.scope() || props.scope()!.tool.key === tool.key)
       .flatMap(({ tool, handle }) =>
         handle.items().map((item) => {
-          const key = `${tool.instance.path.join('/')}/${tool.id}/${item.id}`;
+          const key = `${toolStoragePath(tool)}/${item.id}`;
           return {
             key,
             itemId: item.id,
@@ -363,19 +406,13 @@ function Launcher(
         }),
       ),
   );
-  let input: InputRef | undefined;
-  const refocus = () => input?.focus();
+  const input = signal<InputRef | undefined>(undefined);
+  const refocus = () => input()?.focus();
   // Entering or leaving a tool redraws the bar around the query, which takes the keyboard away.
   effect(() => {
     props.scope();
     untracked(refocus);
   });
-  const enter = (item: ToolEntry, text: string) =>
-    batch(() => {
-      selection.set(0);
-      query.set(text);
-      props.scope.set(item);
-    });
   const entries = computed(() =>
     quick.entries().map((item) => {
       const { key, tool, entry } = item;
@@ -395,7 +432,7 @@ function Launcher(
           : tr('Command'),
         action: tr('Open'),
         tool,
-        run: entry.run ?? (() => enter(item, '')),
+        run: entry.run ?? (() => props.enter(item, '')),
       };
     }),
   );
@@ -454,9 +491,8 @@ function Launcher(
   const listed = computed(() => sections().flatMap((section) => section.rows));
   // A typed query keeps a way to ask the Bot below the rows that scroll, except inside a tool,
   // whose query is the tool's to search.
-  const pinned = computed(() => (home() || props.inside() ? null : askRow()));
+  const pinned = computed(() => (home() || props.scope() !== null ? null : askRow()));
   const rows = computed(() => [...listed(), ...(pinned() ? [pinned()!] : [])]);
-  const selection = signal(0);
   const selected = computed(() => Math.min(selection(), rows().length - 1));
   const previewer = computed(() => {
     const scope = props.scope();
@@ -495,17 +531,21 @@ function Launcher(
   });
   let removeKeys = () => {};
   cleanup(() => removeKeys());
-  // Escape inside a tool goes back to every tool; outside one the popup closes.
+  // The settings page and native popup handle Escape on their own.
   effect(() => {
-    if (!props.inside()) return;
+    if (props.scope() === null || props.page() !== null) return;
+    cleanup(keymap.bind('escape', props.leave, { when: 'always' }));
+  });
+  effect(() => {
+    const node = input();
+    if (!node || props.scope() === null || props.page() !== null) return;
     cleanup(
       keymap.bind(
-        'escape',
+        'backspace',
         () => {
-          selection.set(0);
-          props.leave();
+          if (query() === '') props.leave();
         },
-        { when: 'always' },
+        { when: 'always', within: node, passThrough: true },
       ),
     );
   });
@@ -538,7 +578,7 @@ function Launcher(
       if (query().startsWith(submitted)) query.set(query().slice(submitted.length));
       props.open(sessionId);
     } catch (reason) {
-      failure.set(errorText(reason));
+      failure.set(errorText(reason, 'Maka Bot could not be opened'));
     } finally {
       running = false;
     }
@@ -564,7 +604,7 @@ function Launcher(
     props.page.set(tool);
   };
   return (
-    <View style={frameStyle}>
+    <View style={frameStyle()}>
       <If
         when={props.page() === null}
         else={
@@ -596,7 +636,7 @@ function Launcher(
             {() => (
               <Input
                 ref={(node) => {
-                  input = node;
+                  input.set(node);
                   removeKeys();
                   const unbind = [
                     ...Array.from({ length: 9 }, (_, index) =>
@@ -647,7 +687,7 @@ function Launcher(
                           (row) => entryMatch(word, undefined, row.entry.keywords) !== null,
                         );
                       if (row) {
-                        enter(row.item, prefix[2]!);
+                        props.enter(row.item, prefix[2]!);
                         return;
                       }
                     }
@@ -688,6 +728,7 @@ function Launcher(
                       {(row, index) => (
                         <LauncherRow
                           row={row()}
+                          shortcut={shortcut(section().start + index())}
                           selected={selected() === section().start + index()}
                           select={
                             previewer() ? () => selection.set(section().start + index()) : undefined
@@ -703,6 +744,7 @@ function Launcher(
             <If when={pinned() !== null}>
               <LauncherRow
                 row={pinned()!}
+                shortcut={shortcut(listed().length)}
                 selected={selected() === listed().length}
                 pressed={refocus}
               />
@@ -712,14 +754,14 @@ function Launcher(
             <ResultPreview value={preview()} />
           </If>
         </View>
-        <If when={failure() !== null}>
+        <If when={problem() !== null}>
           <Text
             style={[
               { ...bodyTextStyle, paddingVertical: 8, paddingLeft: 42, paddingRight: 12 },
               { color: C.warning, userSelect: 'text' },
             ]}
           >
-            {renderText(failure()!)}
+            {renderText(problem()!)}
           </Text>
         </If>
         <If
@@ -752,6 +794,27 @@ function Launcher(
 }
 
 /** A popup from the app's one engine; it never activates Maka over the app in use. */
+function QuickEditor(props: { editor: QuickTextEditor; back(): void }) {
+  cleanup(keymap.bind('escape', props.back, { when: 'always' }));
+  return (
+    <View style={[frameStyle(), { height: 380, padding: 14, gap: 10 }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <SettingsButton label={tr('Back')} onPress={props.back} />
+        <Text style={{ color: C.text, fontSize: 16 }}>{props.editor.title}</Text>
+      </View>
+      <SettingsEditor
+        autoFocus
+        label={tr('Content')}
+        value={props.editor.value()}
+        change={(value) => props.editor.change(value)}
+      />
+      <If when={!!props.editor.error()}>
+        <Text style={{ color: C.warning }}>{props.editor.error()}</Text>
+      </If>
+    </View>
+  );
+}
+
 export function QuickLauncher(
   props: Navigation & {
     opened: Signal<boolean>;
@@ -761,26 +824,37 @@ export function QuickLauncher(
     close(): Promise<boolean>;
     closed(): void;
     quick: QuickTools;
-    report(reason: unknown): void;
   },
 ) {
   const { quick } = props;
   const { commands, handles } = quick;
-  const usage = createUsageStore(props.report);
-  effect(() => {
-    if (commands.failure() !== null) props.report(commands.failure());
-  });
+  const usage = createUsageStore();
   const page = signal<UiContributionRef | null>(null);
   const query = signal('');
+  const selection = signal(0);
   const failure = signal<ReturnType<typeof errorText> | null>(null);
   // Tools live as long as the app, not the popup, so their commands run from shortcuts too.
   const tools = computed(() => quick.tools().filter(quick.toolEnabled));
-  const scope = signal<ToolEntry | null>(null);
-  const inside = () => scope() !== null;
-  const leave = () => {
-    scope.set(null);
-    query.set('');
-  };
+  const tool = signal<ToolScope | null>(null);
+  const scope = () => tool()?.entry ?? null;
+  const editor = signal<QuickTextEditor | null>(null);
+  const enter = (entry: ToolEntry, text: string) =>
+    batch(() => {
+      const previous = tool()?.previous ?? { query: query(), selection: selection() };
+      tool.set({ entry, previous });
+      query.set(text);
+      selection.set(0);
+      failure.set(null);
+    });
+  const leave = () =>
+    batch(() => {
+      const current = tool();
+      if (current === null) return;
+      tool.set(null);
+      query.set(current.previous.query);
+      selection.set(current.previous.selection);
+      failure.set(null);
+    });
   const toolView = (tool: UiContributionRef) => {
     cleanup(() => {
       const remaining = new Map(handles());
@@ -793,18 +867,30 @@ export function QuickLauncher(
         if (!entered) return query();
         return entered.tool.key === tool.key ? `${entered.entry.keywords[0]} ${query()}` : '';
       },
+      editText: (next) => editor.set(next),
+      enter: (id, text) => {
+        const entry = quick
+          .entries()
+          .find((row) => row.tool.key === tool.key && row.entry.id === id);
+        if (entry) enter(entry, text);
+      },
       close: () => void props.close(),
-      report: (reason) => failure.set(errorText(reason)),
+      report: (reason) =>
+        failure.set(errorText(reason, 'Could not run {tool}.', { tool: quick.title(tool) })),
       attach: (handle) => handles.set(new Map(handles()).set(tool.key, handle)),
     });
   };
-  const show = (entered: ToolEntry | null) => {
-    query.set('');
-    scope.set(entered);
-    failure.set(null);
-    page.set(null);
-    props.opened.set(true);
-  };
+  const show = (entered: ToolEntry | null) =>
+    batch(() => {
+      query.set('');
+      selection.set(0);
+      tool.set(null);
+      editor.set(null);
+      failure.set(null);
+      page.set(null);
+      if (entered !== null) enter(entered, '');
+      props.opened.set(true);
+    });
   const toggle = () => {
     if (props.opened()) void props.close();
     else show(null);
@@ -815,6 +901,22 @@ export function QuickLauncher(
     if (!found) return;
     if (found.entry.run) found.entry.run();
     else show(found);
+  };
+  const register = (shortcut: string, onPress: () => void) => {
+    let active = true;
+    cleanup(() => {
+      active = false;
+      GlobalShortcut.unregister(shortcut);
+    });
+    void (async () => {
+      try {
+        const registered = await GlobalShortcut.register(shortcut, onPress);
+        if (active) commands.registered(shortcut, registered ? null : 'Taken by another app');
+      } catch (reason) {
+        console.warn('Quick tools shortcut registration failed:', reason);
+        if (active) commands.registered(shortcut, 'Could not register shortcut');
+      }
+    })();
   };
   // Only a change of the shortcuts themselves registers them again.
   const bound = computed(() =>
@@ -830,14 +932,7 @@ export function QuickLauncher(
       .split('\n')
       .filter(Boolean)
       .map((line) => line.split('\t') as [string, string]);
-    untracked(() => {
-      for (const [shortcut, key] of list)
-        void GlobalShortcut.register(shortcut, () => launch(key)).then(
-          (taken) => commands.registered(shortcut, taken),
-          props.report,
-        );
-    });
-    cleanup(() => list.forEach(([shortcut]) => GlobalShortcut.unregister(shortcut)));
+    for (const [shortcut, key] of list) register(shortcut, () => launch(key));
   });
   // The whole launcher is off until the user turns it on: no shortcut, no popup.
   effect(() => {
@@ -845,17 +940,7 @@ export function QuickLauncher(
       if (untracked(props.opened)) void props.close();
       return;
     }
-    const shortcut = commands.launcher();
-    void GlobalShortcut.register(shortcut, toggle).then((registered) => {
-      commands.registered(shortcut, registered);
-      if (!registered)
-        props.report(
-          new Error(
-            tr('The {shortcut} shortcut is unavailable', { shortcut: keymap.label(shortcut) }),
-          ),
-        );
-    }, props.report);
-    cleanup(() => GlobalShortcut.unregister(shortcut));
+    register(commands.launcher(), toggle);
   });
   return (
     <>
@@ -874,7 +959,9 @@ export function QuickLauncher(
         sizeToContent="height"
         // Escape stops a running reply, and every way out has to save the draft first. In a tool's
         // settings Escape goes back, and a picker the page opens must not close it.
-        closeOnEscape={!props.conversing() && page() === null && !inside()}
+        closeOnEscape={
+          !props.conversing() && page() === null && scope() === null && editor() === null
+        }
         closeOnBlur={!props.conversing() && page() === null}
         onFocusChange={({ focused }) => {
           // Keep the conversation mounted until its pending draft has been saved.
@@ -885,30 +972,39 @@ export function QuickLauncher(
         open={props.opened() && quick.enabled()}
         onOpenChange={({ open }) => {
           if (open) return;
+          editor.set(null);
           page.set(null);
-          scope.set(null);
+          tool.set(null);
           props.closed();
         }}
       >
         <If
           when={props.conversing()}
           else={
-            <Launcher
-              openBot={props.openBot}
-              vacate={props.vacate}
-              open={props.open}
-              quick={quick}
-              usage={usage}
-              query={query}
-              failure={failure}
-              page={page}
-              scope={scope}
-              inside={inside}
-              leave={leave}
-            />
+            <If
+              when={editor() !== null}
+              else={
+                <Launcher
+                  openBot={props.openBot}
+                  vacate={props.vacate}
+                  open={props.open}
+                  quick={quick}
+                  usage={usage}
+                  query={query}
+                  failure={failure}
+                  page={page}
+                  scope={scope}
+                  selection={selection}
+                  enter={enter}
+                  leave={leave}
+                />
+              }
+            >
+              <QuickEditor editor={editor()!} back={() => editor.set(null)} />
+            </If>
           }
         >
-          <View style={[frameStyle, { maxHeight: MAX_HEIGHT }]}>{props.conversation()}</View>
+          <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>{props.conversation()}</View>
         </If>
       </Window>
     </>

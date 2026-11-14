@@ -20,6 +20,11 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const pluginMessages = {
+  'Could not load this panel.': [
+    'Could not load this panel.',
+    '无法加载此面板。',
+    '無法載入此面板。',
+  ],
   'This deployment has no root UI selected.': [
     'This deployment has no root UI selected.',
     '当前部署没有选择根界面。',

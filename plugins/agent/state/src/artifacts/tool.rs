@@ -85,9 +85,19 @@ impl ArtifactBatch {
 pub(super) enum BindingOrigin {
     Input,
     Steering,
-    Tool { tool: ToolKey },
-    CellChild { cell: CellId, operation: uuid::Uuid },
-    Cell { cell: CellId },
+    Tool {
+        tool: ToolKey,
+    },
+    ExternalTool {
+        key: maka_agent_facts::external_effects::ExternalEffectKey,
+    },
+    CellChild {
+        cell: CellId,
+        operation: uuid::Uuid,
+    },
+    Cell {
+        cell: CellId,
+    },
 }
 struct Declaration {
     record: PublishedArtifact,
@@ -103,10 +113,10 @@ fn declarations(
 ) -> Result<Vec<Declaration>, StoreError> {
     let mut records = Vec::new();
     for recorded in facts {
-        let (origin, result) = match &recorded.fact {
+        let (origin, result, artifacts) = match &recorded.fact {
             Fact::LocalToolReturned { tool, result, .. }
             | Fact::HostToolResultRecorded { tool, result, .. } => {
-                (BindingOrigin::Tool { tool: tool.clone() }, result)
+                (BindingOrigin::Tool { tool: tool.clone() }, result, None)
             }
             Fact::Cell {
                 event:
@@ -128,16 +138,43 @@ fn declarations(
                     operation: *operation,
                 },
                 result,
+                None,
             ),
+            Fact::ExternalEffect {
+                event:
+                    maka_agent_facts::external_effects::ExternalEffectEvent::Returned {
+                        key,
+                        output,
+                        ..
+                    },
+            } => {
+                #[derive(serde::Deserialize)]
+                struct Manifest {
+                    #[serde(default)]
+                    artifacts: Vec<PublishedArtifact>,
+                }
+                let manifest: Manifest = owned_decode(c, run, output)?;
+                (
+                    BindingOrigin::ExternalTool { key: *key },
+                    output,
+                    Some(manifest.artifacts),
+                )
+            }
             _ => continue,
         };
         if recorded.run != run {
             return Err(invalid("artifact fact belongs to another Run"));
         }
-        let returned: ToolReturn<IgnoredAny> = owned_decode(c, run, result)?;
-        returned.validate().map_err(invalid)?;
+        let artifacts = match artifacts {
+            Some(artifacts) => artifacts,
+            None => {
+                let returned: ToolReturn<IgnoredAny> = owned_decode(c, run, result)?;
+                returned.validate().map_err(invalid)?;
+                returned.artifacts
+            }
+        };
         let mut ids = BTreeSet::new();
-        for record in returned.artifacts {
+        for record in artifacts {
             if !ids.insert(record.artifact.id.clone()) {
                 return Err(StoreError::EventConflict);
             }
@@ -248,6 +285,7 @@ pub(super) fn bind(
         BindingOrigin::CellChild { .. } | BindingOrigin::Cell { .. } => {
             ("cell", None, Some(serde_json::to_string(origin)?))
         }
+        BindingOrigin::ExternalTool { key } => ("tool", Some(serde_json::to_string(key)?), None),
         BindingOrigin::Input => ("input", None, None),
         BindingOrigin::Steering => ("steering", None, None),
     };

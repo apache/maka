@@ -98,6 +98,9 @@ pub(crate) struct TextGeo {
     pub(crate) map: InlineMap,
     /// The lines of its text, in the text's box.
     pub(crate) lines: Vec<TextLine>,
+    /// The rendered length `lines` were laid out for: while it differs
+    /// from `map.len`, the lines are those of the text before an edit.
+    pub(crate) laid_len: Option<u32>,
     /// The text's frame in its block's box.
     pub(crate) frame: Bounds<Points>,
     /// The box the frame is in (the block's own, else a node view's
@@ -196,6 +199,20 @@ impl Geometry {
             .iter()
             .find(|(_, g)| pos >= g.start && pos <= g.start + g.map.size)
             .map(|(id, _)| *id)
+    }
+
+    /// Whether the textblock whose content starts at `start` and is `size`
+    /// long in the document is laid out as it is now: its render has that
+    /// content, its text has its frame, and its lines are that render's.
+    /// Before that [`Self::caret_rect`] answers from the text before the
+    /// edit, or for a new block with a box one point high at its corner.
+    pub(crate) fn text_current(&self, start: usize, size: usize) -> bool {
+        self.texts.values().any(|g| {
+            g.start == start
+                && g.owner.is_some()
+                && g.map.size == size
+                && g.laid_len == Some(g.map.len)
+        })
     }
 
     /// The caret's box at `pos`: as high as its line, without width.

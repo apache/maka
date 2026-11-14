@@ -66,7 +66,9 @@ async fn page(
         .transpose()
         .map_err(io::Error::other)?
         .map_or(0, |value| value.encode_utf16().count() + 12);
-    let mut page = Utf8Page::new(request, max_chars.saturating_sub(overhead));
+    // These parts are serialized JSON or decoded JSON strings, so a NUL
+    // belongs to the tool result and is escaped again when the page is encoded.
+    let mut page = Utf8Page::with_nul_policy(request, max_chars.saturating_sub(overhead), false);
     let mut previous = false;
     for bytes in parts {
         let mut cursor = bytes.open(budget.clone());
@@ -380,12 +382,18 @@ async fn shell(
 pub struct Utf8Page<'a> {
     scan: TextPageScan<'a>,
     pending: Vec<u8>,
+    reject_nul: bool,
 }
 impl<'a> Utf8Page<'a> {
     pub fn new(request: &'a ReadRequest, budget: usize) -> Self {
+        Self::with_nul_policy(request, budget, true)
+    }
+
+    fn with_nul_policy(request: &'a ReadRequest, budget: usize, reject_nul: bool) -> Self {
         Self {
             scan: request.scan_with_budget(budget),
             pending: Vec::new(),
+            reject_nul,
         }
     }
     pub fn push(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -400,7 +408,7 @@ impl<'a> Utf8Page<'a> {
             }
         };
         let text = std::str::from_utf8(&self.pending[..end]).map_err(io::Error::other)?;
-        if text.contains('\0') {
+        if self.reject_nul && text.contains('\0') {
             return Err(io::Error::other(
                 "Read cannot decode this binary content as text",
             ));

@@ -22,7 +22,7 @@ use crate::{
     fold::{self, RunView},
     store::{Mode, invalid},
 };
-use maka_agent_facts::cells::{CellEvent, CellId, CellOwner, CellStatus};
+use maka_agent_facts::cells::{CellEvent, CellId, CellStatus};
 use maka_agent_facts::external_effects::ExternalEffectKey;
 use maka_sandbox::workspace::{BindingRef, BindingStamp};
 use rusqlite::{OptionalExtension, params};
@@ -992,18 +992,6 @@ fn target_pending(
                 return Err(invalid("nil Cell child operation"));
             }
             let cell = crate::cells::read_cell(c, view.run, *cell)?;
-            let CellOwner::Agent { link, .. } = &cell.owner else {
-                return Err(invalid(
-                    "Standalone Cell is not an Agent authorization obligation",
-                ));
-            };
-            if link.run != view.run {
-                return Err(invalid("Cell approval differs from original AgentStepLink"));
-            }
-            let actual: bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_attempt_ids WHERE run=? AND step=? AND attempt=?)",params![link.run.to_string(),link.step.to_string(),link.attempt.to_string()],|row|row.get(0))?;
-            if !actual {
-                return Err(invalid("Cell owner Step/attempt is not canonical"));
-            }
             let child = cell
                 .children
                 .get(operation)

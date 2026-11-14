@@ -136,7 +136,7 @@ export function SessionTree(props: {
           page: displayed,
           loading: false,
           refreshing: false,
-          error: errorText(reason),
+          error: errorText(reason, 'Could not load related conversations.'),
         });
     }
   };

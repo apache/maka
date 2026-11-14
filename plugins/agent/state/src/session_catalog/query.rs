@@ -47,7 +47,10 @@ const BASE: &str = "WITH base AS (
  (SELECT e.schema_version FROM agent_catalog_events e WHERE e.owner=?1 AND e.session=s.id ORDER BY revision DESC LIMIT 1) AS control_schema,
  s.catalog_unpinned AS unpinned,
  source.run AS source_run,COALESCE(source.sequence,0)>COALESCE(k.read_through,0) AS source_unread,
- -max(s.created_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0),COALESCE(CAST(json_extract(source_summary.summary_json,'$.summary.updatedAt') AS INTEGER),0)) AS recency
+ -max(s.created_at,COALESCE((SELECT m.at FROM agent_catalog_runs admitted
+  JOIN agent_catalog_messages m ON m.owner=admitted.owner AND m.session=admitted.session AND m.sequence=admitted.admission_sequence
+  WHERE admitted.owner=?1 AND admitted.session=s.id AND admitted.admission_sequence>COALESCE(source.sequence,0)
+  ORDER BY admitted.admission_sequence DESC LIMIT 1),0),COALESCE(CAST(json_extract(source_summary.summary_json,'$.summary.updatedAt') AS INTEGER),0)) AS recency
  FROM session_control s
  JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1
  LEFT JOIN workspace_bindings b ON b.id=json_extract(s.configuration,'$.workspace.id')

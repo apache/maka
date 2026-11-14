@@ -55,13 +55,21 @@ impl Observation {
             resources: Arc::default(),
         }
     }
-    async fn classify(&self, stop: CancellationToken, done: CancellationToken) {
+    async fn classify(
+        &self,
+        stop: CancellationToken,
+        bridge: &mcp::Bridge,
+        done: CancellationToken,
+    ) {
         let mut classified = false;
+        let finish = bridge.finish_turn();
+        tokio::pin!(finish);
         loop {
             tokio::select! {
                 biased;
                 () = done.cancelled() => return,
                 () = self.retired.cancelled() => return,
+                () = &mut finish, if !stop.is_cancelled() => stop.cancel(),
                 () = self.raw.cancelled(), if !classified => {
                     classified = true;
                     let stopped = tokio::select! {
@@ -208,6 +216,7 @@ pub(super) fn validate_command(
                     key,
                     "acp"
                         | "--process-per-session"
+                        | "--agent"
                         | "--approval-mode"
                         | "--sandbox"
                         | "--mode"
@@ -388,10 +397,19 @@ pub(super) async fn execute(
     let observation = journal.observation();
     let stopped = CancellationToken::new();
     let done = CancellationToken::new();
-    let monitor = observation.classify(stopped.clone(), done.clone());
+    let monitor = observation.classify(stopped.clone(), &bridge, done.clone());
     let work = async {
         let result = execute_observed(
-            runtime, config, cwd, request, journal, output, bridge, stopped, steering, owner,
+            runtime,
+            config,
+            cwd,
+            request,
+            journal,
+            output,
+            bridge.clone(),
+            stopped,
+            steering,
+            owner,
         )
         .await;
         done.cancel();

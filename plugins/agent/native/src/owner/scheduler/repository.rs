@@ -35,17 +35,29 @@ pub(super) struct ReadyIndex {
     pub due: BTreeMap<i64, std::collections::BTreeSet<String>>,
 }
 fn due_at(plan: &Plan) -> Option<i64> {
+    if plan.pending.is_some() {
+        return plan.task.expires_at;
+    }
     if plan.task.status != Status::Active || plan.authorization.is_none() {
         return None;
     }
-    let next = if plan.pending.is_none() {
-        plan.task.next_fire_at
-    } else {
-        None
-    };
-    next.into_iter().chain(plan.task.expires_at).min()
+    plan.task
+        .next_fire_at
+        .into_iter()
+        .chain(plan.task.expires_at)
+        .min()
 }
 impl ReadyIndex {
+    pub(super) fn next_after(&self, loaded_at: i64) -> Option<i64> {
+        // A deadline crossed during loading still needs an immediate next tick.
+        self.due
+            .range((
+                std::ops::Bound::Excluded(loaded_at),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .map(|(at, _)| *at)
+    }
     fn update(&mut self, id: &str, old: Option<&Plan>, new: Option<&Plan>) {
         self.pending.remove(id);
         if let Some(at) = old.and_then(due_at)
@@ -57,11 +69,7 @@ impl ReadyIndex {
             }
         }
         if let Some(plan) = new {
-            if plan
-                .pending
-                .as_ref()
-                .is_some_and(|fire| !matches!(fire.effect, ScheduledEffect::Reminder))
-            {
+            if plan.pending.is_some() {
                 self.pending.insert(id.to_owned());
             }
             if let Some(at) = due_at(plan) {
@@ -110,15 +118,15 @@ fn schedule_budget(
     .map_err(reason)?;
     plan.validate().map_err(reason)?;
     if plan.task.id != id
-        || plan.task.status != maka_scheduler::task::Status::Active
+        || !matches!(plan.task.status, Status::Active | Status::Paused)
         || plan.task.expires_at.is_some_and(|at| now() as i64 >= at)
     {
         return Err("scheduler_authorization_changed".into());
     }
-    let Some(Approval::Execution { approval } | Approval::Discovery { approval, .. }) =
-        &plan.authorization
-    else {
-        return Err("scheduler_user_approval_required".into());
+    let approval = match &plan.authorization {
+        Some(Approval::Execution { approval }) => approval.clone(),
+        Some(Approval::Discovery { approval, .. }) => BackgroundGrant::Model(approval.clone()),
+        _ => return Err("scheduler_execution_unavailable".into()),
     };
     let fire = plan
         .pending
@@ -144,7 +152,7 @@ fn schedule_budget(
                 .task
                 .expires_at
                 .map(maka_agent_facts::durable::UnixMillis),
-            approval: approval.clone(),
+            approval,
         },
         fire.authorization
             .as_ref()
@@ -405,7 +413,7 @@ pub(super) struct ScheduleMutation {
     pub(super) writer: DataWriter,
     pub(super) input: ScheduleChange,
     pub(super) id: String,
-    pub(super) approval: Result<Option<PreparedScheduleApproval>, String>,
+    pub(super) approval: Result<Option<PreparedBackgroundGrant>, String>,
 }
 impl ScheduleMutation {
     fn read(
@@ -472,7 +480,7 @@ impl ScheduleMutation {
         connection: &rusqlite::Connection,
         saved: Option<Saved>,
     ) -> Result<(ScheduleResult, Vec<Mutation>), StoreError> {
-        let actual = saved.as_ref().map(|saved| saved.revision);
+        let actual = saved.as_ref().map(|saved| saved.plan.edit_revision);
         if expected_revision(&self.input) != actual {
             return Ok((ScheduleResult::Conflict { actual }, vec![]));
         }
@@ -509,13 +517,17 @@ impl ScheduleMutation {
             }
             plan.authorization = Some(approval.authorization.clone());
         }
+        let revision = actual.unwrap_or(0) + 1;
+        if let Some(plan) = &mut plan {
+            plan.edit_revision = revision;
+        }
         let catalog = self.catalog(connection, saved)?;
         let (mutations, _, _) = prepare_commit(&catalog, &self.id, plan.as_ref())
             .map_err(StoreError::InvalidTransition)?;
         Ok((
             ScheduleResult::Committed {
                 task_id: self.id.clone(),
-                revision: actual.unwrap_or(0) + 1,
+                revision,
             },
             mutations,
         ))
@@ -588,30 +600,57 @@ impl Saved {
     pub fn summary(&self) -> ScheduledSummary {
         ScheduledSummary {
             id: self.plan.task.id.clone(),
-            revision: self.revision,
+            revision: self.plan.edit_revision,
             title: self.plan.task.title.clone(),
-            status: self.plan.task.status,
+            session_id: self.plan.task.effect.target().session_id.clone(),
+            script: matches!(self.plan.task.schedule, TaskSchedule::Script { .. }),
             approved: self.plan.authorization.is_some(),
             background_followup: matches!(self.plan.task.created_by, Creator::Agent { .. })
                 && matches!(self.plan.task.schedule, TaskSchedule::Once { .. })
                 && matches!(self.plan.task.effect, ScheduledEffect::Discovery { .. })
                 && (self.plan.authorization.is_some()
                     || matches!(self.plan.task.status, Status::Completed | Status::Expired)),
+            status: self.plan.task.status,
             next_fire_at: self.plan.task.next_fire_at,
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
-            reminder: matches!(self.plan.task.effect, ScheduledEffect::Reminder),
             last_error: self.plan.task.last_error.clone(),
         }
     }
     pub fn detail(&self) -> ScheduledDetail {
         ScheduledDetail {
             investigation: None,
-            revision: self.revision,
+            revision: self.plan.edit_revision,
             task: self.plan.task.clone(),
             timezone: self.plan.timezone.clone(),
             misfire: self.plan.misfire,
             approved: self.plan.authorization.is_some(),
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[test]
+    fn deadline_crossed_during_loading_remains_the_next_wake() {
+        let ready = ReadyIndex {
+            due: BTreeMap::from([(1_001, std::collections::BTreeSet::from(["task".into()]))]),
+            ..Default::default()
+        };
+        let loaded_at = 1_000;
+        assert!(ready.due.range(..=loaded_at).next().is_none());
+        let finished_at = 1_002;
+        let wake = ready.next_after(loaded_at).unwrap();
+        assert!(
+            wake <= finished_at,
+            "an unprocessed due task must wake immediately"
+        );
+        assert_eq!(
+            ready.next_after(1_001),
+            None,
+            "do not spin on an already processed deadline"
+        );
     }
 }

@@ -189,7 +189,11 @@ export function createResources(
       }
     } catch (reason) {
       if (admits(sessionId))
-        options.report(new UiError('Could not open link: {reason}', { reason: errorText(reason) }));
+        options.report(
+          new UiError('Could not open link: {reason}', {
+            reason: errorText(reason, 'The link could not be opened'),
+          }),
+        );
     } finally {
       if (pendingLink === request) pendingLink = null;
     }

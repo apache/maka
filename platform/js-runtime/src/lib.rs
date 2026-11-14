@@ -17,7 +17,9 @@
  * under the License.
  */
 
+pub mod automation;
 mod bridge;
+mod embedded;
 mod evaluate;
 mod execution_budget;
 mod json;

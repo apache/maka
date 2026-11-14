@@ -129,6 +129,10 @@ pub enum HistoryView {
     #[default]
     Text,
     Conversation,
+    /// Visible chat rows. Completed work can be read separately at the same fence.
+    Chat,
+    /// All conversation rows belonging to the live history Run at the anchor.
+    Turn,
 }
 
 /// A readable field in a conversation window, in presentation order.
@@ -487,6 +491,8 @@ pub struct Chunk {
     pub compaction: Option<Compaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<TurnTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded_work: Option<FoldedWork>,
     pub field: HistoryField,
     pub message_id: Option<String>,
     pub run_id: Option<maka_agent_facts::durable::RunId>,
@@ -501,6 +507,27 @@ pub struct Chunk {
     pub tool: Option<Tool>,
     /// User attachment descriptors, present only on the first chunk of a message.
     pub attachments: Vec<AttachmentRef>,
+}
+
+/// Completed activity available on demand at the same history fence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryFoldedWork")]
+pub struct FoldedWork {
+    pub thoughts: u64,
+    pub tools: u64,
+    pub messages: u64,
+    pub image_count: u64,
+    pub images: Vec<WorkImage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryWorkImage")]
+pub struct WorkImage {
+    pub position: HistoryRowAddress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<u32>,
 }
 
 /// Duration of a successfully adopted context checkpoint, in recorded milliseconds.

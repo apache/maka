@@ -79,7 +79,7 @@ pub(super) fn index(
                 ExternalReturn::Output {
                     output: ToolOutput::Operation(reply),
                     is_error,
-                    projection: _,
+                    ..
                 } => observe_returned_receipt(c, &request, sequence, record.at, &reply, is_error)?,
                 ExternalReturn::Output { is_error, .. } => settle(
                     c,

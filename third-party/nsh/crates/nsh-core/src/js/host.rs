@@ -846,7 +846,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::ScrollIntent,
         on::SCROLLING,
-        "(e: { intent: \"start\" | \"end\" | \"scroll\" }) => void",
+        "(e: { intent: \"start\" | \"end\" | \"scroll\"; delta?: number }) => void",
         "Before user scrolling, including at a boundary; once at drag start. Home is `start`, End is `end`, other scrolling is `scroll`. Programmatic scrolling does not emit it.",
     ),
     (

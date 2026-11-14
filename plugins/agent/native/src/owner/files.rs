@@ -98,8 +98,8 @@ impl Owner {
             WorkspaceSelection::Directory { path } | WorkspaceSelection::IsolatedGit { path } => {
                 path.clone()
             }
-            WorkspaceSelection::Project { project, path } => {
-                self.project_selection(project, path)
+            WorkspaceSelection::Project { project_id, path } => {
+                self.project_selection(*project_id, path)
                     .await?
                     .ok_or("agent_project_unavailable")?
                     .1

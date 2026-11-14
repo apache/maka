@@ -269,8 +269,6 @@ pub(crate) struct Catalog<T> {
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
-    pub host_tools: Vec<String>,
-    pub resource_reads: Vec<String>,
     pub discovery_reads: Vec<String>,
 }
 
@@ -283,16 +281,12 @@ pub(crate) fn catalog(
         tools,
         basis,
         editing,
-        host_tools,
-        resource_reads,
         discovery_reads,
     } = catalog_inner(services, selected, additional, None)?;
     Ok(Catalog {
         tools: Declarations(tools),
         basis,
         editing,
-        host_tools,
-        resource_reads,
         discovery_reads,
     })
 }
@@ -330,8 +324,6 @@ fn catalog_inner(
     run: Option<RunBindings>,
 ) -> Result<Catalog<ToolCatalog>, String> {
     let mut basis = Vec::new();
-    let mut host_tools = Vec::new();
-    let mut resource_reads = Vec::new();
     let mut discovery_reads = Vec::new();
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
@@ -383,23 +375,10 @@ fn catalog_inner(
                 return Err("agent_tool_contract_invalid".to_owned());
             };
             let contract = binding.contract();
-            let resource_read = contract == &file_contract && selection.method == "readText";
-            if contract == &file_contract && matches!(selection.method.as_str(), "readText" | "readImage" | "glob" | "grep") { discovery_reads.push(selection.name.clone()); }
-            let supported = if contract == &agent_contract {
-                matches!(selection.method.as_str(),
-                    "models" | "list" | "observe" | "history" | "create" | "fork" |
-                    "send" | "stop" | "continueRun" | "pendingInteractions" | "interaction" |
-                    "respond" | "queue" | "editQueue" | "work" | "execution")
-            } else {
-                resource_read || (contract == &skill_contract && matches!(selection.method.as_str(), "search" | "load"))
-                    || (contract == &questions_contract && selection.method == "ask")
-                    || contract == &deployment_contract
-            };
-            if supported && selection.result == ToolResult::Json {
-                host_tools.push(selection.name.clone());
-                if resource_read {
-                    resource_reads.push(selection.name.clone());
-                }
+            if contract == &file_contract
+                && matches!(selection.method.as_str(), "readText" | "readImage" | "glob" | "grep")
+            {
+                discovery_reads.push(selection.name.clone());
             }
             let method = methods
                 .get(&selection.method)
@@ -415,8 +394,6 @@ fn catalog_inner(
                     "write" => Some(title::Kind::Write),
                     "edit" => Some(title::Kind::Edit),
                     "applyPatch" => Some(title::Kind::Patch),
-                    "glob" => Some(title::Kind::Glob),
-                    "grep" => Some(title::Kind::Grep),
                     _ => None,
                 }
             } else if binding.contract() == &web_contract {
@@ -643,8 +620,6 @@ fn catalog_inner(
         tools: catalog,
         basis,
         editing,
-        host_tools,
-        resource_reads,
         discovery_reads,
     })
 }
@@ -877,9 +852,11 @@ impl Service {
                     computer,
                 )
                 .await?;
-            let floor = access
-                .sandbox_floor(&capsule.access().call().call.origin)
-                .await?;
+            let floor = if computer {
+                access.workspace_sandbox_floor().await?
+            } else {
+                access.sandbox_floor(&context.call.origin).await?
+            };
             let request = services
                 .request_with_work_and_context(
                     Identity::Agent {

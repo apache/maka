@@ -146,10 +146,7 @@ pub struct CellAdmission {
 }
 impl CellAdmission {
     pub fn new(source: String, owner: CellOwner, at: UnixMillis) -> Self {
-        let id = match &owner {
-            CellOwner::Agent { link, call } => CellId::for_agent(*link, call),
-            CellOwner::Standalone { .. } => CellId::new(),
-        };
+        let id = owner.cell_id().unwrap_or_else(CellId::new);
         let source = CellContent::new(source.into_bytes());
         let started = CellChange {
             id: id.started_fact_id(),
@@ -945,6 +942,12 @@ async fn publish_notifications(
     port: &Arc<dyn CellPersistence>,
 ) -> Result<(), ToolError> {
     for text in context.take_notifications() {
+        if matches!(port.owner(), CellOwner::External { .. }) {
+            context
+                .emit(CellOutput::Text { text })
+                .map_err(|error| persistence(error.message))?;
+            continue;
+        }
         let content = tokio::task::spawn_blocking(move || {
             CellContent::json(&CellNotification {
                 schema_version: CELL_NOTIFICATION_SCHEMA_VERSION,

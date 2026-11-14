@@ -434,7 +434,7 @@ export function createComposerCompletion(options: Options) {
           if (current === read && owns(read)) loading.set(false);
         } catch (reason) {
           if (current === read && owns(read)) {
-            error.set(errorText(reason));
+            error.set(errorText(reason, 'Could not load suggestions.'));
             loading.set(false);
           }
         }

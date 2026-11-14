@@ -90,7 +90,7 @@ pub(super) fn text(
         let json = serde_json::to_string(references)
             .map_err(|error| RunError::Internal(error.to_string()))?;
         text.push_str("\n\n<directory_references>\n");
-        text.push_str(match language { Language::En => "Live directory paths on the originating Runtime Host, accessible with Glob/Read. The project and working directory are unchanged.\n", Language::ZhCn => "原始运行时主机上的实时目录路径，可通过 Glob/Read 访问。项目与工作目录不变。\n", Language::ZhTw => "原始執行階段主機上的即時目錄路徑，可透過 Glob/Read 存取。專案與工作目錄不變。\n" });
+        text.push_str(match language { Language::En => "Live directory paths on the originating Runtime Host, available to Shell and Read according to workspace permissions. The project and working directory are unchanged.\n", Language::ZhCn => "原始运行时主机上的实时目录路径，Shell 和 Read 可按工作区权限访问。项目与工作目录不变。\n", Language::ZhTw => "原始執行階段主機上的即時目錄路徑，Shell 和 Read 可依工作區權限存取。專案與工作目錄不變。\n" });
         for character in json.chars() {
             match character {
                 '<' => text.push_str("\\u003c"),

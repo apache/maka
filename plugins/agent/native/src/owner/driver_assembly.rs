@@ -17,8 +17,10 @@
  * under the License.
  */
 use super::*;
+use maka_agent_authority::permissions::Access;
 use maka_agent_engine::{DriverExit, cleanup::Evidence};
 use maka_agent_facts::durable::*;
+use maka_agent_facts::execution::ToolMode;
 use maka_agent_state::fold::RunView;
 use serde::de::DeserializeOwned;
 
@@ -89,9 +91,12 @@ impl Owner {
                 .into());
             }
         };
-        let discovery = self.scheduler.investigation.read().unwrap().as_deref()
-            == Some(view.spec.session_id.as_str());
-        let catalog = if executor.is_some() || discovery {
+        let legacy_discovery = self.scheduler.investigation.read().unwrap().as_deref()
+            == Some(view.spec.session_id.as_str())
+            && super::discovery::legacy_tools(view.spec.allowed_tools.as_deref());
+        let external_bridge = matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external");
+        let host_tools = !legacy_discovery && (model.is_some() || external_bridge);
+        let catalog = if !host_tools {
             self.mcp_projects.base.clone()
         } else {
             let floor = self
@@ -112,7 +117,7 @@ impl Owner {
                     cause: RunError::InvalidInput(error),
                 })?
         };
-        let catalog = if model.is_some() && !discovery {
+        let catalog = if host_tools {
             self.mcp_projects
                 .with_client(&view.spec.session_id, catalog)
                 .map_err(|error| RestorationError {
@@ -160,6 +165,7 @@ impl Owner {
             tool_discovery: view.spec.tool_discovery,
             allowed_tools: view.spec.allowed_tools.clone(),
             background: None,
+            background_sandbox_ceiling: None,
             internal_tools: Arc::new(selection.definitions.clone()),
             internal_bindings: Arc::new(selection.internal_bindings.clone()),
             behavior: system,
@@ -303,11 +309,16 @@ impl Owner {
                 let (preview_sender, preview) = tokio::sync::watch::channel(None);
                 let mut original_external_effects = None;
                 let work_cancellation = cancellation.child_token();
+                let language = basis.model.as_ref().map(|model| model.code_language).unwrap_or_default();
+                let mode = basis.model.as_ref().map(|model| model.tool_mode).unwrap_or_default();
+                let uses_maka_tools = basis.model.is_some() || basis.executor.as_ref().is_some_and(|executor| executor.selection.executor == "external");
+                let cells_enabled = uses_maka_tools && mode == ToolMode::CodeMode;
+                let cells = cells_enabled.then(|| driver_cells::RunCells::new(
+                    self.clone(), access.clone(), self.code_executor.clone().with_language(language),
+                    workers.clone(), cleanup.clone(),
+                )).transpose().map_err(RunError::Tool)?;
                 let backend = match (&basis.model, &basis.executor) {
                     (Some(accepted), None) => {
-                        let cells = if accepted.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
-                            Some(driver_cells::RunCells::new(self.clone(), access.clone(), self.code_executor.clone().with_language(accepted.code_language), workers.clone(), cleanup.clone()).map_err(RunError::Tool)?)
-                        } else { None };
                         let source = crate::model::Source::restore(
                             self.configuration.clone(),
                             self.credentials.clone(),
@@ -332,13 +343,24 @@ impl Owner {
                         conversation: Default::default(),
                         preview: preview_sender,
                         };
-                        driver::NativeBackend::Model { model, cells }
+                        driver::NativeBackend::Model { model, cells: cells.clone() }
                     }
                     (None, Some(accepted)) => {
                         let mut backend = self.executors.restore(accepted).map_err(RunError::InvalidInput)?;
-                        let effects = driver_external_effects::NativeExternalEffects::new(self.clone(), access.clone(), claim.clone(), cleanup.clone(), workers.clone())?;
+                        let effects = driver_external_effects::NativeExternalEffects::new(self.clone(), access.clone(), claim.clone(), cleanup.clone(), workers.clone(), cells.clone())?;
                         original_external_effects = Some(effects.clone());
-                        backend.bind_host_tools(crate::executor::external::HostTools { catalog: self.external_catalog(catalog.clone()), resource_reads: self.resource_reads.clone(), effects: Arc::new(effects) });
+                        if accepted.selection.executor == "external" {
+                            let current = access.live_configuration().await?;
+                            let tools = super::access::RunAccess::select_live_tools(&catalog, &current, view.spec.tool_discovery);
+                            let loaded = maka_tools::availability::LoadedTools::new(state.cells().reader(
+                                view.spec.session_id.clone(), tokio::runtime::Handle::current(),
+                            ));
+                            backend.bind_host_tools(crate::executor::external::HostTools {
+                                availability: maka_tools::availability::Availability::new(tools, loaded),
+                                code_language: language,
+                                effects: Arc::new(effects),
+                            });
+                        }
                         let inputs = driver_executor_inputs::NativeInputs::new(self.clone(), access.clone(), claim.clone()).map_err(|error| RunError::InvalidInput(error.to_string()))?;
                         let instructions: Option<SystemPrompt> = self.run_content(view.run, &view.spec.system_prompt).await?;
                         let state_root = self.store.owned_root()?.canonical_path().to_path_buf();
@@ -379,10 +401,7 @@ impl Owner {
                     driver::NativeBackend::Model { model, .. } => Some(model.original_cleanup.changes()),
                     _ => None,
                 };
-                let mut cell_changes = match &driver.backend {
-                    driver::NativeBackend::Model { cells: Some(cells), .. } => Some(cells.physical_changes()),
-                    _ => None,
-                };
+                let mut cell_changes = driver.run_cells().map(|cells| cells.physical_changes());
                 let mut observed_revision = view.revision;
                 let driven = loop {
                     changes.borrow_and_update();
@@ -392,7 +411,7 @@ impl Owner {
                         python.borrow_and_update();
                         coordinator.borrow_and_update();
                     }
-                    let cells_live_before = matches!(&driver.backend, driver::NativeBackend::Model { cells: Some(cells), .. } if !cells.coordinator.is_idle());
+                    let cells_live_before = driver.run_cells().is_some_and(|cells| !cells.coordinator.is_idle());
                     if let driver::NativeBackend::Model { model, .. } = &driver.backend
                         && let Err(error) = model.original_cleanup.reconcile_pending().await {
                             tracing::error!(run = %view.run, %error, "Original model cleanup publication remains unresolved");
@@ -410,7 +429,7 @@ impl Owner {
                         }
                         Ok(exit @ (DriverExit::Waiting { due_at, .. } | DriverExit::Blocked { due_at, .. })) => {
                             let resources_live = driver.has_live_resources();
-                            let cells_live = matches!(&driver.backend, driver::NativeBackend::Model { cells: Some(cells), .. } if !cells.coordinator.is_idle());
+                            let cells_live = driver.run_cells().is_some_and(|cells| !cells.coordinator.is_idle());
                             let pending_cell = {
                                 let current = state.frontier(view.run).await?;
                                 if current.blockers.values().any(|blocker| blocker.decision.is_none() && blocker.resolved_by.is_none()) {

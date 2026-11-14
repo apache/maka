@@ -277,6 +277,6 @@ fn invalid() -> ToolRejection {
 fn direct(name: &str) -> bool {
     matches!(
         name,
-        "Shell" | "Read" | "Glob" | "Grep" | "AskUserQuestion" | "ProcessStop" | "ProcessInput"
+        "Shell" | "Read" | "AskUserQuestion" | "ProcessStop" | "ProcessInput"
     )
 }

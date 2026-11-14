@@ -501,35 +501,26 @@ async fn execute(
         } else {
             ReadExecutor::new(captured.path, ReadScope::Unrestricted)?
         };
-        if tool == maka_fs_tools::READ_NAME {
-            let input: maka_agent_facts::read::ReadInput =
-                serde_json::from_value(input).map_err(failed)?;
-            match executor
-                .read(
-                    input.resolve().map_err(failed)?,
-                    read_page_budget(),
-                    cancellation.clone(),
-                )
-                .await?
-            {
-                ReadOutput::Text(_) if image => {
-                    Err(failed("Workspace readImage requires image content"))
-                }
-                ReadOutput::Text(page) => {
-                    serde_json::to_value(page).map(Output::Json).map_err(failed)
-                }
-                ReadOutput::Image { bytes, mime_type } if image => {
-                    Ok(Output::Image { bytes, mime_type })
-                }
-                ReadOutput::Image { .. } => {
-                    Err(failed("Workspace readText accepts UTF-8 text, not images"))
-                }
+        let input: maka_agent_facts::read::ReadInput =
+            serde_json::from_value(input).map_err(failed)?;
+        match executor
+            .read(
+                input.resolve().map_err(failed)?,
+                read_page_budget(),
+                cancellation.clone(),
+            )
+            .await?
+        {
+            ReadOutput::Text(_) if image => {
+                Err(failed("Workspace readImage requires image content"))
             }
-        } else {
-            executor
-                .invoke(tool.into(), input, cancellation.clone())
-                .await
-                .map(Output::Json)
+            ReadOutput::Text(page) => serde_json::to_value(page).map(Output::Json).map_err(failed),
+            ReadOutput::Image { bytes, mime_type } if image => {
+                Ok(Output::Image { bytes, mime_type })
+            }
+            ReadOutput::Image { .. } => {
+                Err(failed("Workspace readText accepts UTF-8 text, not images"))
+            }
         }
     }
 }

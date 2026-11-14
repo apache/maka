@@ -56,6 +56,21 @@ import {
 } from '../../../../plugins/shared/tui-messages.js';
 
 export const settingsMessages = {
+  'Checking whether the interface changed…': [
+    'Checking whether the interface changed…',
+    '正在确认界面是否已切换…',
+    '正在確認介面是否已切換…',
+  ],
+  'Checking whether settings changes were applied…': [
+    'Checking whether settings changes were applied…',
+    '正在确认设置更改是否已生效…',
+    '正在確認設定變更是否已生效…',
+  ],
+  'Could not read or update settings.': [
+    'Could not read or update settings.',
+    '无法读取或更新设置。',
+    '無法讀取或更新設定。',
+  ],
   'ChatGPT Subscription': ['ChatGPT Subscription', 'ChatGPT 订阅', 'ChatGPT 訂閱'],
   'Last usage refresh failed': [
     'Last usage refresh failed',
