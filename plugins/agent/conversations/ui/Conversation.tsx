@@ -85,6 +85,7 @@ import {
 } from '../../../../products/maka/workbench/app/ui';
 import {
   acceptedSend,
+  activityMessage,
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
@@ -247,7 +248,9 @@ type HistoryNavigation =
 type HistoryWindow = Pick<AgentHistoryPage, 'before' | 'after'> & {
   through: number;
   identity: object;
+  view: HistoryListView;
 };
+type HistoryListView = 'chat' | 'conversation';
 
 export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = Omit<
@@ -545,6 +548,14 @@ export function Conversation(props: ConversationProps) {
     !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
+  const workPages = new Map<
+    string,
+    {
+      through: number;
+      after: AgentHistoryPage['after'];
+      task?: Promise<void>;
+    }
+  >();
   const groupStates = new Map<string, GroupViewState>();
   const rowStates = new Map<string, MessageViewState>();
   const turnState = (id: string) => {
@@ -1095,6 +1106,7 @@ export function Conversation(props: ConversationProps) {
       if (
         turn &&
         (entry.kind === 'process' ||
+          (row?.role === 'compaction' && turn.foldedWork) ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
@@ -1408,7 +1420,15 @@ export function Conversation(props: ConversationProps) {
       reading.set('trajectory');
     });
     if (!trajectorySideBySide()) pendingTrajectoryAnchor = key;
-    jumpTrajectoryEntry(key);
+    const window = historyWindow();
+    const position = currentRow(rowId)?.position;
+    if (window?.view === 'chat' && position) {
+      void resetHistory({ kind: 'row', position, field: 'body' }, window.through)
+        .then((opened) => {
+          if (opened && reading() === 'trajectory') jumpTrajectoryEntry(key);
+        })
+        .catch(report);
+    } else jumpTrajectoryEntry(key);
   };
 
   const resumeHistoryFollowing = (animated = false) => {
@@ -1553,13 +1573,21 @@ export function Conversation(props: ConversationProps) {
     }
     if (!current.missingAttachments.size) attachmentMetadataFailed.set(false);
   };
-  const history = async (through: number, position: HistoryPosition) => {
+  const chatHistoryView = (): HistoryListView =>
+    platform.idiom !== 'terminal' && reading() === 'chat' && botView() !== 'bot'
+      ? 'chat'
+      : 'conversation';
+  const history = async (
+    through: number,
+    position: HistoryPosition,
+    view: HistoryListView | 'turn' = 'conversation',
+  ) => {
     const page = await host.query('agent', 'history', {
       sessionId,
       through,
       position,
       includeThinking: true,
-      view: 'conversation',
+      view,
     });
     if (page.through !== through) throw new UiError('History changed its requested fence.');
     return { ...page, through: page.through };
@@ -1572,6 +1600,7 @@ export function Conversation(props: ConversationProps) {
     through: number,
     verify?: (page: AgentHistoryPage) => void,
     current: () => boolean = () => true,
+    view: HistoryListView = chatHistoryView(),
   ): Promise<boolean> => {
     if (!current()) return Promise.resolve(false);
     const identity = {};
@@ -1603,7 +1632,7 @@ export function Conversation(props: ConversationProps) {
       let location = position;
       let page: Awaited<ReturnType<typeof history>>;
       for (;;) {
-        page = await history(through, location);
+        page = await history(through, location, view);
         if (!canPublish()) return false;
         verify?.(page);
         if (page.chunks.length) break;
@@ -1615,7 +1644,7 @@ export function Conversation(props: ConversationProps) {
       if (!canPublish()) return false;
       if (position.kind === 'tail') {
         const tail = await readHistoryTail(page, async (cursor) => {
-          const older = await history(through, { kind: 'before', cursor });
+          const older = await history(through, { kind: 'before', cursor }, view);
           return canPublish() ? older : null;
         });
         if (tail === null || !canPublish()) return false;
@@ -1623,8 +1652,10 @@ export function Conversation(props: ConversationProps) {
       }
       batch(() => {
         historyRows.set(new HistoryRows());
+        workPages.clear();
         historyWindow.set({
           identity,
+          view,
           through: page.through,
           before: page.before,
           after: page.after,
@@ -1639,6 +1670,15 @@ export function Conversation(props: ConversationProps) {
         historyFollowPaused.set(position.kind !== 'tail');
         innerReader.set(null);
       });
+      for (const [key, state] of turnStates) {
+        if (
+          state.expanded() === true &&
+          historyRows()
+            .byTurn.get(key)
+            ?.some((row) => row.foldedWork)
+        )
+          loadTurnWork(key);
+      }
       if (page.after === null && latestKnown > through) void follow().catch(report);
       return true;
     })()
@@ -1656,6 +1696,60 @@ export function Conversation(props: ConversationProps) {
       });
     windowTask = task;
     return task;
+  };
+  const loadTurnWork = (key: string) => {
+    const owner = historyWindow();
+    const first = historyRows()
+      .byTurn.get(key)
+      ?.find((row) => row.foldedWork && row.position);
+    if (!owner || !first?.position) return;
+    const existing = workPages.get(key);
+    if (existing && (existing.task || existing.after === null)) return;
+    const state = existing ?? { through: first.metadataThrough ?? owner.through, after: null };
+    const position: HistoryPosition = state.after
+      ? { kind: 'after', cursor: state.after }
+      : { kind: 'row', position: first.position, field: 'body' };
+    workPages.set(key, state);
+    const load = async () => {
+      let cursor = position;
+      for (;;) {
+        const page = await history(state.through, cursor, 'turn');
+        if (!alive || workPages.get(key) !== state) return;
+        state.after = page.after;
+        const current = historyRows();
+        const changed = mergeHistoryPage(
+          page.chunks,
+          (key) => current.byKey.get(key),
+          false,
+          page.through,
+        );
+        if (changed.length) {
+          current.put(changed);
+          historyRows.set(current);
+        }
+        if (
+          page.after === null ||
+          page.chunks.some(
+            (chunk) =>
+              chunk.role !== 'compaction' &&
+              (chunk.role !== 'user' || activityMessage(chunk.origin)) &&
+              !chunk.finalOutput &&
+              (chunk.field !== 'thinking' || chunk.text.trim()),
+          )
+        )
+          return;
+        cursor = { kind: 'after', cursor: page.after };
+      }
+    };
+    state.task = load()
+      .catch((reason) => {
+        if (workPages.get(key) !== state) return;
+        if (state.after === null) workPages.delete(key);
+        report(reason);
+      })
+      .finally(() => {
+        state.task = undefined;
+      });
   };
   const hydrateAttachmentMetadata = () => {
     for (const rowKey of historyRows().missingAttachments) {
@@ -2126,7 +2220,7 @@ export function Conversation(props: ConversationProps) {
     const task = (async () => {
       let position: HistoryPosition = { kind: direction, cursor: edge };
       for (;;) {
-        const page = await history(owner.through, position);
+        const page = await history(owner.through, position, owner.view);
         if (!ownsWindow(owner.identity)) return false;
         const current = historyWindow()!;
         if (page.chunks.length || page[direction] === null) {
@@ -2305,6 +2399,7 @@ export function Conversation(props: ConversationProps) {
             throw new UiError('The original message could not be verified.');
         },
         () => navigation() === target && current(),
+        'conversation',
       );
       if (!opened || !alive || navigation() !== target || !current())
         throw new UiError('History navigation was cancelled.');
@@ -3187,7 +3282,31 @@ export function Conversation(props: ConversationProps) {
       innerReader.set(null);
       reading.set(mode);
     });
-    if (historyFollowPaused() && anchor !== null) scrollToTurn(anchor);
+    const window = historyWindow();
+    const desired = chatHistoryView();
+    const atTail = atHistoryTail() && !historyFollowPaused();
+    const rowsAtAnchor = anchor === null ? undefined : historyRows().byTurn.get(anchor);
+    const row =
+      rowsAtAnchor?.find((row) => row.role === 'user' && !activityMessage(row.origin)) ??
+      rowsAtAnchor?.find((row) => row.finalOutput) ??
+      rowsAtAnchor?.[0];
+    if (window && window.view !== desired) {
+      const position: HistoryPosition =
+        !atTail && row?.position
+          ? {
+              kind: 'row',
+              position: row.position,
+              field: row.field === 'thinking' ? 'thinking' : 'body',
+            }
+          : { kind: 'tail' };
+      void resetHistory(position, window.through, undefined, () => reading() === mode, desired)
+        .then((opened) => {
+          if (!opened || reading() !== mode) return;
+          if (position.kind === 'tail') resumeHistoryFollowing();
+          else if (anchor !== null) scrollToTurn(anchor);
+        })
+        .catch(report);
+    } else if (historyFollowPaused() && anchor !== null) scrollToTurn(anchor);
     else if (atHistoryTail()) resumeHistoryFollowing();
   };
   const sendRendered = ({
@@ -3413,7 +3532,12 @@ export function Conversation(props: ConversationProps) {
       };
       // The loaded window already reaches the latest row and follows new ones:
       // scroll it in place, keeping the rows above, without waiting on the Host.
-      if (!reload && atHistoryTail() && navigation() === null) {
+      if (
+        !reload &&
+        atHistoryTail() &&
+        navigation() === null &&
+        historyWindow()?.view === chatHistoryView()
+      ) {
         props.focusComposer();
         showLatest(true);
         return;
@@ -3807,12 +3931,19 @@ export function Conversation(props: ConversationProps) {
             const first = projectedTurn(initial.turnKey);
             if (!first) return <View />;
             const turn = () => projectedTurn(initial.turnKey) ?? first;
-            const images = computed(() =>
-              turnImages(
-                projectedSection(initial.turnKey)?.rowsById.values() ?? [],
-                initial.turnKey,
-              ),
-            );
+            const images = computed(() => {
+              const folded = turn().foldedWork;
+              return folded
+                ? folded.images.map(({ position, image }) => ({
+                    key: `${historyRowKey(position)}/${image ?? 'content'}`,
+                    position,
+                    image: image ?? undefined,
+                  }))
+                : turnImages(
+                    projectedSection(initial.turnKey)?.rowsById.values() ?? [],
+                    initial.turnKey,
+                  );
+            });
             const groups = computed(() =>
               (projectedSection(initial.turnKey)?.entries ?? []).filter(
                 (item): item is ProcessGroup =>
@@ -3831,11 +3962,13 @@ export function Conversation(props: ConversationProps) {
                   sessionId,
                   through: () => latestKnown,
                   refs: images,
+                  total: () => turn().foldedWork?.imageCount,
                   preview: props.previewImage,
                 }}
                 toggle={(open) => {
                   if (open) {
                     historyFollowPaused.set(true);
+                    if (turn().foldedWork) loadTurnWork(initial.turnKey);
                     // Replace the source reading anchor before the folded rows return.
                     list?.scrollToOffset({ offset: historyOffset, animated: false });
                   }
@@ -3896,6 +4029,14 @@ export function Conversation(props: ConversationProps) {
                 resumed={() => {
                   if (historyFollowPaused() && latestActivity()?.key === initial.group.key)
                     resumeHistoryAtEnd(historyOffset);
+                }}
+                nearActivityEnd={() => {
+                  const projected = projectedSection(initial.group.turnKey);
+                  const last = projected?.entries.findLast(
+                    (entry) => entry.kind === 'process' && entry.turnKey === initial.group.turnKey,
+                  );
+                  if (last?.key === initial.group.key && turn().foldedWork)
+                    loadTurnWork(initial.group.turnKey);
                 }}
                 settled={(atEnd) => {
                   if (atEnd) readerAtEnd.set(initial.group.key);

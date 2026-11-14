@@ -105,6 +105,7 @@ fn base(
             origin: None,
             compaction: None,
             timing: None,
+            folded_work: None,
             field: HistoryField::Body,
             imported_turn: None,
             message_id: Some(item.recorded.id.to_string()),
@@ -224,6 +225,8 @@ pub(super) async fn project(
     address: &wire::HistoryRowAddress,
     views: &mut std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
     executor: Option<&maka_agent_state::session_history::ExecutorTranscript>,
+    final_attempt: Option<maka_agent_facts::durable::ModelAttemptId>,
+    terminated: bool,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<Row>, String> {
     let turn = source.spec.turn_id.as_str();
@@ -333,31 +336,45 @@ pub(super) async fn project(
             });
             row.chunk.message_id = Some(item.recorded.id.to_string());
             if let BackendSpec::Model { binding, .. } = &source.spec.backend {
-                if let std::collections::btree_map::Entry::Vacant(e) =
-                    views.entry(item.recorded.run)
+                let reported_model_id = if let Some(step) = item.scope.step
+                    && matches!(reader, data::DataSource::Live { .. })
                 {
-                    e.insert(
-                        reader
-                            .view_at(item.recorded.run)
-                            .await
-                            .map_err(|error| error.to_string())?,
-                    );
-                }
-                let original = views[&item.recorded.run]
-                    .attempts
-                    .get(attempt)
-                    .ok_or("agent_history_original_attempt_missing")?;
-                let reported_model_id = match original.closed.as_ref() {
-                    Some(closed)
-                        if closed.outcome == maka_agent_facts::accounting::Outcome::Success =>
+                    reader
+                        .reported_model(item.recorded.run, step, *attempt)
+                        .await
+                        .map_err(|error| error.to_string())?
+                } else {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
                     {
-                        let protocol: maka_agent_facts::context::ModelClosureProtocol =
-                            serde::Deserialize::deserialize(&closed.protocol).map_err(|error| {
-                                format!("agent_history_model_closure_invalid: {error}")
-                            })?;
-                        protocol.model
+                        e.insert(
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
                     }
-                    _ => None,
+                    let original = views[&item.recorded.run]
+                        .attempts
+                        .get(attempt)
+                        .ok_or("agent_history_original_attempt_missing")?;
+                    original
+                        .closed
+                        .as_ref()
+                        .filter(|closed| {
+                            closed.outcome == maka_agent_facts::accounting::Outcome::Success
+                        })
+                        .map(|closed| {
+                            serde::Deserialize::deserialize(&closed.protocol)
+                                .map(
+                                    |protocol: maka_agent_facts::context::ModelClosureProtocol| {
+                                        protocol.model
+                                    },
+                                )
+                                .map_err(|error| error.to_string())
+                        })
+                        .transpose()?
+                        .flatten()
                 };
                 row.chunk.model = Some(wire::HistoryModel::Native {
                     requested_model_id: binding.model.clone(),
@@ -461,26 +478,37 @@ pub(super) async fn project(
                     false
                 }
             };
-            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
-                let view = reader
-                    .view_at(item.recorded.run)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                e.insert(view);
-            }
-            let view = &views[&item.recorded.run];
-            row.chunk.final_output = view.terminal == Some(Terminal::Completed)
-                && view.current_attempt == Some(*attempt)
-                && final_output_part;
+            row.chunk.final_output = final_attempt == Some(*attempt) && final_output_part;
             if let ModelPart::ToolCall { call } = part {
                 let key = ToolKey {
                     attempt: *attempt,
                     call: call.id.clone(),
                 };
-                if let Some(state) = view.tools.values().find(|tool| tool.key == key)
+                let projected = reader
+                    .projected_tool(item.recorded.run, key.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let state = if let Some(state) = projected.as_ref() {
+                    Some(state)
+                } else {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
+                    {
+                        e.insert(
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    views[&item.recorded.run]
+                        .tools
+                        .get(&maka_agent_state::fold::tool_key(&key))
+                };
+                if let Some(state) = state
                     && let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
                 {
-                    call.pending = view.terminal.is_none() && state.accepted.is_none();
+                    call.pending = !terminated && state.accepted.is_none();
                     call.dispatched = state.admitted;
                     if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
                         apply_display(call, display);
@@ -811,20 +839,36 @@ pub(super) async fn project(
             result.push(row);
         }
         Fact::Cell { event } => {
-            if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
-                e.insert(
-                    reader
-                        .view_at(item.recorded.run)
-                        .await
-                        .map_err(|error| error.to_string())?,
-                );
-            }
+            let cell = if visible(&item.recorded.fact) {
+                if let Some(projected) = reader
+                    .projected_cell(item.recorded.run, event.cell())
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    Some(projected)
+                } else {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        views.entry(item.recorded.run)
+                    {
+                        e.insert(
+                            reader
+                                .view_at(item.recorded.run)
+                                .await
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    views[&item.recorded.run].cells.get(&event.cell()).cloned()
+                }
+            } else {
+                None
+            };
             result.push(cells::project(
                 item,
                 turn,
                 address,
                 event,
-                &views[&item.recorded.run],
+                cell.as_ref(),
+                terminated,
             )?);
         }
         Fact::ContextCompacted { baseline } => {

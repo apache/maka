@@ -4284,7 +4284,7 @@ export type HistoryField = 'thinking' | 'body';
  * Tool output is available through source reads in both views. Conversation
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
-export type HistoryView = 'text' | 'conversation';
+export type HistoryView = ('text' | 'conversation') | 'chat' | 'turn';
 /**
  * Trusted producer attribution, preserved independently of editable content.
  */
@@ -8120,6 +8120,7 @@ export interface AgentHistoryChunk {
    */
   attachments?: AgentHistoryAttachment[];
   timing?: HistoryTurnTiming | null;
+  foldedWork?: HistoryFoldedWork | null;
   field: HistoryField;
   messageId?: string | null;
   turnId?: string | null;
@@ -8172,6 +8173,20 @@ export interface HistoryTurnFinished {
 export interface PromptCacheUsage {
   inputTokens: number;
   readTokens: number;
+}
+/**
+ * Completed activity available on demand at the same history fence.
+ */
+export interface HistoryFoldedWork {
+  thoughts: number;
+  tools: number;
+  messages: number;
+  imageCount: number;
+  images: HistoryWorkImage[];
+}
+export interface HistoryWorkImage {
+  position: HistoryRowAddress;
+  image?: number | null;
 }
 /**
  * Canonical references at the requested fence, never execution authority.

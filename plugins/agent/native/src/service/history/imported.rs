@@ -289,6 +289,7 @@ pub(super) async fn row(
             origin: None,
             compaction: None,
             timing: None,
+            folded_work: None,
             field: wire::HistoryField::Body,
             imported_turn: Some(message.turn_ordinal),
             message_id: message.source_message_id.clone(),

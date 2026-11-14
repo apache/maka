@@ -12487,8 +12487,24 @@ export const contracts: {
               HistoryView: {
                 description:
                   'Tool output is available through source reads in both views. Conversation\nwindows carry tool metadata only, keeping large results out of chat paging.',
-                type: 'string',
-                enum: ['text', 'conversation'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['text', 'conversation'],
+                  },
+                  {
+                    description:
+                      'Visible chat rows. Completed work can be read separately at the same fence.',
+                    type: 'string',
+                    const: 'chat',
+                  },
+                  {
+                    description:
+                      'All conversation rows belonging to the live history Run at the anchor.',
+                    type: 'string',
+                    const: 'turn',
+                  },
+                ],
               },
             },
           },
@@ -12625,6 +12641,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryTurnTiming',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  foldedWork: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryFoldedWork',
                       },
                       {
                         type: 'null',
@@ -13034,48 +13060,54 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['inputTokens', 'readTokens'],
               },
-              HistoryField: {
-                description: 'A readable field in a conversation window, in presentation order.',
-                type: 'string',
-                enum: ['thinking', 'body'],
-              },
-              Role: {
-                description:
-                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
-                type: 'string',
-                enum: [
-                  'system',
-                  'context',
-                  'tool',
-                  'compaction',
-                  'failure',
-                  'user',
-                  'assistant',
-                  'tool_call',
-                  'tool_result',
-                ],
-              },
-              HistoryOrder: {
-                description:
-                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+              HistoryFoldedWork: {
+                description: 'Completed activity available on demand at the same history fence.',
                 type: 'object',
                 properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                  },
-                  itemIndex: {
+                  thoughts: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
                   },
+                  tools: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messages: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  imageCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  images: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryWorkImage',
+                    },
+                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'itemIndex'],
+                required: ['thoughts', 'tools', 'messages', 'imageCount', 'images'],
+              },
+              HistoryWorkImage: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  image: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position'],
               },
               HistoryRowAddress: {
                 description:
@@ -13175,6 +13207,49 @@ export const contracts: {
               FactId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              Role: {
+                description:
+                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
+                type: 'string',
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
               },
               HistoryTool: {
                 description:
@@ -20553,8 +20628,24 @@ export const contracts: {
               HistoryView: {
                 description:
                   'Tool output is available through source reads in both views. Conversation\nwindows carry tool metadata only, keeping large results out of chat paging.',
-                type: 'string',
-                enum: ['text', 'conversation'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['text', 'conversation'],
+                  },
+                  {
+                    description:
+                      'Visible chat rows. Completed work can be read separately at the same fence.',
+                    type: 'string',
+                    const: 'chat',
+                  },
+                  {
+                    description:
+                      'All conversation rows belonging to the live history Run at the anchor.',
+                    type: 'string',
+                    const: 'turn',
+                  },
+                ],
               },
             },
           },
@@ -20691,6 +20782,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryTurnTiming',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  foldedWork: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryFoldedWork',
                       },
                       {
                         type: 'null',
@@ -21100,48 +21201,54 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['inputTokens', 'readTokens'],
               },
-              HistoryField: {
-                description: 'A readable field in a conversation window, in presentation order.',
-                type: 'string',
-                enum: ['thinking', 'body'],
-              },
-              Role: {
-                description:
-                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
-                type: 'string',
-                enum: [
-                  'system',
-                  'context',
-                  'tool',
-                  'compaction',
-                  'failure',
-                  'user',
-                  'assistant',
-                  'tool_call',
-                  'tool_result',
-                ],
-              },
-              HistoryOrder: {
-                description:
-                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+              HistoryFoldedWork: {
+                description: 'Completed activity available on demand at the same history fence.',
                 type: 'object',
                 properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                  },
-                  itemIndex: {
+                  thoughts: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
                   },
+                  tools: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messages: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  imageCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  images: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryWorkImage',
+                    },
+                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'itemIndex'],
+                required: ['thoughts', 'tools', 'messages', 'imageCount', 'images'],
+              },
+              HistoryWorkImage: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  image: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position'],
               },
               HistoryRowAddress: {
                 description:
@@ -21241,6 +21348,49 @@ export const contracts: {
               FactId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              Role: {
+                description:
+                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
+                type: 'string',
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
               },
               HistoryTool: {
                 description:

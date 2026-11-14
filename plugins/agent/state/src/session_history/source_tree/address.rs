@@ -114,6 +114,10 @@ pub(in crate::session_history) fn qualify(
         }
     };
     Ok(QualifiedRow {
+        run: match row {
+            SnapshotPosition::Canonical { run, .. } => Some(*run),
+            SnapshotPosition::Imported { .. } => None,
+        },
         address,
         order: HistoryOrder {
             path: order,

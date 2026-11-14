@@ -148,6 +148,7 @@ export type Row = {
   finalOutput?: boolean;
   finalAnswer?: boolean;
   compaction?: HistoryCompaction;
+  foldedWork?: AgentHistoryChunk['foldedWork'];
   metadataThrough?: number | null;
   runId?: RunId;
   stepId?: StepId;
@@ -312,6 +313,7 @@ export function historyMetadata(
     finalOutput: chunk.finalOutput,
     finalAnswer: chunk.finalAnswer,
     compaction: chunk.compaction ?? undefined,
+    foldedWork: chunk.foldedWork ?? previous?.foldedWork,
     tool: chunk.tool,
     metadataThrough: through,
   };

@@ -2142,7 +2142,47 @@ async fn desktop_folds_work_when_responses_starts_the_final_answer() {
     assert!(desktop.controls(thought).is_empty());
     desktop.press("Turn work details").await;
     desktop.control(thought).await;
+
+    // Reopen to exercise cold Chat history. Live previews already knew the
+    // thought, so expanding before reconnect alone cannot verify lazy paging.
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     desktop.close().await;
+    let client = fixture.client().await;
+    let page = client
+        .query(
+            "agent",
+            "history",
+            json!({
+                "sessionId": session,
+                "position": {"kind": "tail"},
+                "includeThinking": true,
+                "view": "chat",
+            }),
+        )
+        .await
+        .unwrap();
+    let rows = page["chunks"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["foldedWork"]["thoughts"] == 1));
+    assert!(!rows.iter().any(|row| row["field"] == "thinking"));
+    assert!(rows.iter().any(|row| row["text"] == "The log is clean."));
+    let original = std::mem::replace(&mut fixture.session, session);
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.control("Copy message").await;
+    assert!(desktop.controls(thought).is_empty());
+    desktop.artifact("reopened-history-collapsed");
+    desktop.press("Turn work details").await;
+    desktop.control(thought).await;
+    desktop.artifact("reopened-history-expanded");
+    desktop.close().await;
+    fixture.session = original;
     fixture.finish().await;
 }
 

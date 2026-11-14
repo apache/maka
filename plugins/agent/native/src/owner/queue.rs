@@ -59,10 +59,10 @@ impl Owner {
         if let Err(error) = self
             .durable
             .queue()
-            .recover_stopped_goal_steering(self.run_owner(), UnixMillis(now() as i64))
+            .recover_undelivered_steering(self.run_owner(), UnixMillis(now() as i64))
             .await
         {
-            tracing::error!(%error, "Failed to recover steering from stopped Goals");
+            tracing::error!(%error, "Failed to recover undelivered steering");
         }
         let mut sources = root.capability_changes();
         let mut cause = ReadyCause::CapabilitySourceChanged;

@@ -891,6 +891,10 @@ impl Owner {
         })
         .await
     }
+    pub(crate) async fn has_bot_history(&self, session: &str) -> Result<bool, String> {
+        self.bot.is_or_was(session).await
+    }
+
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
         self.bot.load().await.map_err(|error| error.to_string())?;
         let session_id = self.bot.session();

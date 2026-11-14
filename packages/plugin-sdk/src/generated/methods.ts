@@ -533,7 +533,10 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryField = 'thinking' |
  * Tool output is available through source reads in both views. Conversation
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
-export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView = 'text' | 'conversation';
+export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView =
+  | ('text' | 'conversation')
+  | 'chat'
+  | 'turn';
 /**
  * An original row within the actual read capability supplied by the caller.
  * Marker paths are relative to that capability; none of these fields grants access.
