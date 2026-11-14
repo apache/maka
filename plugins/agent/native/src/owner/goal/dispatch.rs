@@ -240,13 +240,12 @@ impl Owner {
             if view.spec.session_id != session || view.spec.owner != self.run_owner() {
                 return Err("goal_execution_identity_changed".into());
             }
-            // A failed recovery is not a completed iteration: retain the original
-            // pending Run instead of redispatching an unobserved call.
-            if view.terminal == Some(Terminal::Failed) && view.recovery_failure().is_some() {
-                return Ok(());
-            }
             if let Some(terminal) = view.terminal.clone() {
                 let retry_at = if terminal == Terminal::Failed {
+                    // A new iteration follows the same settlement rules as any follow-up.
+                    if view.blocks_followup() {
+                        return Ok(());
+                    }
                     failure_retry_at(&view)?
                 } else {
                     None
