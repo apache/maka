@@ -1457,6 +1457,12 @@ async fn automation_delivery(
             .unwrap()
             .as_millis() as u64
     }
+    let fire_message_id = |run: &Value| {
+        format!(
+            "m_{}",
+            hex::encode(Sha256::digest(run["id"].as_str().unwrap().as_bytes()))
+        )
+    };
     let condition = sandbox.workspace.join("status.txt");
     tokio::fs::write(&condition, "waiting")
         .await
@@ -1613,9 +1619,31 @@ async fn automation_delivery(
         steered["task"]["runs"][0]["message"],
         "Message delivered as steering"
     );
+    let delivered = query(
+        client,
+        "work",
+        json!({"sessionId":session,"target":{"kind":"message",
+            "messageId":fire_message_id(&steered["task"]["runs"][0])}}),
+    )
+    .await?;
+    assert_eq!(delivered["kind"], "delivered");
+    assert_eq!(delivered["shared"], true);
+    assert_eq!(delivered["execution"]["runId"], original["runId"]);
+    assert_eq!(delivered["execution"]["turnId"], original["turnId"]);
     let queued = wait(followup, 1).await?;
-    assert_ne!(queued["task"]["runs"][0]["runId"], original["runId"]);
-    assert_eq!(queued["task"]["runs"][0]["message"], "Message admitted");
+    let queued_run = &queued["task"]["runs"][0];
+    assert_ne!(queued_run["runId"], original["runId"]);
+    assert_eq!(queued_run["message"], "Message admitted");
+    // A fire settles at admission; finish the timer Run before the next script edge.
+    let completed = work(
+        client,
+        session,
+        &fire_message_id(queued_run),
+        Some("completed"),
+        Some(model),
+    )
+    .await?;
+    assert_eq!(completed["runId"], queued_run["runId"]);
     let mut check_after = steered["task"]["nextFireAt"].as_i64().unwrap();
     for state in ["ready", "waiting"] {
         tokio::fs::write(&condition, state)
@@ -1640,11 +1668,18 @@ async fn automation_delivery(
         .map_err(|e| e.to_string())?;
     let again = wait(steering, 2).await?;
     let latest = &again["task"]["runs"][0];
-    let message = format!(
-        "m_{}",
-        hex::encode(Sha256::digest(latest["id"].as_str().unwrap().as_bytes()))
-    );
-    work(client, session, &message, Some("completed"), Some(model)).await?;
+    assert_eq!(latest["message"], "Message admitted");
+    assert_ne!(latest["runId"], original["runId"]);
+    assert_ne!(latest["runId"], queued_run["runId"]);
+    let completed = work(
+        client,
+        session,
+        &fire_message_id(latest),
+        Some("completed"),
+        Some(model),
+    )
+    .await?;
+    assert_eq!(completed["runId"], latest["runId"]);
     let observed = query(client, "observe", json!({"sessionId":session})).await?;
     let changed = mutate(
         client,
