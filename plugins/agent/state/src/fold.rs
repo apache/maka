@@ -548,14 +548,17 @@ impl RunView {
         )?;
         require(
             self.external.as_ref().is_none_or(|task| {
-                task.effects.values().all(|effect| {
-                    !effect
-                        .observation
-                        .as_ref()
-                        .is_some_and(|reply| receipt_blocks_effects(&reply.receipt))
-                        && !matches!(effect.cleanup, OperationCleanup::Failed { .. })
-                        && !(effect.known() && effect.cleanup != OperationCleanup::Confirmed)
-                })
+                task.effects
+                    .values()
+                    .filter(|effect| effect.admitted)
+                    .all(|effect| {
+                        !effect
+                            .observation
+                            .as_ref()
+                            .is_some_and(|reply| receipt_blocks_effects(&reply.receipt))
+                            && !matches!(effect.cleanup, OperationCleanup::Failed { .. })
+                            && !(effect.known() && effect.cleanup != OperationCleanup::Confirmed)
+                    })
             }),
             "external task has unresolved original effects or cleanup",
         )
@@ -682,16 +685,17 @@ impl RunView {
             !self.stopped || !fact.is_admission(),
             "stopped run cannot admit work",
         )?;
-        if fact.is_admission() {
-            self.check_effect_admission_at(recorded.at)?;
-            require(
-                self.spec
+        // Fresh effect admission is checked at the write boundary. Replay only
+        // checks the recorded transition, including its original deadline.
+        require(
+            !fact.is_admission()
+                || self
+                    .spec
                     .budget
                     .deadline
                     .is_none_or(|deadline| recorded.at < deadline),
-                "run deadline reached",
-            )?;
-        }
+            "run deadline reached",
+        )?;
         for reference in fact.content_refs() {
             reference
                 .validate()
