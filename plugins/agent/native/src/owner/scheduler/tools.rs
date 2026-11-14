@@ -379,6 +379,9 @@ impl Owner {
                     Input::Pause { .. } => Some(pause_plan(&saved.plan, now() as i64)),
                     Input::Resume { .. } => {
                         let Some(approval) = &saved.plan.authorization else {
+                            if matches!(saved.plan.task.effect, ScheduledEffect::Discovery { .. }) {
+                                return Err("scheduler_user_approval_required".into());
+                            }
                             return Err("scheduler_execution_unavailable".into());
                         };
                         let basis = match approval {
