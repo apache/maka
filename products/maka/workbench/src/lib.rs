@@ -406,6 +406,108 @@ mod tests {
         }
 
         #[test]
+        fn stage_front_card_expands_live_frames_and_dismissal_preserves_selection_and_pin() {
+            let mut app = start();
+            stage(
+                &mut app,
+                "session-1",
+                "binding",
+                1,
+                &["a", "b"],
+                Some("a"),
+                1,
+            );
+            streams(&mut app, 1, 1);
+            for (index, id) in ["a", "b"].into_iter().enumerate() {
+                load(&mut app, id, index, 1200, 800);
+                decode(&mut app, id, true);
+            }
+            app.hover("label:Target a").unwrap();
+            app.press("label:Pin target").unwrap();
+            app.press("label:Target b").unwrap();
+            app.wait_for("text:Selected b pinned true").unwrap();
+            app.wait_for("text:Frame b presented true image-b").unwrap();
+            assert!(!app.shows("Expanded frame b image-b"));
+            app.press("label:Target b").unwrap();
+            app.wait_for("text:Expanded frame b image-b").unwrap();
+            streams(&mut app, 1, 1);
+            app.wait_for("text:Reads 2 maxBusy 1 after 0,0").unwrap();
+            send(
+                &mut app,
+                json!({"kind":"notice", "targetId":"b", "sequences":[2]}),
+            );
+            send(
+                &mut app,
+                json!({"kind":"resolve", "index":2, "sequence":2, "revision":1,
+                "marker":"updated-b", "width":1200, "height":800}),
+            );
+            app.wait_for("text:Expanded frame b updated-b").unwrap();
+            app.press("label:Close expanded view").unwrap();
+            app.wait_for("text:Selected b pinned true").unwrap();
+            assert!(!app.shows("Expanded frame b updated-b"));
+            app.wait_for("text:Lifetimes a:1/0,b:1/0").unwrap();
+            app.press("label:Target b").unwrap();
+            app.wait_for("text:Expanded frame b updated-b").unwrap();
+            app.press_key("escape").unwrap();
+            assert!(!app.shows("Expanded frame b updated-b"));
+            app.wait_for("text:Selected b pinned true").unwrap();
+            app.press("label:Target b").unwrap();
+            app.wait_for("text:Expanded frame b updated-b").unwrap();
+            app.press_at(
+                "id:computer-expanded-backdrop",
+                nsh_core::Point::new(nsh_core::Points(16.0), nsh_core::Points(16.0)),
+            )
+            .unwrap();
+            assert!(!app.shows("Expanded frame b updated-b"));
+            app.wait_for("text:Selected b pinned true").unwrap();
+            app.wait_for("text:Lifetimes a:1/0,b:1/0").unwrap();
+            streams(&mut app, 1, 1);
+            app.wait_for("text:Reads 3 maxBusy 1 after 0,0,0").unwrap();
+        }
+
+        #[test]
+        fn stage_expanded_frames_close_at_target_binding_source_and_visibility_boundaries() {
+            for boundary in ["removal", "revision", "binding", "source", "visibility"] {
+                let mut app = start();
+                stage(&mut app, "session-1", "binding", 1, &["a"], Some("a"), 1);
+                streams(&mut app, 1, 1);
+                load(&mut app, "a", 0, 800, 1200);
+                decode(&mut app, "a", true);
+                app.wait_for("text:Frame a presented true image-a").unwrap();
+                app.press("label:Target a").unwrap();
+                app.wait_for("text:Expanded frame a image-a").unwrap();
+                match boundary {
+                    "removal" => stage(&mut app, "session-1", "binding", 2, &[], None, 1),
+                    "revision" => stage(&mut app, "session-1", "binding", 2, &["a"], Some("a"), 2),
+                    "binding" => stage(
+                        &mut app,
+                        "session-1",
+                        "new-binding",
+                        1,
+                        &["a"],
+                        Some("a"),
+                        1,
+                    ),
+                    "source" => send(&mut app, json!({"kind":"source", "sessionId":"session-2"})),
+                    "visibility" => send(&mut app, json!({"kind":"visible", "value":false})),
+                    _ => unreachable!(),
+                }
+                pixels(&mut app, "none");
+                assert!(!app.shows("Expanded frame a image-a"), "{boundary}");
+                if boundary == "removal" {
+                    stage(&mut app, "session-1", "binding", 3, &["a"], Some("a"), 1);
+                    load(&mut app, "a", 1, 800, 1200);
+                    decode(&mut app, "a", true);
+                    app.wait_for("text:Frame a presented true image-a").unwrap();
+                    assert!(
+                        !app.shows("Expanded frame a image-a"),
+                        "removed overlay revived"
+                    );
+                }
+            }
+        }
+
+        #[test]
         fn stage_blurs_decoded_frames_on_entrance_and_clears_the_filter() {
             use nsh_core::transition::{Live, restyle};
             use std::sync::{Arc, Mutex};

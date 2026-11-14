@@ -30,6 +30,8 @@ const copy = {
   'Follow agent': ['跟随 Agent', '跟隨 Agent'],
   'Show live view': ['显示实时画面', '顯示即時畫面'],
   'Hide live view': ['隐藏实时画面', '隱藏即時畫面'],
+  'Expanded live view': ['放大的实时画面', '放大的即時畫面'],
+  'Close expanded view': ['关闭放大画面', '關閉放大畫面'],
   'Hiding the view does not stop the agent.': [
     '隐藏画面不会停止 Agent。',
     '隱藏畫面不會停止 Agent。',

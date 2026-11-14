@@ -26,12 +26,13 @@ import {
   inputAction,
   reduceMotion,
   signal,
+  windowSize,
   Text,
   View,
   type JSX,
   type ViewStyle,
 } from 'nsh';
-import { Button } from 'nsh/base';
+import { Button, Dialog } from 'nsh/base';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import {
   C,
@@ -54,6 +55,7 @@ export function ComputerStage(props: {
   frameReady(targetId: string): boolean;
   viewport: Size;
   renderFrame(target: () => ComputerTarget, selected: () => boolean): JSX.Element;
+  renderExpandedFrame(target: () => ComputerTarget): JSX.Element;
 }) {
   const stage = props.controller;
   const label = computerText;
@@ -69,6 +71,49 @@ export function ComputerStage(props: {
     if (targets.some((target) => target.id === selected)) presented.set(selected);
     else if (!targets.some((target) => target.id === presented()))
       presented.set(targets[0]?.id ?? null);
+  });
+  const expanded = signal<{ id: string; revision: number; bindingId: string | null } | null>(null);
+  const expandedTarget = computed(() => {
+    const identity = expanded();
+    if (!identity || stage.hidden() || stage.snapshot()?.bindingId !== identity.bindingId)
+      return undefined;
+    return stage
+      .targets()
+      .find(
+        (target) =>
+          target.id === identity.id &&
+          target.revision === identity.revision &&
+          props.frameReady(target.id) &&
+          !props.frameError(target.id),
+      );
+  });
+  effect(() => {
+    if (expanded() && !expandedTarget()) expanded.set(null);
+  });
+  const dismissExpanded = () => expanded.set(null);
+  const interact = (id: string) => {
+    if (presented() !== id) {
+      stage.select(id);
+      return;
+    }
+    const target = stage.targets().find((target) => target.id === id)!;
+    expanded.set({
+      id,
+      revision: target.revision,
+      bindingId: stage.snapshot()?.bindingId ?? null,
+    });
+  };
+  const expandedSize = computed(() => {
+    const target = expandedTarget();
+    const original = target && props.frameSize(target.id);
+    if (!original) return { width: 0, height: 0 };
+    const space = windowSize();
+    const scale = Math.min(
+      1,
+      Math.max(1, space.width - 48) / original.width,
+      Math.max(1, space.height - 96) / original.height,
+    );
+    return { width: original.width * scale, height: original.height * scale };
   });
   const ordered = computed(() => {
     const targets = candidates();
@@ -218,7 +263,7 @@ export function ComputerStage(props: {
                       <Button
                         accessibilityLabel={target().title}
                         onLayout={startEntrance}
-                        onPress={inputAction(stage.select, target().id)}
+                        onPress={inputAction(interact, target().id)}
                         style={{
                           position: 'absolute',
                           top: (size()?.depth ?? 0) * OFFSET_Y,
@@ -366,6 +411,78 @@ export function ComputerStage(props: {
           </View>
         </View>
       </If>
+      <Each
+        of={expandedTarget() ? [expandedTarget()!] : []}
+        key={(target) => JSON.stringify([target.id, target.revision])}
+      >
+        {(target) => (
+          <Dialog
+            testID="computer-expanded"
+            accessibilityLabel={label('Expanded live view')}
+            animation="none"
+            onCancel={dismissExpanded}
+            backdropTestID="computer-expanded-backdrop"
+            backdropStyle={{ backgroundColor: C.scrim }}
+            style={{
+              flex: 1,
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'box-none',
+            }}
+          >
+            <View
+              style={{
+                width: Math.max(160, expandedSize().width),
+                borderRadius: 16,
+                overflow: 'hidden',
+                backgroundColor: C.background,
+                boxShadow: `0 16px 48px ${C.shadow}`,
+              }}
+            >
+              <View
+                style={{
+                  height: 40,
+                  paddingHorizontal: 6,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  backgroundColor: C.raised,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 12,
+                    color: C.secondary,
+                    flexShrink: 1,
+                    numberOfLines: 1,
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {target().title}
+                </Text>
+                <Button
+                  accessibilityLabel={label('Close expanded view')}
+                  onPress={dismissExpanded}
+                  style={iconButton}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Icon name="close" size={14} color={C.secondary} />
+                </Button>
+              </View>
+              <View
+                style={{
+                  width: expandedSize().width,
+                  height: expandedSize().height,
+                  alignSelf: 'center',
+                }}
+              >
+                {untracked(() => props.renderExpandedFrame(target))}
+              </View>
+            </View>
+          </Dialog>
+        )}
+      </Each>
     </View>
   );
 }

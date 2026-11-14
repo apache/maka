@@ -151,6 +151,13 @@ export function ComputerStageView(props: {
                       return !!value && ready().get(id) === frameAuthority(value);
                     }}
                     frameError={(id) => failures().get(id) ?? live.errors().get(id)}
+                    renderExpandedFrame={(target) => (
+                      <LiveImage
+                        frame={frameFor(target())}
+                        onError={(event) => props.report(new Error(event.message))}
+                        style={{ width: '100%', height: '100%' }}
+                      />
+                    )}
                     renderFrame={(target) => {
                       const id = target().id;
                       return (

@@ -348,6 +348,11 @@ mount(() => {
             cachedReady() || (decoded().has(id) && decoded().get(id) === identity(id))
           }
           viewport={pane()}
+          renderExpandedFrame={(target) => (
+            <View style={{ width: '100%', height: '100%' }}>
+              <Text>{`Expanded frame ${target().id} ${live.frames().get(target().id)?.dataBase64 ?? 'waiting'}`}</Text>
+            </View>
+          )}
           renderFrame={(target, presented) => {
             const id = target().id;
             const counts = lifetimes.get(id) ?? { mounted: 0, disposed: 0 };
