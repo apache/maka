@@ -27,7 +27,7 @@ use maka_external_agent::AcpV1Projection;
 use runtime::{Pipe, string};
 use serde_json::json;
 
-const HOST_SERVER: &str = "maka_maka";
+const HOST_SERVER: &str = "maka";
 
 #[expect(
     clippy::too_many_arguments,

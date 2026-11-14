@@ -31709,6 +31709,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'agent_run',
                       },
                       target: {
@@ -31887,6 +31904,48 @@ export const contracts: {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               Misfire: {
                 type: 'string',
@@ -32363,6 +32422,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'agent_run',
                       },
                       target: {
@@ -32541,6 +32617,48 @@ export const contracts: {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               Creator: {
                 oneOf: [
@@ -33953,7 +34071,7 @@ export const contracts: {
             properties: {
               onComplete: {
                 description:
-                  'Best-effort notification to the native model caller when this message finishes,\nfails or is cancelled, and once per pending interaction or authority blocker\nthat needs attention. An attention notification keeps the completion watch.\nWhen registration is confirmed, the caller can yield rather than poll.\nThe watch and task admission commit together;\ncheck the completion field of the send receipt.',
+                  'Best-effort notification to the caller when this message finishes,\nfails or is cancelled, and once per pending interaction or authority blocker\nthat needs attention. An attention notification keeps the completion watch.\nWhen registration is confirmed, the caller can yield rather than poll.\nThe watch and task admission commit together;\ncheck the completion field of the send receipt.',
                 anyOf: [
                   {
                     $ref: '#/$defs/AgentOnComplete',
@@ -40428,6 +40546,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'agent_run',
                       },
                       target: {
@@ -40606,6 +40741,48 @@ export const contracts: {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               Creator: {
                 oneOf: [
@@ -58561,6 +58738,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'external',
+                      },
+                      run: {
+                        $ref: '#/$defs/RunId',
+                      },
+                      key: {
+                        $ref: '#/$defs/ExternalEffectKey',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'run', 'key'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'standalone',
                       },
                       session: {
@@ -58571,6 +58765,20 @@ export const contracts: {
                     required: ['kind', 'session'],
                   },
                 ],
+              },
+              ExternalEffectKey: {
+                type: 'object',
+                properties: {
+                  task: {
+                    $ref: '#/$defs/ExternalTaskId',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['task', 'operation'],
               },
               ExternalTaskId: {
                 type: 'string',

@@ -33,7 +33,7 @@ fn call(
     let cell_owner: CellOwner = serde_json::from_str(&body)?;
     let binding = match &cell_owner {
         CellOwner::Agent { link, .. } => Some(evidence(c, link.run, link.attempt)?.1.binding),
-        CellOwner::Standalone { .. } => None,
+        CellOwner::Standalone { .. } | CellOwner::External { .. } => None,
     };
     let id = key(cell, operation);
     insert_tool(

@@ -507,7 +507,7 @@ fn cell_action(view: &RunView, live: &Live, fenced: bool) -> Option<Action> {
                     && (live.work.contains(&WorkKey::Tool(tool.key.clone()))
                         || (tool.accepted.is_none() && tool.local_returned.is_some()))
             }),
-            CellOwner::Standalone { .. } => false,
+            CellOwner::Standalone { .. } | CellOwner::External { .. } => false,
         };
         if !fenced && !synchronous_pending {
             if matches!(
@@ -520,6 +520,7 @@ fn cell_action(view: &RunView, live: &Live, fenced: bool) -> Option<Action> {
                 return Some(Action::AcceptCellFinal(cell.id));
             }
             if interrupted
+                && matches!(cell.owner, CellOwner::Agent { .. })
                 && cell.children.values().all(|child| child.known())
                 && cell.final_notification.is_none()
             {

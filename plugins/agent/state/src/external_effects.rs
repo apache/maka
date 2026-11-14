@@ -220,7 +220,7 @@ pub(crate) fn apply(view: &mut RunView, event: &ExternalEffectEvent) -> Result<(
         ));
     }
     if event.is_admission() {
-        if task.closed.is_some() {
+        if view.finish_requested() || task.closed.is_some() {
             return Err(invalid("closed external task cannot admit Host work"));
         }
         if view

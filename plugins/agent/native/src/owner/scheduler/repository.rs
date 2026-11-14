@@ -374,7 +374,7 @@ pub(super) struct ScheduleMutation {
     pub(super) writer: DataWriter,
     pub(super) input: ScheduleChange,
     pub(super) id: String,
-    pub(super) approval: Result<Option<PreparedScheduleApproval>, String>,
+    pub(super) approval: Result<Option<PreparedBackgroundGrant>, String>,
 }
 impl ScheduleMutation {
     fn read(

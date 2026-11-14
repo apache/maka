@@ -215,6 +215,13 @@ impl Engine {
             ));
         };
         let mut facts = maka_agent_state::cells::acceptance(original)?;
+        if matches!(
+            original.owner,
+            maka_agent_facts::cells::CellOwner::External { .. }
+        ) {
+            self.publish(Some(claim), view, facts, vec![], now).await?;
+            return Ok(());
+        }
         let content = ContentBlob::json(&CellNotification {
             schema_version: 1,
             body: CellNotificationBody::Completed {

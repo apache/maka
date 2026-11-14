@@ -83,7 +83,11 @@ function AutomationEditor(props: {
     schedule?.kind === 'calendar' ? schedule.recurrence : (schedule?.kind ?? 'once'),
   );
   const delivery = signal<Delivery>(
-    effect?.kind === 'agent_run' ? 'new' : (effect?.delivery ?? 'steering'),
+    effect?.kind === 'agent_run'
+      ? 'new'
+      : effect?.kind === 'executor_session'
+        ? 'followup'
+        : (effect?.delivery ?? 'steering'),
   );
   const title = signal(task?.title ?? '');
   const text = signal(task?.intent.body ?? '');
@@ -111,15 +115,23 @@ function AutomationEditor(props: {
   const cron = signal(schedule?.kind === 'cron' ? schedule.expression : '');
   const error = createText();
   const choices = () =>
-    props.sessions().filter((session) => !session.archived && session.backend?.kind === 'model');
-  const target = () => choices().find((session) => session.id === selected());
+    props
+      .sessions()
+      .filter(
+        (session) =>
+          !session.archived &&
+          (session.backend?.kind === 'model' ||
+            (session.backend?.kind === 'executor' &&
+              session.backend.selection.executor === 'external')),
+      );
+  const selectedSession = () => choices().find((session) => session.id === selected());
   const submit = async () => {
     if (props.pending()) return;
     error.set('');
-    const session = target();
+    const session = selectedSession();
     const backend = session?.backend;
-    if (!session || backend?.kind !== 'model') {
-      error.set(message('Choose a conversation with a model'));
+    if (!session || !backend) {
+      error.set(message('Choose a target conversation'));
       return;
     }
     const when = trigger();
@@ -164,22 +176,31 @@ function AutomationEditor(props: {
               : { kind: 'calendar', recurrence: when, anchorAt: startAt };
         break;
     }
-    const common = {
-      target: {
-        sessionId: session.id,
-        workspace: session.workspace,
-        permissions: session.permissions,
-        boundaryRevision: session.boundaryRevision,
-        binding: session.binding,
-      },
-      model: { connectionId: backend.connectionId, modelId: backend.modelId },
-      thinkingLevel: backend.thinkingLevel,
+    const target = {
+      sessionId: session.id,
+      workspace: session.workspace,
+      permissions: session.permissions,
+      boundaryRevision: session.boundaryRevision,
+      binding: session.binding,
     };
     const mode = delivery();
     const destination: AgentScheduledEffect =
-      mode === 'new'
-        ? { kind: 'agent_run', ...common }
-        : { kind: 'session', delivery: mode, ...common };
+      backend.kind === 'executor'
+        ? { kind: 'executor_session', target, selection: backend.selection }
+        : mode === 'new'
+          ? {
+              kind: 'agent_run',
+              target,
+              model: { connectionId: backend.connectionId, modelId: backend.modelId },
+              thinkingLevel: backend.thinkingLevel,
+            }
+          : {
+              kind: 'session',
+              delivery: mode,
+              target,
+              model: { connectionId: backend.connectionId, modelId: backend.modelId },
+              thinkingLevel: backend.thinkingLevel,
+            };
     const input = {
       timezone: timezone().trim(),
       misfire: props.detail?.misfire ?? 'skip',
@@ -219,7 +240,7 @@ function AutomationEditor(props: {
           value={selected()}
           choices={choices().map((row) => ({ value: row.id, title: row.title }))}
           change={selected.set}
-          placeholder={tr('Choose a conversation with a model')}
+          placeholder={tr('Choose a target conversation')}
         />
         <If when={props.browseMore}>
           <SettingsButton
@@ -228,12 +249,14 @@ function AutomationEditor(props: {
             onPress={() => props.browseMore?.()}
           />
         </If>
-        <SettingsSelect
-          label={tr('Automation delivery')}
-          value={delivery()}
-          choices={deliveries.map(([value, key]) => ({ value, title: tr(key) }))}
-          change={(value) => delivery.set(value as Delivery)}
-        />
+        <If when={selectedSession()?.backend?.kind !== 'executor'}>
+          <SettingsSelect
+            label={tr('Automation delivery')}
+            value={delivery()}
+            choices={deliveries.map(([value, key]) => ({ value, title: tr(key) }))}
+            change={(value) => delivery.set(value as Delivery)}
+          />
+        </If>
         <SettingsSelect
           label={tr('Trigger type')}
           value={trigger()}

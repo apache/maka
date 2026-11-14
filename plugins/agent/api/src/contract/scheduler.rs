@@ -36,6 +36,10 @@ pub enum ScheduledEffect {
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     },
+    ExecutorSession {
+        target: ScheduledTarget,
+        selection: maka_agent_facts::executor::Selection,
+    },
     AgentRun {
         target: ScheduledTarget,
         model: ModelSelection,
@@ -45,27 +49,31 @@ pub enum ScheduledEffect {
 impl ScheduledEffect {
     pub fn target(&self) -> &ScheduledTarget {
         match self {
-            Self::Session { target, .. } | Self::AgentRun { target, .. } => target,
+            Self::Session { target, .. }
+            | Self::ExecutorSession { target, .. }
+            | Self::AgentRun { target, .. } => target,
         }
     }
 }
 
 impl maka_scheduler::task::TaskEffect for ScheduledEffect {
     fn validate(&self) -> Result<(), maka_scheduler::Error> {
-        match self {
-            Self::Session { target, .. } | Self::AgentRun { target, .. } => {
-                if target.session_id.is_empty()
-                    || target.boundary_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
-                    || target.binding.validate().is_err()
-                {
-                    Err(maka_scheduler::Error::Invalid(
-                        "invalid scheduled execution target".into(),
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
+        let target = self.target();
+        if target.session_id.is_empty()
+            || target.boundary_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
+            || target.binding.validate().is_err()
+        {
+            return Err(maka_scheduler::Error::Invalid(
+                "invalid scheduled execution target".into(),
+            ));
         }
+        if let Self::ExecutorSession { selection, .. } = self {
+            selection
+                .settings
+                .validate()
+                .map_err(|error| maka_scheduler::Error::Invalid(error.into()))?;
+        }
+        Ok(())
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

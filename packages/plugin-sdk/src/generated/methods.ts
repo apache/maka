@@ -1194,6 +1194,11 @@ export type SettingsUsageOutput_CellOwner =
       call: string;
     }
   | {
+      kind: 'external';
+      run: SettingsUsageOutput_RunId;
+      key: SettingsUsageOutput_ExternalEffectKey;
+    }
+  | {
       kind: 'standalone';
       session: string;
     };
@@ -4129,6 +4134,10 @@ export interface SettingsUsageOutput_ToolCallIdentity {
   tool_call_id: string;
   origin: SettingsUsageOutput_ToolOrigin;
   [k: string]: unknown | undefined;
+}
+export interface SettingsUsageOutput_ExternalEffectKey {
+  task: SettingsUsageOutput_ExternalTaskId;
+  operation: string;
 }
 export interface SettingsUsageOutput_RunOwner {
   deployment: string;

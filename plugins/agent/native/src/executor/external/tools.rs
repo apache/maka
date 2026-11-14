@@ -21,13 +21,16 @@
 use super::*;
 use maka_agent_facts::{
     durable::{ExecutionIdentity, ExternalTaskId},
-    read::{ReadInput, ResourceAddress},
-    tool_call::{ToolCallIdentity, ToolOrigin, ToolRejection},
+    execution::CodeLanguage,
+    tool_call::{ToolCallIdentity, ToolOrigin},
     tool_output::{DurableToolProjection, ReturnedToolResult, ToolOutput},
-    tools::{ToolCallContext, ToolError},
+    tools::{ToolCallContext, ToolDefinition, ToolError},
 };
+use maka_model::prompt::{ContentPart, FileData};
 use maka_plugin_core::{operation::OperationResult, work::WorkCustody};
 use maka_tools::ToolCatalog;
+
+const TOOL_PREFIX: &str = "maka_";
 
 /// The native owner owns canonical preparation, current access, one original T1,
 /// execution custody and the full immutable return/receipt/cleanup observations.
@@ -36,51 +39,69 @@ pub(crate) trait HostEffects: Send + Sync {
         &self,
         catalog: ToolCatalog,
         context: ToolCallContext,
-        name: String,
+        definition: ToolDefinition,
         input: Value,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, Result<ReturnedToolResult, ToolError>>;
+
+    fn finish_signal(&self) -> CancellationToken;
+
+    fn content<'a>(
+        &'a self,
+        returned: &'a ReturnedToolResult,
+        cancellation: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Vec<ContentPart>, String>>;
 }
 
 #[derive(Clone)]
 pub(crate) struct HostTools {
-    pub catalog: ToolCatalog,
-    pub resource_reads: Vec<String>,
+    pub availability: maka_tools::availability::Availability,
+    pub code_language: CodeLanguage,
     pub effects: Arc<dyn HostEffects>,
 }
 
 pub(super) struct Tools {
-    tools: Option<HostTools>,
+    tools: Option<BoundTools>,
     execution: ExecutionIdentity,
     custody: Arc<dyn WorkCustody>,
     task: ExternalTaskId,
     source: maka_agent_facts::executor::Binding,
 }
 
+struct BoundTools {
+    catalog: ToolCatalog,
+    definitions: Vec<ToolDefinition>,
+    effects: Arc<dyn HostEffects>,
+}
+
 impl Tools {
     pub async fn bind(
-        mut tools: Option<HostTools>,
+        tools: Option<HostTools>,
         request: &Request,
         custody: Arc<dyn WorkCustody>,
         owner: &External,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
-        if let Some(tools) = &mut tools {
-            tools
-                .catalog
-                .bind_request(maka_tools::request::BindingRequest {
-                    behavior: None,
-                    model: None,
-                    execution: request.execution.clone(),
-                    custody: Some(custody.clone()),
-                    cwd: request.cwd.clone(),
-                    tools: tools.catalog.names().into_iter().collect(),
-                    available_tools: tools.catalog.names().into(),
+        let tools = if let Some(tools) = tools {
+            let bound = tools
+                .availability
+                .capture(
+                    None,
+                    request.execution.clone(),
+                    Some(custody.clone()),
+                    request.cwd.clone(),
                     cancellation,
-                })
+                )
                 .await
                 .map_err(|error| Error::Provider(error.to_string()))?;
-        }
+            Some(BoundTools {
+                catalog: bound.all(),
+                definitions: maka_tools::CodeCells::definitions_for(&bound, tools.code_language),
+                effects: tools.effects,
+            })
+        } else {
+            None
+        };
         Ok(Self {
             tools,
             execution: request.execution.clone(),
@@ -90,9 +111,17 @@ impl Tools {
         })
     }
 
+    pub fn finish_signal(&self) -> CancellationToken {
+        self.tools
+            .as_ref()
+            .map_or_else(CancellationToken::new, |tools| {
+                tools.effects.finish_signal()
+            })
+    }
+
     pub fn definitions(&self) -> Vec<Value> {
-        self.tools.iter().flat_map(|tools| tools.catalog.definitions()).map(|tool| serde_json::json!({
-            "name":tool.name, "description":tool.description, "inputSchema":tool.input_schema,
+        self.tools.iter().flat_map(|tools| &tools.definitions).map(|tool| serde_json::json!({
+            "name":format!("{TOOL_PREFIX}{}", tool.name), "description":tool.description, "inputSchema":tool.input_schema,
         })).collect()
     }
 
@@ -112,6 +141,20 @@ impl Tools {
                 )
             });
         };
+        let Some(definition) = name.strip_prefix(TOOL_PREFIX).and_then(|name| {
+            tools
+                .definitions
+                .iter()
+                .find(|definition| definition.name == name)
+        }) else {
+            return Box::pin(async {
+                (
+                    mcp_error(serde_json::json!({"message":"Unknown Maka tool"})),
+                    None,
+                )
+            });
+        };
+        let definition = definition.clone();
         let operation = Uuid::new_v4();
         let operation_id = format!("external:{}:{operation}", self.task);
         let context = ToolCallContext {
@@ -131,18 +174,9 @@ impl Tools {
         };
         let effects = tools.effects.clone();
         let catalog = tools.catalog.clone();
-        let resource_read = tools.resource_reads.contains(&name);
         Box::pin(async move {
-            if resource_read && let Err(reason) = authorize_resource(&input) {
-                return (
-                    mcp_error(
-                        serde_json::json!({"message":reason.to_string(),"operationId":operation_id}),
-                    ),
-                    None,
-                );
-            }
             let result = effects
-                .invoke(catalog, context, name, input, cancellation)
+                .invoke(catalog, context, definition, input, cancellation.clone())
                 .await;
             match result {
                 Ok(returned) => {
@@ -197,19 +231,23 @@ impl Tools {
                             );
                         }
                     }
-                    if matches!(&returned.output, ToolOutput::Image(_))
-                        || matches!(&returned.output,ToolOutput::Mcp(result) if result.content.iter().any(|part|matches!(part,maka_agent_facts::capability::ContentBlock::Image {..}|maka_agent_facts::capability::ContentBlock::Audio {..})))
-                        || matches!(&returned.projection,DurableToolProjection::Content {parts} if parts.iter().any(|part|part.media().is_some()))
-                    {
-                        return (
-                            mcp_error(
-                                serde_json::json!({"message":"Image resources are unsupported by the External agent Host bridge","operationId":operation_id}),
-                            ),
-                            None,
-                        );
-                    }
                     let is_error = returned.is_error
                         || matches!(&returned.projection, DurableToolProjection::Failure);
+                    if let DurableToolProjection::Text { text } = &returned.projection {
+                        return (mcp_content(vec![ContentPart::text(text)], is_error), None);
+                    }
+                    if matches!(&returned.projection, DurableToolProjection::Content { .. }) {
+                        return match effects.content(&returned, &cancellation).await {
+                            Ok(parts) => (mcp_content(parts, is_error), None),
+                            Err(message) => (
+                                mcp_error(serde_json::json!({
+                                    "message": message,
+                                    "operationId": operation_id,
+                                })),
+                                None,
+                            ),
+                        };
+                    }
                     match maka_agent_facts::archive::encode_projection(&returned.projection)
                         .map_err(str::to_owned)
                         .and_then(|bytes| {
@@ -258,32 +296,37 @@ impl Tools {
     }
 }
 
-fn authorize_resource(input: &Value) -> Result<(), ToolRejection> {
-    let request = serde_json::from_value::<ReadInput>(input.clone())
-        .map_err(|error| ToolRejection::InvalidInput {
-            message: error.to_string(),
-        })?
-        .resolve()
-        .map_err(|error| ToolRejection::InvalidInput {
-            message: error.to_string(),
-        })?;
-    if maka_agent_facts::read::parse_imported_tool_result_path(request.path())
-        .map_err(|error| ToolRejection::InvalidInput {
-            message: error.to_string(),
-        })?
-        .is_some()
-    {
-        return Ok(());
-    }
-    match ResourceAddress::parse(request.path()) {
-        Ok(Some(ResourceAddress::Attachment(_) | ResourceAddress::ToolResult(_))) => Ok(()),
-        _ => Err(ToolRejection::InvalidInput {
-            message: "Read only accepts Maka attachment and archived tool-result resources".into(),
-        }),
-    }
-}
 fn mcp(value: Value, error: bool) -> Value {
-    let mut result = serde_json::json!({"content":[{"type":"text","text":serde_json::to_string(&value).expect("tool result is JSON")}]});
+    tool_result(
+        vec![serde_json::json!({"type":"text","text":value.to_string()})],
+        error,
+    )
+}
+
+fn mcp_content(parts: Vec<ContentPart>, error: bool) -> Value {
+    let content = parts
+        .into_iter()
+        .map(|part| match part {
+            ContentPart::Text { text, .. } => serde_json::json!({"type": "text", "text": text}),
+            ContentPart::File {
+                data: FileData::Data(data),
+                media_type,
+                ..
+            } => {
+                let kind = if media_type.starts_with("audio/") {
+                    "audio"
+                } else {
+                    "image"
+                };
+                serde_json::json!({"type": kind, "data": data, "mimeType": media_type})
+            }
+        })
+        .collect();
+    tool_result(content, error)
+}
+
+fn tool_result(content: Vec<Value>, error: bool) -> Value {
+    let mut result = serde_json::json!({"content": content});
     if error {
         result["isError"] = true.into();
     }
