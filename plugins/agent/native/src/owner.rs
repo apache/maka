@@ -951,8 +951,8 @@ impl Owner {
                 };
                 (workspace, None)
             }
-            WorkspaceSelection::Project { project, path } => {
-                let Some(prepared) = self.select_project(project, &path).await? else {
+            WorkspaceSelection::Project { project_id, path } => {
+                let Some(prepared) = self.select_project(project_id, &path).await? else {
                     return Ok(creation::PreparedCreation::Rejected(
                         Rejection::WorkspaceUnavailable,
                     ));
