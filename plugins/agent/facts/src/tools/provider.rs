@@ -62,5 +62,18 @@ pub struct ModelToolContext {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderToolProtocol {
     OpenaiResponses,
+    DeepseekResponses,
     AnthropicMessages,
+}
+
+impl ProviderToolProtocol {
+    pub fn accepts(self, id: &str) -> bool {
+        let namespace = match self {
+            Self::OpenaiResponses => "openai",
+            Self::DeepseekResponses => "deepseek",
+            Self::AnthropicMessages => "anthropic",
+        };
+        id.split_once('.')
+            .is_some_and(|(prefix, _)| prefix == namespace)
+    }
 }

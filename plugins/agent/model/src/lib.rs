@@ -100,11 +100,19 @@ impl ProviderConfig {
             capabilities: self.capabilities,
             provider_tools: match self.kind {
                 ProviderKind::OpenaiResponses => Some(ProviderToolProtocol::OpenaiResponses),
+                ProviderKind::OpenResponses(_) if is_deepseek_endpoint(&self.base_url) => {
+                    Some(ProviderToolProtocol::DeepseekResponses)
+                }
                 ProviderKind::Anthropic => Some(ProviderToolProtocol::AnthropicMessages),
                 _ => None,
             },
         }
     }
+}
+
+fn is_deepseek_endpoint(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.deepseek.com"))
 }
 
 /// Complete JSON encodings before transport-level prefix reuse.
@@ -473,17 +481,12 @@ impl ModelExecutor {
                     provider
                         .validate()
                         .map_err(|error| ModelError::Adapter(error.into()))?;
-                    let protocol = request.provider.tool_context().provider_tools;
-                    let compatible = match protocol {
-                        Some(maka_agent_facts::tools::ProviderToolProtocol::OpenaiResponses) => {
-                            provider.id.starts_with("openai.")
-                        }
-                        Some(maka_agent_facts::tools::ProviderToolProtocol::AnthropicMessages) => {
-                            provider.id.starts_with("anthropic.")
-                        }
-                        None => false,
-                    };
-                    if !compatible {
+                    if !request
+                        .provider
+                        .tool_context()
+                        .provider_tools
+                        .is_some_and(|protocol| protocol.accepts(&provider.id))
+                    {
                         return Err(ModelError::Adapter(
                             "provider tool does not match the selected adapter".into(),
                         ));

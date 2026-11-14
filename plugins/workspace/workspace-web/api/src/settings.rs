@@ -30,12 +30,20 @@ pub enum Source {
     Model,
     Tavily,
 }
-#[derive(Clone, Default, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[schemars(rename = "WebSettings")]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub enabled: bool,
     pub source: Source,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            source: Source::Model,
+        }
+    }
 }
 #[derive(Serialize, schemars::JsonSchema)]
 #[schemars(rename = "WebSnapshot")]

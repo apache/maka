@@ -44,12 +44,9 @@ impl Decoder {
         let search_name = tools
             .iter()
             .find(|tool| {
-                tool.provider.as_ref().is_some_and(|provider| {
-                    matches!(
-                        provider.id.as_str(),
-                        "openai.web_search" | "openai.web_search_preview"
-                    )
-                })
+                tool.provider
+                    .as_ref()
+                    .is_some_and(|provider| super::request::search_kind(&provider.id).is_some())
             })
             .map(|tool| tool.name.clone());
         Self {

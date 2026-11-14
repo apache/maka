@@ -254,6 +254,23 @@ impl ApiProvider {
                 }
                 .into()
             });
+        if self.id == "deepseek"
+            && canonical_endpoint.as_deref() == Some(configuration.base_url.as_str())
+            && route.wire == Wire::OpenaiResponses
+            && let Some(web_search) = self
+                .facts
+                .models
+                .get(&info.id)
+                .and_then(|model| model.metadata.capabilities)
+                .and_then(|capabilities| capabilities.web_search)
+        {
+            info.capabilities.get_or_insert_default().web_search = request
+                .overrides
+                .as_ref()
+                .and_then(|overrides| overrides.capabilities.as_ref())
+                .and_then(|capabilities| capabilities.web_search)
+                .or(Some(web_search));
+        }
         let model = Model {
             adapter,
             protocol: route.kind,

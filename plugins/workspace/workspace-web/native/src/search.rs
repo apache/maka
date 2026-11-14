@@ -205,6 +205,15 @@ pub fn native(
             id: "openai.web_search".into(),
             args: serde_json::json!({"searchContextSize":"medium"}),
         },
+        ProviderToolProtocol::DeepseekResponses => ProviderTool {
+            id: match model.model.as_str() {
+                "deepseek-v4-pro" => "deepseek.web_search",
+                "deepseek-flash" | "deepseek-v4-flash" => "deepseek.deepseek_web_search",
+                _ => return None,
+            }
+            .into(),
+            args: serde_json::json!({}),
+        },
         ProviderToolProtocol::AnthropicMessages => ProviderTool {
             id: "anthropic.web_search_20250305".into(),
             args: serde_json::json!({"maxUses":8}),

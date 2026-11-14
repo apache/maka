@@ -26,7 +26,10 @@ pub(super) fn resolve(provider: &str, model: &str) -> Wire {
     if lower.starts_with("gpt-5")
         || lower.starts_with("gpt-6")
         || (provider == "deepseek"
-            && matches!(lower.as_str(), "deepseek-v4-flash" | "deepseek-v4-pro"))
+            && matches!(
+                lower.as_str(),
+                "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4-pro"
+            ))
         || (provider == "opencode-go" && model == "muse-spark-1.2-contributor")
         || (matches!(provider, "alibaba-token-plan" | "alibaba-token-plan-cn")
             && model == "qwen3.8-max")
