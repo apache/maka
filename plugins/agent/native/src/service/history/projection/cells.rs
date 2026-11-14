@@ -18,9 +18,8 @@
  */
 
 use super::*;
-use maka_agent_facts::cells::{CellEvent, CellOwner, CellStatus};
+use maka_agent_facts::cells::{CellEvent, CellOwner, CellStatus, CellView};
 use maka_agent_facts::tool_call::ToolSettlement;
-use maka_agent_state::fold::RunView;
 use maka_plugin_core::operation::{OperationOutcome, Receipt};
 
 pub(super) fn project(
@@ -28,7 +27,8 @@ pub(super) fn project(
     turn: &str,
     address: &wire::HistoryRowAddress,
     event: &CellEvent,
-    view: &RunView,
+    cell: Option<&CellView>,
+    terminated: bool,
 ) -> Result<Row, String> {
     let mut row = base(item, turn, 0, Role::ToolResult, address)?;
     let receipt = if let CellEvent::ChildObserved {
@@ -73,10 +73,10 @@ pub(super) fn project(
             return Ok(row);
         }
     };
-    let cell = view
-        .cells
-        .get(&event.cell())
-        .ok_or("agent_history_cell_missing")?;
+    if !row.visible {
+        return Ok(row);
+    }
+    let cell = cell.ok_or("agent_history_cell_missing")?;
     let child = cell
         .children
         .get(operation)
@@ -110,7 +110,7 @@ pub(super) fn project(
                     ));
             }
             call.dispatched = child.admitted;
-            call.pending = view.terminal.is_none()
+            call.pending = !terminated
                 && matches!(cell.status, CellStatus::Running)
                 && child.local_result.is_none()
                 && child.provider_result.is_none()

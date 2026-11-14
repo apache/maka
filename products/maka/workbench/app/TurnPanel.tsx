@@ -98,6 +98,14 @@ export function activityCounts(
     const value = row(id);
     return value?.role === 'user' && activityMessage(value.origin);
   }).length;
+  return activityCountLabel({ thoughts, tools, messages });
+}
+
+function activityCountLabel({
+  thoughts,
+  tools,
+  messages,
+}: Pick<NonNullable<Row['foldedWork']>, 'thoughts' | 'tools' | 'messages'>) {
   return [
     thoughts
       ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', { count: thoughts })
@@ -126,6 +134,7 @@ export function TurnSummary(props: {
     sessionId: string;
     through: () => number;
     refs: () => ToolImageRef[];
+    total?: () => number | undefined;
     preview(image: ImagePreview): void;
   };
 }) {
@@ -165,7 +174,9 @@ export function TurnSummary(props: {
             : '';
     const counts =
       platform.idiom !== 'terminal' && props.canFold()
-        ? activityCounts(props.groups(), props.row)
+        ? turn.foldedWork
+          ? activityCountLabel(turn.foldedWork)
+          : activityCounts(props.groups(), props.row)
         : '';
     const usage = turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
     return (
@@ -194,6 +205,7 @@ export function TurnSummary(props: {
                 sessionId={props.images!.sessionId}
                 through={props.images!.through}
                 images={props.images!.refs}
+                total={props.images!.total}
                 preview={props.images!.preview}
               />
             </If>
@@ -286,6 +298,7 @@ function ActivityLog(props: {
   resumed(): void;
   /** Whether the activity list is scrolled to its end, following or not. */
   settled?(atEnd: boolean): void;
+  nearActivityEnd?(): void;
   reveal(): void;
 }) {
   const state = props.state;
@@ -421,6 +434,7 @@ function ActivityLog(props: {
             nearEnd = distance <= activityFollowThreshold;
             atEnd = distance <= 1;
             props.settled?.(atEnd);
+            if (distance < event.size.height) props.nearActivityEnd?.();
             // Reflow and restoring a saved offset also report scroll geometry.
             if (movement === 0 || scrollInput === 'idle') return;
             if (scrollInput === 'pending') scrollInput = 'idle';
@@ -578,6 +592,7 @@ type TurnPanelProps = {
   reading(away: boolean): void;
   resumed(): void;
   settled?(atEnd: boolean): void;
+  nearActivityEnd?(): void;
 };
 
 export function TurnPanel(props: TurnPanelProps) {

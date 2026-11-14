@@ -40,6 +40,7 @@ export type ProcessRow = Pick<
   | 'turnId'
   | 'importedTurn'
   | 'timing'
+  | 'foldedWork'
   | 'finalOutput'
   | 'finalAnswer'
   | 'origin'
@@ -79,6 +80,7 @@ export type ProcessEntry = ProcessGroup | MessageEntry;
 export type TurnPresentation = {
   turnKey: string;
   timing: Row['timing'] | null;
+  foldedWork?: Row['foldedWork'];
   active: boolean;
   finalOutputIds: string[];
   /** Trailing assistant text until more work arrives or history identifies the final output. */
@@ -103,6 +105,7 @@ export function turnWorkFold(
   terminal: boolean,
 ): 'unavailable' | 'open' | 'closed' {
   const outcome = turnOutcome(turn);
+  if (turn.foldedWork) return 'closed';
   if (!turn.worked || turn.interleavedInput || (outcome !== null && outcome !== 'completed'))
     return 'unavailable';
   if (turn.finalAnswerStarted) return 'closed';
@@ -293,6 +296,10 @@ export function projectProcessGroups(input: {
     const rowTurn = historyTurnKey(row);
     if (rowTurn === undefined) continue;
     const presentation = turn(rowTurn);
+    if (row.foldedWork) {
+      presentation.foldedWork = row.foldedWork;
+      presentation.worked = true;
+    }
     const through = row.metadataThrough ?? null;
     const previousThrough = timingThrough.get(rowTurn);
     if (row.timing && (through === null || previousThrough == null || through >= previousThrough)) {
