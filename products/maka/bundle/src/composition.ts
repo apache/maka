@@ -177,6 +177,7 @@ const settingsUiImports = [
   'management',
   'receipts',
   'skills',
+  'web',
 ];
 const workspaceUiImports = ['agent', 'terminal'];
 

@@ -100,13 +100,13 @@ export function createSettingsOperations(host: Host) {
     input: Input<E, M>,
   ): Promise<Output<E, M>>;
   function mutate(
-    endpoint: 'settings' | 'setup' | 'authentication' | 'management',
+    endpoint: 'settings' | 'setup' | 'authentication' | 'management' | 'web',
     method: string,
     input: unknown,
     secret?: string | null,
   ): Promise<any>;
   async function mutate(
-    endpoint: 'settings' | 'setup' | 'authentication' | 'management' | 'agent' | 'skills',
+    endpoint: 'settings' | 'setup' | 'authentication' | 'management' | 'web' | 'agent' | 'skills',
     method: string,
     input: unknown,
     secret: string | null = null,

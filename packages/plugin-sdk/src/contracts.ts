@@ -65110,11 +65110,11 @@ export const contracts: {
               source: {
                 $ref: '#/$defs/WebSource',
               },
-              credentialConfigured: {
+              customAvailable: {
                 type: 'boolean',
               },
             },
-            required: ['basis', 'available', 'source', 'credentialConfigured'],
+            required: ['basis', 'available', 'source', 'customAvailable'],
             title: 'WebCapture',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
@@ -65136,7 +65136,7 @@ export const contracts: {
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
               },
             },
           },
@@ -65153,6 +65153,12 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              settingsRevision: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                default: null,
+              },
             },
             title: 'WebKey',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -65197,6 +65203,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -65224,8 +65244,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -65237,12 +65263,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -65273,19 +65478,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -65302,6 +65525,12 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              settingsRevision: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                default: null,
+              },
             },
             title: 'WebKey',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -65346,6 +65575,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -65373,8 +65616,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -65386,12 +65635,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -65422,19 +65850,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -65598,12 +66044,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
             },
           },
@@ -65647,6 +66272,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -65674,8 +66313,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -65687,12 +66332,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -65723,19 +66547,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -65751,6 +66593,12 @@ export const contracts: {
                 type: ['integer', 'null'],
                 format: 'uint64',
                 minimum: 0,
+              },
+              settingsRevision: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                default: null,
               },
             },
             title: 'WebKey',
@@ -65796,6 +66644,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -65823,8 +66685,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -65836,12 +66704,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -65872,19 +66919,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -66005,8 +67070,14 @@ export const contracts: {
               credential: {
                 $ref: '#/$defs/WebCredential',
               },
+              presets: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/WebSearchPreset',
+                },
+              },
             },
-            required: ['settings', 'credential'],
+            required: ['settings', 'credential', 'presets'],
             title: 'WebSnapshot',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
@@ -66020,12 +67091,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -66056,19 +67306,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },

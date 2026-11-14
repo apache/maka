@@ -44,6 +44,7 @@ type Services = {
   authentication: ServiceMethods['settingsAuthentication'];
   setup: ServiceMethods['settingsSetup'];
   management: ServiceMethods['deploymentManager'];
+  web: ServiceMethods['workspaceWeb'];
   terminal: ServiceMethods['terminal'];
 };
 type Endpoint = keyof Services;

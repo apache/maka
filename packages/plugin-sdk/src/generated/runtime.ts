@@ -77,6 +77,7 @@ export type RuntimeProtocol =
   | WebSet
   | WebKey
   | WebUpdate
+  | WebSnapshot
   | WebResult
   | WebProbe
   | WebEndpoint
@@ -782,7 +783,27 @@ export type DecisionsAnswer =
   | {
       type: 'refusal';
     };
-export type WebSource = 'model' | 'tavily';
+export type WebSource = 'model' | 'custom';
+export type WebBackend =
+  | {
+      kind: 'tavily';
+    }
+  | {
+      kind: 'brave';
+    }
+  | {
+      kind: 'exa';
+    }
+  | {
+      kind: 'serper';
+    }
+  | {
+      kind: 'custom';
+      endpoint: WebSearchEndpoint;
+    };
+export type WebSearchMethod = 'get' | 'post';
+export type WebParameterLocation = 'query' | 'body';
+export type WebAuthLocation = 'header' | 'query' | 'body';
 export type WebUpdate =
   | {
       kind: 'updated';
@@ -793,6 +814,10 @@ export type WebUpdate =
     }
   | {
       kind: 'invalid_key';
+    }
+  | {
+      kind: 'invalid_settings';
+      message: string;
     }
   | {
       kind: 'check_unavailable';
@@ -5719,7 +5744,7 @@ export interface WebCapture {
   basis: WebBasis;
   available: boolean;
   source: WebSource;
-  credentialConfigured: boolean;
+  customAvailable: boolean;
 }
 export interface WebBasis {
   revision?: number | null;
@@ -5747,14 +5772,49 @@ export interface WebSet {
 export interface WebSettings {
   enabled: boolean;
   source: WebSource;
+  backend?: WebBackend;
+}
+export interface WebSearchEndpoint {
+  url: string;
+  method: WebSearchMethod;
+  query: WebParameter;
+  limit?: WebParameter | null;
+  urlParameters: {
+    [k: string]: string | undefined;
+  };
+  body: {
+    [k: string]: unknown | undefined;
+  };
+  auth?: WebAuth | null;
+  results: WebResultMapping;
+}
+export interface WebParameter {
+  location: WebParameterLocation;
+  name: string;
+}
+export interface WebAuth {
+  location: WebAuthLocation;
+  name: string;
+  prefix: string;
+}
+/**
+ * JSON pointers, with an empty list pointer selecting the response root.
+ */
+export interface WebResultMapping {
+  list: string;
+  title?: string | null;
+  url: string;
+  snippet?: string | null;
 }
 export interface WebKey {
   revision?: number | null;
+  settingsRevision?: number | null;
 }
 export interface WebSnapshot {
   revision?: number | null;
   settings: WebSettings;
   credential: WebCredential;
+  presets: WebSearchPreset[];
   [k: string]: unknown | undefined;
 }
 export interface WebCredential {
@@ -5764,8 +5824,14 @@ export interface WebCredential {
   [k: string]: unknown | undefined;
 }
 export interface WebCheck {
-  credential_revision: number;
+  credential_revision?: number | null;
+  settings_revision?: number | null;
   outcome: WebCheckOutcome;
+}
+export interface WebSearchPreset {
+  id: string;
+  endpoint: WebSearchEndpoint;
+  [k: string]: unknown | undefined;
 }
 export interface WebProbe {
   url: string;

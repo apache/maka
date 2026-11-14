@@ -77,13 +77,14 @@ const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
 const TERMINAL_KIND: &str = "terminal";
 const TERMINAL_METHODS: [&str; 4] = ["start", "stop", "control", "release"];
-const SETTINGS_ENDPOINTS: [&str; 6] = [
+const SETTINGS_ENDPOINTS: [&str; 7] = [
     "settings",
     "agent",
     "skills",
     "setup",
     "management",
     "authentication",
+    "web",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +133,7 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "management"
             && matches!(method, "setEnabled" | "configure" | "configureBatch"))
         || (endpoint == "authentication" && method == "loginCredential")
+        || (endpoint == "web" && matches!(method, "save" | "saveKey" | "deleteKey" | "checkKey"))
 }
 fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {
     operation.draft.is_none()
@@ -675,7 +677,9 @@ impl Client {
         if !settings_route(endpoint, method) {
             return Err("unsupported settings mutation method".into());
         }
-        if endpoint == "settings" && matches!(method, "saveCredential" | "saveUsageCredential") {
+        if (endpoint == "settings" && matches!(method, "saveCredential" | "saveUsageCredential"))
+            || (endpoint == "web" && method == "saveKey")
+        {
             if resources.len() != 1
                 || !resources.get("secret").is_some_and(|secret| {
                     secret.resource_type() == text_resource_type()

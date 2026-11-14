@@ -28,7 +28,7 @@ pub(super) async fn run(
     let mut response = match request.send().await {
         Ok(response) => response,
         Err(error) => {
-            let error = message(error);
+            let error = message(error.without_url());
             let _ = head.send(Err(error.clone()));
             return Err(error);
         }
@@ -63,7 +63,7 @@ pub(super) async fn run(
             Ok(None) => {
                 return Ok(serde_json::json!({"status": status, "receivedBytes": received_bytes}));
             }
-            Err(error) => return Err(message(error)),
+            Err(error) => return Err(message(error.without_url())),
         }
     }
 }

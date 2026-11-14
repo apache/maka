@@ -30,6 +30,8 @@ import { ModelSettings } from '../../../products/maka/workbench/app/ModelSetting
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
+import { WebSearchSettings } from '../../../products/maka/workbench/app/WebSearchSettings';
+import { createWebSearchSettings } from '../../../products/maka/workbench/app/webSearchSettingsState';
 import { PluginSettings } from '../../../products/maka/workbench/app/PluginSettings';
 import { SkillSettings } from '../../../products/maka/workbench/app/SkillSettings';
 import { ExternalAgentSettings } from '../../../products/maka/workbench/app/ExternalAgentSettings';
@@ -115,6 +117,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     restored?.general,
     (locale) => runtime.setLocale(locale),
   );
+  const webSearch = createWebSearchSettings(host, operations, active('web-search'));
   const network = createNetworkSettings(host, operations, active('network'), restored?.network);
   const plugins = createPluginSettings(
     host,
@@ -169,6 +172,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         ['createPreset', 'updatePreset', 'deletePreset'].includes(original.method)
       )
         await presets.recovered(value);
+      else if (original.endpoint === 'web') await webSearch.load();
       else if (original.endpoint === 'skills') skills.recovered();
       else if (original.endpoint === 'agent' && original.method === 'manageMcpServer')
         mcp.recovered();
@@ -421,6 +425,24 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               busy: operations.busy,
             },
             () => <ExternalAgentSettings owner={externalAgents} />,
+          ),
+      },
+      'web-search': {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'web-search',
+            webSearch,
+            props,
+            {
+              title: webSearch.title,
+              nested: () => false,
+              navigation: webSearch.navigation,
+              back: webSearch.back,
+              leave: webSearch.leave,
+              busy: operations.busy,
+            },
+            () => <WebSearchSettings owner={webSearch} />,
           ),
       },
       network: {
