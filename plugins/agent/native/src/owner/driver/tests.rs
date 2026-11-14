@@ -3740,6 +3740,116 @@ mod model_recovery {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepared_model_request_survives_package_rebuild_and_settles_on_rejection()
+    -> TestResult<()> {
+        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+        use std::sync::atomic::AtomicUsize;
+
+        for same_adapter in [true, false] {
+            let mut rig = Rig::new()?;
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            let mut prepared = driver
+                .model()?
+                .prepare_step(&view, Preparation::Initial, driver)
+                .await?;
+            let step = prepared.request.step;
+            let body = ContentBlob::json(&prepared.request)?;
+            prepared.contents.push(body.clone());
+            rig.append(
+                vec![Fact::StepPrepared {
+                    step,
+                    request: body.reference().clone(),
+                    adjudications: vec![],
+                }],
+                prepared.contents,
+            )
+            .await?;
+
+            let driver = Arc::get_mut(rig.driver.as_mut().unwrap())
+                .ok_or("driver shared before dispatch")?;
+            let mut replacement = driver.owner.revision.clone();
+            replacement.revision = "rebuilt-agent-package".into();
+            if !same_adapter {
+                replacement.entry_id = "different-adapter-entry".into();
+            }
+            let NativeBackend::Model { model, .. } = &mut driver.backend else {
+                unreachable!();
+            };
+            model.executor =
+                maka_model::ModelExecutor::for_source(Duration::from_secs(30), replacement)?;
+
+            let stop = CancellationToken::new();
+            let posts = Arc::new(AtomicUsize::new(0));
+            let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+            let server = tokio::spawn(serve(listener, posts.clone(), stop.clone(), None));
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let result =
+                tokio::time::timeout(Duration::from_secs(15), async {
+                    let engine = Engine::new(driver.state.clone());
+                    let mut changes = driver.state.subscribe()?;
+                    let terminal = loop {
+                        changes.borrow_and_update();
+                        match engine
+                            .drive(
+                                driver.access.claim().clone(),
+                                driver.clone(),
+                                CancellationToken::new(),
+                            )
+                            .await?
+                        {
+                            DriverExit::Terminal { terminal, .. } => break terminal,
+                            DriverExit::Waiting { .. } => changes.changed().await?,
+                            other => {
+                                return Err(
+                                    format!("prepared request did not settle: {other:?}").into()
+                                );
+                            }
+                        }
+                    };
+                    let view = driver.state.frontier(run).await?;
+                    let attempt = view.current_attempt.ok_or("model attempt missing")?;
+                    Ok::<_, Box<dyn Error + Send + Sync>>((
+                        terminal,
+                        view.blocks_followup(),
+                        view.attempts[&attempt].cleanup.clone(),
+                    ))
+                })
+                .await;
+            drop(driver);
+            stop.cancel();
+            let cleanup = rig.finish().await;
+            assert!(cleanup.is_empty(), "{cleanup:?}");
+            server.await??;
+            let (terminal, blocked, cleanup) = result??;
+            assert_eq!(
+                terminal,
+                if same_adapter {
+                    Terminal::Completed
+                } else {
+                    Terminal::Failed
+                }
+            );
+            assert_eq!(posts.load(Ordering::SeqCst), usize::from(same_adapter));
+            assert_eq!(cleanup, OperationCleanup::Confirmed);
+            assert!(!blocked, "the failed attempt must not block a follow-up");
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interrupted_empty_model_stream_retries_the_same_run() -> TestResult<()> {
         let mut rig = Rig::new()?;
         let session = rig

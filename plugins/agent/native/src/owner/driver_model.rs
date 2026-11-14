@@ -1019,7 +1019,7 @@ impl DriverModel {
             .await
             .map_err(|error| RunError::Internal(error.to_string()))??;
         let binding = self.executor.binding(&model.provider)?;
-        if !same_adapter_revision(binding.source(), &frozen.adapter)
+        if !same_adapter(binding.source(), &frozen.adapter)
             || preparation::route_identity(&model.provider)? != frozen.route_identity
         {
             return Err(unsupported("frozen-tool-model-route-changed"));
@@ -2128,20 +2128,65 @@ impl DriverModel {
 
     pub(super) async fn start_model(
         &self,
-        run: RunId,
+        view: &RunView,
         attempt: ModelAttemptId,
         request: RequestSpec,
         bytes: Vec<u8>,
         witness: maka_agent_engine::ModelWitness,
-        access: Arc<super::access::RunAccess>,
+        driver: &super::driver::NativeDriver,
     ) -> Result<ModelConnection, RunError> {
-        if run != self.execution.run_id {
+        if view.run != self.execution.run_id {
             return Err(RunError::InvalidInput(
                 "model start belongs to another execution".into(),
             ));
         }
         let work = self.original_cleanup.work(attempt, &self.cancellation);
         let _activation = work.activate()?;
+        self.original_cleanup.own(attempt, witness.clone());
+        let result = async {
+            driver.catalog_for_request(view, &request).await?;
+            self.start_admitted_model(attempt, request, bytes, witness, &driver.access, &work)
+                .await
+        }
+        .await;
+        let error = match result {
+            Ok(Some(connection)) => return Ok(connection),
+            Ok(None) => None,
+            Err(error) => Some(error),
+        };
+        // No worker was launched, so there is no model stream left to clean up.
+        let fact = self
+            .original_cleanup
+            .publish_confirmed(attempt, witnessed_at()?)
+            .await
+            .map_err(|cleanup| {
+                RunError::ReconciliationRequired(match &error {
+                    Some(error) => {
+                        format!("model source stopped before dispatch: {error}; {cleanup}")
+                    }
+                    None => {
+                        format!("prevented model source cleanup metadata unresolved: {cleanup}")
+                    }
+                })
+            })?;
+        match error {
+            Some(error) => Err(error),
+            None => Ok(Box::pin(stream::iter([Ok(ModelObservation::Recorded {
+                fact,
+            })]))),
+        }
+    }
+
+    async fn start_admitted_model(
+        &self,
+        attempt: ModelAttemptId,
+        request: RequestSpec,
+        bytes: Vec<u8>,
+        witness: maka_agent_engine::ModelWitness,
+        access: &Arc<super::access::RunAccess>,
+        work: &original::ModelWork,
+    ) -> Result<Option<ModelConnection>, RunError> {
+        let run = self.execution.run_id;
         if request.protocol != PROTOCOL || request.protocol_version != VERSION {
             return Err(unsupported(&request.protocol));
         }
@@ -2152,7 +2197,6 @@ impl DriverModel {
                 "frozen model input changed".into(),
             ));
         }
-        super::driver::validate_tool_digest(&request)?;
         let frozen: FrozenInput = serde_json::from_slice(&bytes)
             .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
         if frozen.accepted != self.source.accepted {
@@ -2192,21 +2236,9 @@ impl DriverModel {
                 "model source lost its original admitted attempt".into(),
             ));
         }
-        self.original_cleanup.own(attempt, witness.clone());
         if work.cancellation.is_cancelled() || view.finish_requested() {
             work.cancellation.cancel();
-            let fact = self
-                .original_cleanup
-                .publish_confirmed(attempt, witnessed_at()?)
-                .await
-                .map_err(|error| {
-                    RunError::ReconciliationRequired(format!(
-                        "prevented model source cleanup metadata unresolved: {error}"
-                    ))
-                })?;
-            return Ok(Box::pin(stream::iter([Ok(ModelObservation::Recorded {
-                fact,
-            })])));
+            return Ok(None);
         }
         let history = self
             .state
@@ -2214,6 +2246,7 @@ impl DriverModel {
         let cut = history.capture().await?;
         let io = self.preparation_io()?;
         let resources = self.resources.clone();
+        let access = access.clone();
         let contract_ref = request.recovery_contract.clone();
         let can_replay_without_output = recovery.contract.is_some();
         let prefix_request = request.request.clone();
@@ -2262,8 +2295,8 @@ impl DriverModel {
                 let prepared = source.capture().await?;
                 validate_model_input_policy(&provenance, &prepared)?;
                 let binding = executor.binding(&prepared.provider)?;
-                if !same_adapter_revision(binding.source(), &frozen.adapter) {
-                    return Err(unsupported("adapter-revision"));
+                if !same_adapter(binding.source(), &frozen.adapter) {
+                    return Err(unsupported("model-adapter-changed"));
                 }
                 if preparation::route_identity(&prepared.provider)? != frozen.route_identity
                     || recovery.contract
@@ -2293,7 +2326,9 @@ impl DriverModel {
                 if item_acceptance != frozen.item_acceptance {
                     return Err(unsupported("item-acceptance-contract"));
                 }
-                let transport_adapter = binding.source().clone();
+                // Warm transport evidence belongs to the activation in the original request.
+                let transport_adapter = (binding.source() == &frozen.adapter)
+                    .then(|| binding.source().clone());
                 let transport_route = frozen.route_identity.clone();
                 let factory = Arc::new(FrozenMaterializer {
                     io,
@@ -2440,7 +2475,7 @@ impl DriverModel {
                     if let Some(failure) = failure {
                         let transport =
                             if source_settled {
-                                conversation.as_ref().map(|conversation|
+                                transport_adapter.zip(conversation.as_ref()).map(|(transport_adapter, conversation)|
                             maka_agent_facts::model::retry_transport::ModelTransportEvidence{
                                 adapter:transport_adapter,route_identity:transport_route,
                                 fallback:conversation.fallback_availability(),
@@ -2670,9 +2705,9 @@ impl DriverModel {
                 }
             }
         }));
-        Ok(Box::pin(stream::unfold(recv, |mut recv| async {
+        Ok(Some(Box::pin(stream::unfold(recv, |mut recv| async {
             recv.recv().await.map(|value| (value, recv))
-        })))
+        }))))
     }
 
     async fn canonical_parts(
@@ -2761,7 +2796,7 @@ impl DriverModel {
         let Some(contract) = recovery.contract.as_ref() else {
             return Err(unsupported("provider-effects-or-unproved-adapter"));
         };
-        if !same_adapter_revision(binding.source(), &frozen.adapter)
+        if !same_adapter(binding.source(), &frozen.adapter)
             || preparation::route_identity(&model.provider)? != frozen.route_identity
             || original_recovery_contract(
                 &binding,
@@ -2772,7 +2807,7 @@ impl DriverModel {
             .as_ref()
                 != Some(contract)
         {
-            return Err(unsupported("recovery-adapter-revision"));
+            return Err(unsupported("recovery-adapter-contract-changed"));
         }
         let mut parts = Vec::new();
         let observed = view.attempts[&attempt].observed;
@@ -3028,13 +3063,12 @@ fn validate_model_input_policy(
     Ok(())
 }
 
-fn same_adapter_revision(current: &SourceRevision, original: &SourceRevision) -> bool {
-    // Activation identifies live custody, not the adapter implementation revision.
+fn same_adapter(current: &SourceRevision, original: &SourceRevision) -> bool {
+    // The Agent package revision covers much more than the model adapter.
     current.kind == original.kind
         && current.name == original.name
         && current.package_id == original.package_id
         && current.entry_id == original.entry_id
-        && current.revision == original.revision
 }
 
 fn original_recovery_contract(
