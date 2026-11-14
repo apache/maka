@@ -20,7 +20,13 @@
 use cap_std::fs::Dir;
 use std::{io, os::fd::AsRawFd};
 
-pub(super) fn volume(directory: &Dir) -> io::Result<String> {
+#[derive(Debug)]
+pub(super) struct Volume {
+    pub(super) id: String,
+    pub(super) stable_birth: bool,
+}
+
+pub(super) fn volume(directory: &Dir) -> io::Result<Volume> {
     // SAFETY: fstatfs initializes the struct on success, and the descriptor is held.
     let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
     let result = unsafe { libc::fstatfs(directory.as_raw_fd(), filesystem.as_mut_ptr()) };
@@ -28,21 +34,34 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
         return Err(io::Error::last_os_error());
     }
     let filesystem = unsafe { filesystem.assume_init() };
+    volume_from_statfs(directory, &filesystem)
+}
+
+fn volume_from_statfs(directory: &Dir, filesystem: &libc::statfs) -> io::Result<Volume> {
     // Cap-std may hold an O_PATH directory. Ioctls use a read handle to its `.`.
     match filesystem.f_type {
-        libc::EXT4_SUPER_MAGIC | libc::TMPFS_MAGIC => {
-            // These filesystems derive f_fsid from their superblock UUID.
+        libc::EXT4_SUPER_MAGIC | libc::TMPFS_MAGIC | libc::OVERLAYFS_SUPER_MAGIC => {
+            // ext4/tmpfs derive f_fsid from their superblock UUID; overlayfs keeps a
+            // stable superblock f_fsid across copy-up, whereas ovl_getattr switches
+            // stx_btime from the lower inode to the newly created upper inode on first
+            // directory copy-up (making birth timestamps unstable on overlayfs).
             // SAFETY: Linux fsid_t has two C int fields and both bit patterns are valid.
             let [first, second]: [u32; 2] = unsafe { std::mem::transmute(filesystem.f_fsid) };
             if [first, second] == [0, 0] {
                 return Err(no_identity());
             }
-            Ok(format!(
-                "linux-fsid:{:08x}:{first:08x}:{second:08x}",
-                filesystem.f_type
-            ))
+            Ok(Volume {
+                id: format!(
+                    "linux-fsid:{:08x}:{first:08x}:{second:08x}",
+                    filesystem.f_type
+                ),
+                stable_birth: filesystem.f_type != libc::OVERLAYFS_SUPER_MAGIC,
+            })
         }
-        libc::BTRFS_SUPER_MAGIC => btrfs_volume(directory),
+        libc::BTRFS_SUPER_MAGIC => Ok(Volume {
+            id: btrfs_volume(directory)?,
+            stable_birth: true,
+        }),
         libc::XFS_SUPER_MAGIC => {
             // XFS f_fsid is a device number. Read its on-disk UUID via XFS_IOC_FSGEOMETRY_V1.
             #[repr(C)]
@@ -59,7 +78,10 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
                 flags: [0; 7],
             };
             ioctl_read(&directory.open(".")?, b'X', 100, &mut geometry)?;
-            uuid(&geometry.uuid)
+            Ok(Volume {
+                id: uuid(&geometry.uuid)?,
+                stable_birth: true,
+            })
         }
         _ => {
             // FS_IOC_GETFSUUID supplies the filesystem UUID on other filesystems
@@ -67,7 +89,10 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
             let mut fsuuid = [0_u8; 17];
             ioctl_read(&directory.open(".")?, 0x15, 0, &mut fsuuid)?;
             let size = usize::from(fsuuid[0]);
-            uuid(fsuuid.get(1..1 + size).ok_or_else(no_identity)?)
+            Ok(Volume {
+                id: uuid(fsuuid.get(1..1 + size).ok_or_else(no_identity)?)?,
+                stable_birth: true,
+            })
         }
     }
 }
@@ -151,4 +176,25 @@ fn no_identity() -> io::Error {
         io::ErrorKind::Unsupported,
         "filesystem has no stable volume identity",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlayfs_statfs_requires_nonzero_fsid_and_marks_birth_unstable() {
+        let dir = tempfile::tempdir().unwrap();
+        let opened = Dir::open_ambient_dir(dir.path(), cap_std::ambient_authority()).unwrap();
+        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+        stat.f_type = libc::OVERLAYFS_SUPER_MAGIC;
+
+        let zero_err = volume_from_statfs(&opened, &stat).unwrap_err();
+        assert_eq!(zero_err.kind(), io::ErrorKind::Unsupported);
+
+        stat.f_fsid = unsafe { std::mem::transmute([0x1234_5678_u32, 0x9abc_def0_u32]) };
+        let parsed = volume_from_statfs(&opened, &stat).unwrap();
+        assert_eq!(parsed.id, "linux-fsid:794c7630:12345678:9abcdef0");
+        assert!(!parsed.stable_birth);
+    }
 }
