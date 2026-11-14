@@ -36,7 +36,7 @@ pub(super) struct Sessions {
 }
 pub(super) struct Interaction {
     pub kernel: tokio::sync::Mutex<Option<Kernel>>,
-    native_owner: maka_computer_use::SessionOwner,
+    pub(super) native_owner: maka_computer_use::SessionOwner,
     epochs: Mutex<Vec<Arc<Epoch>>>,
     pub retiring: CancellationToken,
     turns: Arc<Mutex<BTreeMap<RunId, Arc<TurnCleanup>>>>,

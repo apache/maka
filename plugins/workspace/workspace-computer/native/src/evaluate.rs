@@ -112,6 +112,7 @@ impl Computer {
         }
         if name == "reset" {
             self.retire_kernel(&interaction, &mut kernels).await?;
+            interaction.native_owner.recover_cursor_renderer().await?;
             return self
                 .output(
                     &invocation,

@@ -162,6 +162,13 @@ impl SessionOwner {
         }
     }
 
+    /// Recover a failed renderer after an explicit reset without closing the shared Driver.
+    pub async fn recover_cursor_renderer(&self) -> Result<(), ToolError> {
+        self.ensure_open()?;
+        let pending = self.driver.lock().await.cursors.recover_failed();
+        pending.await
+    }
+
     /// Create fresh interpreter-facing caches without borrowing an older epoch.
     pub fn new_epoch(&self) -> Result<Session, ToolError> {
         let epoch = NativeEpochId::new();

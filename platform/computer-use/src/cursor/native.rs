@@ -206,6 +206,7 @@ struct Job {
 enum Control {
     Call(Request),
     Configure(Spec),
+    RecoverFailed,
     Stop,
 }
 impl Default for Host {
@@ -251,6 +252,11 @@ impl Host {
                             Control::Configure(cursor) => Ok(Response::Render {
                                 state: transport.configure(&cursor).await,
                             }),
+                            Control::RecoverFailed => {
+                                transport.recover_failed().await.map(|()| Response::Render {
+                                    state: RenderState::default(),
+                                })
+                            }
                             Control::Stop => transport.stop().await.map(|()| Response::Render {
                                 state: RenderState::default(),
                             }),
@@ -383,6 +389,20 @@ impl Host {
         self.render(Control::Configure(cursor.clone()))
             .await
             .unwrap_or_else(RenderState::unavailable)
+    }
+    pub(crate) fn recover_failed(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ToolError>> + Send + 'static {
+        let pending = self
+            .sender
+            .is_some()
+            .then(|| self.schedule(Control::RecoverFailed));
+        async move {
+            if let Some(pending) = pending {
+                pending.await?;
+            }
+            Ok(())
+        }
     }
     /// Remove a logical cursor while preserving any helper cleanup uncertainty.
     pub(crate) async fn remove(&mut self, id: &str) -> Result<(), ToolError> {
@@ -704,6 +724,13 @@ impl Transport {
             self.state(&cursor.id).await
         }
     }
+    async fn recover_failed(&mut self) -> Result<(), ToolError> {
+        if self.last_error.is_some() {
+            self.stop().await?;
+            self.last_error = None;
+        }
+        Ok(())
+    }
     pub(crate) async fn remove(&mut self, id: &str) -> Result<(), ToolError> {
         if self.process.is_some() {
             self.request(Request::Remove { id: id.into() }).await?;
@@ -813,6 +840,81 @@ impl crate::protocol::Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_recovery_restarts_only_a_failed_renderer() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("renderer");
+        let starts = directory.path().join("starts");
+        let failed_once = directory.path().join("failed-once");
+        let failure = serde_json::to_string(&Response::Render {
+            state: RenderState::unavailable("task-owned renderer failure"),
+        })
+        .unwrap();
+        let ready = serde_json::to_string(&Response::Render {
+            state: RenderState {
+                status: RenderStatus::Ready,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        std::fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$$" >> '{}'
+while IFS= read -r request; do
+    if [ -e '{}' ]; then
+        printf '%s\n' '{}'
+    else
+        : > '{}'
+        printf '%s\n' '{}'
+    fi
+done
+"#,
+                starts.display(),
+                failed_once.display(),
+                ready,
+                failed_once.display(),
+                failure,
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host = Host::with_executable(executable);
+        let cursor = Spec::default();
+        host.recover_failed().await.unwrap();
+        assert!(!starts.exists(), "reset does not start an unused renderer");
+        let first = host
+            .update(&cursor, None, cursor_overlay::CursorAction::Idle, None)
+            .await
+            .unwrap_err();
+        assert!(first.to_string().contains("task-owned renderer failure"));
+        let repeated = host
+            .update(&cursor, None, cursor_overlay::CursorAction::Idle, None)
+            .await
+            .unwrap_err();
+        assert_eq!(repeated.to_string(), first.to_string());
+        assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1);
+
+        host.recover_failed().await.unwrap();
+        let recovered = host
+            .update(&cursor, None, cursor_overlay::CursorAction::Idle, None)
+            .await
+            .unwrap();
+        assert!(matches!(recovered.status, RenderStatus::Ready));
+        host.recover_failed().await.unwrap();
+        let healthy = host
+            .update(&cursor, None, cursor_overlay::CursorAction::Idle, None)
+            .await
+            .unwrap();
+        assert!(matches!(healthy.status, RenderStatus::Ready));
+        assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 2);
+        host.stop().await.unwrap();
+    }
 
     #[tokio::test]
     async fn stop_failure_keeps_the_original_owner_until_a_confirmed_retry() {
@@ -1020,6 +1122,10 @@ mod tests {
         );
         let configured = transport.configure(&Spec::default()).await;
         assert!(matches!(configured.status, RenderStatus::Unavailable));
+        assert!(matches!(
+            transport.recover_failed().await,
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
         assert!(
             transport.process.is_some(),
             "configuration cannot replace an unconfirmed child"
