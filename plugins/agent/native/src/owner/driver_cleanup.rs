@@ -238,10 +238,7 @@ impl RetainedScope {
                 match original.as_ref() {
                     OriginalScope::Driver { driver, .. } => {
                         if let Some(driver) = driver
-                            && let driver::NativeBackend::Model {
-                                cells: Some(runtime),
-                                ..
-                            } = &driver.backend
+                            && let Some(runtime) = driver.run_cells()
                         {
                             let (js, python, coordinator) = runtime.physical_changes();
                             for receiver in [js, python, coordinator] {

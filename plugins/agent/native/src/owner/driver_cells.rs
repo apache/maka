@@ -126,6 +126,11 @@ struct VmPublication {
     batch: Mutex<Option<(Change, ContentBlob)>>,
 }
 impl RunCells {
+    #[cfg(test)]
+    pub(super) fn retain_vm_for_test(&self, cell: CellId) {
+        self.owned.lock().unwrap().insert(cell);
+    }
+
     pub(super) fn new(
         owner: Arc<Owner>,
         access: Arc<RunAccess>,
