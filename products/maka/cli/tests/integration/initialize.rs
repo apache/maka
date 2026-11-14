@@ -18,7 +18,7 @@
  */
 
 use std::{
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::Path,
     process::{Child, Command, Stdio},
     sync::Arc,
@@ -27,7 +27,7 @@ use std::{
 
 use maka_agent_facts::{
     configuration::{ModelSelection, policy::RuntimePolicy},
-    execution::ThinkingLevel,
+    execution::{SandboxMode, ThinkingLevel},
 };
 use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
@@ -53,6 +53,7 @@ fn initialize(root: &Path, timeout: &str) -> Child {
 #[tokio::test]
 async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() {
     let directory = tempfile::tempdir().unwrap();
+    let workspace_dir = tempfile::tempdir().unwrap();
     let root = directory.path().join("root");
     let mut child = initialize(&root, "15000");
     let mut proxy = RuntimePolicy::default().network_proxy;
@@ -63,6 +64,8 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
     let mut input = serde_json::to_vec(&serde_json::json!({
         "networkProxy": proxy,
         "proxyPassword": "private-bootstrap-proxy-secret",
+        "chatDefaults": { "sandboxMode": "danger-full-access" },
+        "projectDirectoryRoots": [{ "label": "workspace", "path": workspace_dir.path() }],
     }))
     .unwrap();
     // Complete valid input remains accepted beyond the former byte ceiling.
@@ -80,8 +83,12 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
     assert_eq!(response["rootId"], owner.root_id());
     let store = ConfigurationStore::for_root(owner).await.unwrap();
     let policy = store.runtime_policy().await.unwrap();
-    assert_eq!(policy.revision, 1);
+    assert_eq!(policy.revision, 2);
     assert_eq!(policy.policy.network_proxy, proxy);
+    assert_eq!(
+        policy.policy.chat_defaults.sandbox_mode,
+        SandboxMode::DangerFullAccess
+    );
     assert_eq!(
         store
             .network_configuration()
@@ -92,6 +99,93 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
         Some("private-bootstrap-proxy-secret")
     );
     store.close().await.unwrap();
+
+    #[cfg(unix)]
+    let socket_temp = tempfile::Builder::new()
+        .prefix("mkt-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let mut acp_command = Command::new(crate::maka_executable());
+    acp_command
+        .args(["acp", "--root"])
+        .arg(&root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    acp_command.env("TMPDIR", socket_temp.path());
+    let mut acp = acp_command.spawn().unwrap();
+    let mut acp_stdin = acp.stdin.take().unwrap();
+    let workspace_cwd =
+        maka_fs_tools::workspace::project::host_path(&workspace_dir.path().canonicalize().unwrap())
+            .unwrap()
+            .to_owned();
+    let mut reader = BufReader::new(acp.stdout.take().unwrap());
+    let mut line = String::new();
+    let initialize_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": 1, "clientCapabilities": {} }
+    });
+    writeln!(acp_stdin, "{initialize_request}").unwrap();
+    acp_stdin.flush().unwrap();
+    let mut init_ok = false;
+    while reader.read_line(&mut line).unwrap() > 0 {
+        let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if message["id"] == 1 {
+            assert!(message.get("error").is_none(), "{message}");
+            init_ok = true;
+            line.clear();
+            break;
+        }
+        line.clear();
+    }
+    assert!(init_ok, "initialize response from maka acp");
+
+    let session_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/new",
+        "params": { "cwd": workspace_cwd, "mcpServers": [] }
+    });
+    writeln!(acp_stdin, "{session_request}").unwrap();
+    acp_stdin.flush().unwrap();
+    let mut session_response = None;
+    while reader.read_line(&mut line).unwrap() > 0 {
+        let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if message["id"] == 2 {
+            session_response = Some(message);
+            break;
+        }
+        line.clear();
+    }
+    drop(acp_stdin);
+    let _ = acp.wait();
+    let mut retire = Command::new(crate::maka_executable());
+    retire.args(["host", "retire", "--root"]).arg(&root);
+    #[cfg(unix)]
+    retire.env("TMPDIR", socket_temp.path());
+    let _ = retire.output();
+
+    let session_response = session_response.expect("session/new response from maka acp");
+    assert!(
+        session_response.get("error").is_none(),
+        "{session_response}"
+    );
+    assert!(
+        session_response["result"]["sessionId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "{session_response}"
+    );
+    let sandbox_option = session_response["result"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "sandbox_mode")
+        .unwrap();
+    assert_eq!(sandbox_option["currentValue"], "danger_full_access");
 
     let mut child = initialize(&root, "15000");
     child.stdin.take().unwrap().write_all(b"{}").unwrap();
@@ -331,6 +425,13 @@ fn public_init_rejects_invalid_settings_without_exposing_input() {
             "defaultTarget": { "slug": "eval-gateway", "modelId": "eval-model" }
         }))
         .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "projectDirectoryRoots": [{
+                "label": "bad-root",
+                "path": "/private-secret/nonexistent-workspace-root"
+            }]
+        }))
+        .unwrap(),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("root");
@@ -347,6 +448,27 @@ fn public_init_rejects_invalid_settings_without_exposing_input() {
         assert!(!diagnostic.contains("private-secret"));
         assert!(!root.exists());
     }
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("existing-empty-root");
+    std::fs::create_dir(&root).unwrap();
+    let input = serde_json::to_vec(&serde_json::json!({
+        "projectDirectoryRoots": [{
+            "label": "self-root",
+            "path": &root
+        }]
+    }))
+    .unwrap();
+    let mut child = initialize(&root, "15000");
+    let _ = child.stdin.take().unwrap().write_all(&input);
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("invalid initial settings"),
+        "{diagnostic}"
+    );
+    assert!(!root.join(".maka-storage-root.json").exists());
 }
 
 #[test]

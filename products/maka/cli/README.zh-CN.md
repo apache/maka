@@ -31,7 +31,7 @@
 
 `maka --help` 列出 CLI 命令和默认终端参数，`maka terminal-shell --help` 单独查看终端参数。交互入口要求 stdin 和 stdout 都连接终端；任一被重定向时，在打开或创建 Host 前报错退出。自动化使用显式 Host、application、Code 或 ACP 命令。
 
-`host init --settings-stdin` 初始化新的 State Root，并在返回 `rootId` 前从 stdin 读取并写入可选的代理配置、模型连接、凭据与默认目标模型 JSON。例如：
+`host init --settings-stdin` 初始化新的 State Root，并在返回 `rootId` 前从 stdin 读取并写入可选的代理配置、会话默认配置（`chatDefaults.sandboxMode`）、项目根目录列表（`projectDirectoryRoots`）、模型连接、凭据与默认目标模型 JSON。例如：
 
 ```json
 {

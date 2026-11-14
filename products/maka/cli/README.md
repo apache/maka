@@ -31,7 +31,7 @@ Run `maka` or `maka terminal-shell` for the [NSH terminal workbench](../terminal
 
 `maka --help` lists the CLI commands and default terminal options; `maka terminal-shell --help` shows the terminal options alone. The interactive entry requires terminal stdin and stdout. When either is redirected it exits with an error before opening or creating a Host; use explicit Host, application, Code or ACP commands for automation.
 
-`host init --settings-stdin` initializes a new State Root and applies optional proxy settings, model connections, credentials and default target JSON from stdin before returning `rootId`. For example:
+`host init --settings-stdin` initializes a new State Root and applies optional proxy settings, chat defaults (`chatDefaults.sandboxMode`), project directory roots (`projectDirectoryRoots`), model connections, credentials and default target JSON from stdin before returning `rootId`. For example:
 
 ```json
 {
