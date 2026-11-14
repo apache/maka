@@ -24,6 +24,7 @@ import {
   inputAction,
   platform,
   signal,
+  Scroll,
   Text,
   View,
   windowSize,
@@ -35,6 +36,7 @@ import { createComputerAppControls } from './ComputerAppControls';
 import { createMessagesDock } from './MessagesDock';
 import { createGoalContent, goalStatusLabel } from './GoalDialog';
 import { LoadingIndicator } from './Loading';
+import { AppliedPresetDetails } from './AppliedPresetDetails';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
@@ -46,6 +48,7 @@ const composerCorner = 24;
 export function ComposerDetails(props: {
   session: Pick<
     ComposerSession,
+    | 'permissions'
     | 'sessionId'
     | 'checklist'
     | 'computerAccess'
@@ -63,7 +66,22 @@ export function ComposerDetails(props: {
   const goal = () => session.goal?.view()?.current;
   const renderGoal = session.goal ? createGoalContent({ goal: session.goal }) : null;
   const todo = createChecklist(session.checklist, height, session.sessionId);
+  const preset = () => session.permissions.snapshot()?.appliedPreset;
   const panels = {
+    preset: {
+      shown: () => !!preset(),
+      summary: () => preset()?.name ?? '',
+      preview: () => preset()?.instruction ?? '',
+      problem: () => false,
+      content: () => (
+        <Scroll style={{ maxHeight: height(), padding: 16 }}>
+          <AppliedPresetDetails
+            preset={preset()!}
+            backend={session.permissions.snapshot()?.backend}
+          />
+        </Scroll>
+      ),
+    },
     goal: {
       shown: () => !!goal(),
       summary: () => tr(goalStatusLabel(goal()!.status)),
@@ -82,21 +100,24 @@ export function ComposerDetails(props: {
   };
   type Panel = keyof typeof panels;
   type OtherPanel = Exclude<Panel, 'todo'>;
-  const keys: Panel[] = ['goal', 'todo', 'computer', 'messages'];
+  const keys: Panel[] = ['preset', 'goal', 'todo', 'computer', 'messages'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
   const labels = {
+    preset: () => tr('Applied subagent'),
     goal: () => tr('Goal'),
     todo: () => tr('Todo'),
     computer: () => tr('Computer access'),
     messages: () => tr('Messages'),
   };
   const icons: Record<OtherPanel, 'statusPending' | 'shield' | 'queue'> = {
+    preset: 'statusPending',
     goal: 'statusPending',
     computer: 'shield',
     messages: 'queue',
   };
   const accessibilityLabels = {
+    preset: () => tr('Applied subagent'),
     goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),

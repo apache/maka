@@ -171,9 +171,16 @@ export function createSettingsOperations(host: Host) {
                 }
                 continue;
               }
-              if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions') {
-                // File CAS outcomes belong to the instruction editor, which preserves
-                // an unsaved draft when the original receipt reports a conflict.
+              if (
+                original.endpoint === 'agent' &&
+                [
+                  'updateGlobalInstructions',
+                  'createPreset',
+                  'updatePreset',
+                  'deletePreset',
+                ].includes(original.method)
+              ) {
+                // Editors preserve their drafts when an original receipt reports a conflict.
                 await afterKnown(original, value);
                 continue;
               }

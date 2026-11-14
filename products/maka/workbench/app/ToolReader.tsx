@@ -33,6 +33,7 @@ import {
   controlStyle,
 } from './ui';
 import { Icon } from './Icon';
+import { codePieces } from './codePieces';
 
 function Copy(props: { text(): string; label: string; source: ToolSource }) {
   const feedback = signal<{ text: string; error: string } | null>(null);
@@ -148,30 +149,36 @@ function CodeText(props: {
       }
     >
       <Scroll horizontal onScrollIntent={props.userScroll}>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-          <If when={props.gutter !== undefined}>
-            <Text
-              accessibilityElementsHidden
-              style={[
-                { ...codeTextStyle, color: C.muted, textAlign: 'right' },
-                { pointerEvents: 'none', userSelect: 'none' },
-              ]}
-            >
-              {props.gutter}
-            </Text>
-            <View
-              style={[
-                { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
-                { pointerEvents: 'none' },
-              ]}
-            />
-          </If>
-          <Text style={[{ ...codeTextStyle, color: color() }, { userSelect: 'text' }]}>
-            <If when={props.prompt}>
-              <Text style={[{ color: C.muted }, { userSelect: 'none' }]}>$ </Text>
-            </If>
-            {props.text}
-          </Text>
+        <View style={{ minWidth: 0 }}>
+          <Each of={codePieces(props.text, props.gutter)} key="index">
+            {(piece) => (
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+                <If when={piece().gutter !== undefined}>
+                  <Text
+                    accessibilityElementsHidden
+                    style={[
+                      { ...codeTextStyle, color: C.muted, textAlign: 'right' },
+                      { pointerEvents: 'none', userSelect: 'none' },
+                    ]}
+                  >
+                    {piece().gutter}
+                  </Text>
+                  <View
+                    style={[
+                      { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
+                      { pointerEvents: 'none' },
+                    ]}
+                  />
+                </If>
+                <Text style={[{ ...codeTextStyle, color: color() }, { userSelect: 'text' }]}>
+                  <If when={props.prompt && piece().index === 0}>
+                    <Text style={[{ color: C.muted }, { userSelect: 'none' }]}>$ </Text>
+                  </If>
+                  {piece().text}
+                </Text>
+              </View>
+            )}
+          </Each>
         </View>
       </Scroll>
     </If>

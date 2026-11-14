@@ -689,6 +689,11 @@ export const conversationMessages = {
     '編輯佇列訊息 {number}',
   ],
   'Empty recorded text.': ['Empty recorded text.', '记录的文本为空。', '記錄的文字為空。'],
+  '… {count} more characters': [
+    '… {count} more characters',
+    '…还有 {count} 个字符',
+    '…還有 {count} 個字元',
+  ],
   'Enter a complete URI, including its scheme.': [
     'Enter a complete URI, including its scheme.',
     '请输入完整 URI，包括协议。',
@@ -1170,6 +1175,7 @@ export const conversationMessages = {
     '目前的執行結束後才能繼續。',
   ],
   'Waiting for approval': ['Waiting for approval', '等待审批', '等候核准'],
+  'Waiting to retry': ['Waiting to retry', '等待重试', '等待重試'],
   'Waiting for access to be restored': [
     'Waiting for access to be restored',
     '正在等待恢复访问',

@@ -133,7 +133,7 @@ export function BotWaiting(props: {
   );
 }
 
-/** Shown at the end of the Bot's Chat while it is working on a Turn. */
+/** Shown at the end of Chat while a Turn is at work and has no header of its own yet. */
 export function BotWorking(props: { detail: () => string }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>
