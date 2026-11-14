@@ -18,7 +18,9 @@
  */
 
 //! Durable Cell evidence; no value here represents interpreter or Host custody.
-use crate::durable::{AgentStepLink, ApprovalId, ContentRef, FactId, ResourceRecovery, StepId};
+use crate::durable::{
+    AgentStepLink, ApprovalId, ContentRef, FactId, ResourceRecovery, StepId, Terminal,
+};
 use crate::operation::{
     RecordedOperationReply, RecordedOperationResult, result_reference, same_outcome,
 };
@@ -511,19 +513,17 @@ impl CellView {
             || self.children.values().any(|child| !child.known())
             || self.blocks_effect_admission()
     }
-    pub fn blocks_session_retirement(&self, terminal: Option<&crate::durable::Terminal>) -> bool {
-        if self.owner.run().is_some()
-            && matches!(
-                terminal,
-                Some(crate::durable::Terminal::Cancelled | crate::durable::Terminal::Failed)
-            )
-        {
-            self.has_unsettled_effects()
-        } else {
-            self.pending()
+    pub fn blocks_session_retirement(&self, terminal: Option<&Terminal>) -> bool {
+        if self.owner.run().is_none() {
+            return self.pending();
+        }
+        match terminal {
+            Some(Terminal::Completed) => self.settlement_pending(),
+            Some(Terminal::Cancelled | Terminal::Failed) => self.has_unsettled_effects(),
+            None => self.pending(),
         }
     }
-    pub fn pending(&self) -> bool {
+    pub fn settlement_pending(&self) -> bool {
         matches!(
             self.status,
             CellStatus::Running
@@ -533,6 +533,9 @@ impl CellView {
                 }
         ) || self.children.values().any(|child| !child.known())
             || self.blocks_effect_admission()
+    }
+    pub fn pending(&self) -> bool {
+        self.settlement_pending()
             || (matches!(self.owner, CellOwner::Agent { .. })
                 && (!self.notifications.is_empty()
                     || (matches!(self.status, CellStatus::Interrupted { .. })
