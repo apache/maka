@@ -471,7 +471,7 @@ impl NativeDriver {
             .collect()
     }
 
-    async fn catalog_for_request(
+    pub(super) async fn catalog_for_request(
         &self,
         view: &RunView,
         request: &RequestSpec,
@@ -891,14 +891,13 @@ impl DriverPorts for NativeDriver {
                 attempt,
                 &request,
             )?;
-            self.catalog_for_request(&view, &request).await?;
             let writer = self.owner.store.data_writer_for_work(
                 self.access.custody().as_ref(),
                 &self.access.execution().session_id,
             )?;
             let witness = witness.with_data_writer(writer)?;
             self.model()?
-                .start_model(run, attempt, request, bytes, witness, self.access.clone())
+                .start_model(&view, attempt, request, bytes, witness, self)
                 .await
         })
     }
