@@ -847,7 +847,10 @@ fn next_action(
         if tool.accepted.is_some() {
             continue;
         }
-        if let Some(cell) = recovered_cell(view, tool) {
+        // A live callback owns the result, even after its Cell finishes.
+        if let Some(cell) = recovered_cell(view, tool)
+            && !live.work.contains(&WorkKey::Tool(tool.key.clone()))
+        {
             return Action::Accept(tool.key.clone(), AcceptedResult::CellRecovered { cell });
         }
         if let Some(result) = outcome(tool) {
