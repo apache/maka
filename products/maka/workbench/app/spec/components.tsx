@@ -74,6 +74,7 @@ import {
   type SpecComponentRegistry,
   type SpecElementRenderContext,
 } from './runtime.tsx';
+import { compareTableCells } from './sort.ts';
 
 const terminal = platform.idiom === 'terminal';
 
@@ -783,41 +784,6 @@ type TableCol = {
   sortable?: boolean;
 };
 
-const SORTABLE_NUMBER_RE =
-  /^\s*([+-])?[$€£¥]?\s*(\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)\s*(?:%|ms|s|B|KB|MB|GB|TB)?\s*$/i;
-
-function parseSortableNumber(raw: string): number | null {
-  const match = SORTABLE_NUMBER_RE.exec(raw);
-  if (!match) return null;
-  const sign = match[1] === '-' ? -1 : 1;
-  const num = Number(match[2]!.replace(/,/g, ''));
-  return Number.isFinite(num) ? sign * num : null;
-}
-
-function compareNaturalText(a: string, b: string): number {
-  const re = /(\d+)|(\D+)/g;
-  const aParts = a.match(re) ?? [];
-  const bParts = b.match(re) ?? [];
-  const len = Math.min(aParts.length, bParts.length);
-  for (let i = 0; i < len; i++) {
-    const ap = aParts[i]!;
-    const bp = bParts[i]!;
-    const aDigits = ap.charCodeAt(0) >= 48 && ap.charCodeAt(0) <= 57;
-    const bDigits = bp.charCodeAt(0) >= 48 && bp.charCodeAt(0) <= 57;
-    if (aDigits && bDigits) {
-      const diff = Number(ap) - Number(bp);
-      if (diff !== 0) return diff;
-      if (ap.length !== bp.length) return ap.length - bp.length;
-    } else {
-      const al = ap.toLowerCase();
-      const bl = bp.toLowerCase();
-      if (al !== bl) return al < bl ? -1 : 1;
-    }
-  }
-  if (aParts.length !== bParts.length) return aParts.length - bParts.length;
-  return a === b ? 0 : a < b ? -1 : 1;
-}
-
 function renderTable(ctx: SpecElementRenderContext): JSX.Element {
   const p = ctx.props;
   const sortCol = signal<number | null>(null);
@@ -863,17 +829,8 @@ function renderTable(ctx: SpecElementRenderContext): JSX.Element {
     if (idx === null || idx < 0 || idx >= cols.length || !isColumnSortable(cols[idx])) {
       return base;
     }
-    const dir = sortAsc() ? 1 : -1;
-    return [...base].sort((a, b) => {
-      const av = a[idx] ?? '';
-      const bv = b[idx] ?? '';
-      const an = parseSortableNumber(av);
-      const bn = parseSortableNumber(bv);
-      if (an !== null && bn !== null) {
-        return (an - bn) * dir;
-      }
-      return compareNaturalText(av, bv) * dir;
-    });
+    const asc = sortAsc();
+    return [...base].sort((a, b) => compareTableCells(a[idx] ?? '', b[idx] ?? '', asc));
   };
 
   return (

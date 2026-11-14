@@ -29,6 +29,7 @@ import {
 import { SPEC_COMPONENT_NAMES } from '../app/spec/names.ts';
 import { specBuiltInActions } from '../app/spec/schema.ts';
 import { SpecSession, splitSpecMarkdown } from '../app/spec/session.ts';
+import { compareTableCells, parseSortableNumber } from '../app/spec/sort.ts';
 
 const repoRoot = resolve(import.meta.dirname, '../../../..');
 const workbenchAppDir = resolve(import.meta.dirname, '../app');
@@ -134,6 +135,7 @@ test('native catalog, SPEC_COMPONENT_NAMES, and runtime registry stay in lockste
     'MarkdownBody.tsx',
     'BotReply.tsx',
     'spec/names.ts',
+    'spec/sort.ts',
     'spec/session.ts',
     'spec/runtime.tsx',
     'spec/components.tsx',
@@ -379,4 +381,49 @@ test('user-modified state survives streaming /state updates while deletions and 
   assert.equal(session.store.get('/tasks/0/done'), false);
   assert.deepEqual(session.store.get('/nums'), [10, 25]);
   assert.deepEqual(session.store.get('/filters'), { query: '' });
+});
+
+test('Table cell sorting converts matching duration/byte domains and rejects cross-domain or malformed units', () => {
+  // Duration domain converts s/ms/us/ns to milliseconds.
+  assert.deepEqual(
+    ['1.5 s', '450 ms', '120 ms', '800 us'].sort((a, b) => compareTableCells(a, b, true)),
+    ['800 us', '120 ms', '450 ms', '1.5 s'],
+  );
+  assert.deepEqual(
+    ['120 ms', '1.5 s'].sort((a, b) => compareTableCells(a, b, false)),
+    ['1.5 s', '120 ms'],
+  );
+
+  // Bytes domain scales B/KB/MB/GB/TB cleanly.
+  assert.deepEqual(
+    ['2 MB', '500 KB', '1.5 GB', '900 B', '1 TB'].sort((a, b) => compareTableCells(a, b, true)),
+    ['900 B', '500 KB', '2 MB', '1.5 GB', '1 TB'],
+  );
+
+  // Same-currency values sort numerically, while malformed currency+unit strings are rejected.
+  assert.deepEqual(
+    ['$1,200', '-$5.50', '$9.99'].sort((a, b) => compareTableCells(a, b, true)),
+    ['-$5.50', '$9.99', '$1,200'],
+  );
+  assert.equal(parseSortableNumber('$10 ms'), null);
+  assert.equal(parseSortableNumber('$10 KB'), null);
+  assert.equal(parseSortableNumber('$10%'), null);
+
+  // Distinct domains must never compare as equal numeric values; they fall back to natural text.
+  const crossDomain = ['$10', '€10', '10%', '10 ms', '10 B', '10'];
+  for (let i = 0; i < crossDomain.length; i++) {
+    for (let j = i + 1; j < crossDomain.length; j++) {
+      assert.notEqual(
+        compareTableCells(crossDomain[i], crossDomain[j], true),
+        0,
+        `${crossDomain[i]} vs ${crossDomain[j]} must not compare equal`,
+      );
+    }
+  }
+
+  // Natural text fallback orders embedded numbers numerically.
+  assert.deepEqual(
+    ['node-10', 'node-1', 'node-2'].sort((a, b) => compareTableCells(a, b, true)),
+    ['node-1', 'node-2', 'node-10'],
+  );
 });

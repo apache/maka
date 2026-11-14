@@ -123,6 +123,14 @@ fn verify_interactive_spec(idiom: Idiom) {
     assert!(text_index(&app, "node-1") < text_index(&app, "node-2"));
     assert!(text_index(&app, "node-2") < text_index(&app, "node-10"));
 
+    app.press("role:button[Latency]").unwrap();
+    assert!(text_index(&app, "120 ms") < text_index(&app, "450 ms"));
+    assert!(text_index(&app, "450 ms") < text_index(&app, "1.5 s"));
+
+    app.press("role:button[Memory]").unwrap();
+    assert!(text_index(&app, "500 KB") < text_index(&app, "2 MB"));
+    assert!(text_index(&app, "2 MB") < text_index(&app, "1.5 GB"));
+
     // Controls tab: NumberInput draft typing above/below min=10, cyclic watch guard, and Link.
     app.press("role:tab[Controls]").unwrap();
     app.wait_for("text:/Replicas: 12/").unwrap();
