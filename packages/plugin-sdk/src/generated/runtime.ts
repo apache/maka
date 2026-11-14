@@ -2456,6 +2456,12 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'discovery';
+      sessionId: string;
+      cursor?: string | null;
+      expectedRevision?: number | null;
+    }
+  | {
       kind: 'list';
       cursor?: string | null;
       expectedRevision?: number | null;
@@ -2529,6 +2535,12 @@ export type AgentScheduledEffect =
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'discovery';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
     };
 export type AutomationDelivery = 'steering' | 'followup';
 export type Creator =
@@ -2554,6 +2566,11 @@ export type AgentScheduleChange =
       taskId: string;
       revision: number;
       input: AgentScheduledInput;
+    }
+  | {
+      kind: 'approve';
+      taskId: string;
+      revision: number;
     }
   | {
       kind: 'pause';
@@ -7185,6 +7202,7 @@ export interface AgentScheduledSummary {
   title: string;
   sessionId: string;
   script: boolean;
+  approved: boolean;
   status: Status;
   nextFireAt?: number | null;
   pendingFire?: string | null;
@@ -7195,6 +7213,7 @@ export interface AgentScheduledDetail {
   task: Task;
   timezone: string;
   misfire: Misfire;
+  approved: boolean;
   pendingFire?: string | null;
 }
 export interface Task {

@@ -145,7 +145,8 @@ impl Owner {
         let mcp_floor = self
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
-        let selected_catalog = if external && !host_bridge {
+        let discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id);
+        let selected_catalog = if discovery || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -159,7 +160,11 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
+        let selected_catalog = if discovery {
+            selected_catalog
+        } else {
+            self.mcp_projects.with_client(id, selected_catalog)?
+        };
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
@@ -205,7 +210,9 @@ impl Owner {
             )),
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
-            tool_discovery: (!external || host_bridge) && self.settings.tool_discovery,
+            tool_discovery: (!external || host_bridge)
+                && !discovery
+                && self.settings.tool_discovery,
             allowed_tools,
             background: None,
             background_sandbox_ceiling: None,

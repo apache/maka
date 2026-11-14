@@ -385,7 +385,12 @@ pub(crate) fn retract_interactive(
     let mut expected_revision = queue.revision;
     for entry in queue.entries {
         let source = source(c, &entry.request)?;
-        if !is_interactive(&entry.request, &source) {
+        if !is_interactive(&entry.request, &source)
+            || matches!(
+                source.message.origin,
+                Some(maka_agent_facts::message::MessageOrigin::BotWorker { .. })
+            )
+        {
             continue;
         }
         let mut hash = Sha256::new();

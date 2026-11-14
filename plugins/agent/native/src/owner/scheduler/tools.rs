@@ -65,22 +65,28 @@ enum Target {
     #[default]
     Session,
     AgentRun,
+    Discovery,
 }
 impl Scheduler {
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
-        vec![ToolRegistration {
+        let mut tools = vec![ToolRegistration {
             definition: ToolDefinition { provider: None, name: "ScheduledTask".into(),
-                description: "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. For a model connection, the default is steering; choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. Use a time schedule or a script schedule. Scripts are ordinary JavaScript or TypeScript programs run by Deno from the conversation workspace, under its process sandbox. Scripts can import npm:, jsr:, and node: modules directly. Print true or false on the last stdout line. A script fires when the result becomes true and rearms when false. The default script interval is 60 seconds. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions.".into(),
+                description: "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. For a model connection, the default is steering; choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. Use a time schedule or a script schedule. Scripts are ordinary JavaScript or TypeScript programs run by Deno from the conversation workspace, under its process sandbox. Scripts can import npm:, jsr:, and node: modules directly. Print true or false on the last stdout line. A script fires when the result becomes true and rearms when false. The default script interval is 60 seconds. The Bot may propose a time-scheduled discovery. It runs an independent read-only investigation after the user approves it. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions.".into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(ToolRequest<Input>)).expect("task tool schema"),
                 output_schema: None, freeform: None },
             nesting: ToolNesting::Nestable, semantics: ToolSemantics::ExclusiveStep,
             handler: ToolHandler::Prepared(self.clone()),
-        }]
+        }];
+        tools.push(self.discovery_tool());
+        tools
     }
 }
 impl ToolPreparer for Scheduler {
     fn names(&self) -> Vec<String> {
-        vec!["ScheduledTask".into()]
+        vec![
+            "ScheduledTask".into(),
+            super::super::discovery::COMPLETE.into(),
+        ]
     }
     fn prepare(
         &self,
@@ -90,6 +96,9 @@ impl ToolPreparer for Scheduler {
         cancellation: CancellationToken,
     ) -> PreparationFuture {
         let owner = self.link.get().and_then(Weak::upgrade);
+        if name == super::super::discovery::COMPLETE {
+            return self.prepare_discovery(input, context, cancellation);
+        }
         Box::pin(async move {
             if name != "ScheduledTask" || owner.is_none() {
                 return Err(ToolRejection::Unavailable);
@@ -242,7 +251,7 @@ impl Owner {
                         binding: session.configuration.binding,
                     };
                     let sandbox_ceiling = Some(view.spec.permission_ceiling.sandbox);
-                    let (effect, approval) = match (&basis.model, &basis.executor) {
+                    match (&basis.model, &basis.executor) {
                         (Some(accepted), None) => {
                             let model = ModelSelection {
                                 connection_id: accepted.binding.connection_id.clone(),
@@ -250,6 +259,21 @@ impl Owner {
                             };
                             let thinking_level = accepted.thinking_level;
                             let effect = match effect {
+                                Target::Discovery => {
+                                    if !self.settings.bot
+                                        || !self.bot.is(&context.execution.session_id)
+                                    {
+                                        return Err("discovery_requires_bot".into());
+                                    }
+                                    if matches!(schedule, TaskSchedule::Script { .. }) {
+                                        return Err("discovery_requires_time_schedule".into());
+                                    }
+                                    ScheduledEffect::Discovery {
+                                        target: target.clone(),
+                                        model: model.clone(),
+                                        thinking_level,
+                                    }
+                                }
                                 Target::Session => ScheduledEffect::Session {
                                     delivery,
                                     target: target.clone(),
@@ -262,19 +286,23 @@ impl Owner {
                                     thinking_level,
                                 },
                             };
-                            (
-                                effect,
-                                BackgroundGrant::Model(
-                                    super::super::notifications::BackgroundApproval {
-                                        target,
-                                        model,
-                                        thinking_level,
-                                        accepted_model: accepted.clone(),
-                                        language: view.spec.language,
-                                        sandbox_ceiling,
-                                    },
-                                ),
-                            )
+                            let approval = if matches!(effect, ScheduledEffect::Discovery { .. }) {
+                                None
+                            } else {
+                                Some(Approval::Execution {
+                                    approval: BackgroundGrant::Model(
+                                        super::super::notifications::BackgroundApproval {
+                                            target,
+                                            model,
+                                            thinking_level,
+                                            accepted_model: accepted.clone(),
+                                            language: view.spec.language,
+                                            sandbox_ceiling,
+                                        },
+                                    ),
+                                })
+                            };
+                            (effect, approval)
                         }
                         (None, Some(executor)) if executor.selection.executor == "external" => {
                             if !matches!(effect, Target::Session) {
@@ -289,17 +317,18 @@ impl Owner {
                                     target: target.clone(),
                                     selection: selection.clone(),
                                 },
-                                BackgroundGrant::Executor(ExecutorApproval {
-                                    language: view.spec.language,
-                                    target,
-                                    selection,
-                                    sandbox_ceiling,
+                                Some(Approval::Execution {
+                                    approval: BackgroundGrant::Executor(ExecutorApproval {
+                                        language: view.spec.language,
+                                        target,
+                                        selection,
+                                        sandbox_ceiling,
+                                    }),
                                 }),
                             )
                         }
                         _ => return Err("scheduler_backend_unavailable".into()),
-                    };
-                    (effect, Approval::Execution { approval })
+                    }
                 };
                 let id = format!("task-{identity}");
                 let mut plan = Plan::create(
@@ -320,7 +349,10 @@ impl Owner {
                 )
                 .map_err(reason)?;
                 plan.misfire = misfire;
-                plan.authorization = Some(authorization);
+                if authorization.is_none() {
+                    plan = plan.pause(now() as i64);
+                }
+                plan.authorization = authorization;
                 (id, Some(plan))
             }
             Input::Pause {
@@ -344,15 +376,32 @@ impl Owner {
                     return Err("scheduler_task_outside_conversation".into());
                 }
                 let plan = match input {
-                    Input::Pause { .. } => Some(saved.plan.pause(now() as i64)),
+                    Input::Pause { .. } => Some(pause_plan(&saved.plan, now() as i64)),
                     Input::Resume { .. } => {
                         let Some(approval) = &saved.plan.authorization else {
+                            if matches!(saved.plan.task.effect, ScheduledEffect::Discovery { .. }) {
+                                return Err("scheduler_user_approval_required".into());
+                            }
                             return Err("scheduler_execution_unavailable".into());
                         };
-                        let Approval::Execution { approval } = approval;
-                        let basis = self
-                            .prepare_scheduled_background(approval, &saved.plan.task.id)
-                            .await?;
+                        let basis = match approval {
+                            Approval::Execution { approval } => {
+                                self.prepare_scheduled_background(approval, &saved.plan.task.id)
+                                    .await?
+                            }
+                            Approval::Discovery { approval, .. } => {
+                                self.prepare_approved_background(
+                                    approval,
+                                    BackgroundKind::Schedule {
+                                        task_id: saved.plan.task.id.clone(),
+                                    },
+                                )
+                                .await?
+                            }
+                            Approval::CancelledDiscovery { .. } => {
+                                return Err("scheduler_execution_unavailable".into());
+                            }
+                        };
                         self.validate_background(&basis).await?;
                         Some(saved.plan.resume(now() as i64).map_err(reason)?)
                     }

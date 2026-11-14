@@ -91,8 +91,10 @@ impl Owner {
                 .into());
             }
         };
+        let discovery = self.scheduler.investigation.read().unwrap().as_deref()
+            == Some(view.spec.session_id.as_str());
         let external_bridge = matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external");
-        let host_tools = model.is_some() || external_bridge;
+        let host_tools = !discovery && (model.is_some() || external_bridge);
         let catalog = if !host_tools {
             self.mcp_projects.base.clone()
         } else {
