@@ -22,8 +22,10 @@ import { writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-if (process.argv.slice(2).join(' ') !== 'app-server --listen stdio://')
-  throw Error('Only the real foreground app-server JSONL invocation is supported');
+const invocation = process.argv.slice(2).join(' ');
+const antigravity = invocation === 'acp --process-per-session --dangerously-skip-permissions';
+if (!antigravity && invocation !== 'app-server --listen stdio://')
+  throw Error('Unexpected external agent invocation');
 const address = new URL(process.env.FAKE_CONTROL);
 if (address.hostname !== '127.0.0.1') throw Error('Controller must be owned loopback');
 const rootPid = Number(process.env.FAKE_ROOT_PID);
@@ -202,6 +204,7 @@ async function hostEffect() {
   const tools = await rpc('tools/list', {}, 102);
   if (!tools.tools.some((tool) => tool.name === 'SessionCreate'))
     throw Error('Real SessionCreate unavailable');
+  if (antigravity) return;
   await record('host_call', { name: 'SessionCreate' });
   const result = await rpc(
     'tools/call',
@@ -260,12 +263,53 @@ async function terminal(status) {
   await record('terminal', { thread, turn, status });
   socket.end(() => process.exit(0));
 }
+async function acp(id, method, params) {
+  if (method === 'initialize')
+    return reply(id, {
+      protocolVersion: 1,
+      agentCapabilities: { mcpCapabilities: { http: true } },
+    });
+  if (method === 'session/new' || method === 'session/resume') {
+    thread = params.sessionId ?? randomUUID();
+    const server = params.mcpServers[0];
+    mcp = {
+      url: server.url,
+      http_headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
+    };
+    await hostEffect();
+    return reply(id, { sessionId: thread });
+  }
+  if (method === 'session/prompt' && params.sessionId === thread) {
+    const text = params.prompt[0].text;
+    const start = text.indexOf('MAKA_EXTERNAL_CASE ');
+    if (start === -1) return reply(id, { stopReason: 'end_turn' });
+    if (job) throw Error('Duplicate ACP task prompt');
+    job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length));
+    const checkpoint = `ACP checkpoint ${job.label}`;
+    await event('session/update', {
+      sessionId: thread,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: checkpoint } },
+    });
+    await record('ready', { thread, checkpoint, promptId: id });
+    if (job.label === 'ACP-followup') return reply(id, { stopReason: 'end_turn' });
+    return;
+  }
+  if (method === 'session/close' && params.sessionId === thread) {
+    await reply(id, {});
+    finished = true;
+    socket.end(() => process.exit(0));
+    return;
+  }
+  throw Error(`Unexpected ACP request ${method}`);
+}
+
 let requests = Promise.resolve();
 createInterface({ input: process.stdin }).on('line', (line) => {
   requests = requests
     .then(async () => {
       const { id, method, params = {} } = JSON.parse(line);
       await record('method', { method });
+      if (antigravity) return acp(id, method, params);
       if (method === 'initialize') return reply(id, { userAgent: 'owned-codex-upstream' });
       if (method === 'initialized') return;
       if (method === 'thread/start' || method === 'thread/resume') {
@@ -329,12 +373,13 @@ createInterface({ input: socket }).on('line', (line) => {
       }
       if (
         command.action === 'root_reaped' &&
-        job?.label === 'C' &&
+        (job?.label === 'C' || job?.label === 'ACP-original') &&
         command.pid === rootPid &&
         !finished
       ) {
         finished = true;
         await record('root_gone', { thread, turn });
+        if (antigravity) process.kill(process.pid, 'SIGKILL');
         socket.end(() => process.exit(0));
         return;
       }

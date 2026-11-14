@@ -413,6 +413,12 @@ impl RunView {
     }
 
     pub fn has_unsettled_recovery(&self) -> bool {
+        let closed_native_process = matches!(&self.spec.backend, BackendSpec::Executor { selection, .. }
+            if selection.executor == "external")
+            && self
+                .external
+                .as_ref()
+                .is_some_and(|task| task.cleanup == OperationCleanup::Confirmed);
         self.recovery_failures().any(|reason| {
             if let BlockerKind::OriginalAdmissionUnknown { tool } = reason {
                 return self
@@ -424,6 +430,11 @@ impl RunView {
                 return self
                     .recovery_cell(cell)
                     .is_none_or(|cell| cell.has_unsettled_effects());
+            }
+            if closed_native_process
+                && matches!(reason, BlockerKind::ExternalTaskUnobservable { .. })
+            {
+                return false;
             }
             !matches!(
                 reason,
@@ -437,7 +448,7 @@ impl RunView {
             || self.cells.values().any(|cell| cell.has_unsettled_effects())
             || self.external.as_ref().is_some_and(|task| {
                 task.admitted
-                    && (task.closed.is_none()
+                    && (task.closed.is_none() && !closed_native_process
                         || task.cleanup != OperationCleanup::Confirmed
                         || task.effects.values().any(|effect| effect.pending())
                         || task.publication.as_ref().is_some_and(|publication| {

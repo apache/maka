@@ -431,7 +431,12 @@ impl Rig {
         self.clients.push(sdk.clone());
         Ok((anchor, sdk))
     }
-    async fn configure(&mut self, anchor: &mut HostClient, sdk: &Client) -> Result<DeploymentRef> {
+    async fn configure(
+        &mut self,
+        anchor: &mut HostClient,
+        sdk: &Client,
+        runtime: &str,
+    ) -> Result<DeploymentRef> {
         let node = self.node().await?;
         let path = self.sandbox.workspace.join("external-codex-cli.mjs");
         tokio::fs::write(
@@ -463,19 +468,19 @@ impl Rig {
         let mut changes = vec![json!({"path":target["path"]})];
         for (tail, value) in [
             (
-                vec!["runtimes", "codex"],
+                vec!["runtimes", runtime],
                 json!({"kind":"boolean","value":true}),
             ),
             (
-                vec!["commands", "codex", "executable"],
+                vec!["commands", runtime, "executable"],
                 json!({"kind":"text","text":"./external-codex-cli.mjs"}),
             ),
             (
-                vec!["commands", "codex", "env", "FAKE_CONTROL"],
+                vec!["commands", runtime, "env", "FAKE_CONTROL"],
                 json!({"kind":"text","text":self.controller.address}),
             ),
             (
-                vec!["commands", "codex", "env", "FAKE_ROOT_PID"],
+                vec!["commands", runtime, "env", "FAKE_ROOT_PID"],
                 json!({"kind":"text","text":status.pid.get().to_string()}),
             ),
         ] {
@@ -651,11 +656,12 @@ async fn launch(
     label: &str,
     title: &str,
     effect: bool,
+    runtime: &str,
 ) -> Result<(String, Value)> {
     let created = mutate(client, "agent", "create", json!({
         "title":format!("External job {label}"),"automaticTitle":false,"labels":[],
         "workspace":{"kind":"directory","path":workspace},
-        "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"external-model"}}}
+        "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":runtime,"model":if runtime == "codex" { "external-model" } else { "default" }}}}
     })).await?;
     assert_eq!(created["kind"], "created", "{created}");
     let session = created["session"].clone();
@@ -961,7 +967,7 @@ async fn run_case(crash: bool) {
     let outcome = AssertUnwindSafe(async {
         tokio::time::timeout(Duration::from_secs(180), async {
             let (mut anchor, bootstrap) = phase("default Host and Journal", rig.start()).await?;
-            let committed_source = phase("configure actual external runtime", rig.configure(&mut anchor, &bootstrap)).await?;
+            let committed_source = phase("configure actual external runtime", rig.configure(&mut anchor, &bootstrap, "codex")).await?;
             phase("close bootstrap SDK observer", bootstrap.close()).await?;
             rig.clients.pop();
             let sdk = phase("current SDK registration", connect_sdk(&mut rig, &anchor)).await?;
@@ -974,7 +980,7 @@ async fn run_case(crash: bool) {
             let title = format!("external-effect-{}", Uuid::new_v4().simple());
             let label = if crash { "C" } else { "A" };
             let (session, run) = phase("launch exact original external task",
-                launch(&sdk, &rig.sandbox.workspace, label, &title, true)).await?;
+                launch(&sdk, &rig.sandbox.workspace, label, &title, true, "codex")).await?;
             let ready = phase("original provider accepted turn and actual MCP effect", rig.controller.event(label,"ready")).await?;
             let effect = phase("actual MCP creation result", rig.controller.event(label,"effect")).await?;
             let pid = ready["pid"].as_u64().ok_or("original PID missing")?;
@@ -1009,11 +1015,8 @@ async fn run_case(crash: bool) {
                 let (mut reopened, recovery) = phase("same Root new Host epoch", rig.start()).await?;
                 assert_ne!(reopened.epoch(),epoch);
                 assert_eq!(reopened.source(),&post_config_source);
-                let failed = phase("read original immutable transcript, not BackendScope rejection",
-                    terminal_state(&recovery,&session,&run,"failed")).await?;
-                assert_eq!(failed["state"]["reason"], json!({
-                    "kind":"external_task_unobservable", "descriptor":bound["descriptor"]
-                }), "must retain the original bound native resource: {failed}");
+                phase("end the original run without resubmitting it",
+                    terminal_state(&recovery,&session,&run,"cancelled")).await?;
                 let after = phase("same canonical output prefix after crash",
                     checkpoint(&recovery,&session,&run,&ready["checkpoint"])).await?;
                 assert_eq!(after["execution"]["runId"],run);
@@ -1033,11 +1036,11 @@ async fn run_case(crash: bool) {
                 assert_eq!(recovered.iter().filter(|f| f["kind"] == "external_task_observed").cloned().collect::<Vec<_>>(),observed);
                 assert_eq!(recovered.iter().filter(|f| f["kind"] == "external_effect").cloned().collect::<Vec<_>>(),effects);
                 confirmed_task(&recovered,&bound["task"]);
-                assert!(!recovered.iter().any(|f| f["kind"] == "external_task_closed"),"Unknown remains Unknown");
+                assert!(recovered.iter().any(|f| f["kind"] == "external_task_closed" && f["outcome"] == "cancelled"));
                 assert_eq!(recovered.iter().filter(|f| f["kind"] == "run_admitted").count(),1);
             } else {
                 let (session_b,run_b) = phase("parallel original job B",
-                    launch(&sdk,&rig.sandbox.workspace,"B",&title,false)).await?;
+                    launch(&sdk,&rig.sandbox.workspace,"B",&title,false,"codex")).await?;
                 let ready_b = phase("original B connection ready",rig.controller.event("B","ready")).await?;
                 let pid_b = ready_b["pid"].as_u64().unwrap();
                 assert_ne!(pid,pid_b);
@@ -1155,7 +1158,7 @@ async fn quitting_host_reaps_the_active_original_external_process() {
         let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
         phase(
             "configure external runtime",
-            rig.configure(&mut anchor, &bootstrap),
+            rig.configure(&mut anchor, &bootstrap, "codex"),
         )
         .await?;
         phase("close bootstrap session", bootstrap.close()).await?;
@@ -1169,6 +1172,7 @@ async fn quitting_host_reaps_the_active_original_external_process() {
                 "A",
                 "quit-active-external",
                 true,
+                "codex",
             ),
         )
         .await?;
@@ -1220,4 +1224,67 @@ async fn exact_stop_isolates_parallel_original_external_jobs() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sigkill_reopens_original_external_transcript_without_resubmission() {
     run_case(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
+        phase("enable Antigravity ACP", rig.configure(&mut anchor, &bootstrap, "antigravity")).await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let (session, run) = phase(
+            "send first prompt",
+            launch(&sdk, &rig.sandbox.workspace, "ACP-original", "Antigravity restart", true, "antigravity"),
+        ).await?;
+        let original = phase("first ACP prompt delivered", rig.controller.event("ACP-original", "ready")).await?;
+        let before = phase("first ACP output saved", checkpoint(&sdk, &session, &run, &original["checkpoint"])).await?;
+        let pid = original["pid"].as_u64().unwrap();
+        assert!(isolated::closed_evidence(&rig.controller.resource(pid)?).await.map_err(|e| e.to_string())?.is_none());
+        sdk.close().await?;
+        rig.clients.pop();
+        phase("kill and reap original Host", rig.hosts[0].sigkill()).await?;
+        let (mut reopened, recovery) = phase("reopen the same Root", rig.start()).await?;
+        assert_ne!(reopened.epoch(), anchor.epoch());
+        rig.controller.send(pid, json!({"action":"root_reaped","pid":rig.root_pid.unwrap()}))?;
+        let transcript = phase("original ACP process exited and all streams drained", rig.transcript(pid)).await?;
+        assert!(!transcript.output.iter().any(|row| row["id"] == original["promptId"] && row.get("method").is_none()));
+        phase("interrupted Run", terminal_state(&recovery, &session, &run, "cancelled")).await?;
+        let after = phase("original partial answer remains", checkpoint(&recovery, &session, &run, &original["checkpoint"])).await?;
+        assert_eq!(after["prefix"], before["prefix"]);
+        let next = phase("send a new message in the original conversation",
+            send_native(&recovery, &session, "ACP-followup", "Antigravity restart", false)).await?;
+        assert_ne!(next, run);
+        let resumed = phase("new prompt reaches Antigravity",
+            rig.controller.event("ACP-followup", "ready")).await?;
+        assert_eq!(resumed["thread"], original["thread"]);
+        phase("follow-up completes", terminal_state(&recovery, &session, &next, "completed")).await?;
+        let resumed_transcript = phase("seal resumed process", rig.transcript(resumed["pid"].as_u64().unwrap())).await?;
+        let task_prompts = |transcript: &Transcript| {
+            transcript.input.iter().filter_map(|row| {
+                (row["method"] == "session/prompt").then(|| {
+                    row["params"]["prompt"][0]["text"].as_str().unwrap_or_default()
+                })
+                .filter(|text| text.contains("MAKA_EXTERNAL_CASE "))
+                .map(str::to_owned)
+            }).collect::<Vec<_>>()
+        };
+        assert!(matches!(&task_prompts(&transcript)[..], [text] if text.contains("ACP-original")));
+        assert!(matches!(&task_prompts(&resumed_transcript)[..], [text] if text.contains("ACP-followup") && !text.contains("ACP-original")));
+        let events = rig.controller.events();
+        assert_eq!(events.iter().filter(|e| e["kind"] == "hello").count(), 2, "{events:?}");
+        assert!(events.iter().all(|e| e["kind"] != "failure"), "{events:?}");
+        recovery.close().await?;
+        rig.clients.pop();
+        phase("quit reopened Host", rig.hosts[1].quit(&mut reopened)).await?;
+        Ok::<_, String>(())
+    }).catch_unwind().await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
 }
