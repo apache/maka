@@ -282,6 +282,27 @@ impl Model {
                     "stop",
                 ));
             }
+            if matches!(self.producer, Producer::Goal) && iteration > 1 {
+                return match iteration {
+                    2 => Ok(sse(
+                        json!({"tool_calls":[{"index":0,"id":"finish-goal","type":"function","function":{
+                            "name":"GoalStatus","arguments":json!({"status":"achieved","note":"Continued in a new iteration."}).to_string()
+                        }}]}),
+                        "tool_calls",
+                    )),
+                    3 => {
+                        let output: Value =
+                            serde_json::from_str(tool_text(messages, "finish-goal")?)
+                                .map_err(|error| error.to_string())?;
+                        assert_eq!(output["current"]["status"], "achieved");
+                        Ok(sse(
+                            json!({"content":"Goal completed after restart."}),
+                            "stop",
+                        ))
+                    }
+                    _ => Err("Goal dispatched an extra model request".into()),
+                };
+            }
             held.store(true, Ordering::SeqCst);
             // Headers and an SSE comment only: no semantic item, finish or DONE.
             let first = futures_util::stream::once(async move {
@@ -722,19 +743,6 @@ fn one<'a>(records: &'a [Value], kind: &str) -> &'a Value {
     assert_eq!(selected.len(), 1, "one original {kind}: {records:?}");
     selected[0]
 }
-fn goal_identity(current: &Value) -> Value {
-    assert_eq!(current["iterations"], 1);
-    assert_eq!(current["pending"], true);
-    assert_eq!(current["status"], "active");
-    assert!(current["tokenBudget"].is_null());
-    assert!(current["remainingTokens"].is_null());
-    assert!(
-        current["consumed"]["missing"].as_u64().unwrap() > 0,
-        "unfinished usage is missing, not zero: {current}"
-    );
-    json!({"id":current["id"],"objective":current["objective"],"consumed":current["consumed"],
-        "createdAt":current["createdAt"],"report":current["report"],"note":current["note"]})
-}
 
 #[expect(
     clippy::too_many_arguments,
@@ -1106,14 +1114,21 @@ async fn body(
     );
     let run = original["runId"].clone();
     let user = user_message(client, &session, &message, &run).await?;
-    let domain = match producer {
+    let scheduled = match producer {
         Producer::Goal | Producer::GoalBudget => {
             assert_eq!(user["origin"]["kind"], "goal");
             assert_eq!(user["origin"]["goalId"], domain_id);
             let goal = query(client, "goal", json!({"sessionId":session})).await?;
             assert_eq!(goal["enabled"], true);
             assert_eq!(goal["current"]["id"], domain_id);
-            goal_identity(&goal["current"])
+            assert_eq!(goal["current"]["iterations"], 1);
+            assert_eq!(goal["current"]["pending"], true);
+            assert_eq!(goal["current"]["status"], "active");
+            assert!(
+                goal["current"]["consumed"]["missing"].as_u64().unwrap() > 0,
+                "unfinished usage must be reported as missing"
+            );
+            None
         }
         Producer::Automation => unreachable!(),
         Producer::Scheduler => {
@@ -1129,7 +1144,7 @@ async fn body(
             let detail = schedule(client, &domain_id).await?;
             assert_eq!(detail["task"]["runs"][0]["runId"], run);
             assert!(detail["pendingFire"].is_null());
-            detail
+            Some(detail)
         }
     };
     phase("first client close before Host fault", clients[0].close()).await?;
@@ -1201,48 +1216,43 @@ async fn body(
     .await?;
     assert_eq!(by_run["kind"], "found");
     assert_eq!(by_run["execution"], recovered);
-    assert_eq!(user_message(client, &session, &message, &run).await?, user);
-    match producer {
-        Producer::Goal | Producer::GoalBudget => {
-            let current = query(client, "goal", json!({"sessionId":session})).await?;
-            assert_eq!(goal_identity(&current["current"]), domain);
-            let rejected = mutate(
-                client,
-                "agent",
-                "changeGoal",
-                json!({"kind":"control","sessionId":session,"goalId":domain_id,
-                "revision":current["current"]["revision"],"action":"resume","approval":approval}),
-                Attachments::new(),
-            )
+    let successor = match producer {
+        Producer::Goal => {
+            phase("Goal completes a second iteration after recovery", async {
+                loop {
+                    let goal = query(client, "goal", json!({"sessionId":session})).await?;
+                    let current = &goal["current"];
+                    assert_eq!(current["id"], domain_id);
+                    assert!(
+                        current["iterations"]
+                            .as_u64()
+                            .is_some_and(|count| count <= 2)
+                    );
+                    if current["status"] == "achieved" && current["pending"] == false {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
             .await?;
-            assert_eq!(
-                rejected,
-                json!({"kind":"rejected","reason":"goal_approval_invalid"})
-            );
-            let after = query(client, "goal", json!({"sessionId":session})).await?;
-            assert_eq!(goal_identity(&after["current"]), domain);
+            let next_message = format!("m_goal-{domain_id}-2");
+            let next = work(client, &session, &next_message, Some("completed"), None).await?;
+            assert_ne!(next["runId"], run);
+            Some(next["runId"].clone())
         }
-        Producer::Automation => unreachable!(),
+        Producer::GoalBudget | Producer::Automation => unreachable!(),
         Producer::Scheduler => {
-            assert_eq!(schedule(client, &domain_id).await?, domain);
+            assert_eq!(user_message(client, &session, &message, &run).await?, user);
+            assert_eq!(schedule(client, &domain_id).await?, scheduled.unwrap());
             let child = query(client, "observe", json!({"sessionId":session})).await?;
             assert_eq!(child["session"]["parentSessionId"], parent);
             let children = query(client, "list", json!({"filter":"all","position":{"kind":"start"},"scope":{"kind":"children","sessionId":parent}})).await?;
             let children = children["sessions"].as_array().unwrap();
             assert_eq!(children.len(), 1);
             assert_eq!(children[0]["id"], session);
+            None
         }
-    }
-    assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        model.requests.load(Ordering::SeqCst),
-        match producer {
-            Producer::Goal => 1,
-            Producer::Scheduler => 4,
-            Producer::Automation => unreachable!(),
-            Producer::GoalBudget => 2,
-        }
-    );
+    };
     // Leave failed history for the existing read-only inspector, without a
     // test Root/SQL writer or a live Root fence.
     phase("second client close before Host fault", clients[1].close()).await?;
@@ -1252,7 +1262,21 @@ async fn body(
         after.starts_with(&before),
         "recovery must append to original history"
     );
-    assert!(after.iter().all(|record| record["run"] == run));
+    let admitted_runs: Vec<_> = after
+        .iter()
+        .filter(|record| record["fact"]["kind"] == "run_admitted")
+        .map(|record| &record["run"])
+        .collect();
+    assert_eq!(
+        admitted_runs,
+        std::iter::once(&run)
+            .chain(successor.iter())
+            .collect::<Vec<_>>()
+    );
+    let after: Vec<_> = after
+        .into_iter()
+        .filter(|record| record["run"] == run)
+        .collect();
     assert_eq!(one(&after, "run_admitted"), &admitted);
     let reopened_spec: ContentRef =
         serde_json::from_value(one(&after, "run_admitted")["fact"]["spec"].clone())
@@ -1281,7 +1305,6 @@ async fn body(
         record["fact"]["kind"].as_str(),
         Some("model_observed" | "model_closed" | "retry_charged" | "stop_requested")
     )));
-    assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -1391,7 +1414,7 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
                 return;
             }
             let (requests, producer_requests, eof) = match producer {
-                Producer::Goal => (1, 1, 1),
+                Producer::Goal => (3, 3, 1),
                 Producer::Scheduler => (4, 1, 1),
                 Producer::Automation => unreachable!(),
                 Producer::GoalBudget => (2, 2, 0),
@@ -1413,7 +1436,7 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn goal_iteration_one_fails_original_run_without_redispatch_after_reopen() {
+async fn goal_continues_in_a_new_iteration_after_original_run_fails_on_reopen() {
     acceptance(Producer::Goal, false).await;
 }
 
