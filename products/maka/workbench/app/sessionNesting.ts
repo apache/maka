@@ -72,15 +72,16 @@ export function nestCreated(sessions: readonly Nestable[]): {
   return { order, nested };
 }
 
-/**
- * The sessions with every one created, directly or through others listed
- * here, by `ancestor` left out. The Bot's workers stay on the Bot's page.
- */
-export function withoutDescendants<T extends Nestable>(
+/** The desktop's ordinary list puts Bot workers under its own entry; inbox and archive keep them. */
+export function workspaceSessions<T extends Nestable>(
   sessions: readonly T[],
   ancestor: string | null,
+  filter: 'all' | 'archived' | 'needs_you',
+  desktop: boolean,
 ): T[] {
   if (ancestor === null) return [...sessions];
+  sessions = sessions.filter((session) => session.id !== ancestor);
+  if (!desktop || filter !== 'all') return [...sessions];
   const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
   const verdicts = new Map<string, boolean>();
   const descends = (id: string): boolean => {

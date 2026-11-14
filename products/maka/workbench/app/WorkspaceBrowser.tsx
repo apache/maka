@@ -58,7 +58,7 @@ import {
   projectSessionLimit,
   type ConversationGroup,
 } from './conversationGroups';
-import { withoutDescendants } from './sessionNesting';
+import { workspaceSessions } from './sessionNesting';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   hasForkPrefix,
@@ -167,10 +167,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const visibleSessions = computed(() => {
     const bot = props.botSession?.() ?? null;
     const sessions = browser.sessions();
-    return withoutDescendants(
-      bot === null ? sessions : sessions.filter((session) => session.id !== bot),
-      bot,
-    );
+    return workspaceSessions(sessions, bot, browser.filter(), platform.idiom !== 'terminal');
   });
   // Running and waiting first-hand work of the Bot, waiting first; the open
   // one stays while it is open. The rest are on the Bot's page.

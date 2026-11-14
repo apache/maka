@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nestCreated, withoutDescendants } from '../app/sessionNesting.ts';
+import { nestCreated, workspaceSessions } from '../app/sessionNesting.ts';
 
 const session = (id, parentSessionId = null) => ({ id, parentSessionId });
 
@@ -47,7 +47,7 @@ test('a creation cycle leaves every conversation listed once', () => {
 });
 
 test("the Bot's workers and what they created leave the list; others stay", () => {
-  const kept = withoutDescendants(
+  const kept = workspaceSessions(
     [
       session('bot'),
       session('worker', 'bot'),
@@ -57,7 +57,23 @@ test("the Bot's workers and what they created leave the list; others stay", () =
       session('orphan', 'gone'),
     ],
     'bot',
+    'all',
+    true,
   ).map(({ id }) => id);
-  assert.deepEqual(kept, ['bot', 'mine', 'child', 'orphan']);
-  assert.equal(withoutDescendants([session('a', 'b')], null).length, 1);
+  assert.deepEqual(kept, ['mine', 'child', 'orphan']);
+  assert.equal(workspaceSessions([session('a', 'b')], null, 'all', true).length, 1);
+});
+
+test('the inbox and archive keep Bot workers on desktop and terminal', () => {
+  const rows = [session('bot'), session('worker', 'bot'), session('mine')];
+  for (const desktop of [false, true])
+    for (const filter of ['needs_you', 'archived'])
+      assert.deepEqual(
+        workspaceSessions(rows, 'bot', filter, desktop).map(({ id }) => id),
+        ['worker', 'mine'],
+      );
+  assert.deepEqual(
+    workspaceSessions(rows, 'bot', 'all', false).map(({ id }) => id),
+    ['worker', 'mine'],
+  );
 });
