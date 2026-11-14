@@ -105,7 +105,7 @@ impl Fixture {
             .await
             .unwrap();
             assert_eq!(registered["kind"], "committed", "{registered}");
-            json!({"kind":"project","project":registered["project"]["reference"],"path":path})
+            json!({"kind":"project","projectId":registered["project"]["reference"]["id"],"path":path})
         } else {
             json!({"kind":"directory","path":path})
         };
@@ -1520,14 +1520,17 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     finish_text(&mut socket, "Cannot propose discovery here").await;
     f.quiescent(session).await;
     assert_eq!(
-        f.query("schedules", json!({"kind":"list"})).await["tasks"],
+        f.query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
+            .await["tasks"],
         json!([])
     );
     f.send("Propose a discovery", json!([])).await;
     let (mut socket, _) = next(&listener).await;
     tool(&mut socket, "ScheduledTask", proposal).await;
     let (mut socket, _) = next(&listener).await;
-    let page = f.query("schedules", json!({"kind":"list"})).await;
+    let page = f
+        .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
+        .await;
     let task = &page["tasks"][0];
     let id = task["id"].as_str().unwrap();
     assert_eq!(task["status"], "paused");
@@ -1634,6 +1637,9 @@ async fn discovery_desktop_lists_only_its_plans_and_tracks_the_original_worker()
     let automation = f.query("schedule", json!({"kind":"create","input":{"task":{
         "title":"Unrelated automation","intentBody":"Other task","schedule":schedule,"effect":{"kind":"session","target":target,"model":f.model},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
     assert_eq!(automation["kind"], "committed");
+    let automation_page = f.query("schedules", json!({"kind":"list"})).await;
+    assert_eq!(automation_page["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(automation_page["tasks"][0]["title"], "Unrelated automation");
     let page = f
         .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
         .await;
