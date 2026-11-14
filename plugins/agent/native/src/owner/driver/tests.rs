@@ -589,6 +589,17 @@ impl Rig {
         budget: Budget,
         with_ordinary_tool: bool,
     ) -> TestResult<()> {
+        self.assemble_backend(session, budget, with_ordinary_tool, false)
+            .await
+    }
+
+    async fn assemble_backend(
+        &mut self,
+        session: &str,
+        budget: Budget,
+        with_ordinary_tool: bool,
+        external: bool,
+    ) -> TestResult<()> {
         let owner = self
             .captured
             .lock()
@@ -640,7 +651,25 @@ impl Rig {
                 .store
                 .data_writer_for_work(custody.as_ref(), session)?,
         )?;
-        let backend = ContentBlob::json(&source.accepted)?;
+        let external_backend = if external {
+            Some(
+                owner
+                    .executors
+                    .select(maka_agent_facts::executor::Selection {
+                        executor: "external".into(),
+                        settings: maka_agent_facts::executor::Settings {
+                            runtime: Some("codex".into()),
+                            ..Default::default()
+                        },
+                    })?,
+            )
+        } else {
+            None
+        };
+        let backend = match &external_backend {
+            Some(backend) => ContentBlob::json(&backend.accepted)?,
+            None => ContentBlob::json(&source.accepted)?,
+        };
         let empty = ContentBlob::json(&RunInput::Message {
             content: "native wait original read failure".to_string().into(),
             request_fingerprint: None,
@@ -694,9 +723,15 @@ impl Rig {
                 sandbox,
                 approval: maka_sandbox::Approval::Never,
             },
-            backend: BackendSpec::Model {
-                binding: source.accepted.binding.clone(),
-                descriptor: backend.reference().clone(),
+            backend: match &external_backend {
+                Some(external) => BackendSpec::Executor {
+                    selection: external.accepted.selection.clone(),
+                    descriptor: backend.reference().clone(),
+                },
+                None => BackendSpec::Model {
+                    binding: source.accepted.binding.clone(),
+                    descriptor: backend.reference().clone(),
+                },
             },
             collaboration: CollaborationMode::Agent,
             language: Language::En,
@@ -748,20 +783,62 @@ impl Rig {
             owner.services.clone(),
             access.clone(),
         ));
-        self.driver = Some(Arc::new(NativeDriver::new(
+        let external_effects = external_backend
+            .as_ref()
+            .map(|_| {
+                super::super::driver_external_effects::NativeExternalEffects::new(
+                    owner.clone(),
+                    access.clone(),
+                    access.claim().clone(),
+                    cleanup.clone(),
+                    workers.clone(),
+                    Some(cells.clone()),
+                )
+            })
+            .transpose()?;
+        let native_backend = match external_backend {
+            Some(backend) => {
+                NativeBackend::Executor(Arc::new(super::super::driver_executor::DriverExecutor {
+                    state: state.clone(),
+                    state_root: owner.store.owned_root()?.canonical_path().to_path_buf(),
+                    backend,
+                    access: access.clone(),
+                    inputs: Arc::new(super::super::driver_executor_inputs::NativeInputs::new(
+                        owner.clone(),
+                        access.clone(),
+                        access.claim().clone(),
+                    )?),
+                    instructions: None,
+                    cancellation: CancellationToken::new(),
+                    root_observation: CancellationToken::new(),
+                    prepared_private: Default::default(),
+                    candidate_capture: Default::default(),
+                    publication: Default::default(),
+                    cleanup: cleanup.clone(),
+                    workers: workers.clone(),
+                    retained: Arc::default(),
+                }))
+            }
+            None => NativeBackend::Model {
+                model,
+                cells: Some(cells),
+            },
+        };
+        let driver = Arc::new(NativeDriver::new(
             owner.clone(),
             state,
             access,
             catalog,
             owner.mcp_projects.base.clone(),
-            NativeBackend::Model {
-                model,
-                cells: Some(cells),
-            },
+            native_backend,
             CancellationToken::new(),
             cleanup,
             workers,
-        )));
+        ));
+        if let Some(effects) = external_effects {
+            driver.attach_external_effects(effects)?;
+        }
+        self.driver = Some(driver);
         Ok(())
     }
 
@@ -2228,6 +2305,174 @@ mod source_recovery {
     use maka_agent_state::ReadyCause;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_scope_releases_root_after_late_vm_ack() {
+        use maka_agent_facts::cells::{CellEvent, CellId, CellOwner};
+        use maka_agent_facts::external_effects::{
+            ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey,
+        };
+        use maka_agent_facts::tools::{ToolExecutor, ToolFuture};
+        struct Gate {
+            entered: StdMutex<Option<oneshot::Sender<()>>>,
+            release: StdMutex<Option<oneshot::Receiver<()>>>,
+        }
+        impl ToolExecutor for Gate {
+            fn names(&self) -> Vec<String> {
+                vec!["gate".into()]
+            }
+            fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
+                let entered = self.entered.lock().unwrap().take().unwrap();
+                let release = self.release.lock().unwrap().take().unwrap();
+                Box::pin(async move {
+                    entered
+                        .send(())
+                        .map_err(|_| ToolError::Failed("gate observer lost".into()))?;
+                    release
+                        .await
+                        .map_err(|error| ToolError::Failed(error.to_string()))?;
+                    Ok(json!("original gate completed"))
+                })
+            }
+        }
+        let mut rig = Rig::new().unwrap();
+        let (release, gate) = oneshot::channel();
+        let (entered, started) = oneshot::channel();
+        let mut release = Some(release);
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start_configured(None, |config| {
+                config["external"] = json!({"runtimes":{"codex":true}});
+            }).await?;
+            rig.assemble_backend(&session, Budget { tokens: None, retries: 0, deadline: None }, false, true).await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let run = driver.access.execution().run_id;
+            let task = ExternalTaskId::new();
+            let key = ExternalEffectKey { task, operation: Uuid::new_v4() };
+            let task_source = maka_agent_facts::executor::Binding {
+                executor_id: "external".to_string().try_into()?,
+                package_id: "maka.agent".into(), entry_id: "maka.agent".into(), activation: "fixture".into(),
+            };
+            let task_descriptor = ContentBlob::json(&maka_agent_facts::executor::TaskDescriptor {
+                protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(), source: task_source.clone(), payload: json!({}),
+            })?;
+            let descriptor = ContentBlob::json(&ExternalEffectDescriptor {
+                schema_version: SCHEMA_VERSION, protocol: "fixture".into(), execution: driver.access.execution().clone(), key,
+                origin: maka_agent_facts::tool_call::ToolOrigin::External { task, operation: key.operation, package_id: task_source.package_id, entry_id: task_source.entry_id, activation: task_source.activation },
+                operation_id: format!("external:{task}:{}", key.operation), name: "exec".into(), input: json!({}),
+                definition: ToolDefinition { name: "exec".into(), description: "finite VM".into(), input_schema: json!({}), provider: None, freeform: None, output_schema: None },
+                catalog_digest: maka_agent_engine::digest(&json!({}))?, resources: vec![],
+            })?;
+            rig.append(vec![
+                Fact::ExternalTaskPrepared { task, descriptor: task_descriptor.reference().clone(), live_workspace: true },
+                Fact::ExternalTaskAdmitted { task },
+            ], vec![task_descriptor]).await.map_err(|error| format!("task admission: {error}"))?;
+            rig.append(vec![
+                Fact::ExternalEffect { event: ExternalEffectEvent::Prepared { key, descriptor: descriptor.reference().clone() } },
+                Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key, approval: None } },
+            ], vec![descriptor]).await.map_err(|error| format!("effect admission: {error}"))?;
+            let cell = CellId::for_external(run, key);
+            let store = maka_code_runtime::CellStore::temporary().map_err(|error| error.message)?;
+            let context = maka_code_runtime::CellContext::new(store, vec![maka_code_runtime::ToolMetadata { name: "gate".into(), description: "finite original effect".into() }]).map_err(|error| error.message)?;
+            let vm = owner.code_executor.prepare_module("await tools.gate({});".into(), Arc::new(Gate { entered: StdMutex::new(Some(entered)), release: StdMutex::new(Some(gate)) }), CancellationToken::new(), context).await?;
+            let binding = vm.binding().clone();
+            let source = ContentBlob::json(&"await tools.gate({});")?;
+            let vm_descriptor = ContentBlob::json(&binding.descriptor)?;
+            let view = driver.state.frontier(run).await?;
+            driver.state.append(driver.access.claim(), (&view).into(), vec![
+                Change { id: cell.started_fact_id(), at: at(), fact: Fact::Cell { event: CellEvent::Started { cell, owner: CellOwner::External { run, key }, source: source.reference().clone() } } },
+                Change::new(Fact::Cell { event: CellEvent::VmBound { cell, binding: maka_agent_facts::cells::CellVmBinding { runtime: binding.runtime.clone(), version: binding.version, descriptor: vm_descriptor.reference().clone() } } }, at()),
+            ], vec![source, vm_descriptor]).await.map_err(|error| format!("Cell admission: {error}"))?;
+            rig.cells.as_ref().unwrap().retain_vm_for_test(cell);
+            let observing = tokio::spawn(vm.execute_bound());
+            started.await?;
+            observing.abort();
+            assert!(observing.await.unwrap_err().is_cancelled());
+            owner.retain_original_scope(session.clone(), rig.lease.take().unwrap(), super::super::super::driver_cleanup::OriginalScope::Driver { driver: Some(driver.clone()), effects: rig.work_effects.take().unwrap(), state: driver.state.clone(), pending: None }).await;
+            assert_eq!(owner.close().await, Err("agent_cleanup_unconfirmed".into()));
+            assert!(owner.runs.state().await.retained_cleanup.contains_key(&session));
+            let mut physical = owner.physical_changes();
+            let (mut vm_changes, _) = owner.code_executor.physical_changes();
+            release.take().unwrap().send(()).map_err(|_| "original gate lost")?;
+            vm_changes.changed().await?;
+            assert!(matches!(owner.code_executor.observe_binding(&binding).await, maka_code_runtime::RuntimeVmObservation::Gone(_)));
+            eprintln!("original external VM joined; waiting for retained scope to release Root");
+            loop {
+                physical.borrow_and_update();
+                if !owner.runs.state().await.retained_cleanup.contains_key(&session) { break; }
+                physical.changed().await?;
+            }
+            let facts = owner.durable.history(run, 0, 128).await?;
+            assert!(facts.iter().any(|fact| matches!(&fact.fact, Fact::Cell { event: CellEvent::Interrupted { cell: original, .. } } if *original == cell)));
+            rig.store.as_ref().unwrap().shutdown().await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }).await;
+        if let Some(release) = release {
+            let _ = release.send(());
+        }
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "late external VM ACK: {result:?}; {cleanup:?}"
+        );
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_original_model_cleanup_after_model_closed() {
+        let mut rig = Rig::new().expect("owned cleanup fixture");
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let attempt = rig.attempt().await?;
+            rig.append(vec![Fact::ModelClosed {
+                attempt,
+                outcome: maka_agent_facts::accounting::Outcome::Success,
+                diagnostic: None,
+                usage: Default::default(),
+                protocol: json!({"finishReason":"stop"}),
+            }], vec![]).await?;
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let run = driver.access.execution().run_id;
+            let (release, gate) = oneshot::channel::<()>();
+            let state = driver.state.clone();
+            let worker = driver.workers.spawn(async move {
+                gate.await?;
+                state.observe(run, vec![Change::new(Fact::ModelCleanupObserved {
+                    attempt, cleanup: OperationCleanup::Confirmed,
+                }, at())], vec![]).await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>(state.history(run, 0, 1024).await?)
+            });
+            owner.retain_original_scope(session.clone(), rig.lease.take().unwrap(),
+                super::super::super::driver_cleanup::OriginalScope::Driver {
+                    driver: Some(driver.clone()), effects: rig.work_effects.take().unwrap(),
+                    state: driver.state.clone(), pending: None,
+                }).await;
+            let close_request = owner.runs.state().await.retained_cleanup[&session][0].close_request();
+            // Let the retained observer arm before asking the real Host to close.
+            tokio::task::yield_now().await;
+            let host = rig.host.as_ref().unwrap().clone();
+            let closing = tokio::spawn(async move { host.shutdown().await });
+            close_request.cancelled().await;
+            tokio::task::yield_now().await;
+            release.send(()).map_err(|_| "original cleanup gate lost")?;
+            let facts = worker.await??;
+            let closed = closing.await?;
+            assert_eq!(closed, Ok(()), "Host must drain its original model worker");
+            assert_eq!(facts.iter().filter(|fact| matches!(fact.fact,
+                Fact::ModelCleanupObserved { attempt: id, cleanup: OperationCleanup::Confirmed } if id == attempt)).count(), 1);
+            assert!(owner.runs.state().await.retained_cleanup.is_empty());
+            rig.store.as_ref().unwrap().shutdown().await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }).await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "original cleanup shutdown: {result:?}; {cleanup:?}"
+        );
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn disconnected_host_retires_with_unconfirmed_cleanup_reported() {
         let mut rig = Rig::new().expect("owned retirement fixture");
         let result = tokio::time::timeout(Duration::from_secs(10), async {
@@ -2270,6 +2515,106 @@ mod source_recovery {
                 .any(|error| error.contains("agent_cleanup_unconfirmed")),
             "{cleanup:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_close_preserves_late_original_effect_ack_without_repeating_it() {
+        let mut rig = Rig::new().expect("owned late cleanup fixture");
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let attempt = rig.attempt().await?;
+            let (key, admitted) = rig
+                .tool(attempt, "ordinary_local", "late-original", json!({}))
+                .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            let prepared = driver
+                .prepare_tool(&view, &view.tools[&tool_key(&key)], driver.catalog.clone())
+                .await?;
+            let released = Arc::new(AtomicBool::new(false));
+            // This callback outlives the driver workers under its original Root effect.
+            let original_effect = rig.lease.as_ref().unwrap().store().fork_effect()?;
+            rig.begin(
+                prepared.tool.effect,
+                admitted,
+                key.clone(),
+                prepared.source,
+                driver.original_effects.clone(),
+                released.clone(),
+            )?;
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            owner
+                .retain_original_scope(
+                    session.clone(),
+                    rig.lease.take().unwrap(),
+                    super::super::super::driver_cleanup::OriginalScope::Driver {
+                        driver: Some(driver.clone()),
+                        effects: rig.work_effects.take().unwrap(),
+                        state: driver.state.clone(),
+                        pending: None,
+                    },
+                )
+                .await;
+            assert_eq!(owner.close().await, Err("agent_cleanup_unconfirmed".into()));
+            assert!(!released.load(Ordering::SeqCst));
+            assert!(
+                owner
+                    .runs
+                    .state()
+                    .await
+                    .retained_cleanup
+                    .contains_key(&session)
+            );
+            let mut physical_changes = owner.physical_changes();
+            rig.gate
+                .take()
+                .unwrap()
+                .send(())
+                .map_err(|_| "original effect gate lost")?;
+            rig.complete().await?;
+            assert!(released.load(Ordering::SeqCst));
+            original_effect.finish(Ok(()));
+            assert!(driver.original_effects.settle_all(true).await?);
+            loop {
+                physical_changes.borrow_and_update();
+                if !owner
+                    .runs
+                    .state()
+                    .await
+                    .retained_cleanup
+                    .contains_key(&session)
+                {
+                    break;
+                }
+                physical_changes.changed().await?;
+            }
+            let facts = owner.durable.history(run, 0, 1024).await?;
+            assert_eq!(
+                facts
+                    .iter()
+                    .filter(|fact| matches!(&fact.fact,
+                Fact::LocalToolReturned { tool, .. } if tool == &key))
+                    .count(),
+                1
+            );
+            assert!(driver.original_effects.settle_all(true).await?);
+            assert_eq!(
+                serde_json::to_value(owner.durable.history(run, 0, 1024).await?)?,
+                serde_json::to_value(facts)?
+            );
+            rig.store.as_ref().unwrap().shutdown().await?;
+            assert!(owner.runs.state().await.retained_cleanup.is_empty());
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "late original ACK: {result:?}; {cleanup:?}"
+        );
+        assert!(cleanup.is_empty(), "{cleanup:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3392,6 +3737,116 @@ mod model_recovery {
         let cleanup = new.finish().await;
         assert!(cleanup.is_empty(), "{cleanup:?}");
         result?
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepared_model_request_survives_package_rebuild_and_settles_on_rejection()
+    -> TestResult<()> {
+        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+        use std::sync::atomic::AtomicUsize;
+
+        for same_adapter in [true, false] {
+            let mut rig = Rig::new()?;
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            let mut prepared = driver
+                .model()?
+                .prepare_step(&view, Preparation::Initial, driver)
+                .await?;
+            let step = prepared.request.step;
+            let body = ContentBlob::json(&prepared.request)?;
+            prepared.contents.push(body.clone());
+            rig.append(
+                vec![Fact::StepPrepared {
+                    step,
+                    request: body.reference().clone(),
+                    adjudications: vec![],
+                }],
+                prepared.contents,
+            )
+            .await?;
+
+            let driver = Arc::get_mut(rig.driver.as_mut().unwrap())
+                .ok_or("driver shared before dispatch")?;
+            let mut replacement = driver.owner.revision.clone();
+            replacement.revision = "rebuilt-agent-package".into();
+            if !same_adapter {
+                replacement.entry_id = "different-adapter-entry".into();
+            }
+            let NativeBackend::Model { model, .. } = &mut driver.backend else {
+                unreachable!();
+            };
+            model.executor =
+                maka_model::ModelExecutor::for_source(Duration::from_secs(30), replacement)?;
+
+            let stop = CancellationToken::new();
+            let posts = Arc::new(AtomicUsize::new(0));
+            let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+            let server = tokio::spawn(serve(listener, posts.clone(), stop.clone(), None));
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let result =
+                tokio::time::timeout(Duration::from_secs(15), async {
+                    let engine = Engine::new(driver.state.clone());
+                    let mut changes = driver.state.subscribe()?;
+                    let terminal = loop {
+                        changes.borrow_and_update();
+                        match engine
+                            .drive(
+                                driver.access.claim().clone(),
+                                driver.clone(),
+                                CancellationToken::new(),
+                            )
+                            .await?
+                        {
+                            DriverExit::Terminal { terminal, .. } => break terminal,
+                            DriverExit::Waiting { .. } => changes.changed().await?,
+                            other => {
+                                return Err(
+                                    format!("prepared request did not settle: {other:?}").into()
+                                );
+                            }
+                        }
+                    };
+                    let view = driver.state.frontier(run).await?;
+                    let attempt = view.current_attempt.ok_or("model attempt missing")?;
+                    Ok::<_, Box<dyn Error + Send + Sync>>((
+                        terminal,
+                        view.blocks_followup(),
+                        view.attempts[&attempt].cleanup.clone(),
+                    ))
+                })
+                .await;
+            drop(driver);
+            stop.cancel();
+            let cleanup = rig.finish().await;
+            assert!(cleanup.is_empty(), "{cleanup:?}");
+            server.await??;
+            let (terminal, blocked, cleanup) = result??;
+            assert_eq!(
+                terminal,
+                if same_adapter {
+                    Terminal::Completed
+                } else {
+                    Terminal::Failed
+                }
+            );
+            assert_eq!(posts.load(Ordering::SeqCst), usize::from(same_adapter));
+            assert_eq!(cleanup, OperationCleanup::Confirmed);
+            assert!(!blocked, "the failed attempt must not block a follow-up");
+        }
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4902,14 +5357,10 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
         let owner = rig.captured.lock().unwrap().clone().unwrap();
         let source = rig.driver.as_ref().unwrap().access.execution().clone();
         let route = owner.return_route(&source).await?;
-        let model = route.binding_model();
-        let request = json!({
-            "source": source,
-            "model": {"connectionId": model.connection_id, "modelId": model.model},
-            "thinking_level": route.thinking_level(),
-            "workspace": route.workspace,
-            "binding": route.binding,
-        });
+        let mut request = serde_json::to_value(&route.backend)?;
+        request["source"] = json!(source);
+        request["workspace"] = json!(route.workspace);
+        request["binding"] = json!(route.binding);
         let worker = format!("{}missing-worker", owner.prefix);
         owner
             .store
@@ -5001,14 +5452,10 @@ async fn completion_notification_survives_pending_message_edit() {
         let _producer = owner.producer_gate.lock().await;
         let source = rig.driver.as_ref().unwrap().access.execution().clone();
         let route = owner.return_route(&source).await?;
-        let model = route.binding_model();
-        let request = json!({
-            "source": source,
-            "model": {"connectionId": model.connection_id, "modelId": model.model},
-            "thinking_level": route.thinking_level(),
-            "workspace": route.workspace,
-            "binding": route.binding,
-        });
+        let mut request = serde_json::to_value(&route.backend)?;
+        request["source"] = json!(source);
+        request["workspace"] = json!(route.workspace);
+        request["binding"] = json!(route.binding);
         let worker = format!("{}missing-worker", owner.prefix);
         owner
             .store

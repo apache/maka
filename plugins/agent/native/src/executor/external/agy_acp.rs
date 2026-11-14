@@ -27,7 +27,7 @@ use maka_external_agent::AcpV1Projection;
 use runtime::{Pipe, string};
 use serde_json::json;
 
-const HOST_SERVER: &str = "maka_maka";
+const HOST_SERVER: &str = "maka";
 
 #[expect(
     clippy::too_many_arguments,
@@ -44,10 +44,15 @@ pub(super) async fn execute(
     owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     let mut command = runtime::command(config, cwd).await?;
+    if journal.native_session().is_none() {
+        agy::require_host_agent().await?;
+    }
     command.args([
         "acp",
         "--process-per-session",
         "--dangerously-skip-permissions",
+        "--agent",
+        agy::HOST_AGENT,
     ]);
     runtime::task_pipe(
         owner,

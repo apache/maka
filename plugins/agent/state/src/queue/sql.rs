@@ -503,7 +503,11 @@ fn project(
                         ) || original.session_id != session
                             || original.owner != request.spec.owner
                             || !matches!(original.origin, RunOrigin::Local)
-                            || !matches!(original.backend, BackendSpec::Model { .. })
+                            || !matches!(
+                                (&original.backend, &request.spec.backend),
+                                (BackendSpec::Model { .. }, BackendSpec::Model { .. })
+                                    | (BackendSpec::Executor { .. }, BackendSpec::Executor { .. })
+                            )
                             || (check && stopped)
                         {
                             return Err(invalid("completion does not match its original caller"));

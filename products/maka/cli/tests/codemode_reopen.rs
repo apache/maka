@@ -35,11 +35,14 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use maka_agent_facts::{
+    configuration::CatalogMutationResult,
     execution::CodeLanguage,
     operation::{RecordedOperationReply, RecordedOperationResult, inline_reply, same_outcome},
 };
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
+use maka_config::ConfigurationStore;
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::application::host::Client as HostClient;
 use maka_plugin_core::{
     contract::ResourceType,
@@ -1070,38 +1073,35 @@ async fn case(
     base: &str,
     language: CodeLanguage,
 ) -> Result<()> {
-    // Seed before admission, while this fixture is the only configuration writer.
+    // Seed before the Host's public catalog refresh can advance the fixture's CAS revision.
     let connection = {
         let root = sandbox.root.clone();
         let owner = tokio::task::spawn_blocking(move || {
-            maka_event_log::root::RootOwner::create(
-                &root,
-                &maka_event_log::root::RootNamespaces::for_current_account().unwrap(),
-            )
-            .unwrap()
+            RootOwner::create(&root, &RootNamespaces::for_current_account()?)
         })
         .await
-        .unwrap();
-        let store = maka_config::ConfigurationStore::for_root(Arc::new(owner))
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        let store = ConfigurationStore::for_root(Arc::new(owner))
             .await
-            .unwrap();
+            .map_err(|error| error.to_string())?;
         let created = store.create_connection(serde_json::from_value(json!({
-        "expectedCatalogRevision":0,"connection":{
-            "slug":"codemode","name":"CodeMode loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
-            "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
-            "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":language,"apiProtocol":"openai-chat-completions"}}
-        }
-    })).unwrap()).await;
-        store.shutdown().await.map_err(|error| error.to_string())?;
+            "expectedCatalogRevision":0,"connection":{
+                "slug":"codemode","name":"CodeMode loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
+                "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
+                "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":language,"apiProtocol":"openai-chat-completions"}}
+            }
+        })).unwrap()).await;
+        let closed = store.shutdown().await;
         let created = created.map_err(|error| error.to_string())?;
-        let maka_agent_facts::configuration::CatalogMutationResult::Committed {
-            connection: Some(connection),
-            ..
-        } = created
-        else {
-            panic!("fixture connection was not committed: {created:?}");
-        };
-        json!(connection.connection_id)
+        closed.map_err(|error| error.to_string())?;
+        match created {
+            CatalogMutationResult::Committed {
+                connection: Some(basis),
+                ..
+            } => basis.connection_id,
+            other => return Err(format!("fixture connection was not committed: {other:?}")),
+        }
     };
     hosts.push(Host::spawn(sandbox)?);
     let (first, _) = phase("first default Host ready", hosts[0].ready()).await?;

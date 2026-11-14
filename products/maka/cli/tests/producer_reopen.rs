@@ -32,10 +32,12 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use maka_agent_api::contract::{ContextReport, Execution, GoalView, HistoryPage};
-use maka_agent_facts::durable::ContentRef;
+use maka_agent_facts::{configuration::CatalogMutationResult, durable::ContentRef};
 use maka_agent_ports::session::history::{HistoryField, HistoryRowAddress, Role};
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
+use maka_config::ConfigurationStore;
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_plugin_core::{
     contract::ResourceType,
     operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt},
@@ -281,6 +283,27 @@ impl Model {
                     json!({"content":"Budgeted iteration complete."}),
                     "stop",
                 ));
+            }
+            if matches!(self.producer, Producer::Goal) && iteration > 1 {
+                return match iteration {
+                    2 => Ok(sse(
+                        json!({"tool_calls":[{"index":0,"id":"finish-goal","type":"function","function":{
+                            "name":"GoalStatus","arguments":json!({"status":"achieved","note":"Continued in a new iteration."}).to_string()
+                        }}]}),
+                        "tool_calls",
+                    )),
+                    3 => {
+                        let output: Value =
+                            serde_json::from_str(tool_text(messages, "finish-goal")?)
+                                .map_err(|error| error.to_string())?;
+                        assert_eq!(output["current"]["status"], "achieved");
+                        Ok(sse(
+                            json!({"content":"Goal completed after restart."}),
+                            "stop",
+                        ))
+                    }
+                    _ => Err("Goal dispatched an extra model request".into()),
+                };
             }
             held.store(true, Ordering::SeqCst);
             // Headers and an SSE comment only: no semantic item, finish or DONE.
@@ -722,19 +745,6 @@ fn one<'a>(records: &'a [Value], kind: &str) -> &'a Value {
     assert_eq!(selected.len(), 1, "one original {kind}: {records:?}");
     selected[0]
 }
-fn goal_identity(current: &Value) -> Value {
-    assert_eq!(current["iterations"], 1);
-    assert_eq!(current["pending"], true);
-    assert_eq!(current["status"], "active");
-    assert!(current["tokenBudget"].is_null());
-    assert!(current["remainingTokens"].is_null());
-    assert!(
-        current["consumed"]["missing"].as_u64().unwrap() > 0,
-        "unfinished usage is missing, not zero: {current}"
-    );
-    json!({"id":current["id"],"objective":current["objective"],"consumed":current["consumed"],
-        "createdAt":current["createdAt"],"report":current["report"],"note":current["note"]})
-}
 
 #[expect(
     clippy::too_many_arguments,
@@ -751,6 +761,34 @@ async fn body(
     events: &mut mpsc::UnboundedReceiver<&'static str>,
     base: &str,
 ) -> Result<()> {
+    // Seed before the Host's public catalog refresh can advance the fixture's CAS revision.
+    let connection = {
+        let root = sandbox.root.clone();
+        let owner = tokio::task::spawn_blocking(move || {
+            RootOwner::create(&root, &RootNamespaces::for_current_account()?)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        let store = ConfigurationStore::for_root(Arc::new(owner))
+            .await
+            .map_err(|error| error.to_string())?;
+        let created = store.create_connection(serde_json::from_value(json!({"expectedCatalogRevision":0,"connection":{
+            "slug":"producer","name":"Producer loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
+            "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
+            "modelOverrides":{"gpt-4.1":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}
+        }})).unwrap()).await;
+        let closed = store.shutdown().await;
+        let created = created.map_err(|error| error.to_string())?;
+        closed.map_err(|error| error.to_string())?;
+        match created {
+            CatalogMutationResult::Committed {
+                connection: Some(basis),
+                ..
+            } => basis.connection_id,
+            other => return Err(format!("fixture connection was not committed: {other:?}")),
+        }
+    };
     let journal = phase("external Journal", Journal::open(&sandbox.journal)).await?;
     hosts.push(Host::spawn(sandbox)?);
     let (first, _) = phase("actual default Host ready", hosts[0].ready()).await?;
@@ -758,19 +796,6 @@ async fn body(
     let source = first.source().clone();
     clients.push(Client::new(first, journal, "receipts".into())?);
     let client = &clients[0];
-    let catalog = phase(
-        "connection catalog",
-        client.query("settings", "connections", json!({"kind":"start"})),
-    )
-    .await?;
-    assert_eq!(catalog["kind"], "ready");
-    let created = mutate(client, "settings", "create", json!({"expectedCatalogRevision":catalog["revision"],"connection":{
-        "slug":"producer","name":"Producer loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
-        "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
-        "modelOverrides":{"gpt-4.1":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}
-    }}), Attachments::new()).await?;
-    assert_eq!(created["kind"], "committed");
-    let connection = created["connection"]["connectionId"].clone();
     let detail = phase(
         "credential target",
         client.query("settings", "connection", json!({"connectionId":connection})),
@@ -1106,14 +1131,21 @@ async fn body(
     );
     let run = original["runId"].clone();
     let user = user_message(client, &session, &message, &run).await?;
-    let domain = match producer {
+    let scheduled = match producer {
         Producer::Goal | Producer::GoalBudget => {
             assert_eq!(user["origin"]["kind"], "goal");
             assert_eq!(user["origin"]["goalId"], domain_id);
             let goal = query(client, "goal", json!({"sessionId":session})).await?;
             assert_eq!(goal["enabled"], true);
             assert_eq!(goal["current"]["id"], domain_id);
-            goal_identity(&goal["current"])
+            assert_eq!(goal["current"]["iterations"], 1);
+            assert_eq!(goal["current"]["pending"], true);
+            assert_eq!(goal["current"]["status"], "active");
+            assert!(
+                goal["current"]["consumed"]["missing"].as_u64().unwrap() > 0,
+                "unfinished usage must be reported as missing"
+            );
+            None
         }
         Producer::Automation => unreachable!(),
         Producer::Scheduler => {
@@ -1129,7 +1161,7 @@ async fn body(
             let detail = schedule(client, &domain_id).await?;
             assert_eq!(detail["task"]["runs"][0]["runId"], run);
             assert!(detail["pendingFire"].is_null());
-            detail
+            Some(detail)
         }
     };
     phase("first client close before Host fault", clients[0].close()).await?;
@@ -1201,48 +1233,43 @@ async fn body(
     .await?;
     assert_eq!(by_run["kind"], "found");
     assert_eq!(by_run["execution"], recovered);
-    assert_eq!(user_message(client, &session, &message, &run).await?, user);
-    match producer {
-        Producer::Goal | Producer::GoalBudget => {
-            let current = query(client, "goal", json!({"sessionId":session})).await?;
-            assert_eq!(goal_identity(&current["current"]), domain);
-            let rejected = mutate(
-                client,
-                "agent",
-                "changeGoal",
-                json!({"kind":"control","sessionId":session,"goalId":domain_id,
-                "revision":current["current"]["revision"],"action":"resume","approval":approval}),
-                Attachments::new(),
-            )
+    let successor = match producer {
+        Producer::Goal => {
+            phase("Goal completes a second iteration after recovery", async {
+                loop {
+                    let goal = query(client, "goal", json!({"sessionId":session})).await?;
+                    let current = &goal["current"];
+                    assert_eq!(current["id"], domain_id);
+                    assert!(
+                        current["iterations"]
+                            .as_u64()
+                            .is_some_and(|count| count <= 2)
+                    );
+                    if current["status"] == "achieved" && current["pending"] == false {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
             .await?;
-            assert_eq!(
-                rejected,
-                json!({"kind":"rejected","reason":"goal_approval_invalid"})
-            );
-            let after = query(client, "goal", json!({"sessionId":session})).await?;
-            assert_eq!(goal_identity(&after["current"]), domain);
+            let next_message = format!("m_goal-{domain_id}-2");
+            let next = work(client, &session, &next_message, Some("completed"), None).await?;
+            assert_ne!(next["runId"], run);
+            Some(next["runId"].clone())
         }
-        Producer::Automation => unreachable!(),
+        Producer::GoalBudget | Producer::Automation => unreachable!(),
         Producer::Scheduler => {
-            assert_eq!(schedule(client, &domain_id).await?, domain);
+            assert_eq!(user_message(client, &session, &message, &run).await?, user);
+            assert_eq!(schedule(client, &domain_id).await?, scheduled.unwrap());
             let child = query(client, "observe", json!({"sessionId":session})).await?;
             assert_eq!(child["session"]["parentSessionId"], parent);
             let children = query(client, "list", json!({"filter":"all","position":{"kind":"start"},"scope":{"kind":"children","sessionId":parent}})).await?;
             let children = children["sessions"].as_array().unwrap();
             assert_eq!(children.len(), 1);
             assert_eq!(children[0]["id"], session);
+            None
         }
-    }
-    assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        model.requests.load(Ordering::SeqCst),
-        match producer {
-            Producer::Goal => 1,
-            Producer::Scheduler => 4,
-            Producer::Automation => unreachable!(),
-            Producer::GoalBudget => 2,
-        }
-    );
+    };
     // Leave failed history for the existing read-only inspector, without a
     // test Root/SQL writer or a live Root fence.
     phase("second client close before Host fault", clients[1].close()).await?;
@@ -1252,7 +1279,21 @@ async fn body(
         after.starts_with(&before),
         "recovery must append to original history"
     );
-    assert!(after.iter().all(|record| record["run"] == run));
+    let admitted_runs: Vec<_> = after
+        .iter()
+        .filter(|record| record["fact"]["kind"] == "run_admitted")
+        .map(|record| &record["run"])
+        .collect();
+    assert_eq!(
+        admitted_runs,
+        std::iter::once(&run)
+            .chain(successor.iter())
+            .collect::<Vec<_>>()
+    );
+    let after: Vec<_> = after
+        .into_iter()
+        .filter(|record| record["run"] == run)
+        .collect();
     assert_eq!(one(&after, "run_admitted"), &admitted);
     let reopened_spec: ContentRef =
         serde_json::from_value(one(&after, "run_admitted")["fact"]["spec"].clone())
@@ -1281,7 +1322,6 @@ async fn body(
         record["fact"]["kind"].as_str(),
         Some("model_observed" | "model_closed" | "retry_charged" | "stop_requested")
     )));
-    assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -1391,7 +1431,7 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
                 return;
             }
             let (requests, producer_requests, eof) = match producer {
-                Producer::Goal => (1, 1, 1),
+                Producer::Goal => (3, 3, 1),
                 Producer::Scheduler => (4, 1, 1),
                 Producer::Automation => unreachable!(),
                 Producer::GoalBudget => (2, 2, 0),
@@ -1413,7 +1453,7 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn goal_iteration_one_fails_original_run_without_redispatch_after_reopen() {
+async fn goal_continues_in_a_new_iteration_after_original_run_fails_on_reopen() {
     acceptance(Producer::Goal, false).await;
 }
 
@@ -1445,7 +1485,7 @@ async fn automation_delivery(
     client: &Client,
     session: &str,
     target: Value,
-    connection: Value,
+    connection: String,
     sandbox: &Sandbox,
     model: &Model,
     events: &mut mpsc::UnboundedReceiver<&'static str>,
@@ -1457,6 +1497,12 @@ async fn automation_delivery(
             .unwrap()
             .as_millis() as u64
     }
+    let fire_message_id = |run: &Value| {
+        format!(
+            "m_{}",
+            hex::encode(Sha256::digest(run["id"].as_str().unwrap().as_bytes()))
+        )
+    };
     let condition = sandbox.workspace.join("status.txt");
     tokio::fs::write(&condition, "waiting")
         .await
@@ -1613,23 +1659,31 @@ async fn automation_delivery(
         steered["task"]["runs"][0]["message"],
         "Message delivered as steering"
     );
+    let delivered = query(
+        client,
+        "work",
+        json!({"sessionId":session,"target":{"kind":"message",
+            "messageId":fire_message_id(&steered["task"]["runs"][0])}}),
+    )
+    .await?;
+    assert_eq!(delivered["kind"], "delivered");
+    assert_eq!(delivered["shared"], true);
+    assert_eq!(delivered["execution"]["runId"], original["runId"]);
+    assert_eq!(delivered["execution"]["turnId"], original["turnId"]);
     let queued = wait(followup, 1).await?;
-    assert_ne!(queued["task"]["runs"][0]["runId"], original["runId"]);
-    assert_eq!(queued["task"]["runs"][0]["message"], "Message admitted");
-    let followup_message = format!(
-        "m_{}",
-        hex::encode(Sha256::digest(
-            queued["task"]["runs"][0]["id"].as_str().unwrap().as_bytes()
-        ))
-    );
-    work(
+    let queued_run = &queued["task"]["runs"][0];
+    assert_ne!(queued_run["runId"], original["runId"]);
+    assert_eq!(queued_run["message"], "Message admitted");
+    // A fire settles at admission; finish the timer Run before the next script edge.
+    let completed = work(
         client,
         session,
-        &followup_message,
+        &fire_message_id(queued_run),
         Some("completed"),
         Some(model),
     )
     .await?;
+    assert_eq!(completed["runId"], queued_run["runId"]);
     let mut check_after = steered["task"]["nextFireAt"].as_i64().unwrap();
     for state in ["ready", "waiting"] {
         tokio::fs::write(&condition, state)
@@ -1654,11 +1708,18 @@ async fn automation_delivery(
         .map_err(|e| e.to_string())?;
     let again = wait(steering, 2).await?;
     let latest = &again["task"]["runs"][0];
-    let message = format!(
-        "m_{}",
-        hex::encode(Sha256::digest(latest["id"].as_str().unwrap().as_bytes()))
-    );
-    work(client, session, &message, Some("completed"), Some(model)).await?;
+    assert_eq!(latest["message"], "Message admitted");
+    assert_ne!(latest["runId"], original["runId"]);
+    assert_ne!(latest["runId"], queued_run["runId"]);
+    let completed = work(
+        client,
+        session,
+        &fire_message_id(latest),
+        Some("completed"),
+        Some(model),
+    )
+    .await?;
+    assert_eq!(completed["runId"], latest["runId"]);
     let observed = query(client, "observe", json!({"sessionId":session})).await?;
     let changed = mutate(
         client,

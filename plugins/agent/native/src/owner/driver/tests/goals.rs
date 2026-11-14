@@ -167,7 +167,7 @@ async fn exercise(
                 Arm {
                     operation_id: Uuid::new_v4(),
                     objective: "keep working".into(),
-                    grant,
+                    grant: crate::owner::scheduler::BackgroundGrant::Model(grant),
                     token_budget: None,
                     start: true,
                     language: Language::En,

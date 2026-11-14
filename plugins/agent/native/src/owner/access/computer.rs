@@ -618,6 +618,10 @@ impl ComputerAccess for BoundCall {
             Ok(retained)
         })
     }
+    fn file_sandbox_floor(&self) -> BoxFuture<'_, Result<maka_sandbox::Sandbox, ToolError>> {
+        Box::pin(self.access.sandbox_floor(&self.call.call.origin))
+    }
+
     fn session_audio_retention<'a>(
         &'a self,
         basis: &'a PermissionBasis,

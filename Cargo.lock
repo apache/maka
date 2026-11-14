@@ -8716,7 +8716,6 @@ dependencies = [
  "maka-skills-api",
  "maka-skills-native",
  "maka-workspace-api",
- "maka-workspace-support",
  "rusqlite",
  "serde_json",
  "sha2 0.11.1",

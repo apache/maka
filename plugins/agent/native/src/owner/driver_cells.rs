@@ -37,8 +37,8 @@ use maka_agent_facts::{
         CellView, CellVmBinding, StoredCellReturn,
     },
     durable::{
-        AgentStepLink, BlockerId, BlockerKind, ContentRef, ExecutionIdentity, Fact, FactId,
-        SCHEMA_VERSION, ToolKey, UnixMillis,
+        BlockerId, BlockerKind, ContentRef, ExecutionIdentity, Fact, FactId, SCHEMA_VERSION,
+        ToolKey, UnixMillis,
     },
     event::ProjectionArtifactWrite,
     tool_call::{RejectionKind, ToolCallIdentity, ToolOrigin, ToolSettlement},
@@ -126,6 +126,11 @@ struct VmPublication {
     batch: Mutex<Option<(Change, ContentBlob)>>,
 }
 impl RunCells {
+    #[cfg(test)]
+    pub(super) fn retain_vm_for_test(&self, cell: CellId) {
+        self.owned.lock().unwrap().insert(cell);
+    }
+
     pub(super) fn new(
         owner: Arc<Owner>,
         access: Arc<RunAccess>,
@@ -267,8 +272,7 @@ impl RunCells {
                     .remove(&cell);
                 continue;
             };
-            if !matches!(&current.owner,CellOwner::Agent{link,..} if link.run==self.access.execution().run_id)
-            {
+            if current.owner.run() != Some(self.access.execution().run_id) {
                 return Err(RunError::InvalidInput(
                     "Cell cleanup differs from its original Run".into(),
                 ));
@@ -369,6 +373,31 @@ impl RunCells {
             super::driver::DispatchSource::Ordinary
         };
         Ok((effect, source))
+    }
+    pub(super) async fn prepare_external(
+        self: &Arc<Self>,
+        context: ToolCallContext,
+        name: &str,
+        input: &Value,
+        catalog: ToolCatalog,
+        cancellation: CancellationToken,
+    ) -> Result<maka_agent_facts::tools::PreparedEffect, maka_agent_facts::tool_call::ToolRejection>
+    {
+        let port = NativeCellPort::new(self.clone(), context)
+            .await
+            .map_err(
+                |error| maka_agent_facts::tool_call::ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                },
+            )?;
+        self.coordinator.prepare(
+            name,
+            input,
+            catalog,
+            port,
+            cancellation,
+            CancellationToken::new(),
+        )
     }
     fn now(&self) -> UnixMillis {
         UnixMillis(now().try_into().expect("Unix milliseconds"))
@@ -731,14 +760,9 @@ impl RunCells {
             .await
             .map_err(persistence)?
             .ok_or_else(|| ToolError::OutcomeUnknown("Original Cell is unavailable".into()))?;
-        let CellOwner::Agent { link, call } = &canonical.owner else {
-            return Err(ToolError::OutcomeUnknown(
-                "Cell recovery has no original Agent owner".into(),
-            ));
-        };
         if canonical.id != cell
-            || link.run != execution.run_id
-            || CellId::for_agent(*link, call) != cell
+            || canonical.owner.run() != Some(execution.run_id)
+            || canonical.owner.cell_id() != Some(cell)
         {
             return Err(ToolError::OutcomeUnknown(
                 "Cell owner belongs to another original Run".into(),
@@ -937,8 +961,7 @@ impl RunCells {
         let Some(current) = current else {
             return Ok(());
         };
-        if !matches!(current.owner, CellOwner::Agent { link, .. } if link.run == self.access.execution().run_id)
-        {
+        if current.owner.run() != Some(self.access.execution().run_id) {
             return Err(persistence("Cell quarantine belongs to another actual Run"));
         }
         let identity = |kind: &str| -> Uuid {
@@ -1231,8 +1254,7 @@ impl RunCells {
         }
     }
     async fn observe_vm_closure(&self, canonical: &CellView) -> Result<bool, ToolError> {
-        if !matches!(&canonical.owner,CellOwner::Agent{link,..} if link.run==self.access.execution().run_id)
-        {
+        if canonical.owner.run() != Some(self.access.execution().run_id) {
             return Err(persistence("Original VM observer belongs to another Run"));
         }
         if self.coordinator.has_live(canonical.id) {
@@ -1307,8 +1329,7 @@ impl RunCells {
         if self.coordinator.has_live(cell) {
             return Ok(Some(view));
         }
-        if matches!(&view.owner, CellOwner::Agent { link, .. } if link.run == self.access.execution().run_id)
-        {
+        if view.owner.run() == Some(self.access.execution().run_id) {
             for (operation, child) in &view.children {
                 if needs_observation(child) {
                     self.recover_child(cell, *operation, child).await?;
@@ -1328,7 +1349,7 @@ impl RunCells {
 pub(super) struct NativeCellPort {
     run: Arc<RunCells>,
     parent: ToolCallContext,
-    link: AgentStepLink,
+    owner: CellOwner,
     admission_closed: CancellationToken,
     observed_cell: Arc<std::sync::OnceLock<CellId>>,
 }
@@ -1351,10 +1372,9 @@ impl OwnedCellWait {
                 .custody
                 .as_ref()
                 .is_none_or(|custody| !Arc::ptr_eq(custody, access.custody()))
-            || self.port.link.run != access.execution().run_id
-            || self.port.link.attempt != key.attempt
             || self.port.parent.call.tool_call_id != key.call
-            || !matches!(&self.port.parent.call.origin, ToolOrigin::Provider { link } if *link == self.port.link)
+            || !matches!(&self.port.owner, CellOwner::Agent { link, .. }
+                if link.run == access.execution().run_id && link.attempt == key.attempt)
             || self.port.parent.operation_id != format!("{}:{}", key.attempt, key.call)
         {
             return Err(RunError::InvalidInput(
@@ -1375,10 +1395,10 @@ impl OwnedCellWait {
             || view.spec != *access.spec()
             || view.spec.session_id != access.execution().session_id
             || view.spec.turn_id != access.execution().turn_id
-            || view
-                .attempts
-                .get(&key.attempt)
-                .is_none_or(|attempt| attempt.step != self.port.link.step)
+            || view.attempts.get(&key.attempt).is_none_or(|attempt| {
+                !matches!(&self.port.owner,
+                    CellOwner::Agent { link, .. } if attempt.step == link.step)
+            })
         {
             return Err(RunError::InvalidInput(
                 "Cell wait observation differs from its original Run".into(),
@@ -1508,44 +1528,63 @@ impl CellPersistence for FailFirstCellRead {
 impl NativeCellPort {
     async fn new(run: Arc<RunCells>, parent: ToolCallContext) -> Result<Arc<Self>, ToolError> {
         run.access.check_context(&parent).await?;
-        let ToolOrigin::Provider { link } = &parent.call.origin else {
-            return Err(ToolError::Failed(
-                "Cell controls require the original provider call".into(),
-            ));
-        };
-        let link = *link;
         let view = run.access.fresh().await.map_err(persistence)?;
-        let key = ToolKey {
-            attempt: link.attempt,
-            call: parent.call.tool_call_id.clone(),
+        let owner = match &parent.call.origin {
+            ToolOrigin::Provider { link } => {
+                let key = ToolKey {
+                    attempt: link.attempt,
+                    call: parent.call.tool_call_id.clone(),
+                };
+                if link.run != view.run
+                    || parent.operation_id != format!("{}:{}", key.attempt, key.call)
+                    || view
+                        .attempts
+                        .get(&link.attempt)
+                        .is_none_or(|attempt| attempt.step != link.step)
+                    || !view.tools.contains_key(&tool_key(&key))
+                {
+                    return Err(ToolError::Failed(
+                        "Cell parent differs from its provider call".into(),
+                    ));
+                }
+                CellOwner::Agent {
+                    link: *link,
+                    call: key.call,
+                }
+            }
+            ToolOrigin::External {
+                task, operation, ..
+            } => {
+                let key = maka_agent_facts::external_effects::ExternalEffectKey {
+                    task: *task,
+                    operation: *operation,
+                };
+                let original = run
+                    .state
+                    .external_effect_descriptor(view.run, key)
+                    .await
+                    .map_err(persistence)?;
+                if original.origin != parent.call.origin
+                    || original.operation_id != parent.operation_id
+                {
+                    return Err(ToolError::Failed(
+                        "Cell parent differs from its external call".into(),
+                    ));
+                }
+                CellOwner::External { run: view.run, key }
+            }
+            _ => return Err(ToolError::Failed("Cell parent is unavailable".into())),
         };
-        if view.spec.owner != run.owner.run_owner()
-            || link.run != view.run
-            || parent.operation_id != format!("{}:{}", key.attempt, key.call)
-            || view
-                .attempts
-                .get(&link.attempt)
-                .is_none_or(|attempt| attempt.step != link.step)
-            || !view.tools.contains_key(&tool_key(&key))
-        {
-            return Err(ToolError::Failed(
-                "Cell parent differs from the canonical provider obligation".into(),
-            ));
-        }
-
         Ok(Arc::new(Self {
             run,
             parent,
-            link,
+            owner,
             admission_closed: CancellationToken::new(),
             observed_cell: Arc::default(),
         }))
     }
     fn cell_owner(&self) -> CellOwner {
-        CellOwner::Agent {
-            link: self.link,
-            call: self.parent.call.tool_call_id.clone(),
-        }
+        self.owner.clone()
     }
 
     async fn original_cell(&self, cell: CellId) -> Result<CellView, ToolError> {
@@ -2273,9 +2312,7 @@ impl CellPorts for RunCells {
         cell: &'a CellView,
     ) -> BoxFuture<'a, Result<CellObservation, RunError>> {
         Box::pin(async move {
-            if view.run != self.access.execution().run_id
-                || !matches!(&cell.owner, CellOwner::Agent { link, .. } if link.run == view.run)
-            {
+            if view.run != self.access.execution().run_id || cell.owner.run() != Some(view.run) {
                 return Err(RunError::InvalidInput(
                     "Cell observer differs from its actual Run".into(),
                 ));

@@ -121,6 +121,8 @@ pub trait ComputerAccess: NativeCallAccess {
         &'a self,
         basis: &'a maka_sandbox::workspace::PermissionBasis,
     ) -> BoxFuture<'a, Result<Arc<dyn ComputerPreviewAccess>, ToolError>>;
+    fn file_sandbox_floor(&self) -> BoxFuture<'_, Result<maka_sandbox::Sandbox, ToolError>>;
+
     fn session_audio_retention<'a>(
         &'a self,
         basis: &'a maka_sandbox::workspace::PermissionBasis,

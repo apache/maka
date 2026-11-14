@@ -29,7 +29,7 @@ use maka_agent_facts::{
     },
     tool_call::{ToolOrigin, ToolSettlement},
     tool_output::{DurableToolProjection, ReturnedToolResult, ToolOutput, ToolSuccess},
-    tools::{ToolCallContext, ToolError},
+    tools::{ToolCallContext, ToolDefinition, ToolError},
 };
 use maka_agent_state::{Change, ContentBlob, DriverClaim, Head, fold::RunView};
 use maka_capabilities::call::Identity;
@@ -61,10 +61,13 @@ pub(super) struct NativeExternalEffects {
     claim: DriverClaim,
     cleanup: Evidence,
     workers: TaskTracker,
+    pub(super) cells: Option<Arc<super::driver_cells::RunCells>>,
     observation: Arc<Mutex<Option<EffectReply>>>,
     retained: Arc<Mutex<Vec<Arc<RetainedBatch>>>>,
     calls: Arc<Mutex<Vec<Arc<tokio::sync::Mutex<OwnedCall>>>>>,
     active: Option<Arc<tokio::sync::Mutex<OwnedCall>>>,
+    finish: CancellationToken,
+    finishes_turn: bool,
 }
 
 struct RetainedBatch {
@@ -121,6 +124,7 @@ impl NativeExternalEffects {
         claim: DriverClaim,
         cleanup: Evidence,
         workers: TaskTracker,
+        cells: Option<Arc<super::driver_cells::RunCells>>,
     ) -> Result<Self, RunError> {
         let writer = owner
             .store
@@ -133,10 +137,13 @@ impl NativeExternalEffects {
             claim,
             cleanup,
             workers,
+            cells,
             observation: Arc::new(Mutex::new(None)),
             retained: Arc::new(Mutex::new(Vec::new())),
             calls: Arc::default(),
             active: None,
+            finish: CancellationToken::new(),
+            finishes_turn: false,
         })
     }
 
@@ -192,7 +199,11 @@ impl NativeExternalEffects {
         name: &str,
         cancellation: &CancellationToken,
     ) -> Result<RunView, ToolError> {
-        self.access.check_tool(context, name).await?;
+        if self.cells.is_some() && matches!(name, "exec" | "wait") {
+            self.access.check_context(context).await?;
+        } else {
+            self.access.check_tool(context, name).await?;
+        }
         let view = self.access.fresh().await.map_err(ToolError::Failed)?;
         let task = view
             .external
@@ -216,10 +227,11 @@ impl NativeExternalEffects {
         &self,
         catalog: ToolCatalog,
         context: ToolCallContext,
-        name: String,
+        definition: ToolDefinition,
         input: Value,
         cancellation: CancellationToken,
     ) -> Result<ReturnedToolResult, ToolError> {
+        let name = definition.name.clone();
         let key = self.key(&context)?;
         let view = self.access.fresh().await.map_err(ToolError::Failed)?;
         let task = view
@@ -299,13 +311,6 @@ impl NativeExternalEffects {
                 "Original prepared Host effect is unavailable".into(),
             ));
         }
-        let definition = catalog
-            .definitions()
-            .find(|tool| tool.name == name)
-            .cloned()
-            .ok_or_else(|| {
-                ToolError::Failed("Host tool is unavailable in the original catalog".into())
-            })?;
         let descriptor = ExternalEffectDescriptor {
             schema_version: SCHEMA_VERSION,
             protocol: PROTOCOL.into(),
@@ -317,7 +322,7 @@ impl NativeExternalEffects {
             input: input.clone(),
             definition,
             catalog_digest: catalog.digest(),
-            // ServiceTool's bridge admits only JSON methods with no required resource slots.
+            // Tool calls have no attached Host resource slots.
             resources: vec![],
         };
         let blob = ContentBlob::json(&descriptor).map_err(persistence)?;
@@ -334,10 +339,36 @@ impl NativeExternalEffects {
             vec![blob],
         )
         .await?;
-        let effect = match catalog
-            .prepare(name.clone(), input, context.clone(), cancellation.clone())
-            .await
+        let prepared = if let Some(cells) = &self.cells
+            && matches!(name.as_str(), "exec" | "wait")
         {
+            cells
+                .prepare_external(
+                    context.clone(),
+                    &name,
+                    &input,
+                    catalog,
+                    cancellation.clone(),
+                )
+                .await
+        } else {
+            match catalog.semantics(&name) {
+                Ok(semantics) => super::driver::PreparedTool::prepare(
+                    &self.owner,
+                    &self.access,
+                    &catalog,
+                    name.clone(),
+                    input,
+                    context.clone(),
+                    cancellation.clone(),
+                    semantics,
+                )
+                .await
+                .map(|prepared| prepared.effect),
+                Err(rejection) => Err(rejection),
+            }
+        };
+        let effect = match prepared {
             Ok(effect) => effect,
             Err(rejection) => {
                 let diagnostic = rejection.to_string();
@@ -784,7 +815,7 @@ impl NativeExternalEffects {
             || original.id != id
             || original.schema_version != SCHEMA_VERSION
             || !matches!(&original.fact, Fact::ExternalEffect {
-                event: ExternalEffectEvent::Returned { key: original_key, output }
+                event: ExternalEffectEvent::Returned { key: original_key, output, .. }
             } if *original_key == key && *output == reference)
         {
             return Err(persistence(StoreError::EventConflict));
@@ -1315,12 +1346,27 @@ impl NativeExternalEffects {
                             output: normalized.output,
                             is_error: normalized.is_error,
                             projection: normalized.projection,
+                            artifacts: normalized
+                                .artifacts
+                                .iter()
+                                .map(|write| {
+                                    let evidence = write.evidence();
+                                    maka_agent_facts::artifact::PublishedArtifact {
+                                        artifact: write.artifact().clone(),
+                                        payload: ContentRef {
+                                            digest: evidence.digest,
+                                            bytes: evidence.bytes,
+                                        },
+                                    }
+                                })
+                                .collect(),
                         };
                         let blob = ContentBlob::json(&returned).map_err(persistence)?;
                         let ExternalReturn::Output {
                             output,
                             is_error,
                             projection,
+                            ..
                         } = returned
                         else {
                             unreachable!()
@@ -1348,7 +1394,8 @@ impl NativeExternalEffects {
                         return Err(error);
                     }
                 }
-                self.publish_return_blob(key, blob, artifacts).await?;
+                self.publish_return_blob(key, blob, artifacts, self.finishes_turn && !is_error)
+                    .await?;
                 Ok(ReturnedToolResult {
                     output,
                     is_error,
@@ -1402,7 +1449,7 @@ impl NativeExternalEffects {
                         "Original failure preparation failed: {error}"
                     ))
                 })??;
-                self.publish_return_blob(key, blob, vec![]).await?;
+                self.publish_return_blob(key, blob, vec![], false).await?;
                 Err(error)
             }
         }
@@ -1413,6 +1460,7 @@ impl NativeExternalEffects {
         key: ExternalEffectKey,
         blob: ContentBlob,
         artifacts: Vec<maka_agent_facts::event::ProjectionArtifactWrite>,
+        finish_turn: bool,
     ) -> Result<(), ToolError> {
         let changes = vec![
             change(ExternalEffectEvent::CleanupObserved {
@@ -1426,6 +1474,7 @@ impl NativeExternalEffects {
                     event: ExternalEffectEvent::Returned {
                         key,
                         output: blob.reference().clone(),
+                        finish_turn,
                     },
                 },
             },
@@ -1445,6 +1494,9 @@ impl NativeExternalEffects {
             Err(error) => self.reconcile(&changes, error).await.map(|_| ()),
         };
         if committed.is_ok() {
+            if finish_turn {
+                self.finish.cancel();
+            }
             batch
                 .acknowledged
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1455,11 +1507,58 @@ impl NativeExternalEffects {
 }
 
 impl HostEffects for NativeExternalEffects {
+    fn finish_signal(&self) -> CancellationToken {
+        self.finish.clone()
+    }
+
+    fn content<'a>(
+        &'a self,
+        returned: &'a ReturnedToolResult,
+        cancellation: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Vec<maka_model::prompt::ContentPart>, String>> {
+        use maka_agent_engine::preparation::{MediaSource, project_returned_tool_from};
+        use maka_agent_state::artifacts::ArtifactScope;
+        use maka_model::prompt::ToolOutput;
+
+        Box::pin(async move {
+            let spec = self.access.spec();
+            let artifacts = self.state.artifacts();
+            let view = self
+                .state
+                .frontier(self.claim.run())
+                .await
+                .map_err(|error| error.to_string())?;
+            let media = MediaSource::LiveWithSession {
+                artifacts: &artifacts,
+                run: ArtifactScope {
+                    owner: spec.owner.clone(),
+                    session: spec.session_id.clone(),
+                    run: view.run,
+                    through: view.revision,
+                },
+            };
+            let rendered = project_returned_tool_from(
+                media,
+                returned,
+                spec.language,
+                true,
+                &self.owner.services.model_preparation_resources(),
+                cancellation,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            match rendered {
+                ToolOutput::Content(parts) => Ok(parts),
+                _ => unreachable!("a media projection renders as content"),
+            }
+        })
+    }
+
     fn invoke(
         &self,
         catalog: ToolCatalog,
         context: ToolCallContext,
-        name: String,
+        definition: ToolDefinition,
         input: Value,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, Result<ReturnedToolResult, ToolError>> {
@@ -1468,6 +1567,10 @@ impl HostEffects for NativeExternalEffects {
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         let mut owner = self.clone();
+        owner.finishes_turn = matches!(
+            catalog.semantics(&definition.name),
+            Ok(maka_agent_facts::tools::ToolSemantics::FinishTurn)
+        );
         let (reply, observed) = oneshot::channel();
         owner.observation = Arc::new(Mutex::new(Some(reply)));
         owner.retained = Arc::new(Mutex::new(Vec::new()));
@@ -1491,7 +1594,7 @@ impl HostEffects for NativeExternalEffects {
         // Admission, execution and T2 have one owner, independent of this observer's lifetime.
         self.workers.spawn(async move {
             let result = owner
-                .invoke_original(catalog, context, name, input, cancellation)
+                .invoke_original(catalog, context, definition, input, cancellation)
                 .await;
             if let Err(error) = &result {
                 owner.cleanup.observe_tool(error);
@@ -1559,6 +1662,7 @@ fn render_return(
             output,
             is_error,
             projection,
+            ..
         } => (output, is_error, projection),
         ExternalReturn::Failure { diagnostic, .. } => return Err(ToolError::Failed(diagnostic)),
     };

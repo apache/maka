@@ -27,7 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod agy;
+pub(crate) mod agy;
 mod agy_acp;
 mod attachments;
 mod claude;
@@ -620,7 +620,7 @@ impl External {
         }
         let key = (conversation.to_owned(), runtime);
         if !endpoints.contains_key(&key) {
-            let endpoint = mcp::Endpoint::open(session.to_owned(), None).await?;
+            let endpoint = mcp::Endpoint::open(session.to_owned()).await?;
             endpoints.insert(key.clone(), endpoint);
         }
         let endpoint = endpoints[&key].clone();

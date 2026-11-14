@@ -21,7 +21,7 @@
 mod dispatch;
 mod stop;
 pub(super) mod tools;
-use super::*;
+use super::{notifications::BackgroundApproval, scheduler::BackgroundGrant, *};
 use maka_event_log::{
     StoreError,
     root_store::DataWriter,
@@ -39,7 +39,7 @@ use tokio::sync::Notify;
 pub(super) struct Goals {
     pub(super) admissions: Arc<runs::Registry>,
     pub(super) storage: Arc<maka_host_runtime::storage::Storage>,
-    pub(super) repository: Repository<super::notifications::BackgroundApproval>,
+    pub(super) repository: Repository<BackgroundGrant>,
     pub(super) gate: Arc<Mutex<()>>,
     wake: Notify,
     changed: tokio::sync::watch::Sender<()>,
@@ -86,16 +86,13 @@ impl Goals {
         self.changed.send_modify(|_| {});
         self.wake.notify_one();
     }
-    pub(super) async fn save(
-        &self,
-        saved: Saved<super::notifications::BackgroundApproval>,
-    ) -> Result<(), String> {
+    pub(super) async fn save(&self, saved: Saved<BackgroundGrant>) -> Result<(), String> {
         self.repository.save(saved).await.map_err(reason)?;
         self.written();
         Ok(())
     }
 }
-fn detail(saved: Saved<super::notifications::BackgroundApproval>) -> GoalDetail {
+fn detail(saved: Saved<BackgroundGrant>) -> GoalDetail {
     let goal = saved.goal;
     GoalDetail {
         id: goal.id,
@@ -188,7 +185,7 @@ impl Owner {
         session: &str,
         id: Uuid,
         approval: GoalApproval,
-    ) -> Result<super::notifications::BackgroundApproval, String> {
+    ) -> Result<BackgroundGrant, String> {
         if approval.target.session_id != session {
             return Err("goal_approval_session_changed".into());
         }
@@ -202,14 +199,14 @@ impl Owner {
             )
             .await?;
         self.check_goal_tools(&basis)?;
-        Ok(super::notifications::BackgroundApproval {
+        Ok(BackgroundGrant::Model(BackgroundApproval {
             target: approval.target,
             model: approval.model,
             accepted_model: basis.model.clone().ok_or("goal_model_unavailable")?,
             thinking_level: approval.thinking_level,
             language: basis.language,
             sandbox_ceiling: None,
-        })
+        }))
     }
     pub(super) fn check_goal_tools(&self, basis: &CapturedRun) -> Result<(), String> {
         if basis
@@ -332,7 +329,7 @@ struct GoalMutation {
     input: GoalChange,
     session: String,
     operation: RecoveryRef,
-    approval: Result<Option<super::notifications::BackgroundApproval>, String>,
+    approval: Result<Option<BackgroundGrant>, String>,
     enabled: bool,
     schedule: (Option<u64>, maka_goal::goal::ScheduleIndex),
     usage: maka_agent_state::usage::UsageStore,
@@ -363,7 +360,7 @@ impl GoalMutation {
     fn apply(
         &self,
         connection: &rusqlite::Connection,
-        old: Option<Saved<super::notifications::BackgroundApproval>>,
+        old: Option<Saved<BackgroundGrant>>,
     ) -> Result<(GoalResult, Vec<Mutation>), StoreError> {
         let rejected = |reason: String| (GoalResult::Rejected { reason }, vec![]);
         if !self.enabled {
@@ -398,7 +395,7 @@ impl GoalMutation {
                 let hash = Sha256::digest(serde_json::to_vec(&self.operation)?);
                 let id = Uuid::from_bytes(hash[..16].try_into().expect("SHA-256 prefix"));
                 let arm = Arm {
-                    language: grant.language,
+                    language: grant.language(),
                     operation_id: id,
                     objective: objective.clone(),
                     grant,
@@ -468,18 +465,11 @@ impl GoalMutation {
                             ));
                         }
                     };
-                    if saved.goal.arm.grant.model != grant.model
-                        || !saved
-                            .goal
-                            .arm
-                            .grant
-                            .accepted_model
-                            .same_execution_route(&grant.accepted_model)
-                    {
+                    if !saved.goal.arm.grant.same_route(&grant) {
                         saved.goal.retry_at = None;
                     }
                     saved.goal.arm.grant = grant;
-                    saved.goal.arm.language = saved.goal.arm.grant.language;
+                    saved.goal.arm.language = saved.goal.arm.grant.language();
                 }
                 if let Some(budget) = budget {
                     if budget.token_budget == Some(0) {

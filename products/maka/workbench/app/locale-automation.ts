@@ -51,10 +51,10 @@ export const automationMessages = {
     '使用 Maka 内嵌的 Deno 运行 JavaScript 或 TypeScript。最后一行输出 true 或 false，结果变为 true 时触发。',
     '使用 Maka 內嵌的 Deno 執行 JavaScript 或 TypeScript。最後一行輸出 true 或 false，結果變為 true 時觸發。',
   ],
-  'Choose a conversation with a model': [
-    'Choose a conversation with a model.',
-    '选择已配置模型的会话。',
-    '選擇已設定模型的對話。',
+  'Choose a target conversation': [
+    'Choose a target conversation.',
+    '请选择目标会话。',
+    '請選擇目標對話。',
   ],
   'Enter a valid date and time': [
     'Enter a valid date and time.',
