@@ -158,6 +158,9 @@ pub struct RunSpec {
     pub workspace: String,
     pub permission_basis: PermissionBasis,
     pub permission_ceiling: maka_sandbox::Permissions,
+    /// Inherited network ceiling for separately approved Host requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_approval_ceiling: Option<maka_sandbox::Network>,
     pub backend: BackendSpec,
     pub collaboration: CollaborationMode,
     pub language: Language,
@@ -760,6 +763,12 @@ impl Fact {
     }
 }
 impl RunSpec {
+    pub fn network_approval_ceiling(&self) -> &maka_sandbox::Network {
+        self.network_approval_ceiling
+            .as_ref()
+            .unwrap_or_else(|| self.permission_ceiling.sandbox.network())
+    }
+
     pub fn content_refs(&self) -> Vec<&ContentRef> {
         let mut refs = vec![&self.system_prompt, &self.tool_selection, &self.input];
         match &self.backend {

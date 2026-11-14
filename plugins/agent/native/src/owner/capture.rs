@@ -210,6 +210,9 @@ impl Owner {
                 maka_sandbox::Approval::Never
             },
         };
+        let inherited_network = parent.sandbox_floor().network();
+        let network_approval_ceiling = (inherited_network != permission_ceiling.sandbox.network())
+            .then(|| inherited_network.clone());
         let system_prompt = basis.behavior.clone();
         if let Some(prompt) = &system_prompt {
             prompt.validate().map_err(|e| e.to_string())?;
@@ -286,6 +289,7 @@ impl Owner {
             workspace: configuration.workspace.path.clone(),
             permission_basis: configuration.permission_basis(),
             permission_ceiling,
+            network_approval_ceiling,
             backend,
             collaboration: basis.collaboration_mode,
             language: basis.language,

@@ -327,7 +327,7 @@ async fn tool_round(
         "{request}"
     );
     let owner = rig.captured.lock().unwrap().clone().unwrap();
-    let approve_web = name == "WebFetch"
+    let approve_web = matches!(name, "WebFetch" | "WebSearch")
         && owner
             .mutable_session(session)
             .await?
@@ -418,13 +418,26 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = format!("http://{}", listener.local_addr()?);
     let web_calls = Arc::new(AtomicUsize::new(0));
+    let search_calls = Arc::new(AtomicUsize::new(0));
     let mcp_calls = Arc::new(AtomicUsize::new(0));
     let web = web_calls.clone();
+    let search = search_calls.clone();
     let mcp = mcp_calls.clone();
     let app = axum::Router::new()
         .route("/page",axum::routing::get(move || {let calls = web.clone(); async move {
             calls.fetch_add(1,Ordering::SeqCst); "web-acceptance-marker"
         }}))
+        .route("/search", axum::routing::get(move |uri: axum::http::Uri| {
+            let search = search.clone();
+            async move {
+                assert_eq!(uri.query(), Some("q=Rust"));
+                search.fetch_add(1, Ordering::SeqCst);
+                (
+                    [("content-type", "application/json")],
+                    json!({"results":[{"url":"https://www.rust-lang.org/"}]}).to_string(),
+                )
+            }
+        }))
         .route("/mcp",axum::routing::post(move |body: axum::body::Bytes| {
             let calls = mcp.clone(); async move {
                 use axum::response::IntoResponse;
@@ -450,7 +463,8 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
             config["tools"] = json!([
                 {"name":"Read","description":"Read local file","target":{"kind":"import","name":"files"},"method":"readText","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
-                {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
+                {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},"method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
             config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")},"preapproved":true}]);
         }).await?;
@@ -458,9 +472,33 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
         attach(&mut rig,&boot).await?;
         let client = rig.client.as_ref().unwrap();
         let web = call(client,"web","snapshot",json!({})).await?;
-        assert_eq!(call(client,"web","save",json!({"revision":web["revision"],"settings":{"enabled":true,"source":"model"}})).await?["kind"],"updated");
+        assert_eq!(call(client,"web","save",json!({"revision":web["revision"],"settings":{
+            "enabled":true,"source":"model","backend":{"kind":"custom","endpoint":{
+                "url":format!("{address}/search"),"method":"get","urlParameters":{},"body":{},"auth":null,
+                "query":{"location":"query","name":"q"},"limit":null,
+                "results":{"list":"/results","url":"/url","title":null,"snippet":null}
+            }}
+        }})).await?["kind"],"updated");
         let model = model(client,&provider.url,code).await?;
         let preset = preset(client,&model,"Keep the reviewer role.").await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        for requests in [true, false] {
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let revision = owner.mutable_session(id).await?.revision;
+            let changed = call(client, "agent", "metadata", json!({
+                "sessionId":id,"expectedRevision":revision,"title":"Sandboxed search","labels":[],
+                "permissions":{"settings":{"access":"workspace_write","requestPermissions":requests},"revokeGrants":true}
+            })).await?;
+            assert_eq!(changed["kind"], "committed", "{changed}");
+            let output = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
+            if requests {
+                assert!(output.contains("https://www.rust-lang.org/"), "{output}");
+            } else {
+                assert!(output.contains("WebSearch network access was denied"), "{output}");
+            }
+            assert_eq!(search_calls.load(Ordering::SeqCst), 1, "{output}");
+        }
         for selected in [None,Some(&preset)] {
             std::fs::write(base.join("workspace/output.txt"),"unchanged-before-write")?;
             let session = create(client,&base,&model,selected).await?;

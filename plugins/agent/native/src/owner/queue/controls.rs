@@ -26,6 +26,7 @@ fn same_execution(a: &RunSpec, b: &RunSpec) -> bool {
         && a.workspace == b.workspace
         && a.permission_basis == b.permission_basis
         && a.permission_ceiling == b.permission_ceiling
+        && a.network_approval_ceiling() == b.network_approval_ceiling()
         && a.backend == b.backend
         && a.collaboration == b.collaboration
         && a.language == b.language
