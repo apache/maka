@@ -1637,19 +1637,28 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     desktop.control("Inspect User input").await;
     desktop.control("Inspect Run script").await;
     desktop.control("Inspect Assistant output").await;
-    let parent = desktop.control("Inspect Run script").await;
-    let child = desktop.control("Inspect Read goal").await;
-    assert!(parent.bottom() <= child.top());
-    let requests = desktop
+    let (requests, parent, child) = desktop
         .until(
             "both model requests must be visible, including the tool-only request",
             || {
                 let rows = desktop.controls("Inspect model request fixture-model");
-                (rows.len() == 2).then_some(rows)
+                let parents = desktop.controls("Inspect Run script");
+                let children = desktop.controls("Inspect Read goal");
+                match (rows.len(), parents.as_slice(), children.as_slice()) {
+                    (2, [parent], [child]) => Some((rows, *parent, *child)),
+                    _ => None,
+                }
             },
         )
         .await;
-    assert!(requests[0].bottom() <= parent.top());
+    assert!(
+        parent.bottom() <= child.top(),
+        "parent={parent:?}; child={child:?}"
+    );
+    assert!(
+        requests[0].bottom() <= parent.top(),
+        "requests={requests:?}; parent={parent:?}; child={child:?}"
+    );
     desktop.artifact("trajectory-ledger");
     desktop.press_at(requests[0].center());
     desktop.control("Close record details").await;
