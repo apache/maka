@@ -64,7 +64,7 @@ agy 从原生 `agy models` 读取模型目录，从 `/usage` 读取分组额度�
 
 macOS 上的 `cargo test -p maka-cli --test external_jobs` 用可控 app-server 验证原工作区、原生续接、精确停止和冷启动恢复。
 
-Host MCP 桥接为当前会话的工具名加上 `maka_` 前缀。Code Mode 使用 `maka_exec` 和 `maka_wait`，脚本内沿用 `tools.<name>`。图片和音频以 MCP 内容块返回。调用沿用会话权限、审批和原操作回执。
+Host MCP 桥通过 `maka` 服务按原名暴露当前会话的工具。Code Mode 使用 `exec` 和 `wait`，脚本内沿用 `tools.<name>`。图片和音频以 MCP 内容块返回。调用沿用会话权限、审批和原操作回执。
 
 自动化支持给已有的外部 Agent 会话发后续消息。Host 负责触发，会话忙时先排队，随后恢复原生会话继续运行。
 
