@@ -31688,6 +31688,25 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'approve',
+                  },
+                  taskId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'taskId', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'pause',
                   },
                   taskId: {
@@ -32448,6 +32467,9 @@ export const contracts: {
                   script: {
                     type: 'boolean',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
                   },
@@ -32463,7 +32485,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
               },
               Status: {
                 type: 'string',
@@ -32496,12 +32518,15 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire'],
+                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
               },
               AgentScheduledInvestigation: {
                 type: 'object',
@@ -40747,6 +40772,9 @@ export const contracts: {
                   script: {
                     type: 'boolean',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
                   },
@@ -40762,7 +40790,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
               },
               Status: {
                 type: 'string',
@@ -40795,12 +40823,15 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire'],
+                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
               },
               AgentScheduledInvestigation: {
                 type: 'object',

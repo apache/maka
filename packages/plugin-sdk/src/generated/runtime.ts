@@ -2548,6 +2548,11 @@ export type AgentScheduleChange =
       input: AgentScheduledInput;
     }
   | {
+      kind: 'approve';
+      taskId: string;
+      revision: number;
+    }
+  | {
       kind: 'pause';
       taskId: string;
       revision: number;
@@ -7154,6 +7159,7 @@ export interface AgentScheduledSummary {
   title: string;
   sessionId: string;
   script: boolean;
+  approved: boolean;
   status: Status;
   nextFireAt?: number | null;
   pendingFire?: string | null;
@@ -7165,6 +7171,7 @@ export interface AgentScheduledDetail {
   task: Task;
   timezone: string;
   misfire: Misfire;
+  approved: boolean;
   pendingFire?: string | null;
 }
 export interface AgentScheduledInvestigation {
