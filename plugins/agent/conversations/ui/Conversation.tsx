@@ -3953,6 +3953,7 @@ export function Conversation(props: ConversationProps) {
                     : undefined
                 }
                 messages={() => bot.forTurn(initial.turnId)}
+                sessionId={sessionId}
                 openLink={props.openLink}
                 userScroll={() => cancelNavigation()}
               />

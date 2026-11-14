@@ -115,7 +115,11 @@ mod tests {
                 .unwrap(),
             minify: false,
             split: false,
-            ui_sets: sets.iter().map(Into::into).collect(),
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
@@ -154,6 +158,7 @@ mod tests {
         let mut app = completion_fixture();
         app.wait_for("text:Open new chat").unwrap();
         app.press("id:pending").unwrap();
+        app.wait_for("label:New chat").unwrap();
         app.type_text("label:New chat", "/skill-1").unwrap();
         app.wait_for("role:button[skill-11]").unwrap();
         app.press_key("down").unwrap();
@@ -182,7 +187,11 @@ mod tests {
                 .unwrap(),
             minify: false,
             split: false,
-            ui_sets: sets.iter().map(Into::into).collect(),
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
@@ -281,3 +290,6 @@ mod desktop_residency_tests;
 
 #[cfg(test)]
 mod preset_settings_tests;
+
+#[cfg(test)]
+mod spec_view_tests;

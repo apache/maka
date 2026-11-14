@@ -70,7 +70,12 @@ pub(super) fn every_visible_turn_mark_can_be_clicked_with_cell_coordinates() {
             .join("tests/fixtures/turn-navigation.tsx"),
         minify: false,
         split: false,
-        ui_sets: vec![nsh_base::registry().into(), host.into()],
+        ui_sets: nsh_base::registry()
+            .sets()
+            .into_iter()
+            .map(Into::into)
+            .chain(std::iter::once(host.into()))
+            .collect(),
         asset_root_from: Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")),
         ..Default::default()
     })

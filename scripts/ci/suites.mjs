@@ -71,6 +71,7 @@ const embeddedInputs = [
   'products/maka/cli/tests/support/external_codex_cli.mjs',
   'products/maka/terminal-shell/tests/support/external-agent-cli.mjs',
   ...productInputs,
+  'skills/maka-generative-ui',
   'skills/maka-plugin-authoring',
   'platform/computer-use/skills',
 ];
