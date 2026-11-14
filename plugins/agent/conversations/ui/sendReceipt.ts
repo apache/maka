@@ -58,7 +58,9 @@ export function sendReceiptFailure(
       };
     case 'original_operation_unsettled':
       return {
-        detail: message('Maka could not confirm the previous operation. Your message is kept.'),
+        detail: message(
+          'Message was not sent because the previous run is unsettled. Your message is kept.',
+        ),
         retryable: true,
       };
     default:

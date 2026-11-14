@@ -3108,7 +3108,6 @@ fn wheel_step(surface: &Rc<Surface>, x: f32, y: f32, dx: f32, dy: f32, time: f64
         return;
     };
     *input.latch.borrow_mut() = Some((view.clone(), horizontal, time));
-    crate::scroll::scroll_intent(surface, &view, "scroll");
     // Without a begin, the scroll module takes it as a mouse wheel: it
     // settles (and snaps) by itself once the steps stop.
     crate::scroll::wheel(surface, &view, dx, dy, time);

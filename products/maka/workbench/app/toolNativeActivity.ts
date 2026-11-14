@@ -20,6 +20,7 @@
 import { currentLocale, tr } from './locale';
 import { formatDuration } from './duration';
 import type { ActivityPresentation } from './toolActivityPresentation';
+import { scriptReply } from './scriptReply';
 import { record, toolResult, type ToolSection } from './toolCards';
 
 function section(label: string, text: unknown): ToolSection[] {
@@ -280,33 +281,26 @@ function scriptSource(value: unknown): ToolSection[] | null {
 }
 
 function scriptResult(value: unknown): ToolSection[] | null {
-  const observation = record(record(value)?.observation);
-  if (!observation) return null;
-  const interrupted = record(observation.report);
-  const result = record(observation.result);
-  const error = record(result?.error)?.message;
+  const script = scriptReply(value);
+  if (!script) return null;
   const state =
-    observation.state === 'running'
+    script.state === 'running'
       ? tr('Script still running at capture')
-      : observation.state === 'interrupted'
+      : script.state === 'interrupted'
         ? tr('Script interrupted')
-        : observation.state === 'completed' && result?.ok === false
+        : script.failed
           ? tr('Script reported an error')
           : null;
-  const diagnostic = typeof error === 'string' ? error : interrupted?.diagnostic;
-  const priorOutput = record(interrupted?.priorOutput)?.content;
-  const emitted = textItems(observation.content ?? priorOutput, 'text').join('\n');
-  const output = emitted || (typeof result?.value === 'string' ? result.value : '');
   const rows: ToolSection[] = [];
   if (state) {
     rows.push({
       label: tr('Script source'),
-      text: [state, diagnostic].filter((part) => typeof part === 'string' && part).join('\n'),
-      ...(observation.state === 'running' ? {} : { tone: 'warning' }),
+      text: [state, script.diagnostic].filter(Boolean).join('\n'),
+      ...(script.state === 'running' ? {} : { tone: 'warning' }),
     });
   }
-  if (output) rows.push({ label: tr('Output'), text: output, style: 'code' });
-  if (!rows.length && observation.state === 'completed')
+  if (script.output) rows.push({ label: tr('Output'), text: script.output, style: 'code' });
+  if (!rows.length && script.state === 'completed')
     rows.push({ label: tr('Output'), text: tr('Script finished without text output') });
   return rows.length ? rows : null;
 }

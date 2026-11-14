@@ -134,6 +134,8 @@ export function SettingsSection(props: {
   title?: string;
   trailing?: JSX.Element;
   note?: string;
+  /** The note reports something that went wrong, not how the section works. */
+  noteWarns?: boolean;
   children: JSX.Element;
 }) {
   return (
@@ -174,7 +176,13 @@ export function SettingsSection(props: {
         <View style={{ marginTop: terminal ? 0 : -1 }}>{props.children}</View>
       </View>
       <If when={props.note}>
-        <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: inset }}>
+        <Text
+          style={{
+            ...captionTextStyle,
+            color: props.noteWarns ? C.warning : C.muted,
+            paddingHorizontal: inset,
+          }}
+        >
           {props.note}
         </Text>
       </If>

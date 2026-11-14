@@ -344,7 +344,7 @@ pub enum WorkspaceSelection {
     },
     /// A registered Project at one of its locations.
     Project {
-        project: ProjectRef,
+        project_id: uuid::Uuid,
         #[schemars(length(min = 1))]
         path: String,
     },

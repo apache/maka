@@ -55,7 +55,9 @@ import { Automations } from './Automations';
 import {
   groupWorkspace,
   groupConversations,
+  foldableFamilies,
   projectSessionLimit,
+  unfoldedSessions,
   type ConversationGroup,
 } from './conversationGroups';
 import { workspaceSessions } from './sessionNesting';
@@ -108,6 +110,8 @@ export type WorkspaceBrowserProps = {
    */
   collapsedGroups?: Signal<ReadonlySet<string>>;
   expandedProjects?: Signal<ReadonlySet<string>>;
+  /** The conversations whose created ones are folded behind one row, kept by the owner. */
+  foldedFamilies?: Signal<ReadonlySet<string>>;
 };
 
 type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
@@ -264,6 +268,40 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return last;
   });
   const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
+  const foldedFamilies = props.foldedFamilies ?? signal<ReadonlySet<string>>(new Set());
+  // Only the full list folds; the inbox and archive show every match.
+  const families = computed(() =>
+    browser.filter() === 'all'
+      ? new Map(groups().flatMap((group) => [...foldableFamilies(group)]))
+      : new Map<string, string[]>(),
+  );
+  const familyOf = computed(() => {
+    const parents = new Map<string, string>();
+    for (const [parent, members] of families()) for (const id of members) parents.set(id, parent);
+    return parents;
+  });
+  const shownSessions = (group: WorkspaceGroup) =>
+    browser.filter() === 'all' ? unfoldedSessions(group, foldedFamilies()) : group.sessions;
+  const toggleFamily = (parent: string) => {
+    const next = new Set(foldedFamilies());
+    if (!next.delete(parent)) next.add(parent);
+    foldedFamilies.set(next);
+  };
+  // Opening a folded conversation, from search or a notice, unfolds its
+  // family once; folding it again afterwards is the user's call.
+  let unfoldedFor: string | null = null;
+  effect(() => {
+    const id = props.selected();
+    const parent = id ? familyOf().get(id) : undefined;
+    if (!id || !parent || id === unfoldedFor) return;
+    unfoldedFor = id;
+    untracked(() => {
+      if (!foldedFamilies().has(parent)) return;
+      const next = new Set(foldedFamilies());
+      next.delete(parent);
+      foldedFamilies.set(next);
+    });
+  });
   const rowIds = computed(() =>
     platform.idiom === 'terminal'
       ? choosingWorkspace()
@@ -272,12 +310,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       : groups().flatMap((group) => {
           const heading = `group:${group.key}`;
           if (collapsed().has(group.key)) return [heading];
+          const all = shownSessions(group);
           const limit = projectSessionLimit(group);
-          if (group.sessions.length <= limit) return [heading, ...group.sessions];
-          const sessions = expanded().has(group.key)
-            ? group.sessions
-            : group.sessions.slice(0, limit);
-          return [heading, ...sessions, `show-more:${group.key}`];
+          const sessions =
+            all.length <= limit || expanded().has(group.key) ? all : all.slice(0, limit);
+          // A folding family's row sits right under its creator, open or not.
+          const rows = sessions.flatMap((id) => (families().has(id) ? [id, `family:${id}`] : [id]));
+          return [heading, ...rows, ...(all.length > limit ? [`show-more:${group.key}`] : [])];
         }),
   );
   const toggleGroup = (key: string) => {
@@ -389,7 +428,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         (group) =>
           !collapsed().has(group.key) &&
           !expanded().has(group.key) &&
-          group.sessions.length > projectSessionLimit(group),
+          shownSessions(group).length > projectSessionLimit(group),
       )
     );
   };
@@ -861,7 +900,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             ? inputAction(createWorkspace, {
                                 workspace: {
                                   kind: 'project',
-                                  project: project()!.reference,
+                                  projectId: project()!.reference.id,
                                   path: project()!.path!,
                                 },
                                 origin: props.selected(),
@@ -905,6 +944,93 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       )}
                     </Text>
                   </Button>
+                );
+              }
+              if (key().startsWith('family:')) {
+                const parent = key().slice('family:'.length);
+                const members = () =>
+                  (families().get(parent) ?? []).flatMap((id) => sessionsById().get(id) ?? []);
+                const open = () => !foldedFamilies().has(parent);
+                const activityKnown = () => !props.connectionLost() && !browser.error();
+                // While folded the row stands in for its members' activity.
+                const waiting = () =>
+                  !open() &&
+                  activityKnown() &&
+                  members().some((member) => member.activity === 'waiting');
+                const lane = () =>
+                  open()
+                    ? null
+                    : activityKnown() && members().some((member) => member.activity === 'working')
+                      ? 'working'
+                      : members().some((member) => member.hasUnread)
+                        ? 'unread'
+                        : null;
+                const title = () =>
+                  sessionsById().get(parent)?.title || tr('Untitled conversation');
+                return (
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      height: rowHeight(),
+                      paddingVertical: compact() ? 0 : 2,
+                      paddingLeft: nestInset,
+                    }}
+                  >
+                    <GuideLine last={() => !open()} height={rowHeight} />
+                    <Button
+                      accessibilityLabel={tr(
+                        open()
+                          ? 'Fold the conversations {title} created'
+                          : 'Show the conversations {title} created',
+                        { title: title() },
+                      )}
+                      onPress={inputAction(toggleFamily, parent)}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                        paddingHorizontal: 8,
+                        borderRadius: 8,
+                      }}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                        {tr('{count} created conversations', { count: members().length })}
+                      </Text>
+                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.accent, flex: 1, minWidth: 0 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {waiting() ? sessionStatusCaption.waiting : ''}
+                      </Text>
+                      <View
+                        style={[
+                          { width: 16, alignItems: 'center', justifyContent: 'center' },
+                          { pointerEvents: 'none' },
+                        ]}
+                      >
+                        <If when={lane() === 'working'}>
+                          <LoadingIndicator size={12} label={sessionStatusCaption.working} />
+                        </If>
+                        <If when={lane() === 'unread'}>
+                          <View
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: 3,
+                              backgroundColor: C.accent,
+                            }}
+                          />
+                        </If>
+                      </View>
+                    </Button>
+                  </View>
                 );
               }
               const groupKey = key().startsWith('group:') ? key().slice('group:'.length) : '';

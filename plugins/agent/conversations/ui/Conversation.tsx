@@ -366,6 +366,7 @@ const readingColumn = {
   paddingRight: platform.idiom === 'terminal' ? 24 : 16,
 } as const;
 const historyEndTolerance = 1;
+const historyFollowThreshold = 24;
 
 export function Conversation(props: ConversationProps) {
   const host = useHost();
@@ -1416,6 +1417,17 @@ export function Conversation(props: ConversationProps) {
     // Replace the list's reading anchor when manual scrolling reaches the end.
     list?.scrollToEnd({ animated: animated && !reduceMotion() });
   };
+  const resumeHistoryAtEnd = (offset: number) => {
+    if (
+      historyMaxOffset - offset > historyFollowThreshold ||
+      !historyFollowPaused() ||
+      (reading() === 'trajectory' && trajectoryRange() !== null) ||
+      !atHistoryTail()
+    )
+      return;
+    if (innerReader() === null) resumeHistoryFollowing();
+    else historyFollowPaused.set(false);
+  };
   let compactScroll: ScrollRef | undefined;
   let followCompact = false;
   let alive = true;
@@ -1470,8 +1482,11 @@ export function Conversation(props: ConversationProps) {
     },
   });
 
-  const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason, 'Could not load conversation history.'));
+  const report = (
+    reason: unknown,
+    fallback: MessageKey = 'Could not load conversation history.',
+  ) => {
+    if (alive) error.set(errorText(reason, fallback));
   };
   const publishHistory = (
     chunks: AgentHistoryChunk[],
@@ -2384,7 +2399,7 @@ export function Conversation(props: ConversationProps) {
     })()
       .catch((reason) => {
         if (alive) savingFailed.set(true);
-        report(reason);
+        report(reason, 'Could not save the draft.');
       })
       .finally(() => {
         saveTask = null;
@@ -2663,7 +2678,7 @@ export function Conversation(props: ConversationProps) {
       }
       await observe();
     } catch (reason) {
-      report(reason);
+      report(reason, 'Could not continue the response.');
     } finally {
       if (alive)
         batch(() => {
@@ -2795,7 +2810,7 @@ export function Conversation(props: ConversationProps) {
       try {
         if (alive) await refreshSends();
       } catch (reason) {
-        report(reason);
+        report(reason, 'Could not send the message.');
       }
       if (alive) {
         const next = new Map(activeSends());
@@ -2906,7 +2921,7 @@ export function Conversation(props: ConversationProps) {
       attachments.sent(edit.attachments.map((file) => file.id));
       await freezeSend(frozen);
     } catch (reason) {
-      report(reason);
+      report(reason, 'Could not send the message.');
     }
   };
 
@@ -3050,12 +3065,12 @@ export function Conversation(props: ConversationProps) {
             : 'unknown',
         detail: checking
           ? tr('Checking send status…')
-          : detail && receiptFailure?.retryable !== false
-            ? renderText(detail)
+          : receiptFailure
+            ? renderText(receiptFailure.detail)
             : cancelled
               ? tr('Stopped before delivery. Your message is kept.')
-              : receiptFailure
-                ? renderText(receiptFailure.detail)
+              : detail
+                ? renderText(detail)
                 : original.abandoned
                   ? tr('Message was not sent.')
                   : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
@@ -3099,7 +3114,7 @@ export function Conversation(props: ConversationProps) {
         if (needsRecovery(original) || acceptedQueued(original)) await checkSend(original.id);
       }
     } catch (reason) {
-      report(reason);
+      report(reason, 'Could not send the message.');
     } finally {
       if (alive) recovering.set(false);
     }
@@ -3146,7 +3161,7 @@ export function Conversation(props: ConversationProps) {
       // Stop is a durable admission fence, not proof that in-flight work ended.
     } catch (reason) {
       if (alive && stoppingRun() === targetRunId) stoppingRun.set(null);
-      report(reason);
+      report(reason, 'Could not stop the response.');
     }
   };
   const chooseReading = ({ owner, mode }: { owner: string; mode: 'chat' | 'trajectory' }) => {
@@ -4276,6 +4291,8 @@ export function Conversation(props: ConversationProps) {
                     historyScrolled = true;
                     if (nearHistoryStart()) prefetchOlder();
                     if (nearHistoryEnd()) prefetchNewer();
+                    // At the edge, further downward input may leave the offset unchanged.
+                    if ((event.delta ?? 0) > 0) resumeHistoryAtEnd(historyOffset);
                   } else if (atHistoryTail()) resumeHistoryFollowing();
                   else ownHandle.jumpLatest(null);
                 }
@@ -4331,15 +4348,7 @@ export function Conversation(props: ConversationProps) {
                 if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
                 if (scrolled && movement < 0 && distance > historyEndTolerance)
                   historyFollowPaused.set(true);
-                else if (
-                  scrolled &&
-                  movement > 0 &&
-                  distance <= historyEndTolerance &&
-                  historyFollowPaused() &&
-                  (reading() !== 'trajectory' || trajectoryRange() === null) &&
-                  atHistoryTail()
-                )
-                  resumeHistoryFollowing();
+                else if (scrolled && movement > 0) resumeHistoryAtEnd(offset);
                 const owner = pagingOwner('before');
                 if (owner !== null) {
                   // An underfilled initial viewport needs history before the first gesture.

@@ -21,8 +21,9 @@ import { cleanup, effect, Image, platform, signal, Text, View } from 'nsh';
 import { Button, TextView } from 'nsh/base';
 import { host } from 'maka/host';
 import { diagramSvg, type DiagramPalette } from './mermaid';
+import { CodeBlockAction, codeBlockActions, codeBlockStyles } from './codeBlockLook';
 import { tr } from './locale';
-import { C, captionTextStyle, codeTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
+import { C, captionTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
 type Presentation =
   | { kind: 'loading' }
@@ -36,11 +37,9 @@ export function MermaidView(props: { source(): string }) {
     <TextView
       document={{ blocks: [{ type: 'codeBlock', language: 'mermaid', code: props.source() }] }}
       selectable
-      codeBlockActions={[
-        { id: 'copy', label: tr('Copy code block') },
-        { id: 'wrap', label: tr('Wrap code') },
-      ]}
-      styles={{ codeBlockCode: { ...codeTextStyle, color: C.text } }}
+      renderCodeBlockAction={(action) => <CodeBlockAction action={action} />}
+      codeBlockActions={codeBlockActions()}
+      styles={codeBlockStyles(C.text, 12)}
     />
   );
   if (platform.idiom === 'terminal') return code();

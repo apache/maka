@@ -1043,8 +1043,15 @@ impl ExternalPorts for DriverExecutor {
     ) -> BoxFuture<'_, Result<ExternalConnection, RunError>> {
         Box::pin(async move {
             let frozen = self.decode(run, task, descriptor.clone()).await?;
-            if frozen.payload.recovery.is_none() {
-                return Err(blocked(descriptor));
+            match &frozen.payload.recovery {
+                Some(RecoveryDescriptor::Native { binding })
+                    if binding.resource.resource_ref
+                        != frozen.payload.private_resource.resource_ref =>
+                {
+                    return Err(blocked(descriptor));
+                }
+                Some(_) => {}
+                None => return Err(blocked(descriptor)),
             }
             self.connection(
                 frozen,

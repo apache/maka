@@ -228,7 +228,7 @@ mod tests {
             ),
             (
                 "ScrollingHostProps",
-                "  onScrollIntent?: (e: { intent: \"start\" | \"end\" | \"scroll\" }) => void;",
+                "  onScrollIntent?: (e: { intent: \"start\" | \"end\" | \"scroll\"; delta?: number }) => void;",
             ),
             ("HostProps", "  onFocus?: () => void;"),
             ("HostProps", "  onBlur?: () => void;"),
