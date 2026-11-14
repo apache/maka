@@ -3796,38 +3796,37 @@ mod model_recovery {
             let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
             let server = tokio::spawn(serve(listener, posts.clone(), stop.clone(), None));
             let driver = rig.driver.as_ref().unwrap().clone();
-            let result =
-                tokio::time::timeout(Duration::from_secs(15), async {
-                    let engine = Engine::new(driver.state.clone());
-                    let mut changes = driver.state.subscribe()?;
-                    let terminal = loop {
-                        changes.borrow_and_update();
-                        match engine
-                            .drive(
-                                driver.access.claim().clone(),
-                                driver.clone(),
-                                CancellationToken::new(),
-                            )
-                            .await?
-                        {
-                            DriverExit::Terminal { terminal, .. } => break terminal,
-                            DriverExit::Waiting { .. } => changes.changed().await?,
-                            other => {
-                                return Err(
-                                    format!("prepared request did not settle: {other:?}").into()
-                                );
-                            }
+            let result = tokio::time::timeout(Duration::from_secs(15), async {
+                let engine = Engine::new(driver.state.clone());
+                let mut changes = driver.state.subscribe()?;
+                let terminal = loop {
+                    changes.borrow_and_update();
+                    match engine
+                        .drive(
+                            driver.access.claim().clone(),
+                            driver.clone(),
+                            CancellationToken::new(),
+                        )
+                        .await?
+                    {
+                        DriverExit::Terminal { terminal, .. } => break terminal,
+                        DriverExit::Waiting { .. } => changes.changed().await?,
+                        other => {
+                            return Err(
+                                format!("prepared request did not settle: {other:?}").into()
+                            );
                         }
-                    };
-                    let view = driver.state.frontier(run).await?;
-                    let attempt = view.current_attempt.ok_or("model attempt missing")?;
-                    Ok::<_, Box<dyn Error + Send + Sync>>((
-                        terminal,
-                        view.blocks_followup(),
-                        view.attempts[&attempt].cleanup.clone(),
-                    ))
-                })
-                .await;
+                    }
+                };
+                let view = driver.state.frontier(run).await?;
+                let attempt = view.current_attempt.ok_or("model attempt missing")?;
+                Ok::<_, Box<dyn Error + Send + Sync>>((
+                    terminal,
+                    view.blocks_followup(),
+                    view.attempts[&attempt].cleanup.clone(),
+                ))
+            })
+            .await;
             drop(driver);
             stop.cancel();
             let cleanup = rig.finish().await;
