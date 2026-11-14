@@ -26,6 +26,7 @@ mod browser_files;
 mod browser_popup;
 mod evaluate;
 mod native_monitor;
+mod preview;
 mod sessions;
 mod system_permission;
 
@@ -58,6 +59,7 @@ struct Computer {
     stopping: CancellationToken,
     tasks: tokio_util::task::TaskTracker,
     popup_provenance: Option<Arc<browser_popup::Provenance>>,
+    previews: preview::Feeds,
 }
 // The settlement tokens stay outside their retained Computer material.
 struct Service(
@@ -112,6 +114,7 @@ impl Computer {
             popup_provenance: Some(Arc::new(browser_popup::Provenance::capture(&context)?)),
             configuration,
             sessions,
+            previews: Default::default(),
             resources: Arc::new(Resources::default()),
             stopping: CancellationToken::new(),
             tasks,
@@ -125,6 +128,9 @@ impl Computer {
         input: Value,
         context: Context,
     ) -> Result<HandlerValue, ToolError> {
+        if matches!(name, "watchStage" | "watchFrames" | "readFrame") {
+            return preview::call(self, name, input, &context).await;
+        }
         let authority = context
             .native_context::<maka_agent_authority::computer::NativeCallContext>()
             .and_then(|context| context.computer())
@@ -221,54 +227,71 @@ impl Handler for Service {
             if owner.stopping.is_cancelled() || context.scope().cancellation.is_cancelled() {
                 return Err(HandlerError::from("computer_closed".to_owned()));
             }
-            let mut owned = owner
-                .resources
-                .reserve()
-                .map_err(|error| HandlerError::from(message(error)))?;
+            // Viewer subscriptions must not prevent Host/configuration retirement.
+            // Their original request tickets and tracked cleanup still join at close.
+            let viewer = matches!(name.as_str(), "watchStage" | "watchFrames" | "readFrame");
+            let mut owned = if viewer {
+                None
+            } else {
+                Some(
+                    owner
+                        .resources
+                        .reserve()
+                        .map_err(|error| HandlerError::from(message(error)))?,
+                )
+            };
             let mut caller = context
                 .scope()
                 .resources
                 .reserve()
                 .map_err(|error| HandlerError::from(message(error)))?;
             // The original accepted worker retains both cleanup fences if its observer disappears.
-            tokio::spawn(async move {
-                owned.start();
-                caller.start();
-                let result = AssertUnwindSafe(owner.call(&name, input, context))
-                    .catch_unwind()
-                    .await;
-                let cleanup = if matches!(
-                    result,
-                    Err(_)
-                        | Ok(Err(ToolError::Persistence(_)
+            let tasks = owner.tasks.clone();
+            tasks
+                .spawn(async move {
+                    if let Some(ticket) = &mut owned {
+                        ticket.start();
+                    }
+                    caller.start();
+                    let result = AssertUnwindSafe(owner.call(&name, input, context))
+                        .catch_unwind()
+                        .await;
+                    let cleanup = if matches!(
+                        result,
+                        Err(_)
+                            | Ok(Err(ToolError::Persistence(_)
+                                | ToolError::CleanupUnconfirmed(_)
+                                | ToolError::OperationCleanupUnconfirmed { .. }))
+                    ) {
+                        Err("Computer cleanup unconfirmed".into())
+                    } else {
+                        Ok(())
+                    };
+                    if let Some(ticket) = owned {
+                        ticket.complete(cleanup.clone());
+                    }
+                    caller.complete(cleanup);
+                    result
+                        .map_err(|_| HandlerError::Unknown {
+                            diagnostic: "Computer worker panicked".into(),
+                        })?
+                        .map_err(|error| match error {
+                            ToolError::OutcomeUnknown(_)
+                            | ToolError::OperationUnknown { .. }
+                            | ToolError::Persistence(_)
                             | ToolError::CleanupUnconfirmed(_)
-                            | ToolError::OperationCleanupUnconfirmed { .. }))
-                ) {
-                    Err("Computer cleanup unconfirmed".into())
-                } else {
-                    Ok(())
-                };
-                owned.complete(cleanup.clone());
-                caller.complete(cleanup);
-                result
-                    .map_err(|_| HandlerError::Unknown {
-                        diagnostic: "Computer worker panicked".into(),
-                    })?
-                    .map_err(|error| match error {
-                        ToolError::OutcomeUnknown(_)
-                        | ToolError::OperationUnknown { .. }
-                        | ToolError::Persistence(_)
-                        | ToolError::CleanupUnconfirmed(_)
-                        | ToolError::OperationCleanupUnconfirmed { .. } => HandlerError::Unknown {
-                            diagnostic: message(error),
-                        },
-                        error => HandlerError::from(message(error)),
-                    })
-            })
-            .await
-            .map_err(|error| HandlerError::Unknown {
-                diagnostic: message(error),
-            })?
+                            | ToolError::OperationCleanupUnconfirmed { .. } => {
+                                HandlerError::Unknown {
+                                    diagnostic: message(error),
+                                }
+                            }
+                            error => HandlerError::from(message(error)),
+                        })
+                })
+                .await
+                .map_err(|error| HandlerError::Unknown {
+                    diagnostic: message(error),
+                })?
         })
     }
 }

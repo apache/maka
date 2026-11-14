@@ -5180,6 +5180,7 @@ impl<M: TextEngine> Core<M> {
                         }
                         ImageProp::BlurRadius(r) => image.options.blur_radius = r.max(Points::ZERO),
                         ImageProp::FadeDuration(ms) => image.options.fade_ms = ms,
+                        ImageProp::RetainPrevious(value) => image.options.retain_previous = value,
                         ImageProp::SvgCurrentColor(on) => image.svg_current_color = on,
                     }
                     flags |= dirty::IMAGE;
@@ -7056,6 +7057,7 @@ impl<M: TextEngine> Core<M> {
                             .map(|s| s.resolved(ratio)),
                         blur_radius: image.options.blur_radius,
                         fade_ms: image.options.fade_ms,
+                        retain_previous: image.options.retain_previous,
                         position: node.view_style.object_position,
                         current_color: image.svg_current_color.then(|| self.resolved_paint(key).1),
                     },

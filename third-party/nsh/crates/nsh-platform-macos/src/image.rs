@@ -693,7 +693,11 @@ fn fetch(
                 let picture = look.apply(&decoded.value);
                 drop(lease);
                 let cost = picture.cost();
-                let lease = variants().insert(key, picture.clone(), cost);
+                let lease = if nsh_core::image::is_live_frame(&key.image.source) {
+                    variants().insert_transient(key, picture.clone(), cost)
+                } else {
+                    variants().insert(key, picture.clone(), cost)
+                };
                 done(Ok((picture, lease)));
             });
         }),
@@ -1153,14 +1157,17 @@ pub(crate) fn set(
             false
         } else {
             image.generation += 1;
-            image.image = None;
-            image.lease = Lease::none();
+            let retain = options.retain_previous && source.is_some() && image.source.is_some();
+            if !retain {
+                image.image = None;
+                image.lease = Lease::none();
+                s.decor.set_image(None, 0.0);
+            }
             image.load = None;
             image.placeholder_lease = Lease::none();
             image.placeholder_load = None;
             image.source = source.cloned();
             image.pending = image.source.is_some() || image.options.placeholder.is_some();
-            s.decor.set_image(None, 0.0);
             true
         }
     };
@@ -1491,13 +1498,26 @@ fn loaded(
                 quiet(|| s.decor.set_image(Some((picture, natural)), fade));
             }
             // The placeholder (if any) stays.
-            Err(message) => log::warn!("image failed: {message}"),
+            Err(message) => {
+                if image.options.retain_previous {
+                    image.image = None;
+                    image.lease = Lease::none();
+                    s.decor.set_image(None, 0.0);
+                }
+                log::warn!("image failed: {message}");
+            }
         }
         (events, id)
     };
     view.changed();
     #[cfg(feature = "terminal")]
-    if result.is_ok() {
+    if result.is_ok()
+        || view
+            .state()
+            .image
+            .as_ref()
+            .is_some_and(|image| image.options.retain_previous)
+    {
         view.invalidate_capture();
     }
     match &result {
@@ -1548,6 +1568,66 @@ mod tests {
 
     const SVG_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="#000"/></svg>"##;
     const SVG_LOGO: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="24"><rect width="24" height="24" fill="#f00"/><rect x="24" width="24" height="24" fill="#00f"/></svg>"##;
+
+    #[test]
+    fn live_imageio_pixels_and_metadata_leave_with_the_last_lease() {
+        use nsh_core::image::{Budget, loader::Location};
+
+        const PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let budget = Budget::new(1 << 20);
+        let (evicted, released) = mpsc::channel();
+        let cache = Images::with_on_evict(
+            &budget,
+            |bytes, target| {
+                let picture = decode(bytes.bytes(), target)?;
+                let cost = picture.cost();
+                Ok((picture.clone(), picture.natural, cost))
+            },
+            move |_: &Picture| {
+                evicted.send(()).unwrap();
+            },
+        );
+        let source = ImageSource::default().with_bytes("image/png", PNG.to_vec().into());
+        let key = source.uri.replace(";nsh-key=", ";nsh-live=1;nsh-key=");
+        let request = Request {
+            location: Location::Memory(key.clone().into(), source.data.unwrap()),
+            context: Context::default(),
+            declared: None,
+            want: Want::natural(1.0),
+            frames: Frames::First,
+            priority: Priority::default(),
+            progress: None,
+        };
+        let cache_key = request.location.key();
+        let (done, ready) = mpsc::channel();
+        let ticket = cache.load(
+            request.clone(),
+            Box::new(move |result| {
+                done.send(result).unwrap();
+            }),
+        );
+        let (picture, first) = ready.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        assert_eq!(picture.natural, Natural::Pixels(1, 1));
+        assert!(budget.used() > 0);
+        assert_eq!(cache.natural(&cache_key), Some(Natural::Pixels(1, 1)));
+        let (_, second) = cache.cached(&request).unwrap();
+        drop((picture, first));
+        assert!(cache.cached(&request).is_some());
+        assert!(released.try_recv().is_err());
+        drop(second);
+        // Decode completion owns a short insertion lease too; synchronize on
+        // actual eviction, not a sleep or the callback having been entered.
+        released.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(cache.cached(&request).is_none());
+        assert_eq!(cache.natural(&cache_key), None);
+        assert_eq!(budget.used(), 0);
+        drop(ticket);
+    }
 
     /// `bytes` decoded with its longest side `longest` pixels (0: its own).
     fn decoded(bytes: &[u8], longest: u32) -> Result<Picture, String> {

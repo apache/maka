@@ -196,6 +196,51 @@ test('built recovery gateway binds the exact ReceiptReader query without caller 
   assert.deepEqual(read.input.$defs.RecoveryProtocol.enum, ['journal_v1']);
 });
 
+test('Computer Stage exposes only transient read-only methods and disappears without Computer tools', () => {
+  const target = [{ kind: 'instance', path: ['workspace-computer'], export: 'computer' }];
+  const methods = ['watchStage', 'watchFrames', 'readFrame'];
+  assert.deepEqual(instances.gateway.bindings.computer, target);
+  assert.deepEqual(source.endpoints.computer, {
+    consumer: [keys.gateway],
+    import: 'computer',
+    grant: { methods, recovery: false },
+  });
+  const provider = built['workspace-computer'].manifest.application.host.exports.computer.contract;
+  const consumer = built.conversations.manifest.application.ui.imports.computer.contract;
+  for (const [method, mode] of [
+    ['watchStage', 'subscription'],
+    ['watchFrames', 'subscription'],
+    ['readFrame', 'query'],
+  ]) {
+    assert.equal(provider.interface.methods[method].mode, mode);
+    assert.deepEqual(consumer.interface.methods[method], provider.interface.methods[method]);
+  }
+  const modelMethods = defaults.agent.tools
+    .filter((tool) => tool.target.kind === 'import' && tool.target.name === 'computer')
+    .map((tool) => tool.method);
+  assert.deepEqual(modelMethods, ['evaluate', 'reset']);
+
+  const disabled = {
+    ...defaults,
+    computer: undefined,
+    agent: {
+      ...defaults.agent,
+      tools: defaults.agent.tools.filter(
+        (tool) => tool.target.kind !== 'import' || tool.target.name !== 'computer',
+      ),
+    },
+  };
+  const withoutComputer = composition({
+    ...disabled,
+    packages: Object.fromEntries(names.map((name) => [name, built[name].ref])),
+    keys: Object.fromEntries(installationNames(disabled).map((name) => [name, randomUUID()])),
+    hostDeployment: randomUUID(),
+  });
+  assert.equal(withoutComputer.host.instances['workspace-computer'], undefined);
+  assert.equal(withoutComputer.host.instances.gateway.bindings.computer, undefined);
+  assert.equal(withoutComputer.endpoints.computer, undefined);
+});
+
 test('the built default installation nests service tools except computer REPL and user questions', () => {
   const tools = instances.agent.configuration.values.tools;
   const directOnly = tools.filter((tool) => !tool.nestable).map((tool) => tool.name);

@@ -37,12 +37,12 @@ pub(crate) enum MacRole {
     PermissionStatus,
     PermissionRequest(SystemPermissionGrant),
     ListApps,
-    ListWindows,
+    ListWindows { pid: Option<u32> },
 }
 
 impl MacRole {
-    fn arguments(self) -> Vec<&'static str> {
-        match self {
+    fn arguments(self) -> Vec<OsString> {
+        let arguments = match self {
             Self::PermissionStatus => vec!["--macos-permission-status"],
             Self::PermissionRequest(SystemPermissionGrant::Accessibility) => {
                 vec!["--macos-permission-request", "accessibility"]
@@ -51,8 +51,13 @@ impl MacRole {
                 vec!["--macos-permission-request", "screen_recording"]
             }
             Self::ListApps => vec!["--macos-list-apps"],
-            Self::ListWindows => vec!["--macos-list-windows"],
+            Self::ListWindows { .. } => vec!["--macos-list-windows"],
+        };
+        let mut arguments: Vec<OsString> = arguments.into_iter().map(OsString::from).collect();
+        if let Self::ListWindows { pid: Some(pid) } = self {
+            arguments.push(pid.to_string().into());
         }
+        arguments
     }
 
     fn parse(arguments: &[OsString]) -> Option<Result<Self, String>> {
@@ -60,7 +65,13 @@ impl MacRole {
         let role = match first {
             "--macos-permission-status" if arguments.len() == 1 => Self::PermissionStatus,
             "--macos-list-apps" if arguments.len() == 1 => Self::ListApps,
-            "--macos-list-windows" if arguments.len() == 1 => Self::ListWindows,
+            "--macos-list-windows" if arguments.len() == 1 => Self::ListWindows { pid: None },
+            "--macos-list-windows" if arguments.len() == 2 => {
+                let Some(Ok(pid)) = arguments[1].to_str().map(str::parse::<u32>) else {
+                    return Some(Err("macOS window inventory requires a valid PID".into()));
+                };
+                Self::ListWindows { pid: Some(pid) }
+            }
             "--macos-permission-request" if arguments.len() == 2 => match arguments[1].to_str() {
                 Some("accessibility") => {
                     Self::PermissionRequest(SystemPermissionGrant::Accessibility)
@@ -207,7 +218,7 @@ pub(super) fn bootstrap(arguments: &[OsString]) -> Option<ExitCode> {
             watch_request_owner()?;
             crate::system_permission::process::finite_request(grant)
         }
-        MacRole::ListApps | MacRole::ListWindows => {
+        MacRole::ListApps | MacRole::ListWindows { .. } => {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -250,9 +261,15 @@ fn watch_request_owner() -> Result<(), String> {
 
 async fn inventory(role: MacRole) -> Result<Value, String> {
     use cua_driver_sdk::{CuaDriver, HostSessionOptions, SessionPermissionMode};
-    let name = match role {
-        MacRole::ListApps => "list_apps",
-        MacRole::ListWindows => "list_windows",
+    let (name, input) = match role {
+        MacRole::ListApps => ("list_apps", serde_json::json!({})),
+        MacRole::ListWindows { pid } => (
+            "list_windows",
+            pid.map_or_else(
+                || serde_json::json!({}),
+                |pid| serde_json::json!({"pid": pid}),
+            ),
+        ),
         _ => unreachable!(),
     };
     // Deliberately call the SDK, not Maka's Driver::invoke inventory route:
@@ -277,7 +294,7 @@ async fn inventory(role: MacRole) -> Result<Value, String> {
             .await
             .map_err(|error| error.to_string())?;
         let result = session
-            .call_tool(name.into(), "{}".into())
+            .call_tool(name.into(), input.to_string())
             .await
             .map_err(|error| error.to_string())?;
         if result.is_error {
@@ -298,7 +315,7 @@ async fn inventory(role: MacRole) -> Result<Value, String> {
                 serde_json::from_value::<cua_driver_contract::ListAppsOutput>(value)
                     .map_err(|error| error.to_string())?,
             ),
-            MacRole::ListWindows => serde_json::to_value(
+            MacRole::ListWindows { .. } => serde_json::to_value(
                 serde_json::from_value::<cua_driver_contract::ListWindowsOutput>(value)
                     .map_err(|error| error.to_string())?,
             ),

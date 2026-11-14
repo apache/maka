@@ -160,6 +160,7 @@ const services = Object.fromEntries(
     'deploymentManager',
     'terminal',
     'skillLibrary',
+    'workspaceComputer',
   ].map((service) => [
     service,
     object(

@@ -1600,6 +1600,10 @@ pub enum ImageProp {
     /// Native).
     #[prop(js = "fadeDuration", min = 0, on = IMAGE)]
     FadeDuration(Option<f32>),
+    /// Desktop: keep decoded pixels during a replacement load. Empty source and
+    /// errors clear them. Clear or remount before changing the pixel owner.
+    #[prop(js = "retainPrevious", on = IMAGE)]
+    RetainPrevious(bool),
     /// Set by `svg()` where the platform draws the SVG itself (the web): its
     /// `currentColor` is the element's text color
     /// ([`crate::mount::ImageOptions::current_color`]).

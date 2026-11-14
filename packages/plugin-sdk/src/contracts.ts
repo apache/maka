@@ -66960,6 +66960,135 @@ export const contracts: {
           },
           resources: {},
         },
+        readFrame: {
+          mode: 'query',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              feedId: {
+                type: 'string',
+              },
+              targetId: {
+                type: 'string',
+              },
+              after: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['sessionId', 'bindingId', 'feedId', 'targetId', 'after'],
+            title: 'ComputerReadFrame',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'frame',
+                  },
+                  frame: {
+                    $ref: '#/$defs/ComputerStageFrame',
+                  },
+                },
+                required: ['kind', 'frame'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'pending',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+            ],
+            title: 'ComputerFrameResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ComputerStageFrame: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  bindingId: {
+                    type: 'string',
+                  },
+                  targetId: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  dataBase64: {
+                    type: 'string',
+                  },
+                  width: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  height: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                required: [
+                  'revision',
+                  'sessionId',
+                  'bindingId',
+                  'targetId',
+                  'sequence',
+                  'mimeType',
+                  'dataBase64',
+                  'width',
+                  'height',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         reset: {
           mode: 'mutation',
           input: {
@@ -67029,6 +67158,136 @@ export const contracts: {
             enum: ['fresh', 'ready', 'reset_required'],
             title: 'ComputerReplState',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
+        watchFrames: {
+          mode: 'subscription',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              targetIds: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                minItems: 1,
+                maxItems: 5,
+              },
+              selectedTargetId: {
+                type: ['string', 'null'],
+              },
+            },
+            required: ['sessionId', 'bindingId', 'targetIds'],
+            title: 'ComputerWatchFrames',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              feedId: {
+                type: 'string',
+              },
+              targetId: {
+                type: 'string',
+              },
+              sequence: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['sessionId', 'bindingId', 'feedId', 'targetId', 'sequence'],
+            description:
+              'Notifications are small. Encoded images stay in one replaceable slot per\ntarget, never in the ordered Host subscription queue or durable history.',
+            title: 'ComputerFrameNotice',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
+        watchStage: {
+          mode: 'subscription',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+            },
+            required: ['sessionId'],
+            title: 'ComputerWatchStage',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: ['string', 'null'],
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              targets: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/ComputerStageTarget',
+                },
+              },
+              activeTargetId: {
+                type: ['string', 'null'],
+              },
+            },
+            required: ['sessionId', 'revision', 'targets'],
+            title: 'ComputerStageSnapshot',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ComputerStageTarget: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  kind: {
+                    $ref: '#/$defs/ComputerStageTargetKind',
+                  },
+                },
+                required: ['id', 'revision', 'title', 'kind'],
+              },
+              ComputerStageTargetKind: {
+                type: 'string',
+                enum: ['app', 'browser'],
+              },
+            },
           },
           resources: {},
         },

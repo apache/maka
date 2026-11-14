@@ -132,6 +132,7 @@ maka-ui-build.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 tokio-tungstenite.workspace = true
 nsh-bundler.workspace = true
 nsh-core.workspace = true

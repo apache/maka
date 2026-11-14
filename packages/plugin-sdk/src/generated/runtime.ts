@@ -101,6 +101,12 @@ export type RuntimeProtocol =
   | ComputerEvaluate
   | ComputerReplState
   | ComputerResult
+  | ComputerWatchStage
+  | ComputerStageSnapshot
+  | ComputerWatchFrames
+  | ComputerFrameNotice
+  | ComputerReadFrame
+  | ComputerFrameResult
   | ProtocolProcessLaunch
   | AcpExecutorConfiguration
   | ExecutorOutcome
@@ -1032,6 +1038,19 @@ export type ComputerResult =
       kind: 'failed';
       message: string;
       state: ComputerReplState;
+    };
+export type ComputerStageTargetKind = 'app' | 'browser';
+export type ComputerFrameResult =
+  | {
+      kind: 'frame';
+      frame: ComputerStageFrame;
+    }
+  | {
+      kind: 'pending';
+    }
+  | {
+      kind: 'unavailable';
+      message: string;
     };
 export type Scope = 'subtree' | 'exact';
 /**
@@ -5963,6 +5982,66 @@ export interface ComputerEvaluate {
    * Short, user-facing description of this call, in the user’s language.
    */
   title?: string | null;
+}
+export interface ComputerWatchStage {
+  sessionId: string;
+}
+export interface ComputerStageSnapshot {
+  sessionId: string;
+  bindingId?: string | null;
+  revision: number;
+  targets: ComputerStageTarget[];
+  activeTargetId?: string | null;
+}
+export interface ComputerStageTarget {
+  id: string;
+  revision: number;
+  title: string;
+  kind: ComputerStageTargetKind;
+}
+export interface ComputerWatchFrames {
+  sessionId: string;
+  bindingId: string;
+  /**
+   * @minItems 1
+   * @maxItems 5
+   */
+  targetIds:
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string];
+  selectedTargetId?: string | null;
+}
+/**
+ * Notifications are small. Encoded images stay in one replaceable slot per
+ * target, never in the ordered Host subscription queue or durable history.
+ */
+export interface ComputerFrameNotice {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  sequence: number;
+}
+export interface ComputerReadFrame {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  after: number;
+}
+export interface ComputerStageFrame {
+  revision: number;
+  sessionId: string;
+  bindingId: string;
+  targetId: string;
+  sequence: number;
+  mimeType: string;
+  dataBase64: string;
+  width: number;
+  height: number;
 }
 export interface ProtocolProcessLaunch {
   executable: string;

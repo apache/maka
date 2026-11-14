@@ -114,3 +114,31 @@ python3 scripts/rust/browser-handoff-smoke.py --host target/debug/examples/deskt
 临时标签页由所属 Session 持有。Turn 结束时，未标记保留的标签页关闭；`markDeliverable()` 为用户保留标签页，`markHandoff()` 则保留至后续 Turn。重新使用保留的标签页需要当前授权。重置和断开连接会请求清理，并保留标签页标记。导航和窗口变化可能使观察失效。结果不确定的输入不会自动重放。
 
 原生 Computer Use 需要交互式桌面，Linux 原生方法需要 X11。Windows 中提供截图 ID 时使用图像坐标，省略 ID 时使用窗口逻辑视口。浏览器上传支持已授权的普通文件，不支持目录上传或子框架文件选择器。浏览器宿主退出时仍被选择的文件不会自动回收。
+
+## Computer Stage 只读预览
+
+`SessionOwner::preview()` 返回独立的 `preview::PreviewRegistry`，Host 服务在 REPL
+evaluating 期间也能读取。成功绑定或操作的应用/标签页发布为 opaque target，最多保留最近五个。
+`snapshot()`、`subscribe()` 提供清单与 active target revision；`capture()` 返回最长边
+1600 像素、最大 2 MiB 的 JPEG。`PreviewTarget.revision` 与 `PreviewFrame.revision`
+是像素来源代次，不是 agent observation 或清单 revision。交付保留帧前必须比较来源代次，
+并调用 `authorize()` 重新检查真实进程/窗口或浏览器 document/claim。
+
+Host 使用真实 retained call 实现 `PreviewAuthority`，不弹授权提示，也不凭 target ID
+创建 grant。需要 full preparation 的浏览器适配器还需当前只读 Host `BrowserEffectScope`。
+预览使用单帧 viewport 截图，不改变 agent 已有 screencast 的 ACK/stop 托管。
+原生只采真实绑定窗口：macOS 复用窗口捕获与 TCC 检查，Linux 仅 X11，Windows 仅 WGC，
+禁止 screen-region 回退。Windows 远程 worker 通过私有 `PreviewWatch` long-poll RPC
+镜像真实目标，`PreviewRead` 在同一个执行 worker 上做当前授权检查或返回 bounded JPEG，
+不借 Session 操作队列。controller 持有每次请求的真实 `PreviewAuthority`，worker 通过
+`PreviewAuthorization` 回调检查该 authority 及其当前只读 preparation scope。
+跨进程校验 owner/Session/epoch、opaque target/binding/source generation 与原始 connection。
+不伪造 evaluate、journal mutation 或 native input，不向 UI 暴露 raw HWND。
+预览帧不进入 agent log/context。
+
+Stop/reset 封口时同步调用 `retire_epoch()`，然后再等待 native cleanup；owner close 与
+native epoch close 已接入。旧 epoch 不能晚到发布目标。捕获或授权失败会移除目标，
+不会静默重试。viewer 取消（包括直接丢弃 capture future）保留共享目标；同一个目标的
+采集通过可取消的锁排队。像素读取和编码持有原锁及 cleanup custody，viewer 消失也不会
+提前释放。owner/epoch cleanup 等待原始远程 watch 请求结清；worker restart 不能重放
+旧 connection 的清单或像素。

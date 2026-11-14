@@ -114,3 +114,40 @@ The runner uses real Host authorization and effect custody, creates only blank t
 Sessions own temporary tabs. At turn end, unmarked tabs close; `markDeliverable()` keeps a tab for the user, and `markHandoff()` preserves it for a later turn. Reusing a retained tab requires current authorization. Reset and disconnect request cleanup while preserving retention marks. Navigation and window changes can invalidate observations. Uncertain input is never replayed automatically.
 
 Native Computer Use requires an interactive desktop; Linux native methods require X11. On Windows, screenshot IDs select image coordinates; omitting the ID uses the window's logical viewport. Browser uploads accept authorized regular files; directory uploads and child-frame choosers are unsupported. Files still selected when the browser host exits are not reclaimed automatically.
+
+## Read-only Computer Stage preview
+
+`SessionOwner::preview()` returns an independent `preview::PreviewRegistry`; a Host
+service can keep it while the REPL is evaluating. Successful bound app/tab calls
+publish opaque targets (at most five recent targets). `snapshot()` and
+`subscribe()` expose inventory/active-target revisions; `capture()` returns a JPEG
+bounded to 1600 pixels per edge and 2 MiB. `PreviewTarget.revision` and
+`PreviewFrame.revision` identify the pixel-source generation, not agent observation
+or inventory revisions. Before serving retained bytes, compare that generation and
+call `authorize()` to recheck the real process/window or browser document/claim.
+
+The Host implements `PreviewAuthority` using its actual retained call, without
+prompting or manufacturing a grant from a target ID. Full-preparation browser
+adapters also need the current read-only Host `BrowserEffectScope`. Preview uses
+one-shot viewport screenshots; existing agent screencast ACK/stop custody is
+unchanged. Native capture only targets the bound window: macOS uses the existing
+window capture API and TCC checks, Linux requires X11, Windows uses WGC without a
+screen-region fallback. Windows remote-worker targets are mirrored through private
+`PreviewWatch` long-poll RPCs; `PreviewRead` obtains current authorization or bounded
+JPEG bytes from that same execution worker without borrowing its Session queue.
+The controller carries the real per-request `PreviewAuthority`, and the worker's
+`PreviewAuthorization` callbacks check that authority and its read-only preparation
+scope. Owner/Session/epoch plus opaque target/binding/source generation and original
+connection are checked across the boundary. No evaluate, journal mutation or native
+input is manufactured; no raw HWND reaches the UI. No preview bytes enter agent
+logs or context.
+
+Retire an epoch synchronously with `retire_epoch()` when sealing Stop/reset,
+before joining its native cleanup. Owner close and native epoch close already do
+this; a retired epoch cannot publish late targets. Capture or authorization
+failure removes the target instead of silently retrying it. Viewer cancellation
+(including dropping a capture future) preserves the shared target. Captures wait
+on the target's cancellation-aware serialization lock; native pixel reads and
+encoding retain that lock and their cleanup custody even if the viewer disappears.
+Owner/epoch cleanup joins its original remote watch request; worker restart cannot
+replay inventory or pixels from the old connection.

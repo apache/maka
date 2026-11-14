@@ -554,6 +554,15 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         : {},
     );
   host.instances.gateway!.bindings!.agent = [local('agent', 'agent')];
+  if (computerMethods.length) {
+    host.instances.gateway!.bindings!.computer = [local('workspace-computer', 'computer')];
+    endpoints.computer = expose(
+      'gateway',
+      'computer',
+      ['watchStage', 'watchFrames', 'readFrame'],
+      false,
+    );
+  }
   if (configuration.processes)
     host.instances.gateway!.bindings!.terminal = [local('workspace-processes', 'terminal')];
   if (configuration.web) {

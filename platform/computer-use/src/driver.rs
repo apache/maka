@@ -1074,7 +1074,11 @@ impl Driver {
         #[cfg(target_os = "macos")]
         if let Some(role) = match name {
             "list_apps" => Some(crate::desktop::worker::MacRole::ListApps),
-            "list_windows" => Some(crate::desktop::worker::MacRole::ListWindows),
+            "list_windows" => Some(crate::desktop::worker::MacRole::ListWindows {
+                pid: serde_json::from_value::<cua_driver_contract::ListWindowsInput>(input.clone())
+                    .map_err(|error| ToolError::Failed(error.to_string()))?
+                    .pid,
+            }),
             _ => None,
         } {
             // Inventory must not initialize the serving Host's native runtime.

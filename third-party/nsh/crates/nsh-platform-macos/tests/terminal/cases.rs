@@ -1548,3 +1548,182 @@ mount(App);
     expect_copied("draft text");
     surface.shutdown();
 }
+
+pub(super) fn retained_image() {
+    use std::{
+        cell::Cell,
+        rc::Rc,
+        sync::{Condvar, Mutex},
+    };
+    #[derive(Default)]
+    struct Frames {
+        released: Mutex<usize>,
+        changed: Condvar,
+        requested: Mutex<usize>,
+    }
+    impl Frames {
+        fn release(&self, frame: usize) {
+            *self.released.lock().unwrap() = frame;
+            self.changed.notify_all();
+        }
+    }
+    impl nsh_engine::Assets for Frames {
+        fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
+            let frame: usize = uri
+                .rsplit_once('-')
+                .unwrap()
+                .1
+                .strip_suffix(".svg")
+                .unwrap()
+                .parse()
+                .unwrap();
+            *self.requested.lock().unwrap() = frame;
+            let mut released = self.released.lock().unwrap();
+            while frame > *released {
+                released = self.changed.wait(released).unwrap();
+            }
+            if frame == 4 {
+                return Ok(b"invalid image".to_vec());
+            }
+            let color = match frame {
+                0 => "red",
+                3 => "blue",
+                _ => "lime",
+            };
+            Ok(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="{color}"/></svg>"#).into_bytes())
+        }
+    }
+    struct Release(Arc<Frames>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.release(usize::MAX);
+        }
+    }
+    for retain in [false, true] {
+        let script = r##"
+            import { mount, signal, keymap } from "nsh";
+            import { element, prop, insert } from "nsh:rt";
+            mount(() => {
+                const root = element("view"), picture = element("image"), shown = signal(true);
+                prop(root, "style", { flex: 1, backgroundColor: "#000" });
+                prop(picture, "style", { width: 32, height: 32 });
+                prop(picture, "fadeDuration", 0);
+                prop(picture, "retainPrevious", RETAIN);
+                prop(picture, "src", "asset:/retain-0.svg");
+                insert(root, () => shown() ? picture : null);
+                for (const n of [1,2,3,4,7]) keymap.bind("f" + n, () => prop(picture, "src", "asset:/retain-" + n + ".svg"), {when:"always"});
+                keymap.bind("f5", () => prop(picture, "src", ""), {when:"always"});
+                keymap.bind("f6", () => shown.set(false), {when:"always"});
+                return root;
+            });
+        "##.replace("RETAIN", if retain { "true" } else { "false" });
+        let assets = Arc::new(Frames::default());
+        let mut config = EngineConfig::new(App::Js(Bundle::source(script)));
+        config.assets = Some(assets.clone());
+        let pixel = Rc::new(Cell::new([0u8; 4]));
+        let observed = pixel.clone();
+        let phase = Rc::new(Cell::new(0));
+        let observed_phase = phase.clone();
+        let surface = TerminalSurface::new(
+            config,
+            size(DevicePixels(64), DevicePixels(64)),
+            1.0,
+            Box::new(move |frame| {
+                let frame = frame.submit().unwrap().complete().unwrap();
+                let rgba: [u8; 4] = frame.pixels()[(16 * 64 + 16) * 4..][..4]
+                    .try_into()
+                    .unwrap();
+                match observed_phase.get() {
+                    1 => assert!(
+                        rgba == [255, 0, 0, 255] || rgba == [0, 255, 0, 255],
+                        "replacement flashed: {rgba:?}"
+                    ),
+                    2 => assert!(
+                        rgba == [0, 0, 0, 255] || rgba == [0, 0, 255, 255],
+                        "cleared decode resurrected: {rgba:?}"
+                    ),
+                    3 => assert_eq!(rgba, [0, 0, 0, 255], "unmounted decode resurrected"),
+                    _ => {}
+                }
+                observed.set(
+                    frame.pixels()[(16 * 64 + 16) * 4..][..4]
+                        .try_into()
+                        .unwrap(),
+                );
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let _release = Release(assets.clone());
+        let pump = |done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                surface.pump_with_draw(true);
+                assert_eq!(surface.take_error(), None);
+                if done() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "pixel {:?}, retain {retain}",
+                    pixel.get()
+                );
+            }
+        };
+        pump(&|| pixel.get() == [255, 0, 0, 255]);
+        if retain {
+            phase.set(1);
+        }
+        key(&surface, "f1");
+        pump(&|| *assets.requested.lock().unwrap() == 1);
+        assert_eq!(
+            pixel.get(),
+            if retain {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 0, 255]
+            },
+            "replacement decode must retain only when opted in"
+        );
+        assets.release(1);
+        pump(&|| pixel.get() == [0, 255, 0, 255]);
+        // A pending replacement cannot resurrect after explicit clear.
+        key(&surface, "f2");
+        pump(&|| *assets.requested.lock().unwrap() == 2);
+        phase.set(0);
+        key(&surface, "f5");
+        pump(&|| pixel.get() == [0, 0, 0, 255]);
+        phase.set(2);
+        assets.release(2);
+        key(&surface, "f3");
+        assets.release(3);
+        pump(&|| pixel.get() == [0, 0, 255, 255]);
+        phase.set(0);
+        key(&surface, "f4");
+        pump(&|| *assets.requested.lock().unwrap() == 4);
+        assets.release(4);
+        pump(&|| pixel.get() == [0, 0, 0, 255]);
+        key(&surface, "f7");
+        pump(&|| *assets.requested.lock().unwrap() == 7);
+        key(&surface, "f6");
+        // Black predates removal; fence the input before releasing the decode.
+        let removed = Rc::new(Cell::new(false));
+        let done = removed.clone();
+        surface.pause_input(Box::new(move |result| {
+            result.expect("remove input fence");
+            done.set(true);
+        }));
+        pump(&|| removed.get());
+        surface.resume_input();
+        pump(&|| pixel.get() == [0, 0, 0, 255]);
+        phase.set(3);
+        assets.release(7);
+        let until = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < until {
+            surface.pump_with_draw(true);
+            assert_eq!(surface.take_error(), None);
+            assert_eq!(pixel.get(), [0, 0, 0, 255]);
+        }
+        surface.shutdown();
+    }
+}

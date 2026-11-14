@@ -40,7 +40,8 @@ ChatGPT and stock OpenCLI compatibility is best effort. Stock OpenCLI currently 
 
 Entry points (selection emits initial state):
 - `await cua.getState({emit?})`: app and available browser inventory, including inventory errors.
-- `await cua.listApps({emit?})`, `await cua.listWindows({emit?})`.
+- `await cua.listApps({emit?})`, `await cua.listWindows({pid?, emit?})`.
+  Pass an observed app PID to include its floating panels on macOS.
   Window entries include `pid` and `bindable`. Select a window with `bindable: true`.
   An unavailable binding includes `bindingError`. Bindable macOS entries also include
   `applicationId` and `appPath`. App consent and live identity are checked when binding.

@@ -35,7 +35,7 @@
 
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap},
+    collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::{
         Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock,
@@ -463,7 +463,7 @@ impl Drop for Ticket {
 pub struct Loader {
     reads: Mutex<Reads>,
     ready: Condvar,
-    decodes: Mutex<BinaryHeap<Decode>>,
+    decodes: Mutex<BTreeMap<(Priority, Reverse<u64>), Decode>>,
     decode_ready: Condvar,
     encoded: Mutex<Encoded>,
     failures: Mutex<HashMap<String, (Instant, String)>>,
@@ -538,29 +538,7 @@ impl ReadJob {
 }
 
 /// A decode waiting for a thread.
-struct Decode {
-    priority: Priority,
-    seq: Reverse<u64>,
-    cancelled: Arc<AtomicBool>,
-    run: Box<dyn FnOnce() + Send>,
-}
-
-impl PartialEq for Decode {
-    fn eq(&self, other: &Self) -> bool {
-        (self.priority, self.seq) == (other.priority, other.seq)
-    }
-}
-impl Eq for Decode {}
-impl PartialOrd for Decode {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for Decode {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.priority, self.seq).cmp(&(other.priority, other.seq))
-    }
-}
+type Decode = Box<dyn FnOnce() + Send>;
 
 impl Loader {
     fn start(&'static self) {
@@ -778,16 +756,18 @@ impl Loader {
         job: impl FnOnce() + Send + 'static,
     ) -> Ticket {
         self.start();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let seq = Reverse(self.seq.fetch_add(1, Ordering::Relaxed));
-        lock(&self.decodes).push(Decode {
-            priority,
-            seq,
-            cancelled: cancelled.clone(),
-            run: Box::new(job),
-        });
+        let key = (priority, Reverse(self.seq.fetch_add(1, Ordering::Relaxed)));
+        lock(&self.decodes).insert(key, Box::new(job));
         self.decode_ready.notify_one();
-        Ticket::new(move || cancelled.store(true, Ordering::Relaxed), None)
+        Ticket::new(
+            move || {
+                let job = lock(&self.decodes).remove(&key);
+                // Captured values may drop other tickets; never drop them under
+                // the queue lock. A job already taken by a worker runs to its end.
+                drop(job);
+            },
+            None,
+        )
     }
 
     fn decode_loop(&'static self) {
@@ -795,9 +775,8 @@ impl Loader {
             let job = {
                 let mut queue = lock(&self.decodes);
                 loop {
-                    match queue.pop() {
-                        Some(job) if job.cancelled.load(Ordering::Relaxed) => continue,
-                        Some(job) => break job,
+                    match queue.pop_last() {
+                        Some((_, job)) => break job,
                         None => {
                             queue = self
                                 .decode_ready
@@ -807,7 +786,7 @@ impl Loader {
                     }
                 }
             };
-            (job.run)();
+            job();
         }
     }
 

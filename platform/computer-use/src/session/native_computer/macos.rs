@@ -649,9 +649,7 @@ impl Session {
                 .await?
                 .ok_or_else(|| failed("application has no primary AX window"))?,
         };
-        let windows = self
-            .windows(invocation.session(), cancellation, language)
-            .await?;
+        let windows = self.windows(Some(pid), cancellation, language).await?;
         let window = primary_app_window(windows, pid, id)?;
         let expected = approved.clone();
         let observed = generation.clone();
