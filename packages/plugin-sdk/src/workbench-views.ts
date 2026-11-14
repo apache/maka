@@ -39,11 +39,29 @@ export interface ConversationShell {
   hideSidebar(): void;
   dismissRoute(): boolean;
   /** Opens a conversation in another pane beside this one, where the shell has them. */
-  openBeside?(sessionId: string): void;
+  /** With `thread`, as a side thread's card: one at a time, beside the selected conversation. */
+  openBeside?(sessionId: string, options?: { thread?: boolean }): void;
+  /**
+   * Opens a side thread's card before its conversation exists, so the question
+   * can be typed while the conversation is created.
+   */
+  openThread?(thread: PendingThread): void;
   /** The conversations open in panes beside this one, left to right. */
   besideSessionIds?(): readonly string[];
   /** Present on a pane the shell opened beside another: closes that pane. */
   closePane?(): void;
+}
+
+/** A side thread whose conversation is still being created. */
+export interface PendingThread {
+  /** Its name, when it has one already. */
+  readonly title: string | null;
+  /** What its input starts with. */
+  readonly draft: string;
+  /** The passages it asks about, shown above its input and sent with the question. */
+  readonly quotes: readonly string[];
+  /** The conversation's id, once it exists. */
+  readonly ready: Promise<string>;
 }
 
 export interface ConversationSessionHandle {
@@ -144,6 +162,13 @@ export interface ConversationNavigationInput {
 export interface ConversationCompact {
   expand(): void;
   close(): void;
+  /**
+   * A card beside the conversation it was asked from: a title row, everything
+   * asked in it, and its input below.
+   */
+  thread?: boolean;
+  /** What a thread's card is called until its conversation has loaded. */
+  title?: string | null;
 }
 
 export interface ConversationSessionInput {

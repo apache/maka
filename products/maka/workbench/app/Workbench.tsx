@@ -26,6 +26,8 @@ import { dialogTop, PANEL_INSET } from './chrome';
 const CELL = 8;
 const CENTER_DOCK_WIDTH = 72 * CELL;
 const CENTER_MIN = 48 * CELL;
+// As wide as a conversation's minimum, so the room for side panes counts a card as one.
+const THREAD_WIDTH = CENTER_MIN;
 const BROWSER_MIN = 24 * CELL;
 const BROWSER_MAX = 40 * CELL;
 const PREVIEW_MIN = 40 * CELL;
@@ -55,7 +57,11 @@ export function Workbench(props: {
   navigation(): JSX.Element;
   preview(docked: boolean): JSX.Element;
   /** Stable pane objects keep their mounted conversations through reorder and resize. */
-  sides?(): readonly { render(): JSX.Element }[];
+  sides?(): readonly { render(): JSX.Element; thread?: boolean }[];
+  /** Whether a side thread's card that has no pane yet is open. */
+  cardShown?(): boolean;
+  /** That card; it stands where its pane's card will. */
+  card?(): JSX.Element | null;
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
@@ -63,14 +69,39 @@ export function Workbench(props: {
   const preview = () => props.previewShown() && canDockPreview();
   const browser = () => props.expanded() && canDockBrowser(props.previewShown());
   const room = () => sidePaneRoom(browser(), preview());
+  const sides = () => props.sides?.() ?? [];
+  const fits = (pane: { render(): JSX.Element }) => sides().indexOf(pane) < room();
+  // A side thread's card stands in the selected conversation's panel, to its
+  // right, as tall as what it holds: it takes a fixed width from that panel
+  // rather than splitting the window with a second conversation.
+  const cards = () => sides().filter((pane) => pane.thread && fits(pane));
+  const pendingCard = () => sides().length < room() && (props.cardShown?.() ?? false);
+  const cardStyle = {
+    width: THREAD_WIDTH,
+    minHeight: 0,
+    paddingTop: 8,
+    paddingRight: 8,
+    paddingBottom: 8,
+  } as const;
   const panes = () => (
     <>
-      <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-        {props.children}
+      <ResizablePanel
+        minSize={CENTER_MIN + (cards().length > 0 || pendingCard() ? THREAD_WIDTH : 0)}
+        style={{ minHeight: 0 }}
+      >
+        <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'row' }}>
+          <View style={{ flex: 1, minWidth: 0, minHeight: 0 }}>{props.children}</View>
+          <Each of={cards()} key={(pane) => pane}>
+            {(pane) => <View style={cardStyle}>{pane().render()}</View>}
+          </Each>
+          <If when={pendingCard()}>
+            <View style={cardStyle}>{props.card?.()}</View>
+          </If>
+        </View>
       </ResizablePanel>
-      <Each of={props.sides?.() ?? []} key={(pane) => pane}>
-        {(pane, index) => (
-          <ResizablePanel visible={index() < room()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+      <Each of={sides().filter((pane) => !pane.thread)} key={(pane) => pane}>
+        {(pane) => (
+          <ResizablePanel visible={fits(pane())} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
             {pane().render()}
           </ResizablePanel>
         )}
@@ -88,7 +119,7 @@ export function Workbench(props: {
   );
   // The desktop's panel holds the panes, so it needs their minimums and its own insets.
   const panesMin = () =>
-    CENTER_MIN * (1 + Math.min(room(), props.sides?.().length ?? 0)) +
+    CENTER_MIN * (1 + Math.min(room(), sides().length + (props.cardShown?.() ? 1 : 0))) +
     (preview() ? PREVIEW_MIN : 0) +
     INSET * (browser() ? 1 : 2);
   const previewDialog = signal(false);
