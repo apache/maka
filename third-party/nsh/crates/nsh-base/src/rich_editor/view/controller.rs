@@ -2180,6 +2180,25 @@ impl Rv {
             self.scroll_pending.set(false);
             return;
         }
+        // The edit that asked for the scroll is laid out in steps: a block's
+        // frame, its text's frame, then its lines. Until the head's text has
+        // the lines of its present content, the head's box is where it was
+        // before the edit (a line that wrapped), or one point high at the
+        // corner of a new block (a paragraph split off): scrolling to that
+        // leaves the head below the view.
+        {
+            let state = self.st.borrow();
+            let head = state.selection().head();
+            if let Ok(at) = state.doc().resolve(head)
+                && at.parent().is_textblock()
+                && !self
+                    .geo
+                    .borrow()
+                    .text_current(head - at.parent_offset, at.parent().content().size())
+            {
+                return;
+            }
+        }
         let Some(caret) = self.caret_rect() else {
             return;
         };
