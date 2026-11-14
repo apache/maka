@@ -1431,7 +1431,206 @@ mod bounded_risk {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn compaction_reuses_background_summary_after_late_cell_return() {
+    async fn parallel_tool_results_stay_together_when_a_cell_callback_returns_late()
+    -> TestResult<()> {
+        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+        use maka_agent_facts::{
+            cells::{CellObservation, CellVmBinding, SessionPublication},
+            tool_output::CellFinalEvidence,
+        };
+
+        let mut rig = Rig::new()?;
+        let stop = CancellationToken::new();
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(model_recovery::serve(
+            listener,
+            Default::default(),
+            stop.clone(),
+            Some(requests),
+        ));
+        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+            let (cell, first) = start_original_cell(&rig, attempt).await?;
+            let (second, _) = rig
+                .tool(attempt, "exec", "second-exec", json!({"code":"second"}))
+                .await?;
+            rig.finish_model_request(attempt, None).await?;
+
+            let completed = ContentBlob::json(&CellObservation::Completed {
+                cell_id: cell,
+                content: vec![],
+                result: json!("first result"),
+            })?;
+            let recovered = ContentBlob::json(&AcceptedToolResult::RecoveredCell {
+                cell,
+                evidence: CellFinalEvidence::Completed {
+                    result: completed.reference().clone(),
+                },
+            })?;
+            let returned = |text: &str| {
+                ContentBlob::json(&ToolReturn {
+                    schema_version: SCHEMA_VERSION,
+                    artifacts: vec![],
+                    body: ReturnedToolResult {
+                        output: ToolOutput::Text(text.into()),
+                        projection: DurableToolProjection::Text { text: text.into() },
+                        is_error: false,
+                        loaded_tools: Default::default(),
+                    },
+                })
+            };
+            let late = returned("internal callback copy")?;
+            let normal = returned("second result")?;
+            rig.append(
+                vec![
+                    Fact::Cell {
+                        event: CellEvent::VmBound {
+                            cell,
+                            binding: CellVmBinding {
+                                runtime: "fixture".into(),
+                                version: 1,
+                                descriptor: completed.reference().clone(),
+                            },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::Completed {
+                            cell,
+                            result: completed.reference().clone(),
+                            publication: SessionPublication {
+                                values: Default::default(),
+                                loaded_tools: None,
+                            },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ResultAccepted { cell },
+                    },
+                    Fact::ToolResultAccepted {
+                        tool: first.clone(),
+                        result: recovered.reference().clone(),
+                        outcome: AcceptedResult::CellRecovered { cell },
+                    },
+                    Fact::LocalToolReturned {
+                        tool: first,
+                        result: late.reference().clone(),
+                        settlement: ToolSettlement::Returned,
+                        is_error: false,
+                        cell_observation: None,
+                    },
+                    Fact::LocalToolReturned {
+                        tool: second,
+                        result: normal.reference().clone(),
+                        settlement: ToolSettlement::Returned,
+                        is_error: false,
+                        cell_observation: None,
+                    },
+                ],
+                vec![completed, recovered, late, normal],
+            )
+            .await?;
+
+            let driver = rig.driver.as_ref().unwrap();
+            let engine = Engine::new(driver.state.clone());
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                match engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?
+                {
+                    DriverExit::Terminal {
+                        terminal: Terminal::Completed,
+                        ..
+                    } => break,
+                    DriverExit::Waiting { .. } => changes.changed().await?,
+                    other => {
+                        let history = driver
+                            .state
+                            .history(driver.access.execution().run_id, 0, 128)
+                            .await?;
+                        let failure = history.iter().rev().find_map(|fact| match &fact.fact {
+                            Fact::RunTerminated { diagnostic, .. }
+                            | Fact::ModelClosed { diagnostic, .. } => diagnostic.as_deref(),
+                            Fact::ModelInterrupted { diagnostic, .. } => Some(diagnostic.as_str()),
+                            _ => None,
+                        });
+                        return Err(format!(
+                            "unexpected run outcome: {other:?}; {failure:?}; requests: {}",
+                            received.len()
+                        )
+                        .into());
+                    }
+                }
+            }
+            let wire: Value = serde_json::from_slice(&received.try_recv()?)?;
+            let messages = wire["messages"]
+                .as_array()
+                .ok_or("missing Chat Completions messages")?;
+            let index = messages
+                .iter()
+                .position(|message| message["tool_calls"].is_array())
+                .ok_or("missing tool calls")?;
+            let calls: Vec<_> = messages[index]["tool_calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|call| call["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(calls, ["bounded-cell-parent", "second-exec"]);
+            let results: Vec<_> = messages[index + 1..]
+                .iter()
+                .map(|message| {
+                    (
+                        message["role"].as_str().unwrap(),
+                        message["tool_call_id"].as_str(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                results,
+                [
+                    ("tool", Some("bounded-cell-parent")),
+                    ("tool", Some("second-exec"))
+                ]
+            );
+            let wire = wire.to_string();
+            assert_eq!(wire.matches("first result").count(), 1);
+            assert_eq!(wire.matches("second result").count(), 1);
+            assert!(!wire.contains("internal callback copy"));
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        let server_result = server.await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        server_result??;
+        match outcome {
+            Ok(result) => result?,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compaction_reuses_background_summary_with_later_tool_result() {
         use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
         use maka_agent_facts::{
             cells::{CellObservation, CellVmBinding, SessionPublication},
@@ -1507,7 +1706,7 @@ mod bounded_risk {
                         event: CellEvent::ResultAccepted { cell },
                     },
                     Fact::ToolResultAccepted {
-                        tool: parent.clone(),
+                        tool: parent,
                         result: accepted.reference().clone(),
                         outcome: AcceptedResult::CellRecovered { cell },
                     },
@@ -1516,7 +1715,7 @@ mod bounded_risk {
             )
             .await?;
 
-            // Snapshot the original tool acceptance before its callback returns.
+            // Capture a checkpoint before another round of model output and tools.
             let mut summary_cut = driver.state.frontier(run).await?;
             summary_cut.current_step = None;
             let mut summary = driver
@@ -1526,29 +1725,59 @@ mod bounded_risk {
             let summary_body = ContentBlob::json(&summary.request)?;
             summary.contents.push(summary_body.clone());
 
-            let late_text = format!(
-                "Late result belongs after the checkpoint. {}",
-                "x".repeat(50_000)
-            );
-            let late = ContentBlob::json(&ToolReturn {
+            let (_, later, _) = rig
+                .record_model_request(Preparation::ToolContinuation { attempt: main })
+                .await?;
+            rig.append(
+                vec![Fact::ModelObserved {
+                    attempt: later,
+                    index: 0,
+                    part: ModelPart::Text {
+                        text_kind: maka_agent_facts::model::TextKind::Text,
+                        text: "x".repeat(50_000).into(),
+                        provider_options: None,
+                    },
+                    continuation: None,
+                }],
+                vec![],
+            )
+            .await?;
+            let (tool, _) = rig
+                .tool(later, "exec", "later-exec", json!({"code":"later"}))
+                .await?;
+            rig.finish_model_request(later, None).await?;
+            let marker = "Tool result belongs after the checkpoint.";
+            let returned = ContentBlob::json(&ToolReturn {
                 schema_version: SCHEMA_VERSION,
                 artifacts: vec![],
                 body: ReturnedToolResult {
-                    output: ToolOutput::Text(late_text.clone()),
-                    projection: DurableToolProjection::Text { text: late_text },
+                    output: ToolOutput::Text(marker.into()),
+                    projection: DurableToolProjection::Text {
+                        text: marker.into(),
+                    },
                     is_error: false,
                     loaded_tools: Default::default(),
                 },
             })?;
+            let accepted = ContentBlob::json(&AcceptedToolResult::Local {
+                result: returned.reference().clone(),
+            })?;
             rig.append(
-                vec![Fact::LocalToolReturned {
-                    tool: parent,
-                    settlement: ToolSettlement::Returned,
-                    result: late.reference().clone(),
-                    is_error: false,
-                    cell_observation: None,
-                }],
-                vec![late],
+                vec![
+                    Fact::LocalToolReturned {
+                        tool: tool.clone(),
+                        settlement: ToolSettlement::Returned,
+                        result: returned.reference().clone(),
+                        is_error: false,
+                        cell_observation: None,
+                    },
+                    Fact::ToolResultAccepted {
+                        tool,
+                        result: accepted.reference().clone(),
+                        outcome: AcceptedResult::Succeeded,
+                    },
+                ],
+                vec![returned, accepted],
             )
             .await?;
 
@@ -1557,7 +1786,7 @@ mod bounded_risk {
                 .model()?
                 .prepare_step(
                     &view,
-                    Preparation::ToolContinuation { attempt: main },
+                    Preparation::ToolContinuation { attempt: later },
                     driver,
                 )
                 .await?;
@@ -1644,9 +1873,7 @@ mod bounded_risk {
             let late_position = messages
                 .iter()
                 .position(|message| {
-                    message
-                        .to_string()
-                        .contains("Late result belongs after the checkpoint")
+                    message["role"] == "tool" && message.to_string().contains(marker)
                 })
                 .ok_or("late tool result missing")?;
             assert!(summary_position < late_position);
@@ -4028,6 +4255,11 @@ mod model_recovery {
                 sent.push(requests_rx.recv().await.ok_or("HTTP request missing")?);
             }
             assert_eq!(GROUPING_REQUESTS.load(Ordering::SeqCst), 4);
+            for pair in sent[..3].windows(2) {
+                let previous = pair[0]["messages"].as_array().ok_or("missing previous request messages")?;
+                let continued = pair[1]["messages"].as_array().ok_or("missing continuation messages")?;
+                assert!(continued.starts_with(previous), "tool continuation changed its cached message prefix");
+            }
             assert_eq!(sent[3]["model"], "llama3.1");
             let messages = sent[3]["messages"].as_array().ok_or("ChatCompletions messages missing")?;
             let mut previous_result = None;

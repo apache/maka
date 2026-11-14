@@ -1907,6 +1907,80 @@ async fn desktop_previews_an_incoming_session_message() {
     fixture.finish().await;
 }
 
+async fn desktop_folds_the_conversations_a_conversation_created() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    mutate(
+        &desktop.client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": backend, "message": "Split the work."}),
+    )
+    .await;
+    for title in [
+        "Triage CI failure",
+        "Review the browser dispatch",
+        "Measure Stage blur",
+        "Check Windows build",
+    ] {
+        desktop
+            .request(&mut fixture)
+            .await
+            .tool_call(
+                "SessionCreate",
+                json!({
+                    "title": title,
+                    "labels": [],
+                    "workspace": {"kind": "session", "sessionId": fixture.session}
+                }),
+            )
+            .await;
+    }
+    let last = desktop.request(&mut fixture).await;
+    assert!(
+        !last.body.to_string().contains("invalid tool input"),
+        "{}",
+        last.body
+    );
+    // Four created conversations list under their creator and fold behind one row.
+    let child = "Open conversation Check Windows build";
+    let unfold = "Show the conversations NSH real Agent created";
+    let fold = "Fold the conversations NSH real Agent created";
+    let row = desktop.control(fold).await;
+    assert!(row.bottom() <= desktop.control(child).await.top());
+    desktop.artifact("created-conversations-open");
+    desktop.press(fold).await;
+    desktop.control(unfold).await;
+    assert!(desktop.controls(child).is_empty());
+    desktop.artifact("created-conversations-folded");
+    desktop.press(unfold).await;
+    desktop.control(fold).await;
+    desktop.control(child).await;
+    last.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_folds_work_when_responses_starts_the_final_answer() {
     let mut fixture = Fixture::configured(Options {
         responses: true,
@@ -3505,6 +3579,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
     "desktop_presents_session_tools_in_chat_and_trajectory",
     "desktop_previews_an_incoming_session_message",
+    "desktop_folds_the_conversations_a_conversation_created",
     "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
@@ -3570,6 +3645,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_previews_an_incoming_session_message" => {
             runtime.block_on(desktop_previews_an_incoming_session_message())
+        }
+        "desktop_folds_the_conversations_a_conversation_created" => {
+            runtime.block_on(desktop_folds_the_conversations_a_conversation_created())
         }
         "desktop_folds_work_when_responses_starts_the_final_answer" => {
             runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())

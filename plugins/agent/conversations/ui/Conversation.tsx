@@ -3050,12 +3050,12 @@ export function Conversation(props: ConversationProps) {
             : 'unknown',
         detail: checking
           ? tr('Checking send status…')
-          : detail && receiptFailure?.retryable !== false
-            ? renderText(detail)
+          : receiptFailure
+            ? renderText(receiptFailure.detail)
             : cancelled
               ? tr('Stopped before delivery. Your message is kept.')
-              : receiptFailure
-                ? renderText(receiptFailure.detail)
+              : detail
+                ? renderText(detail)
                 : original.abandoned
                   ? tr('Message was not sent.')
                   : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'

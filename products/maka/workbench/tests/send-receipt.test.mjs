@@ -45,6 +45,20 @@ test('a rejected send keeps its reason and can be retried', () => {
   });
 });
 
+test('a run that is still unsettled produces a definitive send failure', () => {
+  const result = {
+    kind: 'success',
+    value: { kind: 'rejected', sessionId: 'conversation', reason: 'original_operation_unsettled' },
+  };
+  assert.deepEqual(sendReceiptFailure(recorded({ kind: 'returned', result })), {
+    detail: {
+      key: 'Message was not sent because the previous run is unsettled. Your message is kept.',
+      values: undefined,
+    },
+    retryable: true,
+  });
+});
+
 test('an unknown outcome supplies no definitive send failure', () => {
   assert.equal(
     sendReceiptFailure(recorded({ kind: 'unknown', diagnostic: 'connection lost' })),

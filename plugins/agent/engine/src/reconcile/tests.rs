@@ -155,6 +155,88 @@ fn pending_cell_observation_precedes_new_tool_policy_without_freezing_live_cells
     );
 }
 
+#[test]
+fn completed_cell_waits_for_live_tool_return_before_recovering() {
+    use maka_agent_facts::{
+        accounting::Outcome,
+        cells::{CellVmBinding, SessionPublication},
+        context::ModelPurpose,
+        model::ModelFinishReason,
+    };
+
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (mut view, request, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::ToolCalls,
+        Outcome::Success,
+        true,
+    );
+    let key = ToolKey {
+        attempt,
+        call: "continuation".into(),
+    };
+    view.tools
+        .get_mut(&maka_agent_state::fold::tool_key(&key))
+        .unwrap()
+        .admitted = true;
+    let link = AgentStepLink {
+        run: view.run,
+        step: request.step,
+        attempt,
+    };
+    let cell = CellId::for_agent(link, &key.call);
+    let source = view.spec.input.clone();
+    for event in [
+        CellEvent::Started {
+            cell,
+            owner: CellOwner::Agent {
+                link,
+                call: key.call.clone(),
+            },
+            source: source.clone(),
+        },
+        CellEvent::VmBound {
+            cell,
+            binding: CellVmBinding {
+                runtime: "fixture".into(),
+                version: 1,
+                descriptor: source.clone(),
+            },
+        },
+        CellEvent::Completed {
+            cell,
+            result: source,
+            publication: SessionPublication {
+                values: Default::default(),
+                loaded_tools: None,
+            },
+        },
+    ] {
+        apply_policy_fact(&mut view, Fact::Cell { event });
+    }
+
+    let mut live = Live::default();
+    live.work.insert(WorkKey::Tool(key.clone()));
+    assert!(matches!(
+        next(&view, &live, UnixMillis(1), None, false),
+        Action::Idle
+    ));
+
+    live.work.clear();
+    assert!(matches!(next(&view, &live, UnixMillis(1), None, false),
+        Action::Accept(tool, AcceptedResult::CellRecovered { cell: recovered })
+            if tool == key && recovered == cell
+    ));
+}
+
 pub(crate) fn apply_policy_fact(view: &mut RunView, fact: Fact) {
     let recorded = RecordedFact {
         schema_version: SCHEMA_VERSION,

@@ -265,6 +265,11 @@ export const conversationMessages = {
     '请先批准工作区连接，再重试这条消息。',
     '請先核准工作區連線，再重試這則訊息。',
   ],
+  'Message was not sent because the previous run is unsettled. Your message is kept.': [
+    'Message was not sent because the previous run is unsettled. Your message is kept.',
+    '上一轮还有操作未结束，消息发送失败。消息已保留。',
+    '上一輪還有操作未結束，訊息傳送失敗。訊息已保留。',
+  ],
   'Message was not sent.': ['Message was not sent.', '消息尚未发送。', '訊息尚未傳送。'],
   'Send failed: {reason}': ['Send failed: {reason}', '发送失败：{reason}', '傳送失敗：{reason}'],
   'Delivery not confirmed. Check status before retrying.': [
@@ -1180,11 +1185,6 @@ export const conversationMessages = {
     'Waiting for access to be restored',
     '正在等待恢复访问',
     '正在等候恢復存取',
-  ],
-  'Maka could not confirm the previous operation. Your message is kept.': [
-    'Maka could not confirm the previous operation. Your message is kept.',
-    'Maka 无法确认上次操作的结果，消息已保留。',
-    'Maka 無法確認上次操作的結果，訊息已保留。',
   ],
   'Maka could not confirm that the run stopped. Try Stop again.': [
     'Maka could not confirm that the run stopped. Try Stop again.',

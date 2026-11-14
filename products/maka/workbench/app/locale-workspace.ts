@@ -73,6 +73,21 @@ export const workspaceMessages = {
   Pin: ['Pin', '置顶', '置頂'],
   Unpin: ['Unpin', '取消置顶', '取消置頂'],
   'Rename…': ['Rename…', '重命名…', '重新命名…'],
+  '{count} created conversations': [
+    '{count} created conversations',
+    '{count} 个子对话',
+    '{count} 個子對話',
+  ],
+  'Show the conversations {title} created': [
+    'Show the conversations {title} created',
+    '展开「{title}」的子对话',
+    '展開「{title}」的子對話',
+  ],
+  'Fold the conversations {title} created': [
+    'Fold the conversations {title} created',
+    '收起「{title}」的子对话',
+    '收合「{title}」的子對話',
+  ],
   '{count} more': ['{count} more', '还有 {count} 个', '還有 {count} 個'],
   '{count} more in Maka Bot': [
     '{count} more in Maka Bot',
