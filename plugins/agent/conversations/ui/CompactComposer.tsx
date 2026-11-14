@@ -28,6 +28,7 @@ import {
   quickBarStyle,
   quickInputStyle,
 } from '../../../../products/maka/workbench/app/QuickBar';
+import { threadInputRowStyle } from '../../../../products/maka/workbench/app/ThreadCard';
 import {
   bodyTextStyle,
   C,
@@ -38,13 +39,17 @@ import {
 
 const MAX_INPUT_HEIGHT = 96;
 
-/** The conversation's input in the popup's top bar, where the launcher's input was. */
+/**
+ * The conversation's input in the popup's top bar, where the launcher's input
+ * was; with `thread`, the input under a side thread card's messages.
+ */
 export function CompactComposer(props: {
   session(): ComposerSession<JSX.Element> | null;
   stop(): void;
   expand(): void;
   chooseModel(): void;
   attach(node: InputRef): void;
+  thread?: boolean;
 }) {
   const refused = signal('');
   const inputHeight = signal<number>(quickInputStyle().lineHeight);
@@ -56,7 +61,8 @@ export function CompactComposer(props: {
     return (
       session.error() ||
       session.sends().find((send) => send.state === 'failed')?.detail ||
-      refused()
+      // A refusal that no longer holds has nothing left to say.
+      (refused() && session.blockedReason() ? refused() : '')
     );
   };
   const send = () => {
@@ -73,23 +79,37 @@ export function CompactComposer(props: {
     refused.set(reason);
     if (!reason) session.submit({ text });
   };
+  const hasDraft = () => {
+    const session = props.session();
+    return !!session && (session.draft().trim() !== '' || session.attachments.files().length > 0);
+  };
   return (
-    <View>
-      <View style={quickBarStyle}>
-        <View style={{ height: QUICK_BAR_SLOT, justifyContent: 'center' }}>
-          <MakaMark />
-        </View>
+    <View style={props.thread ? { borderTopWidth: 1, borderTopColor: C.line } : {}}>
+      <View style={props.thread ? threadInputRowStyle() : quickBarStyle}>
+        <If when={!props.thread}>
+          <View style={{ height: QUICK_BAR_SLOT, justifyContent: 'center' }}>
+            <MakaMark />
+          </View>
+        </If>
         <View style={{ flex: 1, minWidth: 0, gap: 8, paddingVertical: 8 }}>
           <Input
             ref={props.attach}
             autoFocus
             multiline
             submitBehavior="submit"
-            accessibilityLabel={tr('Ask Maka')}
+            accessibilityLabel={props.thread ? tr('Ask in the side question') : tr('Ask Maka')}
+            // A thread is never empty: it holds the conversation it was asked from.
             placeholder={
-              props.session()?.empty() === false ? tr('Ask a follow-up') : tr('Ask Maka')
+              props.thread
+                ? tr('Ask about this')
+                : props.session()?.empty() === false
+                  ? tr('Ask a follow-up')
+                  : tr('Ask Maka')
             }
-            value={props.session()?.draft() ?? ''}
+            // A thread's first question shows above as sent while it waits to be.
+            value={
+              props.thread && props.session()?.recovering() ? '' : (props.session()?.draft() ?? '')
+            }
             readonly={!(props.session()?.editable() ?? false)}
             onChange={({ value }) => {
               refused.set('');
@@ -99,7 +119,11 @@ export function CompactComposer(props: {
             onContentSizeChange={({ size }) =>
               inputHeight.set(Math.min(size.height, MAX_INPUT_HEIGHT))
             }
-            style={{ ...quickInputStyle(), height: inputHeight() }}
+            style={
+              props.thread
+                ? { ...quickInputStyle(), ...bodyTextStyle, height: inputHeight() }
+                : { ...quickInputStyle(), height: inputHeight() }
+            }
           />
           <If when={(props.session()?.attachments.files().length ?? 0) > 0}>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -139,7 +163,15 @@ export function CompactComposer(props: {
           <If when={running()}>
             <IconButton label={tr('Stop')} icon="stop" onPress={props.stop} />
           </If>
-          <If when={props.session()?.empty() === false}>
+          <If when={props.thread && !running()}>
+            <IconButton
+              label={tr('Send message')}
+              icon="send"
+              disabled={!hasDraft() || unavailable()}
+              onPress={send}
+            />
+          </If>
+          <If when={!props.thread && props.session()?.empty() === false}>
             <IconButton label={tr('Open in Main Window')} icon="expand" onPress={props.expand} />
           </If>
         </View>

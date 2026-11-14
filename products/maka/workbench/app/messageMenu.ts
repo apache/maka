@@ -19,7 +19,7 @@
 
 import { cleanup, signal } from 'nsh';
 
-const order = ['copy', 'fork', 'regenerate', 'edit'] as const;
+const order = ['copy', 'ask', 'quote', 'fork', 'regenerate', 'edit'] as const;
 
 /** A message action that its context menu offers beside its button. */
 export type MessageCommand = {

@@ -54,6 +54,8 @@ const icons = {
   workspaceWrite: { lucide: 'file-pen', glyph: '✎' },
   sandboxOff: { lucide: 'shield-off', glyph: '◇' },
   approval: { lucide: 'hand', glyph: '✋' },
+  ask: { lucide: 'message-square-quote', glyph: '❝' },
+  quote: { lucide: 'text-quote', glyph: '“' },
   shield: { lucide: 'shield', glyph: '◇' },
   lock: { lucide: 'lock', glyph: '▣' },
   activity: { lucide: 'clock', glyph: '◌' },

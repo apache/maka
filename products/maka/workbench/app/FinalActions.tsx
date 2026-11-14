@@ -31,6 +31,8 @@ import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
 import { cacheHitRate, executorUsageLabel, TurnUsage } from './TurnUsage';
+import { addPendingQuote, forgetPassage, pendingQuotes, selectedPassage } from './sideThreads';
+import { SideThreadsMenu } from './SideThreadsMenu';
 import {
   C,
   controlDisabledStyle,
@@ -64,6 +66,8 @@ export function FinalActions(props: {
   sessionId: string;
   through(): number;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
+  /** Forks at this turn beside it, quoting `passage` (the selection, if any). */
+  askBeside?(turnId: string, passage: string | null): Promise<void>;
   /** Another action on this turn, after the fork. */
   extra?: JSX.Element;
   menu?: MessageMenu;
@@ -119,6 +123,79 @@ export function FinalActions(props: {
       if (alive) pending.set(false);
     }
   };
+  const asking = signal(false);
+  const askLabel = () =>
+    pendingQuotes(props.sessionId).length > 0
+      ? tr('Ask beside with the {count} quoted', { count: pendingQuotes(props.sessionId).length })
+      : selectedPassage(props.sessionId, props.row().turnId ?? '')
+        ? tr('Ask about the selection beside')
+        : tr('Ask beside');
+  // The menu passes the passage selected as it opened: it may stay open longer
+  // than a cleared selection counts.
+  const ask = async (original: Target | null, held?: string | null) => {
+    if (!original || !owns(original) || asking() || !props.askBeside) return;
+    const turnId = original.turnId;
+    if (turnId === undefined) return;
+    asking.set(true);
+    notice.set('');
+    try {
+      const passage = held === undefined ? selectedPassage(original.sessionId, turnId) : held;
+      await props.askBeside(turnId, passage);
+      if (passage) forgetPassage();
+    } catch (reason) {
+      if (owns(original)) notice.set(errorText(reason, 'Could not fork the conversation.'));
+    } finally {
+      if (alive) asking.set(false);
+    }
+  };
+  const askHeld = (held: { original: Target; passage: string | null }) =>
+    ask(held.original, held.passage);
+  // Gather the selected passage to ask about with others (the tray above the composer).
+  const quote = (held: { original: Target | null; passage?: string | null }) => {
+    const original = held.original;
+    if (!original || !owns(original)) return;
+    const turnId = original.turnId;
+    if (turnId === undefined) return;
+    const passage =
+      held.passage === undefined ? selectedPassage(original.sessionId, turnId) : held.passage;
+    if (!passage) {
+      notice.set(uiMessage('Select a passage of this reply first.'));
+      return;
+    }
+    notice.set(
+      addPendingQuote(original.sessionId, { turnId, text: passage })
+        ? ''
+        : uiMessage('Already quoted, or eight passages are gathered.'),
+    );
+    forgetPassage();
+  };
+  if (props.askBeside)
+    props.menu?.add({
+      kind: 'quote',
+      label: () => tr('Quote for a side question'),
+      busy: () => false,
+      action: () => {
+        const original = target();
+        const passage =
+          original?.turnId !== undefined && selectedPassage(original.sessionId, original.turnId);
+        return original && passage ? inputAction(quote, { original, passage }) : null;
+      },
+    });
+  if (props.askBeside)
+    props.menu?.add({
+      kind: 'ask',
+      label: () => askLabel(),
+      busy: asking,
+      action: () => {
+        const original = target();
+        return original?.turnId === undefined
+          ? null
+          : inputAction(askHeld, {
+              original,
+              passage: selectedPassage(original.sessionId, original.turnId),
+            });
+      },
+    });
   props.menu?.add({
     kind: 'fork',
     label: () => tr('Fork from this turn'),
@@ -178,6 +255,22 @@ export function FinalActions(props: {
           through={props.through}
           menu={props.menu}
         />
+        <If when={props.askBeside}>
+          <IconButton
+            label={askLabel()}
+            tooltip={asking() ? tr('Creating fork…') : undefined}
+            icon="ask"
+            disabled={asking() || target() === null}
+            onPress={inputAction(ask, target())}
+          />
+          <IconButton
+            label={tr('Quote for a side question')}
+            icon="quote"
+            disabled={target() === null}
+            onPress={inputAction(quote, { original: target() })}
+          />
+          <SideThreadsMenu parentId={props.sessionId} turnId={() => props.row().turnId} />
+        </If>
         <IconButton
           label={tr('Fork from this turn')}
           tooltip={pending() ? tr('Creating fork…') : undefined}

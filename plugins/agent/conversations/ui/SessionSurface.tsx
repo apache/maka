@@ -38,6 +38,8 @@ import {
 } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
+import { ThreadHeader, threadCardStyle } from '../../../../products/maka/workbench/app/ThreadCard';
+import { takeSidePrefill } from '../../../../products/maka/workbench/app/sideThreads';
 import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
@@ -679,7 +681,7 @@ export function createConversationUi(
     if (result.kind === 'failure') throw new Error(result.diagnostic);
     return result.value;
   };
-  const control: Control = async (method, input) => {
+  const control: Control = async (method, input, options) => {
     const urgent = method === 'stop' || method === 'stopComputerApp';
     if (!urgent && !controlsKnown()) throw new ActionPending();
     const originals: any[] = urgent ? await host.pendingControls() : controls();
@@ -702,7 +704,8 @@ export function createConversationUi(
     const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
     if (!urgent) {
       busy.set(true);
-      creatingFork.set(method === 'fork');
+      // A quiet fork has a place of its own that reports the wait.
+      creatingFork.set(method === 'fork' && options?.quiet !== true);
     }
     try {
       let result: any;
@@ -2487,9 +2490,28 @@ export function createConversationUi(
             }}
             onFileDragEnter={() => fileDragging.set(true)}
             onFileDragLeave={() => fileDragging.set(false)}
-            style={input.compact ? { flexShrink: 1, minHeight: 0 } : { flex: 1, minHeight: 0 }}
+            style={
+              input.compact?.thread
+                ? threadCardStyle()
+                : input.compact
+                  ? { flexShrink: 1, minHeight: 0 }
+                  : { flex: 1, minHeight: 0 }
+            }
           >
-            <If when={input.compact !== undefined}>
+            <If when={input.compact?.thread === true}>
+              <ThreadHeader
+                // Until the conversation has loaded, its handle only knows its id.
+                title={() => {
+                  const loaded = handle()?.title() ?? '';
+                  return loaded !== '' && loaded !== selected()
+                    ? loaded
+                    : (input.compact!.title ?? '');
+                }}
+                expand={input.compact!.expand}
+                close={input.compact!.close}
+              />
+            </If>
+            <If when={input.compact !== undefined && !input.compact.thread}>
               <CompactComposer
                 session={composerSession}
                 stop={() => stopAction()()}
@@ -2516,6 +2538,7 @@ export function createConversationUi(
               {(id) => (
                 <Conversation
                   compact={input.compact !== undefined}
+                  thread={input.compact?.thread === true}
                   client={host.session(id())}
                   connectionLost={connectionLost}
                   botSession={botSession}
@@ -2536,7 +2559,11 @@ export function createConversationUi(
                   }}
                   edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
                   takePrefill={(available: boolean) => {
-                    const prefill = prefills.get(id()) ?? null;
+                    // A side question's quoted passages, when its draft is empty.
+                    const side = takeSidePrefill(id());
+                    const prefill =
+                      prefills.get(id()) ??
+                      (side !== null && available ? { text: side, send: false } : null);
                     prefills.delete(id());
                     const current = submission();
                     const handoff =
@@ -2591,6 +2618,7 @@ export function createConversationUi(
                         }
                       : undefined)
                   }
+                  openThreadCard={shell()?.openThread}
                   openSessionHere={(sessionId) => {
                     void shell()?.openSession(sessionId).catch(report);
                   }}
@@ -2616,6 +2644,19 @@ export function createConversationUi(
               )}
             </Each>
             <If when={input.compact !== undefined}>{request}</If>
+            <If when={input.compact?.thread === true}>
+              <CompactComposer
+                thread
+                session={composerSession}
+                stop={() => stopAction()()}
+                expand={input.compact!.expand}
+                // The card has no model picker; the full conversation does.
+                chooseModel={input.compact!.expand}
+                attach={(node) => {
+                  compactInput = node;
+                }}
+              />
+            </If>
             <If when={input.compact === undefined}>
               <ComposerView
                 dropFiles={(drop) => {

@@ -35,12 +35,14 @@ import {
   type ConversationShell,
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
+  type PendingThread,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
 import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
 import { ownTitleBar } from './chrome';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
+import { PendingThreadCard } from './ThreadCard';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
@@ -55,6 +57,8 @@ type Configuration = {
 type SavedRoot = {
   sessionId: string | null;
   sideSessionIds?: string[];
+  /** Those of `sideSessionIds` shown as side-thread cards. */
+  threadSessionIds?: string[];
   sidebarExpanded: boolean;
   settings: { model?: ModelSelection; page?: string } | null;
   panel: PanelRoute | null;
@@ -63,6 +67,10 @@ type SavedRoot = {
 type SidePane = {
   id: Signal<string>;
   handle: Signal<ConversationSessionHandle | null>;
+  /** A side thread's card beside the selected conversation; at most one is open. */
+  thread: boolean;
+  /** The conversation a card was asked from: it shows beside that one only. */
+  parent: string | null;
   render(): JSX.Element;
 };
 
@@ -82,23 +90,28 @@ function App(
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
-  const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
+  const restoredThreads = new Set(saved?.threadSessionIds ?? []);
+  const sides = signal<SidePane[]>(
+    restoredSides.map((id) => (restoredThreads.has(id) ? createThread(id) : createSide(id))),
+  );
   const besides = () => sides().map((pane) => pane.id());
   const sideFor = (id: string) => sides().find((pane) => pane.id() === id);
   function createSide(
     id: string,
     paneShell = sideShell,
     firstMessage?: string,
-    compact?: ConversationCompact,
+    compact?: ConversationCompact | ((pane: SidePane) => ConversationCompact),
   ): SidePane {
     const pane: SidePane = {
       id: signal(id),
       handle: signal<ConversationSessionHandle | null>(null),
+      thread: false,
+      parent: null,
       render: () =>
         runtime.renderView(configuration.session, conversationSessionView, {
           shell: paneShell(pane),
           firstMessage,
-          compact,
+          compact: typeof compact === 'function' ? compact(pane) : compact,
           attach(handle) {
             if (pane.handle() !== handle) pane.handle.set(handle);
           },
@@ -106,6 +119,19 @@ function App(
     };
     return pane;
   }
+  function createThread(id: string, question?: string, title?: string | null): SidePane {
+    const pane = createSide(id, sideShell, question, (card) => ({
+      thread: true,
+      title,
+      close: () => void openSide(card, null),
+      expand: () => void expandThread(card),
+    }));
+    pane.thread = true;
+    pane.parent = selected();
+    return pane;
+  }
+  // A side thread's card before its conversation exists; it stands where the card will.
+  const pendingThread = signal<{ thread: PendingThread; parent: string | null } | null>(null);
   const launcherOpened = signal(false);
   const assistant = signal<SidePane | null>(null);
   const preview = signal<ConversationPreviewHandle | null>(null);
@@ -189,6 +215,18 @@ function App(
       return false;
     }
   };
+  // The card becomes a full conversation beside the selected one.
+  const expandThread = async (pane: SidePane) => {
+    if (!alive || blocked()) return;
+    try {
+      const owner = pane.handle();
+      if (owner && !(await owner.leave())) return;
+      if (!alive || blocked() || !sides().includes(pane)) return;
+      sides.set(sides().map((side) => (side === pane ? createSide(pane.id()) : side)));
+    } catch (reason) {
+      console.warn('Could not open the side question as a conversation:', reason);
+    }
+  };
   const openSession = async (id: string | null): Promise<boolean> => {
     if (!alive || blocked() || !(await releaseAssistant(id))) return false;
     // A conversation is open in one pane at a time; selecting a side one moves it here.
@@ -211,6 +249,9 @@ function App(
         settingsOpened.set(false);
         selected.set(id);
       });
+      // A side thread's card stays with the conversation it was asked from.
+      for (const pane of sides()) if (pane.thread && pane.parent !== id) void openSide(pane, null);
+      if (pendingThread() && pendingThread()!.parent !== id) pendingThread.set(null);
       return true;
     } catch (reason) {
       console.warn('Could not switch the conversation:', reason);
@@ -265,21 +306,62 @@ function App(
     get openBeside() {
       return platform.idiom !== 'terminal' && sideRoom() > 0 ? openBeside : undefined;
     },
+    get openThread() {
+      return platform.idiom !== 'terminal' && sideRoom() > 0 ? openThread : undefined;
+    },
     ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
   };
-  function openBeside(id: string) {
+  function openBeside(id: string, options?: { thread?: boolean }) {
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
     if (assistant()?.id() === id) {
       void closeLauncher().then((closed) => {
-        if (closed) openBeside(id);
+        if (closed) openBeside(id, options);
       });
       return;
     }
     const room = sideRoom();
     if (room === 0) return;
     const open = sides();
-    if (open.length < room) sides.set([...open, createSide(id)]);
-    else void openSide(open[room - 1]!, id);
+    const thread = options?.thread === true;
+    // The pending card gives way to another card, or to a pane that needs its place.
+    if (pendingThread() && (thread || open.length + 2 > room)) pendingThread.set(null);
+    // A side thread takes the open card's place: one card, however many are asked.
+    const card = thread ? open.find((pane) => pane.thread) : undefined;
+    if (card) return void openSide(card, id);
+    const create = thread ? createThread : (next: string) => createSide(next);
+    if (open.length < room) return sides.set([...open, create(id)]);
+    const last = open[room - 1]!;
+    // A pane keeps its kind, so the other kind replaces it rather than moving in.
+    if (last.thread === thread) return void openSide(last, id);
+    void openSide(last, null).then((closed) => {
+      if (closed && alive && !blocked() && id !== selected() && !sideFor(id))
+        sides.set([...sides(), create(id)]);
+    });
+  }
+  // The card shows at once; the conversation it is for arrives later.
+  function openThread(thread: PendingThread) {
+    if (!alive || blocked()) return;
+    const room = sideRoom();
+    if (room === 0) return;
+    const show = () => {
+      if (alive && !blocked()) pendingThread.set({ thread, parent: selected() });
+    };
+    // One card at a time, and it needs a place among the panes.
+    const card = sides().find((pane) => pane.thread);
+    const leaving = card ?? (sides().length >= room ? sides()[room - 1] : undefined);
+    if (!leaving) return show();
+    void openSide(leaving, null).then((closed) => {
+      if (closed) show();
+    });
+  }
+  // The pending card's question goes to its conversation, in a card of its own.
+  function askThread(card: { thread: PendingThread }, id: string, question: string) {
+    if (!alive || pendingThread()?.thread !== card.thread) return;
+    if (blocked() || id === selected() || sideFor(id)) return pendingThread.set(null);
+    batch(() => {
+      pendingThread.set(null);
+      sides.set([...sides(), createThread(id, question, card.thread.title)]);
+    });
   }
   function sideShell(pane: SidePane): ConversationShell {
     return {
@@ -345,6 +427,9 @@ function App(
     props.saveWith(async () => ({
       sessionId: selected(),
       sideSessionIds: besides(),
+      threadSessionIds: sides()
+        .filter((pane) => pane.thread)
+        .map((pane) => pane.id()),
       sidebarExpanded: sidebarExpanded(),
       settings: settingsOpened() ? { model: settingsModel(), page: settingsPage() } : null,
       panel: plugins.panelRoute(),
@@ -384,6 +469,19 @@ function App(
           else preview()?.close();
         }}
         sides={sides}
+        cardShown={() => pendingThread() !== null}
+        card={() => {
+          const card = pendingThread();
+          return card === null ? null : (
+            <PendingThreadCard
+              thread={card.thread}
+              open={(id, question) => askThread(card, id, question)}
+              close={() => {
+                if (pendingThread() === card) pendingThread.set(null);
+              }}
+            />
+          );
+        }}
         navigation={() =>
           runtime.renderView(configuration.navigation, conversationNavigationView, { shell })
         }

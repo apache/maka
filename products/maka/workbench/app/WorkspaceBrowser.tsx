@@ -49,6 +49,7 @@ import {
   controlDisabledStyle,
 } from './ui';
 import { Icon } from './Icon';
+import { sideParent } from './sideThreads';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
 import { Automations } from './Automations';
@@ -166,7 +167,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const browser = props.browsing;
   const visibleSessions = computed(() => {
     const bot = props.botSession?.() ?? null;
-    const sessions = browser.sessions();
+    // Side questions live on the replies they asked about, not in the list.
+    const archived = browser.filter() === 'archived';
+    const sessions = browser
+      .sessions()
+      .filter((session) => archived || sideParent(session) === null);
     return workspaceSessions(sessions, bot, browser.filter(), platform.idiom !== 'terminal');
   });
   // Running and waiting first-hand work of the Bot, waiting first; the open
