@@ -48,6 +48,10 @@ impl Owner {
                 .sandbox_floor()
                 .contains(&target.spec.permission_ceiling.sandbox)
                 .map_err(|error| error.to_string())?
+            || !parent
+                .sandbox_floor()
+                .network()
+                .contains(target.spec.network_approval_ceiling())
         {
             return Err("agent_steering_isolation_unavailable".into());
         }

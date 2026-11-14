@@ -56,6 +56,7 @@ pub(crate) fn policy_view(tokens: Option<u64>) -> RunView {
                 sandbox: maka_sandbox::Sandbox::Disabled,
                 approval: maka_sandbox::Approval::Never,
             },
+            network_approval_ceiling: None,
             backend: BackendSpec::Model {
                 binding: ModelBinding {
                     connection_id: "policy".into(),

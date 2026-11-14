@@ -842,11 +842,18 @@ impl Service {
                     computer,
                 )
                 .await?;
-            let floor = if computer {
+            let mut floor = if computer {
                 access.workspace_sandbox_floor().await?
             } else {
                 access.sandbox_floor(&context.call.origin).await?
             };
+            if selection.input == ToolInput::Web
+                && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor
+            {
+                // Host HTTP still requires a destination grant. Its inherited ceiling
+                // is independent of the workspace process sandbox's base network.
+                *network = access.spec().network_approval_ceiling().clone();
+            }
             let request = services
                 .request_with_work_and_context(
                     Identity::Agent {
