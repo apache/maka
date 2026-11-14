@@ -1483,8 +1483,11 @@
     "cargo:zvariant_derive@5.15.1 registry+https://github.com/rust-lang/crates.io-index": "d2a1df59cf5f99d30e08bf03aa8a1a041b97fed9fce896bb5b5de40d616e434c",
     "cargo:zvariant_utils@4.2.0 registry+https://github.com/rust-lang/crates.io-index": "58641071a870aa97a0f38637179049eaf2ffaeeafbbb53e016c3d409411b9f88",
     "cargo:zvariant@5.15.1 registry+https://github.com/rust-lang/crates.io-index": "8606849c24d82d7d012980cba51a766abfe0307b48f936ec59e11b9a05b9c288",
+    "npm:@json-render/core@0.22.0 https://registry.npmjs.org/@json-render/core/-/core-0.22.0.tgz sha512-BIfJ2V3bLYETetBu2KWoxxRPU5cSAf77dDTBgqaV54kEAfyHta1psPJgNk0fDcB3FCrnCZ5KO/X41VDkrNSYgw==": "e1991c2b619e2e74d0e2d2d2ec278c08701e48cd8c7b097dac6ba0698c90dd12",
+    "npm:@json-render/directives@0.22.0 https://registry.npmjs.org/@json-render/directives/-/directives-0.22.0.tgz sha512-m0TSZfAUzhiHF1YX5Fkdfh/f0EwQu2p/oXEnIx1F9xdtV4UwIqqZ7UG+drNRAFPn8oMxRYdBq4tVXT5/Ksw59g==": "bf7e389ec4645fc87d4870eaf98b700386529b92a122c1cd8c50995537896f70",
     "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
-    "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
+    "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b",
+    "npm:zod@4.6.7 https://registry.npmjs.org/zod/-/zod-4.6.7.tgz sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==": "8d405b2be44c8f37150acc9a7b5f1cf6103ddc26b043e56d34625b1c45d3a2ff"
   },
-  "sha256": "6ffe25b937398d099f31cb0ef2c90bd6e4965dd2fe82acc7fdd62db959e09759"
+  "sha256": "4bc7a04a7f48315aeb355492b473f9bdaf1f7a452f219ce3fc379c4def6da1c0"
 }

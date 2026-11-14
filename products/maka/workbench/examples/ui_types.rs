@@ -42,6 +42,7 @@ const SOURCES: &[&str] = &[
     "products/maka/workbench/tests/fixtures/skill-input.tsx",
     "products/maka/workbench/tests/fixtures/subagent-settings.tsx",
     "products/maka/workbench/tests/fixtures/mermaid-view.tsx",
+    "products/maka/workbench/tests/fixtures/spec-view.tsx",
     "products/maka/terminal-shell/tests/real_host/mermaid_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/model_settings_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/permission_preview.tsx",
@@ -90,10 +91,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir(&output)
         .map_err(|source| FileError::new("create fresh output", &output, source))?;
 
-    let ui_sets = [
-        nsh_base::registry().into(),
-        maka_workbench::bindings::ui_set_description(),
-    ];
+    let base = nsh_base::registry();
+    let ui_sets: Vec<_> = base
+        .sets()
+        .into_iter()
+        .map(Into::into)
+        .chain(std::iter::once(
+            maka_workbench::bindings::ui_set_description(),
+        ))
+        .collect();
     let mut definitions = nsh_js::type_definitions(&ui_sets);
     definitions.extend(nsh_bundler::type_definitions());
     let tokens = nsh_base::Theme::default().into_tokens();

@@ -199,6 +199,7 @@ fn main() {
     let mut source = String::from("const BUNDLED: &[Bundled] = &[\n");
     for (id, relative, resources) in [
         ("maka-cua", "platform/computer-use/skills/maka-cua", &[][..]),
+        ("maka-generative-ui", "skills/maka-generative-ui", &[][..]),
         (
             "maka-plugin-authoring",
             "skills/maka-plugin-authoring",

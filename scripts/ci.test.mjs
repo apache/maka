@@ -128,6 +128,7 @@ test('a planned Root cannot go green on missing or zero test-selection evidence'
 
 test('an embedded product Markdown change selects its actual runtime consumers', () => {
   for (const path of [
+    'skills/maka-generative-ui/SKILL.md',
     'skills/maka-plugin-authoring/SKILL.md',
     'platform/computer-use/skills/computer.md',
   ]) {
@@ -229,17 +230,21 @@ test('macOS recovery cases stay in a required worker with the complete workspace
 });
 
 test('skill and product inputs still select the native Windows skills consumer', () => {
-  const path = 'skills/maka-plugin-authoring/SKILL.md';
-  const plan = createPlan({
-    root,
-    changes: [path],
-    metadata: {},
-    revision: 'test',
-    baseline: 'base',
-  });
-  assert.ok(plan.suites['windows-skills']);
-  const worker = plan.workers.find((worker) => worker.id === 'native-windows');
-  assert.ok(worker.suites.includes('windows-skills'));
+  for (const path of [
+    'skills/maka-generative-ui/SKILL.md',
+    'skills/maka-plugin-authoring/SKILL.md',
+  ]) {
+    const plan = createPlan({
+      root,
+      changes: [path],
+      metadata: {},
+      revision: 'test',
+      baseline: 'base',
+    });
+    assert.ok(plan.suites['windows-skills']);
+    const worker = plan.workers.find((worker) => worker.id === 'native-windows');
+    assert.ok(worker.suites.includes('windows-skills'));
+  }
 });
 
 test('Windows process and account-guard regressions are selected from their actual consumers', () => {

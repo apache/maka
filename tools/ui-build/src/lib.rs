@@ -138,12 +138,19 @@ pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result
         "TerminalGrid",
         "UploadIntake",
     ]);
+    let base = nsh_base::registry();
+    let ui_sets = base
+        .sets()
+        .into_iter()
+        .map(Into::into)
+        .chain(std::iter::once(host.into()))
+        .collect();
     let bundled = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: entry.clone(),
         minify: false,
         split: false,
         fail_on_unresolved_imports: true,
-        ui_sets: vec![nsh_base::registry().into(), host.into()],
+        ui_sets,
         asset_root_from: asset_root.map(Path::to_path_buf),
         ..Default::default()
     })?;

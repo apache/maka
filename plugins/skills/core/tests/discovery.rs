@@ -268,3 +268,29 @@ async fn same_named_skills_select_whole_directories_and_fall_back_after_removal(
         fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[tokio::test]
+async fn bundled_generative_ui_skill_is_discoverable_and_loadable() {
+    let snapshot = maka_skills::scan_with_bundled(&[], &CancellationToken::new())
+        .await
+        .unwrap();
+    let preferences = Preferences::Available(BTreeMap::new());
+    let host = HostCapabilities::default();
+    let catalog = Catalog {
+        discovery: &snapshot,
+        preferences: &preferences,
+        host: &host,
+    };
+    let loaded = catalog.load("maka-generative-ui").unwrap();
+    assert_eq!(
+        loaded.skill.location.reference,
+        "bundled:maka-generative-ui"
+    );
+    assert!(
+        loaded.skill.document.issues.is_empty(),
+        "{:?}",
+        loaded.skill.document.issues
+    );
+    assert!(loaded.instructions.contains("```spec"));
+    assert!(loaded.instructions.contains("CLIENT-ONLY BOUNDARY"));
+}
