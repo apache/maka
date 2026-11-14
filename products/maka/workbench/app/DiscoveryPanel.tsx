@@ -159,7 +159,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     try {
       await readDetail(id, true);
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
     }
   };
   const edit = async (fresh: boolean) => {
@@ -179,7 +179,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       const captured = await capture();
       if (alive && ticket === formGeneration) basis.set(captured);
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
     }
   };
   const watch = async () => {
@@ -223,7 +223,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       }
       if (alive) error.set(message('Discovery updates disconnected'));
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
     } finally {
       const opened = stream;
       stream = null;
@@ -250,7 +250,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (result.kind === 'rejected') throw new Error(result.reason);
       if (alive) await readDetail(current.task.id);
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not update the discovery plan.'));
     } finally {
       if (alive) busy.set(false);
     }
@@ -298,7 +298,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         await readDetail(result.taskId, true);
       }
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not update the discovery plan.'));
     } finally {
       if (alive) busy.set(false);
     }
