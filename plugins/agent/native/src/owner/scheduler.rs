@@ -177,10 +177,22 @@ impl Owner {
         let scheduler = &self.scheduler;
         let _gate = scheduler.gate.lock().await;
         let catalog = scheduler.load().await?;
+        let discovery_session = match &input {
+            ScheduleRead::Discovery { session_id, .. } => {
+                self.session(session_id).await?;
+                Some(session_id.clone())
+            }
+            _ => None,
+        };
         match input {
             ScheduleRead::List {
                 cursor,
                 expected_revision,
+            }
+            | ScheduleRead::Discovery {
+                cursor,
+                expected_revision,
+                ..
             } => {
                 let revision = catalog.revision.unwrap_or(0);
                 if expected_revision.is_some_and(|expected| expected != revision) {
@@ -192,6 +204,15 @@ impl Owner {
                 let mut tasks = Vec::new();
                 let mut next_cursor = None;
                 for (id, saved) in &catalog.plans {
+                    let matches_view = match &saved.plan.task.effect {
+                        ScheduledEffect::Discovery { target, .. } => {
+                            discovery_session.as_ref() == Some(&target.session_id)
+                        }
+                        _ => discovery_session.is_none(),
+                    };
+                    if !matches_view {
+                        continue;
+                    }
                     if cursor.as_ref().is_some_and(|after| id <= after) {
                         continue;
                     }

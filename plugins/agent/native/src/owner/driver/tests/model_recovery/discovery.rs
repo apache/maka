@@ -745,14 +745,17 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     finish_text(&mut socket, "Cannot propose discovery here").await;
     f.quiescent(session).await;
     assert_eq!(
-        f.query("schedules", json!({"kind":"list"})).await["tasks"],
+        f.query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
+            .await["tasks"],
         json!([])
     );
     f.send("Propose a discovery").await;
     let (mut socket, _) = next(&listener).await;
     tool(&mut socket, "ScheduledTask", proposal).await;
     let (mut socket, _) = next(&listener).await;
-    let page = f.query("schedules", json!({"kind":"list"})).await;
+    let page = f
+        .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
+        .await;
     let task = &page["tasks"][0];
     let id = task["id"].as_str().unwrap();
     assert_eq!(task["status"], "paused");

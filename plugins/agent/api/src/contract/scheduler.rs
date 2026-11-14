@@ -120,6 +120,11 @@ pub struct ScheduledInput {
 )]
 #[schemars(rename = "AgentScheduleRead")]
 pub enum ScheduleRead {
+    Discovery {
+        session_id: String,
+        cursor: Option<String>,
+        expected_revision: Option<u64>,
+    },
     List {
         cursor: Option<String>,
         expected_revision: Option<u64>,

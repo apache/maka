@@ -2431,6 +2431,12 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'discovery';
+      sessionId: string;
+      cursor?: string | null;
+      expectedRevision?: number | null;
+    }
+  | {
       kind: 'list';
       cursor?: string | null;
       expectedRevision?: number | null;
