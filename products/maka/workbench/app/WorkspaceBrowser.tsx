@@ -861,7 +861,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             ? inputAction(createWorkspace, {
                                 workspace: {
                                   kind: 'project',
-                                  project: project()!.reference,
+                                  projectId: project()!.reference.id,
                                   path: project()!.path!,
                                 },
                                 origin: props.selected(),

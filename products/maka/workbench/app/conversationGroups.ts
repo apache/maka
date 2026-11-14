@@ -130,7 +130,7 @@ export function groupWorkspace(
   if (group.project) {
     const project = group.project;
     if (project.archived || !project.available || !project.path) return null;
-    return { kind: 'project', project: project.reference, path: project.path };
+    return { kind: 'project', projectId: project.reference.id, path: project.path };
   }
   const sessionId = group.sessions[0];
   return sessionId ? { kind: 'session', sessionId } : null;

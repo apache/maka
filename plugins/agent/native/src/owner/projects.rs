@@ -317,13 +317,13 @@ impl Owner {
 
     pub(super) async fn project_selection(
         &self,
-        selected: &ProjectRef,
+        project_id: Uuid,
         path: &str,
     ) -> Result<Option<(ProjectRecord, String)>, String> {
-        let Some(record) = self.project_record(selected.id).await? else {
+        let Some(record) = self.project_record(project_id).await? else {
             return Ok(None);
         };
-        if reference(&record) != *selected || record.archived_at.is_some() {
+        if record.archived_at.is_some() {
             return Ok(None);
         }
         let Some((registration, path)) = self.project_directory(path).await? else {
@@ -342,10 +342,10 @@ impl Owner {
 
     pub(super) async fn select_project(
         &self,
-        selected: ProjectRef,
+        project_id: Uuid,
         path: &str,
     ) -> Result<Option<PreparedProjectWorkspace>, String> {
-        let Some((record, path)) = self.project_selection(&selected, path).await? else {
+        let Some((record, path)) = self.project_selection(project_id, path).await? else {
             return Ok(None);
         };
         let writer = self
@@ -354,7 +354,7 @@ impl Owner {
             .map_err(|error| error.to_string())?;
         let project = self
             .store
-            .plan_selected_project(record, vec![path.clone()], now(), &writer)
+            .plan_selected_project(record, path.clone(), now(), &writer)
             .map_err(|error| error.to_string())?;
         let root = self
             .store

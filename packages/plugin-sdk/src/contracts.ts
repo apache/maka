@@ -6360,8 +6360,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -6369,7 +6370,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -6404,21 +6405,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
             },
           },
@@ -9895,8 +9881,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -9904,7 +9891,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -9939,21 +9926,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
               WorkspacePath: {
                 type: 'object',
@@ -26155,8 +26127,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -26164,7 +26137,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -26199,21 +26172,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
             },
           },
@@ -36134,8 +36092,9 @@ export const contracts: {
                         type: 'string',
                         const: 'project',
                       },
-                      project: {
-                        $ref: '#/$defs/AgentProjectRef',
+                      projectId: {
+                        type: 'string',
+                        format: 'uuid',
                       },
                       path: {
                         type: 'string',
@@ -36143,7 +36102,7 @@ export const contracts: {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'path'],
+                    required: ['kind', 'projectId', 'path'],
                   },
                   {
                     description:
@@ -36178,21 +36137,6 @@ export const contracts: {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentProjectRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
               },
               AgentBackendPreference: {
                 description:

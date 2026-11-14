@@ -2344,7 +2344,7 @@ export type AgentWorkspaceSelection =
     }
   | {
       kind: 'project';
-      project: AgentProjectRef;
+      projectId: string;
       path: string;
     }
   | {
@@ -7015,10 +7015,6 @@ export interface AgentCreate {
   labels: string[];
   workspace: AgentWorkspaceSelection;
 }
-export interface AgentProjectRef {
-  id: string;
-  revision: string;
-}
 export interface AgentGoalRead {
   sessionId: string;
 }
@@ -7351,6 +7347,10 @@ export interface AgentProject {
    * The location the Project was last used at, when it is available.
    */
   path: string | null;
+}
+export interface AgentProjectRef {
+  id: string;
+  revision: string;
 }
 export interface AgentProjectLocation {
   path: string;
