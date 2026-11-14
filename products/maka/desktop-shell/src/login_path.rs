@@ -26,7 +26,7 @@ use std::{
         process::CommandExt,
     },
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc::{self, RecvTimeoutError},
     time::{Duration, Instant},
 };
@@ -107,23 +107,6 @@ fn account_shell() -> Option<PathBuf> {
     }
 }
 
-fn capture_args(shell: &Path, mark: &str) -> (&'static [&'static str], String) {
-    let name = shell
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or_default();
-    let prefix = if name == "nu" { "^" } else { "" };
-    // Spawn /bin/sh so shells where $PATH is a list (fish, nu, csh) export a colon-delimited PATH.
-    let script =
-        format!("{prefix}/bin/sh -c 'printf \"%s%s%s\" \"$1\" \"$PATH\" \"$1\"' sh {mark}");
-    let flags: &'static [&'static str] = if matches!(name, "csh" | "tcsh") {
-        &["-ic"]
-    } else {
-        &["-i", "-l", "-c"]
-    };
-    (flags, script)
-}
-
 enum Chunk {
     Bytes(Vec<u8>),
     Overflow,
@@ -135,14 +118,22 @@ struct Probe {
 }
 
 impl Probe {
-    fn spawn(
-        shell: &Path,
-        flags: &[&str],
-        script: &str,
-    ) -> Result<(Self, std::process::ChildStdout), String> {
+    fn spawn(shell: &Path, mark: &str) -> Result<(Self, std::process::ChildStdout), String> {
+        let name = shell
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default();
+        let prefix = if name == "nu" { "^" } else { "" };
+        // Spawn /bin/sh so shells where $PATH is a list (fish, nu, csh) export a colon-delimited PATH.
+        let script =
+            format!("{prefix}/bin/sh -c 'printf \"%s%s%s\" \"$1\" \"$PATH\" \"$1\"' sh {mark}");
         let mut command = Command::new(shell);
+        if matches!(name, "csh" | "tcsh") {
+            command.arg0(format!("-{name}")).arg("-ic");
+        } else {
+            command.args(["-i", "-l", "-c"]);
+        }
         command
-            .args(flags)
             .arg(script)
             .env("DISABLE_AUTO_UPDATE", "true")
             .env("DISABLE_UPDATE_PROMPT", "true")
@@ -174,17 +165,6 @@ impl Probe {
             }
         }
     }
-
-    fn try_wait(&mut self, shell: &Path) -> Result<Option<ExitStatus>, String> {
-        let status = self
-            .child
-            .try_wait()
-            .map_err(|error| format!("{}: {error}", shell.display()))?;
-        if status.is_some() {
-            self.kill_group();
-        }
-        Ok(status)
-    }
 }
 
 impl Drop for Probe {
@@ -196,8 +176,7 @@ impl Drop for Probe {
 
 fn capture(shell: &Path, timeout: Duration) -> Result<OsString, String> {
     let mark = format!("__MAKA_PATH_{}__", uuid::Uuid::new_v4().simple());
-    let (flags, script) = capture_args(shell, &mark);
-    let (mut probe, mut stdout) = Probe::spawn(shell, flags, &script)?;
+    let (mut probe, mut stdout) = Probe::spawn(shell, &mark)?;
     let (tx, rx) = mpsc::sync_channel(16);
     std::thread::spawn(move || {
         let mut total = 0usize;
@@ -222,23 +201,14 @@ fn capture(shell: &Path, timeout: Duration) -> Result<OsString, String> {
     let mut eof = false;
     loop {
         if let Some(parsed) = extract(&output, mark.as_bytes()) {
-            let path = parsed.map_err(str::to_owned)?;
-            let settle = (Instant::now() + Duration::from_millis(100)).min(deadline);
-            loop {
-                if let Some(status) = probe.try_wait(shell)? {
-                    return if status.success() {
-                        Ok(path)
-                    } else {
-                        Err(format!("{} exited with {status}", shell.display()))
-                    };
-                }
-                if Instant::now() >= settle {
-                    return Ok(path);
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            return parsed.map_err(str::to_owned);
         }
-        if eof && let Some(status) = probe.try_wait(shell)? {
+        if eof
+            && let Some(status) = probe
+                .child
+                .try_wait()
+                .map_err(|error| format!("{}: {error}", shell.display()))?
+        {
             return if status.success() {
                 Err(format!("missing PATH markers from {}", shell.display()))
             } else {

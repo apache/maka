@@ -215,3 +215,34 @@ fn failed_or_flooding_login_shell_falls_back_to_inherited_path() {
         assert_eq!(recorded, "desktop\n/usr/bin:/bin\nabsent\n");
     }
 }
+
+#[test]
+fn csh_login_shell_loads_cshrc_and_login() {
+    let Some(csh) = ["/bin/tcsh", "/bin/csh", "/usr/bin/tcsh", "/usr/bin/csh"]
+        .into_iter()
+        .map(Path::new)
+        .find(|candidate| candidate.is_file())
+    else {
+        return;
+    };
+
+    let staged = Staged::new("csh-login");
+    std::fs::write(
+        staged.directory.join(".cshrc"),
+        "setenv PATH /from-cshrc:/usr/bin:/bin\n",
+    )
+    .unwrap();
+    std::fs::write(
+        staged.directory.join(".login"),
+        "setenv PATH /from-login:$PATH\n",
+    )
+    .unwrap();
+
+    let mut command = staged.command();
+    command.env("HOME", &staged.directory).env("SHELL", csh);
+    let (_, recorded) = staged.run(command);
+    assert_eq!(
+        recorded,
+        "desktop\n/from-login:/from-cshrc:/usr/bin:/bin\nabsent\n"
+    );
+}
