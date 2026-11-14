@@ -1861,6 +1861,35 @@ async fn desktop_previews_an_incoming_session_message() {
             }),
         )
         .await;
+    // Delivery changes sidebar recency; admit both ends before locating the row.
+    let first = desktop.request(&mut fixture).await;
+    let second = desktop.request(&mut fixture).await;
+    let mut roles = Vec::new();
+    for request in [&first, &second] {
+        let message = request.body["messages"].as_array().unwrap().last().unwrap();
+        let role = message["role"].as_str().unwrap();
+        roles.push(role);
+        let content = message["content"].as_str().unwrap();
+        match role {
+            "tool" => {
+                let receipt: Value = serde_json::from_str(content).unwrap();
+                assert_eq!(receipt["kind"], "queued", "{receipt}");
+                assert_eq!(receipt["sessionId"], recipient["session"]["id"]);
+                assert!(receipt["messageId"].is_string(), "{receipt}");
+            }
+            "user" => {
+                assert!(content.contains(&fixture.session), "{content}");
+                assert!(
+                    content
+                        .ends_with("**The build passed.**\nPlease review the compiler warnings."),
+                    "{content}"
+                );
+            }
+            _ => panic!("unexpected preview request: {}", request.body),
+        }
+    }
+    roles.sort_unstable();
+    assert_eq!(roles, ["tool", "user"]);
     desktop.press("Open conversation Build review").await;
     let summary = "From NSH real Agent · The build passed. Please review the compiler warnings.";
     desktop.control(summary).await;
@@ -1872,8 +1901,8 @@ async fn desktop_previews_an_incoming_session_message() {
         .press("Open source conversation beside this one")
         .await;
     desktop.control("Close side pane").await;
-    desktop.request(&mut fixture).await.finish().await;
-    desktop.request(&mut fixture).await.finish().await;
+    first.finish().await;
+    second.finish().await;
     desktop.close().await;
     fixture.finish().await;
 }
