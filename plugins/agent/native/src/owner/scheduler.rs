@@ -42,10 +42,64 @@ type Plan = TaskPlan<ScheduledEffect, Approval>;
     reason = "Scheduler approval transfers its original record inline without an allocation per observation"
 )]
 pub(in crate::owner) enum Approval {
-    Execution {
-        approval: super::notifications::BackgroundApproval,
-    },
+    Execution { approval: BackgroundGrant },
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Schedule records store their backend inline"
+)]
+pub(super) enum BackgroundGrant {
+    Model(super::notifications::BackgroundApproval),
+    Executor(ExecutorApproval),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ExecutorApproval {
+    pub(super) language: Language,
+    pub(super) target: ScheduledTarget,
+    pub(super) selection: maka_agent_facts::executor::Selection,
+    pub(super) sandbox_ceiling: Option<maka_sandbox::Sandbox>,
+}
+
+impl BackgroundGrant {
+    pub(super) fn target(&self) -> &ScheduledTarget {
+        match self {
+            Self::Model(approval) => &approval.target,
+            Self::Executor(approval) => &approval.target,
+        }
+    }
+
+    pub(super) fn language(&self) -> Language {
+        match self {
+            Self::Model(approval) => approval.language,
+            Self::Executor(approval) => approval.language,
+        }
+    }
+
+    pub(super) fn same_route(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Model(left), Self::Model(right)) => {
+                left.model == right.model
+                    && left
+                        .accepted_model
+                        .same_execution_route(&right.accepted_model)
+            }
+            (Self::Executor(left), Self::Executor(right)) => left.selection == right.selection,
+            _ => false,
+        }
+    }
+
+    fn sandbox_ceiling(&self) -> Option<&maka_sandbox::Sandbox> {
+        match self {
+            Self::Model(approval) => approval.sandbox_ceiling.as_ref(),
+            Self::Executor(approval) => approval.sandbox_ceiling.as_ref(),
+        }
+    }
+}
+
 pub(crate) struct Scheduler {
     storage: Arc<maka_host_runtime::storage::Storage>,
     pub(in crate::owner) gate: Arc<Mutex<()>>,
@@ -195,14 +249,14 @@ impl Owner {
         plan: &Plan,
         saved: Option<&Saved>,
         writer: &maka_event_log::root_store::DataWriter,
-    ) -> Result<PreparedScheduleApproval, String> {
+    ) -> Result<PreparedBackgroundGrant, String> {
         let sandbox_ceiling = saved
             .and_then(|saved| saved.plan.authorization.as_ref())
-            .and_then(|Approval::Execution { approval }| approval.sandbox_ceiling.as_ref());
+            .and_then(|Approval::Execution { approval }| approval.sandbox_ceiling());
         let authorization = self.approve_schedule(plan, sandbox_ceiling).await?;
         let metadata = match &authorization {
             Approval::Execution { approval } => {
-                let target = &approval.target;
+                let target = approval.target();
                 let current = self.mutable_session(&target.session_id).await?;
                 if current.archived
                     || current.configuration.workspace != target.workspace
@@ -222,7 +276,7 @@ impl Owner {
                 )
             }
         };
-        Ok(PreparedScheduleApproval {
+        Ok(PreparedBackgroundGrant {
             authorization,
             metadata,
             effect: plan.task.effect.clone(),
@@ -230,7 +284,7 @@ impl Owner {
     }
 }
 
-struct PreparedScheduleApproval {
+struct PreparedBackgroundGrant {
     authorization: Approval,
     metadata: Option<maka_event_log::root_store::SessionRevisionGuard>,
     effect: ScheduledEffect,

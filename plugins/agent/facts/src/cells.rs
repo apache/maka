@@ -80,6 +80,16 @@ impl CellId {
         input.extend_from_slice(call.as_bytes());
         Self(cell_uuid(b"maka.agent.cell.parent.v1\0", &input))
     }
+    pub fn for_external(
+        run: crate::durable::RunId,
+        key: crate::external_effects::ExternalEffectKey,
+    ) -> Self {
+        let mut input = [0; 48];
+        input[..16].copy_from_slice(run.as_uuid().as_bytes());
+        input[16..32].copy_from_slice(key.task.as_uuid().as_bytes());
+        input[32..].copy_from_slice(key.operation.as_bytes());
+        Self(cell_uuid(b"maka.external.cell.parent.v1\0", &input))
+    }
     pub fn started_fact_id(self) -> FactId {
         FactId::try_from(cell_uuid(b"maka.cell.started.v1\0", self.0.as_bytes()))
             .expect("UUIDv8 is non-nil")
@@ -127,8 +137,33 @@ impl std::fmt::Display for CellId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CellOwner {
-    Agent { link: AgentStepLink, call: String },
-    Standalone { session: String },
+    Agent {
+        link: AgentStepLink,
+        call: String,
+    },
+    External {
+        run: crate::durable::RunId,
+        key: crate::external_effects::ExternalEffectKey,
+    },
+    Standalone {
+        session: String,
+    },
+}
+impl CellOwner {
+    pub fn run(&self) -> Option<crate::durable::RunId> {
+        match self {
+            Self::Agent { link, .. } => Some(link.run),
+            Self::External { run, .. } => Some(*run),
+            Self::Standalone { .. } => None,
+        }
+    }
+    pub fn cell_id(&self) -> Option<CellId> {
+        match self {
+            Self::Agent { link, call } => Some(CellId::for_agent(*link, call)),
+            Self::External { run, key } => Some(CellId::for_external(*run, *key)),
+            Self::Standalone { .. } => None,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -409,9 +444,7 @@ impl CellView {
         else {
             return Err("CellStarted required".into());
         };
-        if let CellOwner::Agent { link, call } = owner
-            && *cell != CellId::for_agent(*link, call)
-        {
+        if owner.cell_id().is_some_and(|id| *cell != id) {
             return Err(CellTransitionError::Conflict(
                 "Cell identity differs from its original parent",
             ));
@@ -479,7 +512,7 @@ impl CellView {
             || self.blocks_effect_admission()
     }
     pub fn blocks_session_retirement(&self, terminal: Option<&crate::durable::Terminal>) -> bool {
-        if matches!(self.owner, CellOwner::Agent { .. })
+        if self.owner.run().is_some()
             && matches!(
                 terminal,
                 Some(crate::durable::Terminal::Cancelled | crate::durable::Terminal::Failed)

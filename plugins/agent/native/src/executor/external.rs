@@ -620,7 +620,7 @@ impl External {
         }
         let key = (conversation.to_owned(), runtime);
         if !endpoints.contains_key(&key) {
-            let endpoint = mcp::Endpoint::open(session.to_owned(), None).await?;
+            let endpoint = mcp::Endpoint::open(session.to_owned()).await?;
             endpoints.insert(key.clone(), endpoint);
         }
         let endpoint = endpoints[&key].clone();

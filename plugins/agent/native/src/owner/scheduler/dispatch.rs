@@ -37,7 +37,7 @@ impl ScriptChecks {
         id: String,
         revision: u64,
         source: String,
-        approval: super::super::notifications::BackgroundApproval,
+        approval: BackgroundGrant,
     ) {
         self.running.insert(id.clone());
         let check_owner = owner.clone();
@@ -131,6 +131,22 @@ impl Owner {
                 model,
                 thinking_level,
             } => (target, model, thinking_level),
+            ScheduledEffect::ExecutorSession { target, selection } => {
+                let approval = ExecutorApproval {
+                    language: self.native_language,
+                    target: target.clone(),
+                    selection: selection.clone(),
+                    sandbox_ceiling: sandbox_ceiling.cloned(),
+                };
+                self.prepare_scheduled_background(
+                    &BackgroundGrant::Executor(approval.clone()),
+                    &plan.task.id,
+                )
+                .await?;
+                return Ok(Approval::Execution {
+                    approval: BackgroundGrant::Executor(approval),
+                });
+            }
         };
         let basis = self
             .approve_background(
@@ -144,14 +160,14 @@ impl Owner {
             )
             .await?;
         Ok(Approval::Execution {
-            approval: super::super::notifications::BackgroundApproval {
+            approval: BackgroundGrant::Model(super::super::notifications::BackgroundApproval {
                 target: target.clone(),
                 model: model.clone(),
                 accepted_model: basis.model.clone().ok_or("scheduler_model_unavailable")?,
                 thinking_level: *thinking,
                 language: basis.language,
                 sandbox_ceiling: basis.background_sandbox_ceiling,
-            },
+            }),
         })
     }
     pub(in crate::owner) async fn approve_background(
@@ -159,6 +175,25 @@ impl Owner {
         target: &ScheduledTarget,
         model: ModelSelection,
         thinking: Option<ThinkingLevel>,
+        kind: BackgroundKind,
+        sandbox_ceiling: Option<&maka_sandbox::Sandbox>,
+    ) -> Result<CapturedRun, String> {
+        self.capture_background_backend(
+            target,
+            BackendPreference::Model {
+                connection_id: model.connection_id,
+                model_id: model.model_id,
+                thinking_level: thinking,
+            },
+            kind,
+            sandbox_ceiling,
+        )
+        .await
+    }
+    async fn capture_background_backend(
+        &self,
+        target: &ScheduledTarget,
+        backend: BackendPreference,
         kind: BackgroundKind,
         sandbox_ceiling: Option<&maka_sandbox::Sandbox>,
     ) -> Result<CapturedRun, String> {
@@ -187,16 +222,7 @@ impl Owner {
             None => native,
         };
         let captured = self
-            .capture_current_run(
-                id,
-                Some(BackendPreference::Model {
-                    connection_id: model.connection_id,
-                    model_id: model.model_id,
-                    thinking_level: thinking,
-                }),
-                String::new(),
-                native.scope(),
-            )
+            .capture_current_run(id, Some(backend), String::new(), native.scope())
             .await;
         let cleanup = native.finish().await;
         let mut basis = match (captured, cleanup) {
@@ -240,6 +266,42 @@ impl Owner {
         basis.model = Some(approval.accepted_model.clone());
         super::super::capture_budget::check_approval(&basis, approval)?;
         Ok(basis)
+    }
+    pub(super) async fn prepare_scheduled_background(
+        &self,
+        approval: &BackgroundGrant,
+        task_id: &str,
+    ) -> Result<CapturedRun, String> {
+        let kind = BackgroundKind::Schedule {
+            task_id: task_id.into(),
+        };
+        self.prepare_background(approval, kind).await
+    }
+    pub(in crate::owner) async fn prepare_background(
+        &self,
+        approval: &BackgroundGrant,
+        kind: BackgroundKind,
+    ) -> Result<CapturedRun, String> {
+        match approval {
+            BackgroundGrant::Model(approval) => {
+                self.prepare_approved_background(approval, kind).await
+            }
+            BackgroundGrant::Executor(approval) => {
+                if approval.selection.executor != "external" {
+                    return Err("scheduler_executor_unavailable".into());
+                }
+                let backend = BackendPreference::Executor {
+                    selection: approval.selection.clone(),
+                };
+                self.capture_background_backend(
+                    &approval.target,
+                    backend,
+                    kind,
+                    approval.sandbox_ceiling.as_ref(),
+                )
+                .await
+            }
+        }
     }
     pub(in crate::owner) fn start_schedules(self: &Arc<Self>) {
         if !self.settings.scheduled_tasks {
@@ -513,12 +575,7 @@ impl Owner {
             MessageResolution::Missing => {}
         }
         let mut basis = match self
-            .prepare_approved_background(
-                approval,
-                BackgroundKind::Schedule {
-                    task_id: fire.task_id.clone(),
-                },
-            )
+            .prepare_scheduled_background(approval, &fire.task_id)
             .await
         {
             Ok(basis) => basis,
@@ -528,6 +585,9 @@ impl Owner {
                     "scheduler_authorization_changed"
                         | "background_model_route_changed"
                         | "scheduler_disabled"
+                        | "scheduler_executor_unavailable"
+                        | "agent_executor_unavailable"
+                        | "agent_executor_runtime_required"
                         | "agent_session_unavailable"
                 ) =>
             {
@@ -568,7 +628,7 @@ impl Owner {
                         pinned: false,
                         labels: vec![],
                         workspace,
-                        permissions: approval.target.permissions.clone(),
+                        permissions: approval.target().permissions.clone(),
                         boundary_revision: 0,
                     },
                     fire.scheduled_at as u64,

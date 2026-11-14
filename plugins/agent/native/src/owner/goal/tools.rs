@@ -190,41 +190,65 @@ impl ToolPreparer for Goals {
                                 }) {
                                     return Err(failed("goal_status_tool_unavailable"));
                                 }
-                                let maka_agent_facts::durable::BackendSpec::Model {
-                                    binding,
-                                    descriptor,
-                                } = &view.spec.backend
-                                else {
-                                    return Err(failed("goal_model_required"));
+                                use super::super::scheduler::{BackgroundGrant, ExecutorApproval};
+                                use maka_agent_facts::durable::BackendSpec;
+
+                                let target = ScheduledTarget {
+                                    session_id: session.clone(),
+                                    workspace: session_config.workspace,
+                                    permissions: session_config.permissions,
+                                    boundary_revision: session_config.boundary_revision,
+                                    binding: session_config.binding,
                                 };
-                                let accepted = crate::model::AcceptedModel::from_backend(
-                                    &view.spec.backend,
-                                    &captured
-                                        .durable
-                                        .content(root.run_id, descriptor.clone())
-                                        .await
-                                        .map_err(failed)?,
-                                )
-                                .map_err(failed)?;
-                                let grant = super::super::notifications::BackgroundApproval {
-                                    target: ScheduledTarget {
-                                        session_id: session.clone(),
-                                        workspace: session_config.workspace,
-                                        permissions: session_config.permissions,
-                                        boundary_revision: session_config.boundary_revision,
-                                        binding: session_config.binding,
-                                    },
-                                    model: ModelSelection {
-                                        connection_id: binding.connection_id.clone(),
-                                        model_id: binding.model.clone(),
-                                    },
-                                    thinking_level: accepted.thinking_level,
-                                    accepted_model: accepted,
-                                    language: view.spec.language,
-                                    sandbox_ceiling: None,
+                                let language = view.spec.language;
+                                let grant = match &view.spec.backend {
+                                    BackendSpec::Model {
+                                        binding,
+                                        descriptor,
+                                    } => {
+                                        let accepted = crate::model::AcceptedModel::from_backend(
+                                            &view.spec.backend,
+                                            &captured
+                                                .durable
+                                                .content(root.run_id, descriptor.clone())
+                                                .await
+                                                .map_err(failed)?,
+                                        )
+                                        .map_err(failed)?;
+                                        BackgroundGrant::Model(
+                                            super::super::notifications::BackgroundApproval {
+                                                target,
+                                                model: ModelSelection {
+                                                    connection_id: binding.connection_id.clone(),
+                                                    model_id: binding.model.clone(),
+                                                },
+                                                thinking_level: accepted.thinking_level,
+                                                accepted_model: accepted,
+                                                language,
+                                                sandbox_ceiling: None,
+                                            },
+                                        )
+                                    }
+                                    BackendSpec::Executor { selection, .. }
+                                        if selection.executor == "external" =>
+                                    {
+                                        BackgroundGrant::Executor(ExecutorApproval {
+                                            target,
+                                            selection: selection.clone(),
+                                            sandbox_ceiling: Some(
+                                                view.spec.permission_ceiling.sandbox,
+                                            ),
+                                            language,
+                                        })
+                                    }
+                                    _ => {
+                                        return Err(failed(
+                                            "Goal requires an active model or external agent",
+                                        ));
+                                    }
                                 };
                                 let arm = Arm {
-                                    language: grant.language,
+                                    language,
                                     operation_id: id,
                                     objective: input.objective,
                                     grant,

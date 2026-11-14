@@ -101,6 +101,7 @@ pub(super) fn owned_content(
     let view = read(c, session, cell)?.ok_or_else(|| invalid("Cell not found in this session"))?;
     match view.owner {
         CellOwner::Agent { link, .. } => crate::sql::owned_content(c, link.run, reference),
+        CellOwner::External { run, .. } => crate::sql::owned_content(c, run, reference),
         CellOwner::Standalone { .. } => {
             let id = content_id(c, reference)?;
             c.query_row("SELECT c.payload FROM contents c JOIN agent_standalone_cell_pins p ON p.content_id=c.id WHERE p.cell=? AND c.id=?",params![cell.to_string(),id],|r|r.get(0)).optional()?.ok_or_else(||invalid("content not retained by this Cell"))
@@ -337,13 +338,15 @@ pub(crate) fn apply(
         return Ok(());
     };
     let view = if let CellEvent::Started { owner, .. } = event {
-        let CellOwner::Agent { link, call } = owner else {
-            return Err(invalid("Standalone Cell cannot enter Agent facts"));
-        };
-        if link.run != recorded.run {
-            return Err(invalid("Cell AgentStepLink belongs to another Run"));
+        if owner.run() != Some(recorded.run) {
+            return Err(invalid("Cell belongs to another Run"));
         }
-        let row_exists: bool = c.query_row(
+        if recorded.id != event.cell().started_fact_id() {
+            return Err(StoreError::EventConflict);
+        }
+        match owner {
+            CellOwner::Agent { link, call } => {
+                let row_exists: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_attempt_ids WHERE attempt=? AND run=? AND step=?)",
             params![
                 link.attempt.to_string(),
@@ -352,27 +355,34 @@ pub(crate) fn apply(
             ],
             |r| r.get(0),
         )?;
-        if !row_exists {
-            return Err(invalid("Cell owner is not an actual admitted Agent step"));
-        }
-        if recorded.id != event.cell().started_fact_id() {
-            return Err(StoreError::EventConflict);
-        }
-        let key = ToolKey {
-            attempt: link.attempt,
-            call: call.clone(),
-        };
-        let body: Option<String> = c
-            .query_row(
-                "SELECT body FROM agent_tools WHERE run=? AND key=?",
-                params![recorded.run.to_string(), crate::fold::tool_key(&key)],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let parent: crate::fold::Tool =
-            serde_json::from_str(&body.ok_or_else(|| invalid("Cell parent T1 was not recorded"))?)?;
-        if parent.key != key || !parent.admitted || parent.accepted.is_some() {
-            return Err(invalid("Cell parent has not passed actual T1 admission"));
+                if !row_exists {
+                    return Err(invalid("Cell owner is not an actual admitted Agent step"));
+                }
+                let key = ToolKey {
+                    attempt: link.attempt,
+                    call: call.clone(),
+                };
+                let body: Option<String> = c
+                    .query_row(
+                        "SELECT body FROM agent_tools WHERE run=? AND key=?",
+                        params![recorded.run.to_string(), crate::fold::tool_key(&key)],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let parent: crate::fold::Tool = serde_json::from_str(
+                    &body.ok_or_else(|| invalid("Cell parent T1 was not recorded"))?,
+                )?;
+                if parent.key != key || !parent.admitted || parent.accepted.is_some() {
+                    return Err(invalid("Cell parent has not passed actual T1 admission"));
+                }
+            }
+            CellOwner::External { key, .. } => {
+                let parent = crate::external_effects::read_original(c, recorded.run, key)?;
+                if !parent.admitted || parent.returned.is_some() {
+                    return Err(invalid("External Cell parent is not admitted"));
+                }
+            }
+            CellOwner::Standalone { .. } => unreachable!("standalone Cell has no Run"),
         }
         if exists(c, event.cell(), Some(recorded.id))? {
             return Err(StoreError::EventConflict);
@@ -381,10 +391,7 @@ pub(crate) fn apply(
     } else {
         let mut view =
             read(c, session, event.cell())?.ok_or_else(|| invalid("Cell has not started"))?;
-        let CellOwner::Agent { link, .. } = &view.owner else {
-            return Err(invalid("Standalone Cell cannot enter Agent facts"));
-        };
-        if link.run != recorded.run {
+        if view.owner.run() != Some(recorded.run) {
             return Err(invalid("Cell belongs to another Run"));
         }
         validate_batch(&view, event, changes)?;
@@ -646,7 +653,7 @@ pub(crate) fn read_cell(c: &Connection, run: RunId, cell: CellId) -> Result<Cell
     )?;
     let view =
         read(c, &session, cell)?.ok_or_else(|| invalid("Cell was not recorded in this session"))?;
-    if !matches!(&view.owner,CellOwner::Agent{link,..} if link.run==run) {
+    if view.owner.run() != Some(run) {
         return Err(invalid("Cell belongs to another owner"));
     }
     Ok(view)
@@ -660,39 +667,27 @@ pub(crate) fn native_source_pending(
     reference: &maka_plugin_core::operation::RecoveryRef,
 ) -> Result<bool, StoreError> {
     let view = read_cell(c, execution.run_id, cell)?;
-    let CellOwner::Agent { link, .. } = &view.owner else {
-        return Err(invalid("Agent source cannot use a standalone Cell"));
-    };
     let original: Vec<u8> = c.query_row(
         "SELECT c.payload FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?",
-        [link.run.to_string()],
+        [execution.run_id.to_string()],
         |r| r.get(0),
     )?;
     let spec: RunSpec = serde_json::from_slice(&original)?;
     let canonical = ExecutionIdentity {
         session_id: spec.session_id,
         turn_id: spec.turn_id,
-        run_id: link.run,
+        run_id: execution.run_id,
     };
     if execution != &canonical {
         return Err(invalid(
             "Cell source execution differs from its canonical Run",
         ));
     }
-    let actual: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_attempt_ids WHERE run=? AND step=? AND attempt=?)",
-        params![
-            link.run.to_string(),
-            link.step.to_string(),
-            link.attempt.to_string()
-        ],
-        |r| r.get(0),
-    )?;
     let child = view
         .children
         .get(&operation)
         .ok_or_else(|| invalid("Cell source child was not prepared"))?;
-    if !actual || child.reference.as_ref() != Some(reference) {
+    if child.reference.as_ref() != Some(reference) {
         return Err(invalid(
             "Cell source does not match original admitted operation",
         ));

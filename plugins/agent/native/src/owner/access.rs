@@ -251,9 +251,32 @@ impl RunAccess {
         Ok(path.into())
     }
 
+    pub(crate) async fn workspace_sandbox_floor(&self) -> Result<maka_sandbox::Sandbox, ToolError> {
+        self.resolve_sandbox_floor(false).await
+    }
+
     pub(crate) async fn sandbox_floor(
         &self,
         origin: &maka_agent_facts::tool_call::ToolOrigin,
+    ) -> Result<maka_sandbox::Sandbox, ToolError> {
+        self.resolve_sandbox_floor(matches!(
+            origin,
+            maka_agent_facts::tool_call::ToolOrigin::External { .. }
+                | maka_agent_facts::tool_call::ToolOrigin::CodeCell {
+                    owner: maka_agent_facts::cells::CellOwner::External { .. },
+                    ..
+                }
+                | maka_agent_facts::tool_call::ToolOrigin::CodeMode {
+                    owner: maka_agent_facts::cells::CellOwner::External { .. },
+                    ..
+                }
+        ))
+        .await
+    }
+
+    async fn resolve_sandbox_floor(
+        &self,
+        protect_external_files: bool,
     ) -> Result<maka_sandbox::Sandbox, ToolError> {
         let current = self.live_configuration().await?;
         let workspace = current.workspace;
@@ -268,10 +291,7 @@ impl RunAccess {
         .await
         .map_err(|error| ToolError::Failed(error.to_string()))?
         .map_err(ToolError::Failed)?;
-        if !matches!(
-            origin,
-            maka_agent_facts::tool_call::ToolOrigin::External { .. }
-        ) {
+        if !protect_external_files {
             return Ok(floor);
         }
         let owner = self.owner().map_err(ToolError::Failed)?;
@@ -368,6 +388,29 @@ impl RunAccess {
         Ok(current)
     }
 
+    pub(super) fn select_live_tools(
+        catalog: &maka_tools::ToolCatalog,
+        configuration: &ResolvedConfiguration,
+        discovery: bool,
+    ) -> maka_tools::ToolCatalog {
+        let excluded: Vec<_> = catalog
+            .definitions()
+            .filter(|tool| {
+                configuration
+                    .tools
+                    .as_ref()
+                    .is_some_and(|allowed| !allowed.contains(&tool.name))
+            })
+            .map(|tool| tool.name.as_str())
+            .collect();
+        let catalog = catalog.excluding(&excluded);
+        if discovery {
+            catalog.with_discovery()
+        } else {
+            catalog
+        }
+    }
+
     pub(crate) async fn check_context(&self, context: &ToolCallContext) -> Result<(), ToolError> {
         if context.execution != self.execution
             || context
@@ -406,10 +449,7 @@ impl RunAccess {
         &self,
         context: &ToolCallContext,
     ) -> Result<AuthorizationObligation, ToolError> {
-        use maka_agent_facts::{
-            cells::{CellOwner, CellStatus},
-            tool_call::ToolOrigin,
-        };
+        use maka_agent_facts::{cells::CellStatus, tool_call::ToolOrigin};
         self.check_context(context).await?;
         let view = self.fresh().await.map_err(ToolError::Failed)?;
         let target = match &context.call.origin {
@@ -439,9 +479,6 @@ impl RunAccess {
                 AuthorizationObligation::Tool { tool }
             }
             ToolOrigin::CodeMode { cell, owner, .. } | ToolOrigin::CodeCell { cell, owner, .. } => {
-                let CellOwner::Agent { link, .. } = owner else {
-                    return Err(ToolError::Failed("agent_cell_owner_unsupported".into()));
-                };
                 let canonical = self
                     .cells()
                     .map_err(ToolError::Failed)?
@@ -449,13 +486,7 @@ impl RunAccess {
                     .await
                     .map_err(|error| ToolError::Persistence(error.to_string()))?
                     .ok_or_else(|| ToolError::Failed("agent_cell_missing".into()))?;
-                if canonical.owner != *owner
-                    || link.run != self.execution.run_id
-                    || view
-                        .attempts
-                        .get(&link.attempt)
-                        .is_none_or(|attempt| attempt.step != link.step)
-                {
+                if canonical.owner != *owner || owner.run() != Some(self.execution.run_id) {
                     return Err(ToolError::Failed("agent_cell_origin_mismatch".into()));
                 }
                 let operation = Uuid::parse_str(&context.call.tool_call_id)
@@ -584,7 +615,7 @@ impl RunAccess {
         &self,
         target: &AuthorizationObligation,
     ) -> Result<(ApprovalBinding, Vec<ContentBlob>), String> {
-        use maka_agent_facts::cells::{CellOwner, CellStatus};
+        use maka_agent_facts::cells::CellStatus;
         let view = self.fresh().await?;
         let (input, resources, contents) = match target {
             AuthorizationObligation::External { task, operation } => {
@@ -639,15 +670,7 @@ impl RunAccess {
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or("agent_cell_missing")?;
-                let CellOwner::Agent { link, .. } = &cell.owner else {
-                    return Err("agent_cell_owner_unsupported".into());
-                };
-                if link.run != self.execution.run_id
-                    || view
-                        .attempts
-                        .get(&link.attempt)
-                        .is_none_or(|attempt| attempt.step != link.step)
-                {
+                if cell.owner.run() != Some(self.execution.run_id) {
                     return Err("agent_cell_origin_mismatch".into());
                 }
                 if !matches!(cell.status, CellStatus::Running) {

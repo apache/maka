@@ -234,6 +234,13 @@ opt-level = 1
 [profile.dev.package.nsh-platform-tui]
 opt-level = 1
 
+# Keep Computer Use's deep browser dispatch within the normal Tokio stack in dev builds.
+[profile.dev.package.maka-computer-use]
+opt-level = 1
+
+[profile.dev.package.maka-computer-native]
+opt-level = 1
+
 # Keep terminal image encoding optimized.
 [profile.dev.package.nsh-terminal]
 opt-level = 3

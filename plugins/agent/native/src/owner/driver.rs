@@ -397,23 +397,8 @@ impl NativeDriver {
         reset_loaded_tools: bool,
     ) -> Result<BoundStepTools, RunError> {
         let current = self.access.live_configuration().await?;
-        let excluded: Vec<_> = self
-            .catalog
-            .definitions()
-            .filter(|tool| {
-                current
-                    .tools
-                    .as_ref()
-                    .is_some_and(|allowed| !allowed.contains(&tool.name))
-            })
-            .map(|tool| tool.name.as_str())
-            .collect();
-        let catalog = self.catalog.excluding(&excluded);
-        let catalog = if view.spec.tool_discovery {
-            catalog.with_discovery()
-        } else {
-            catalog
-        };
+        let catalog =
+            RunAccess::select_live_tools(&self.catalog, &current, view.spec.tool_discovery);
         let availability = self.availability(catalog);
         let model = model.provider.tool_context();
         let execution = self.access.execution().clone();
@@ -715,12 +700,10 @@ impl NativeDriver {
     }
     pub(super) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
         self.prepared.lock().await.clear();
+        if let Some(cells) = self.run_cells() {
+            cells.coordinator.cancel();
+        }
         match &self.backend {
-            NativeBackend::Model {
-                cells: Some(cells), ..
-            } => {
-                cells.coordinator.cancel();
-            }
             NativeBackend::Executor(executor) => executor.retire_root_observation().await?,
             _ => {}
         }
@@ -758,7 +741,15 @@ impl NativeDriver {
             }
             NativeBackend::Executor(executor) => {
                 executor.workers.close();
-                (executor.original_cleanup_confirmed().await, false)
+                let executor = executor.original_cleanup_confirmed().await?;
+                let cells = match self.run_cells() {
+                    Some(cells) if cells.coordinator.is_idle() => {
+                        cells.original_cleanup_confirmed().await?
+                    }
+                    Some(_) => false,
+                    None => true,
+                };
+                (Ok(executor && cells), cells)
             }
         };
         let ordinary = self
@@ -785,7 +776,16 @@ impl NativeDriver {
                 .get()
                 .is_some_and(|external| external.has_retained())
             || matches!(&self.backend, NativeBackend::Model { model, .. } if model.original_cleanup.has_retained())
-            || matches!(&self.backend, NativeBackend::Model { cells: Some(cells), .. } if !cells.coordinator.is_idle())
+            || self
+                .run_cells()
+                .is_some_and(|cells| !cells.coordinator.is_idle())
+    }
+
+    pub(super) fn run_cells(&self) -> Option<&Arc<super::driver_cells::RunCells>> {
+        match &self.backend {
+            NativeBackend::Model { cells, .. } => cells.as_ref(),
+            NativeBackend::Executor(_) => self.external_effects.get()?.cells.as_ref(),
+        }
     }
 }
 
@@ -803,12 +803,8 @@ impl DriverPorts for NativeDriver {
         }
     }
     fn cells(&self) -> Option<Arc<dyn CellPorts>> {
-        match &self.backend {
-            NativeBackend::Model {
-                cells: Some(cells), ..
-            } => Some(cells.clone()),
-            _ => None,
-        }
+        self.run_cells()
+            .map(|cells| cells.clone() as Arc<dyn CellPorts>)
     }
     fn now(&self) -> UnixMillis {
         UnixMillis(now().try_into().expect("Unix milliseconds"))
@@ -1231,10 +1227,7 @@ impl DriverPorts for NativeDriver {
     fn cancel_live(&self, run: RunId) {
         if run == self.access.execution().run_id {
             self.cancellation.cancel();
-            if let NativeBackend::Model {
-                cells: Some(cells), ..
-            } = &self.backend
-            {
+            if let Some(cells) = self.run_cells() {
                 cells.coordinator.cancel();
             }
         }
