@@ -1053,6 +1053,7 @@ impl CodeCells {
             display_from,
         } = observed;
         let is_error = matches!(state, CellReplyState::Interrupted { .. });
+        let running = matches!(state, CellReplyState::Running);
         let raw = serde_json::to_value(&observation).expect("typed Cell observation");
         let (content, summary) = match observation {
             CellObservation::Running { cell_id, content } => {
@@ -1079,6 +1080,12 @@ impl CodeCells {
             &summary.to_string(),
             &mut remaining,
         ))];
+        if running {
+            parts.push(ToolContent::Text(clip(
+                "To cancel this cell, call wait directly with the shown cell_id and terminate: true.",
+                &mut remaining,
+            )));
+        }
         for output in content.into_iter().skip(display_from) {
             parts.push(match output {
                 CellOutput::Text { text } => ToolContent::Text(clip(&text, &mut remaining)),

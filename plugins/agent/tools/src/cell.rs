@@ -243,7 +243,7 @@ pub(super) struct WaitInput {
 pub(super) fn wait_definition() -> ToolDefinition {
     ToolDefinition {
         freeform: None, output_schema: None, provider: None, name: "wait".into(),
-        description: "Observe a cell_id returned by running exec/wait. Returns new output and running/completed/terminated state. terminate requests cancellation; state stays running through cleanup. Completed/interrupted results remain readable after Host restart. Old interpreter heaps and handles are never restored.".into(),
+        description: "Observe a cell_id returned by running exec/wait. To cancel the cell and its pending calls, pass the same cell_id with terminate: true. State stays running through cleanup. Returns new output and running/completed/interrupted state. Completed/interrupted results remain readable after Host restart. Old interpreter heaps and handles are never restored.".into(),
         input_schema: schemars::schema_for!(WaitInput).into(),
     }
 }

@@ -112,8 +112,11 @@ impl Processes {
                 .await;
         }
         let input: Reference = serde_json::from_value(value).map_err(failed)?;
-        let id =
-            parse_ref(&input.reference).ok_or_else(|| failed("Invalid process resource ref"))?;
+        let id = parse_ref(&input.reference).ok_or_else(|| {
+            failed(
+                "Invalid process resource ref. Use the ref returned by background Shell. To cancel a Code Mode cell, call wait directly with cell_id and terminate: true.",
+            )
+        })?;
         let mut record = self.read_model(tool, id).await?;
         cancelled(cancellation)?;
         if name == "read" {
