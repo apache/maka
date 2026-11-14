@@ -41,10 +41,16 @@ struct RetainedMaterial {
 pub(super) struct RetainedScope {
     material: std::sync::Mutex<Option<RetainedMaterial>>,
     close_requested: CancellationToken,
+    close_checked: CancellationToken,
     observer: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl RetainedScope {
+    #[cfg(test)]
+    pub(super) fn close_request(&self) -> CancellationToken {
+        self.close_requested.clone()
+    }
+
     async fn release(self: &Arc<Self>, owner: &Arc<Owner>, session: &str) {
         let mut runs = owner.runs.state().await;
         if let Some(material) = self.material.lock().unwrap().take() {
@@ -62,6 +68,17 @@ impl RetainedScope {
     }
 }
 impl OriginalScope {
+    async fn join_workers(&self) -> Result<(), RunError> {
+        match self {
+            Self::Driver {
+                driver: Some(driver),
+                ..
+            } => driver.join_original_workers().await,
+            Self::Preparation(Some(model)) => model.original_worker_join().await,
+            _ => Ok(()),
+        }
+    }
+
     fn model_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         match self {
             Self::Driver {
@@ -123,10 +140,15 @@ impl Owner {
         }
         for scope in scopes {
             let observer = scope.observer.lock().unwrap().take();
-            if let Some(observer) = observer
-                && let Err(error) = observer.await
-            {
-                tracing::error!(%error, "Original cleanup observer failed to join normally");
+            if let Some(mut observer) = observer {
+                tokio::select! {
+                    result = &mut observer => if let Err(error) = result {
+                        tracing::error!(%error, "Original cleanup observer failed to join normally");
+                    },
+                    () = scope.close_checked.cancelled() => {
+                        *scope.observer.lock().unwrap() = Some(observer);
+                    }
+                }
             }
             let material = scope.material.lock().unwrap();
             let Some(material) = material.as_ref() else {
@@ -173,6 +195,7 @@ impl Owner {
                 settlement,
             })),
             close_requested: CancellationToken::new(),
+            close_checked: CancellationToken::new(),
             observer: std::sync::Mutex::new(None),
         });
         let mut runs = self.runs.state().await;
@@ -269,8 +292,14 @@ impl RetainedScope {
                         None => return,
                     }
                 };
-                let close_round = retained.close_requested.is_cancelled();
+                let close_round = retained.close_requested.is_cancelled()
+                    && !retained.close_checked.is_cancelled();
                 let confirmed = std::panic::AssertUnwindSafe(async {
+                    if close_round {
+                        // Only owned joins are drained. Effect signals remain wakeups,
+                        // so an unconfirmed external fence cannot block shutdown.
+                        original.join_workers().await?;
+                    }
                     physical.extend(original.signals().await);
                     // Drain ready hints so every remaining source has installed its wake.
                     futures_util::future::poll_fn(|cx| {
@@ -303,11 +332,12 @@ impl RetainedScope {
                     Err(error) => tracing::error!(%error, "original cleanup remains unconfirmed"),
                 }
                 if close_round {
-                    return;
+                    // Report the failed close probe without losing late original ACKs.
+                    retained.close_checked.cancel();
                 }
                 tokio::select! {
                     biased;
-                    () = retained.close_requested.cancelled() => {},
+                    () = retained.close_requested.cancelled(), if !retained.close_checked.is_cancelled() => {},
                     changed = async { model_changes.as_mut().expect("original model receiver branch enabled").changed().await }, if model_changes.is_some() => if changed.is_err() { model_changes = None; },
                     changed = async { notices.as_mut().expect("SQL receiver branch enabled").changed().await }, if notices.is_some() => if changed.is_err() { notices = None; },
                     _ = physical.next(), if !physical.is_empty() => {},

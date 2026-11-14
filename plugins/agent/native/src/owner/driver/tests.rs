@@ -2000,6 +2000,62 @@ mod source_recovery {
     use crate::owner::PreparingRun;
     use maka_agent_state::ReadyCause;
 
+    #[tokio::test]
+    async fn shutdown_waits_for_original_model_cleanup_after_model_closed() {
+        let mut rig = Rig::new().expect("owned cleanup fixture");
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let attempt = rig.attempt().await?;
+            rig.append(vec![Fact::ModelClosed {
+                attempt,
+                outcome: maka_agent_facts::accounting::Outcome::Success,
+                diagnostic: None,
+                usage: Default::default(),
+                protocol: json!({"finishReason":"stop"}),
+            }], vec![]).await?;
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let run = driver.access.execution().run_id;
+            let (release, gate) = oneshot::channel::<()>();
+            let state = driver.state.clone();
+            let worker = driver.workers.spawn(async move {
+                gate.await?;
+                state.observe(run, vec![Change::new(Fact::ModelCleanupObserved {
+                    attempt, cleanup: OperationCleanup::Confirmed,
+                }, at())], vec![]).await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>(state.history(run, 0, 1024).await?)
+            });
+            owner.retain_original_scope(session.clone(), rig.lease.take().unwrap(),
+                super::super::super::driver_cleanup::OriginalScope::Driver {
+                    driver: Some(driver.clone()), effects: rig.work_effects.take().unwrap(),
+                    state: driver.state.clone(), pending: None,
+                }).await;
+            let close_request = owner.runs.state().await.retained_cleanup[&session][0].close_request();
+            // Let the retained observer arm before asking the real Host to close.
+            tokio::task::yield_now().await;
+            let host = rig.host.as_ref().unwrap().clone();
+            let closing = tokio::spawn(async move { host.shutdown().await });
+            close_request.cancelled().await;
+            tokio::task::yield_now().await;
+            release.send(()).map_err(|_| "original cleanup gate lost")?;
+            let facts = worker.await??;
+            let closed = closing.await?;
+            assert_eq!(closed, Ok(()), "Host must drain its original model worker");
+            assert_eq!(facts.iter().filter(|fact| matches!(fact.fact,
+                Fact::ModelCleanupObserved { attempt: id, cleanup: OperationCleanup::Confirmed } if id == attempt)).count(), 1);
+            assert!(owner.runs.state().await.retained_cleanup.is_empty());
+            rig.store.as_ref().unwrap().shutdown().await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }).await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "original cleanup shutdown: {result:?}; {cleanup:?}"
+        );
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn disconnected_host_retires_with_unconfirmed_cleanup_reported() {
         let mut rig = Rig::new().expect("owned retirement fixture");
@@ -2043,6 +2099,106 @@ mod source_recovery {
                 .any(|error| error.contains("agent_cleanup_unconfirmed")),
             "{cleanup:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_close_preserves_late_original_effect_ack_without_repeating_it() {
+        let mut rig = Rig::new().expect("owned late cleanup fixture");
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let attempt = rig.attempt().await?;
+            let (key, admitted) = rig
+                .tool(attempt, "ordinary_local", "late-original", json!({}))
+                .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            let prepared = driver
+                .prepare_tool(&view, &view.tools[&tool_key(&key)], driver.catalog.clone())
+                .await?;
+            let released = Arc::new(AtomicBool::new(false));
+            // This callback outlives the driver workers under its original Root effect.
+            let original_effect = rig.lease.as_ref().unwrap().store().fork_effect()?;
+            rig.begin(
+                prepared.tool.effect,
+                admitted,
+                key.clone(),
+                prepared.source,
+                driver.original_effects.clone(),
+                released.clone(),
+            )?;
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            owner
+                .retain_original_scope(
+                    session.clone(),
+                    rig.lease.take().unwrap(),
+                    super::super::super::driver_cleanup::OriginalScope::Driver {
+                        driver: Some(driver.clone()),
+                        effects: rig.work_effects.take().unwrap(),
+                        state: driver.state.clone(),
+                        pending: None,
+                    },
+                )
+                .await;
+            assert_eq!(owner.close().await, Err("agent_cleanup_unconfirmed".into()));
+            assert!(!released.load(Ordering::SeqCst));
+            assert!(
+                owner
+                    .runs
+                    .state()
+                    .await
+                    .retained_cleanup
+                    .contains_key(&session)
+            );
+            let mut physical_changes = owner.physical_changes();
+            rig.gate
+                .take()
+                .unwrap()
+                .send(())
+                .map_err(|_| "original effect gate lost")?;
+            rig.complete().await?;
+            assert!(released.load(Ordering::SeqCst));
+            original_effect.finish(Ok(()));
+            assert!(driver.original_effects.settle_all(true).await?);
+            loop {
+                physical_changes.borrow_and_update();
+                if !owner
+                    .runs
+                    .state()
+                    .await
+                    .retained_cleanup
+                    .contains_key(&session)
+                {
+                    break;
+                }
+                physical_changes.changed().await?;
+            }
+            let facts = owner.durable.history(run, 0, 1024).await?;
+            assert_eq!(
+                facts
+                    .iter()
+                    .filter(|fact| matches!(&fact.fact,
+                Fact::LocalToolReturned { tool, .. } if tool == &key))
+                    .count(),
+                1
+            );
+            assert!(driver.original_effects.settle_all(true).await?);
+            assert_eq!(
+                serde_json::to_value(owner.durable.history(run, 0, 1024).await?)?,
+                serde_json::to_value(facts)?
+            );
+            rig.store.as_ref().unwrap().shutdown().await?;
+            assert!(owner.runs.state().await.retained_cleanup.is_empty());
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "late original ACK: {result:?}; {cleanup:?}"
+        );
+        assert!(cleanup.is_empty(), "{cleanup:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -689,6 +689,19 @@ impl NativeDriver {
         Ok(())
     }
 
+    pub(super) async fn join_original_workers(&self) -> Result<(), RunError> {
+        self.workers.close();
+        self.workers.wait().await;
+        match &self.backend {
+            NativeBackend::Model { model, .. } => model.original_worker_join().await?,
+            NativeBackend::Executor(executor) => {
+                executor.workers.close();
+                executor.workers.wait().await;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn original_cleanup_signals(&self) -> Vec<BoxFuture<'static, ()>> {
         let mut signals = self.original_effects.original_cleanup_signals().await;
         signals.extend(self.access.binding_cleanup_signals().await);
