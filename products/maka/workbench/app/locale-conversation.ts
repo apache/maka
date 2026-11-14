@@ -1170,6 +1170,7 @@ export const conversationMessages = {
     '目前的執行結束後才能繼續。',
   ],
   'Waiting for approval': ['Waiting for approval', '等待审批', '等候核准'],
+  'Waiting to retry': ['Waiting to retry', '等待重试', '等待重試'],
   'Waiting for access to be restored': [
     'Waiting for access to be restored',
     '正在等待恢复访问',
