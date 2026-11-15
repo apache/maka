@@ -237,6 +237,22 @@ pub struct EditableMessage {
 }
 
 impl RootSourceMessage {
+    /// Host-only provenance is not part of the visible text used by inline offsets.
+    pub fn into_attributed_input(self, language: crate::language::Language) -> MessageInput {
+        let DeliveredMessage {
+            mut content,
+            origin,
+            ..
+        } = self.message;
+        if let Some(origin) = origin {
+            content
+                .display_text
+                .get_or_insert_with(|| content.text.clone());
+            content.text.insert_str(0, &origin.prompt_header(language));
+        }
+        content
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         self.message.validate()?;
         if !self.unprepared_content.preparation.is_empty() {
@@ -330,34 +346,6 @@ fn append<T: Clone>(target: &mut Option<Vec<T>>, source: Option<&[T]>) {
             .get_or_insert_with(Vec::new)
             .extend_from_slice(source);
     }
-}
-
-// Only the executor-facing copy is labelled; canonical content and digests stay raw.
-pub fn attributed_content(
-    sources: &[RootSourceMessage],
-    language: crate::language::Language,
-) -> MessageInput {
-    let contents = sources
-        .iter()
-        .map(|source| {
-            let mut content = source.message.content.clone();
-            let header = source
-                .message
-                .origin
-                .as_ref()
-                .map_or_else(String::new, |origin| origin.prompt_header(language));
-            let offset = header.encode_utf16().count() as u64;
-            content.text.insert_str(0, &header);
-            if let Some(display) = &mut content.display_text {
-                display.insert_str(0, &header);
-            }
-            for reference in content.inline_references.iter_mut().flatten() {
-                reference.start = reference.start.saturating_add(offset);
-            }
-            content
-        })
-        .collect::<Vec<_>>();
-    aggregate(contents.iter())
 }
 
 #[cfg(test)]

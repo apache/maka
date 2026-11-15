@@ -31,6 +31,7 @@ use maka_agent_facts::{
     durable::*,
     executor::{NATIVE_TASK_PROTOCOL, TaskDescriptor},
     input::RunInput,
+    message::aggregate,
 };
 use maka_agent_ports::executor::{Error, Outcome, OutputSink, Request, Settlement};
 use maka_agent_state::{ContentBlob, Store, fold::RunView};
@@ -879,10 +880,27 @@ impl ExternalPorts for DriverExecutor {
                     .await?,
             )
             .map_err(|error| RunError::InvalidInput(error.to_string()))?;
-            let RunInput::Message { content, .. } = input else {
+            let RunInput::Message {
+                content,
+                source_messages,
+                ..
+            } = input
+            else {
                 return Err(RunError::InvalidInput(
                     "external runtime requires original message input".into(),
                 ));
+            };
+            let content = if source_messages
+                .iter()
+                .any(|source| source.message.origin.is_some())
+            {
+                let attributed: Vec<_> = source_messages
+                    .into_iter()
+                    .map(|source| source.into_attributed_input(view.spec.language))
+                    .collect();
+                aggregate(&attributed)
+            } else {
+                content
             };
             let live_workspace = self.backend.service_binding().is_none();
             let request = Request {
