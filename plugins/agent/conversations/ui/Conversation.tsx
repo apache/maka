@@ -2803,7 +2803,7 @@ export function Conversation(props: ConversationProps) {
   };
   const inTranscript = (messageId: string) =>
     historyRows().byMessage.has(`${messageId}/body`) ||
-    pendingMessages().some((row) => row.messageId === messageId);
+    (atHistoryTail() && pendingMessages().some((row) => row.messageId === messageId));
   const settleReply = (
     reply: any,
     text?: string,
@@ -2813,7 +2813,11 @@ export function Conversation(props: ConversationProps) {
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
     if (
-      shouldProjectPendingSend(accepted, { immediate, activeRunId: runId() }) &&
+      shouldProjectPendingSend(accepted, {
+        immediate,
+        activeRunId: runId(),
+        atHistoryTail: atHistoryTail(),
+      }) &&
       text !== undefined &&
       !historyRows().byMessage.has(`${accepted.messageId}/body`)
     ) {
@@ -3385,6 +3389,10 @@ export function Conversation(props: ConversationProps) {
   effect(() => {
     const current = pendingMessages();
     if (!current.length) return;
+    if (!atHistoryTail()) {
+      pendingMessages.set([]);
+      return;
+    }
     const cancelledIds = new Set(
       unresolved()
         .filter((item) => sendDeliveries().get(item.id) === 'cancelled')
@@ -3406,18 +3414,9 @@ export function Conversation(props: ConversationProps) {
     );
     if (next.length !== current.length) pendingMessages.set(next);
   });
-  const visibleQueue = computed<AgentQueue | null>(() => {
-    const current = queued();
-    if (!current) return null;
-    if (!current.entries.some((entry) => inTranscript(entry.messageId))) return current;
-    return {
-      ...current,
-      entries: current.entries.filter((entry) => !inTranscript(entry.messageId)),
-    };
-  });
   const queueSession: ComposerQueue = {
     sessionId,
-    snapshot: visibleQueue,
+    snapshot: queued,
     running: () => connected() && runId() !== null && !stopping(),
     async read(messageId, expectedRevision) {
       if (!alive) throw new UiError('This conversation is closed.');

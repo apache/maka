@@ -70,22 +70,48 @@ test('an unknown outcome supplies no definitive send failure', () => {
   );
 });
 
-test('idle queued sends project immediately into the transcript while followups stay in the dock', () => {
+test('idle queued sends project immediately at history tail while followups and anchored windows stay in the dock', () => {
   assert.equal(
-    shouldProjectPendingSend({ kind: 'queued' }, { immediate: true, activeRunId: null }),
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: true, activeRunId: null, atHistoryTail: true },
+    ),
     true,
   );
   assert.equal(
-    shouldProjectPendingSend({ kind: 'queued' }, { immediate: false, activeRunId: 'run-1' }),
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: true, activeRunId: null, atHistoryTail: false },
+    ),
     false,
   );
   assert.equal(
-    shouldProjectPendingSend({ kind: 'queued' }, { immediate: true, activeRunId: 'run-1' }),
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: false, activeRunId: 'run-1', atHistoryTail: true },
+    ),
     false,
   );
   assert.equal(
-    shouldProjectPendingSend({ kind: 'started' }, { immediate: false, activeRunId: 'run-1' }),
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: true, activeRunId: 'run-1', atHistoryTail: true },
+    ),
+    false,
+  );
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'started' },
+      { immediate: false, activeRunId: 'run-1', atHistoryTail: true },
+    ),
     true,
+  );
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'started' },
+      { immediate: false, activeRunId: 'run-1', atHistoryTail: false },
+    ),
+    false,
   );
 });
 

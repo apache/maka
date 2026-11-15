@@ -73,9 +73,9 @@ export function sendReceiptFailure(
 
 export function shouldProjectPendingSend(
   accepted: { kind: string } | null | undefined,
-  context: { immediate: boolean; activeRunId: string | null },
+  context: { immediate: boolean; activeRunId: string | null; atHistoryTail: boolean },
 ): boolean {
-  if (!accepted) return false;
+  if (!accepted || !context.atHistoryTail) return false;
   if (accepted.kind === 'started') return true;
   return accepted.kind === 'queued' && context.immediate && context.activeRunId === null;
 }
