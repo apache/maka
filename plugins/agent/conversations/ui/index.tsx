@@ -55,7 +55,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const views = createConversationUi(context, host, window);
   const owner = (sessionId: string | null) =>
     [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
-  const Navigation = (props: { input: ConversationNavigationInput }) =>
+  const Navigation = (props: { input: ConversationNavigationInput<JSX.Element> }) =>
     views.navigation(props.input);
   const Session = (props: { input: ConversationSessionInput }) => {
     if (!props.input.shell.closePane) return views.session(props.input);
@@ -106,7 +106,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       navigation: {
         kind: 'view',
         contract: conversationNavigationView.id,
-        render({ input }: UiEmbeddedViewProps<ConversationNavigationInput, JSX.Element>) {
+        render({
+          input,
+        }: UiEmbeddedViewProps<ConversationNavigationInput<JSX.Element>, JSX.Element>) {
           return (
             <HostProvider value={host}>
               <Navigation input={input} />

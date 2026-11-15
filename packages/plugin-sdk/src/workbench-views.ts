@@ -138,8 +138,9 @@ export interface ConversationPreviewHandle {
   focused(): boolean;
 }
 
-export interface ConversationNavigationInput {
+export interface ConversationNavigationInput<Element = unknown> {
   readonly shell: ConversationShell;
+  navigationMore(): Element;
 }
 
 /** What a conversation drawn compactly, with its input on top, leaves to its host. */

@@ -19,6 +19,7 @@
 
 import {
   batch,
+  Clipboard,
   cleanup,
   createAnimatedValue,
   effect,
@@ -32,13 +33,14 @@ import {
   type JSX,
   type ScrollRef,
 } from 'nsh';
-import { Button, Input } from 'nsh/base';
+import { Button, ContextMenu, Input, Menu, MenuItem } from 'nsh/base';
 import type {
   AgentSession,
   AgentRoomMessage,
   AgentRoomHistoryPage,
   AgentWorkspaceSelection,
   AgentCreated,
+  AgentSessionChanged,
   HistoryPosition,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { createBrowsing } from './browsing';
@@ -53,6 +55,9 @@ import {
   captionTextStyle,
   controlStyle,
   controlFocusStyle,
+  floatingStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
   inputTextStyle,
   type BrowserHeader,
 } from './ui';
@@ -91,6 +96,7 @@ export function createRoomWorkspace(options: {
   const createBusy = signal(false);
   const renaming = signal<AgentSession | null>(null);
   const renameTitle = signal('');
+  const removing = signal<AgentSession | null>(null);
   let composer: RoomComposerHandle | null = null;
   let alive = true;
   let navigation = 0;
@@ -189,6 +195,55 @@ export function createRoomWorkspace(options: {
     creating.set(true);
     error.set('');
   };
+  const remove = async () => {
+    const session = removing();
+    if (!session || createBusy()) return;
+    createBusy.set(true);
+    error.set('');
+    try {
+      if (selected() === session.id) await composer?.flush();
+      const result = roomResult<AgentSessionChanged>(
+        (
+          await host.control('changeSession', {
+            sessionId: session.id,
+            expectedRevision: session.revision,
+            action: 'remove',
+          })
+        ).reply,
+      );
+      if (result.kind !== 'removed')
+        throw new Error(result.kind === 'rejected' ? result.reason : result.kind);
+      if (selected() === session.id) selected.set(null);
+      const sessions = new Map(known());
+      sessions.delete(session.id);
+      known.set(sessions);
+      removing.set(null);
+    } catch (reason) {
+      if (alive) error.set(reasonText(reason));
+    } finally {
+      if (alive) createBusy.set(false);
+    }
+  };
+  const roomActions = (session: AgentSession) => (
+    <>
+      <RoomMenuItem
+        label={tr('Rename room')}
+        select={() => {
+          error.set('');
+          renameTitle.set(session.title);
+          renaming.set(session);
+        }}
+      />
+      <RoomMenuItem
+        label={tr('Delete room')}
+        danger
+        select={() => {
+          error.set('');
+          removing.set(session);
+        }}
+      />
+    </>
+  );
   const searchSessions = async (query: string) => {
     const page = await host.query('agent', 'list', {
       kind: 'agent',
@@ -241,34 +296,46 @@ export function createRoomWorkspace(options: {
           <Icon name="plus" color={C.secondary} />
           <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('New room')}</Text>
         </Button>
+        {modeSwitch}
         <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: 4, paddingTop: 12 }}>
           <Each of={browser.sessions()} key={(session) => session.id}>
             {(session) => (
-              <Button
-                accessibilityLabel={session().title}
-                selected={selected() === session().id}
-                onPress={() => void open(session().id)}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: 12,
-                  borderRadius: 10,
-                  backgroundColor: selected() === session().id ? C.surface : 'transparent',
-                }}
-                hoverStyle={{ backgroundColor: C.surface }}
-                focusStyle={controlFocusStyle()}
+              <ContextMenu
+                offset={4}
+                margin={8}
+                popupStyle={floatingStyle()}
+                trigger={
+                  <Button
+                    accessibilityLabel={session().title}
+                    selected={selected() === session().id}
+                    onPress={() => void open(session().id)}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: 12,
+                      borderRadius: 10,
+                      backgroundColor: selected() === session().id ? C.surface : 'transparent',
+                    }}
+                    hoverStyle={{ backgroundColor: C.surface }}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Icon name="symbol" color={C.muted} />
+                    <Text
+                      style={[{ ...bodyTextStyle, color: C.text, flex: 1 }, { numberOfLines: 1 }]}
+                    >
+                      {session().title}
+                    </Text>
+                    <If when={session().hasUnread && selected() !== session().id}>
+                      <View
+                        style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent }}
+                      />
+                    </If>
+                  </Button>
+                }
               >
-                <Icon name="symbol" color={C.muted} />
-                <Text style={[{ ...bodyTextStyle, color: C.text, flex: 1 }, { numberOfLines: 1 }]}>
-                  {session().title}
-                </Text>
-                <If when={session().hasUnread && selected() !== session().id}>
-                  <View
-                    style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent }}
-                  />
-                </If>
-              </Button>
+                {roomActions(session())}
+              </ContextMenu>
             )}
           </Each>
           <If when={browser.loading()}>
@@ -305,7 +372,6 @@ export function createRoomWorkspace(options: {
           <Icon name="settings" color={C.secondary} />
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Settings')}</Text>
         </Button>
-        <View style={{ paddingTop: 4 }}>{modeSwitch}</View>
       </View>
     </HostProvider>
   );
@@ -317,21 +383,25 @@ export function createRoomWorkspace(options: {
           browser={options.browser()}
           commands={() => {}}
           actions={
-            selected() ? (
-              <Button
-                accessibilityLabel={tr('Rename room')}
-                onPress={() => {
-                  const session = known().get(selected()!);
-                  if (session) {
-                    renameTitle.set(session.title);
-                    renaming.set(session);
-                  }
-                }}
-                style={controlStyle}
-                hoverStyle={{ backgroundColor: C.surface }}
+            selected() && known().has(selected()!) ? (
+              <Menu
+                align="end"
+                offset={4}
+                margin={8}
+                popupStyle={floatingStyle()}
+                trigger={
+                  <Button
+                    accessibilityLabel={tr('Room actions')}
+                    style={controlStyle}
+                    hoverStyle={{ backgroundColor: C.surface }}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Icon name="more" color={C.muted} />
+                  </Button>
+                }
               >
-                <Icon name="edit" color={C.muted} />
-              </Button>
+                {roomActions(known().get(selected()!)!)}
+              </Menu>
             ) : undefined
           }
         />
@@ -468,6 +538,40 @@ export function createRoomWorkspace(options: {
               style={controlStyle}
             >
               <Text style={{ color: C.accent }}>{tr('Save')}</Text>
+            </Button>
+          </DialogFooter>
+        </ModalDialog>
+      </If>
+      <If when={removing()}>
+        <ModalDialog
+          size="form"
+          onCancel={() => {
+            if (!createBusy()) removing.set(null);
+          }}
+        >
+          <DialogHeader title={tr('Delete room')} />
+          <Text style={{ ...bodyTextStyle, color: C.text }}>
+            {tr('Delete “{title}” and its messages?', { title: removing()!.title })}
+          </Text>
+          <If when={error()}>
+            <Text style={{ color: C.warning }}>{error()}</Text>
+          </If>
+          <DialogFooter>
+            <Button
+              accessibilityLabel={tr('Cancel')}
+              onPress={() => removing.set(null)}
+              disabled={createBusy()}
+              style={controlStyle}
+            >
+              <Text style={{ color: C.secondary }}>{tr('Cancel')}</Text>
+            </Button>
+            <Button
+              accessibilityLabel={tr('Confirm delete room')}
+              onPress={() => void remove()}
+              disabled={createBusy()}
+              style={controlStyle}
+            >
+              <Text style={{ color: C.danger }}>{tr('Delete')}</Text>
             </Button>
           </DialogFooter>
         </ModalDialog>
@@ -709,130 +813,167 @@ function RoomTimeline(props: {
           </If>
           <Each of={messages()} key={(message) => message.id}>
             {(message) => (
-              <View style={{ flexDirection: 'row', gap: 12 }}>
-                <View
-                  style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: 10,
-                    backgroundColor: C.surface,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <If
-                    when={message().author.kind === 'human'}
-                    else={<Icon name="bot" size={16} color={C.secondary} />}
-                  >
-                    <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                      {tr('You').slice(0, 1)}
-                    </Text>
-                  </If>
-                </View>
-                <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Button
-                      accessibilityLabel={author(message())}
-                      disabled={message().author.kind === 'human'}
-                      onPress={() => {
-                        const id = roomAuthorSession(message());
-                        if (id) props.openAgent(id);
-                      }}
-                      style={{ paddingVertical: 4 }}
-                    >
-                      <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.text }}>
-                        {author(message())}
-                      </Text>
-                    </Button>
-                    <Text style={{ ...captionTextStyle, color: C.muted }}>
-                      {time(message().at)}
-                    </Text>
-                    <View style={{ flex: 1 }} />
-                    <Button
-                      accessibilityLabel={tr('Reply to message')}
-                      onPress={() => composer?.reply(message())}
-                      style={{ ...controlStyle, minHeight: 24, paddingVertical: 2 }}
-                      hoverStyle={{ backgroundColor: C.surface }}
-                      focusStyle={controlFocusStyle()}
-                    >
-                      <Icon name="undo" size={14} color={C.muted} />
-                    </Button>
-                  </View>
-                  <If when={message().replyTo}>
-                    <Button
-                      accessibilityLabel={tr('View replied message')}
-                      onPress={() => void focusMessage(message().replyTo!)}
+              <ContextMenu
+                offset={4}
+                margin={8}
+                popupStyle={floatingStyle()}
+                trigger={
+                  <View selectable class="group" style={{ flexDirection: 'row', gap: 12 }}>
+                    <View
                       style={{
-                        borderLeftWidth: 2,
-                        borderLeftColor: C.line,
-                        paddingLeft: 10,
-                        paddingVertical: 4,
+                        width: 30,
+                        height: 30,
+                        borderRadius: 10,
+                        backgroundColor: C.surface,
+                        alignItems: 'center',
+                        justifyContent: 'center',
                       }}
-                      hoverStyle={{ backgroundColor: C.surface }}
                     >
-                      <Text
-                        style={[{ ...captionTextStyle, color: C.secondary }, { numberOfLines: 1 }]}
+                      <If
+                        when={message().author.kind === 'human'}
+                        else={<Icon name="bot" size={16} color={C.secondary} />}
                       >
-                        {map().get(message().replyTo!)?.content.text || tr('View replied message')}
-                      </Text>
-                    </Button>
-                  </If>
-                  <If when={message().mentions.length > 0}>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                      <Each of={message().mentions} key={(id) => id}>
-                        {(id) => (
+                        <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                          {tr('You').slice(0, 1)}
+                        </Text>
+                      </If>
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Button
+                          accessibilityLabel={author(message())}
+                          disabled={message().author.kind === 'human'}
+                          onPress={() => {
+                            const id = roomAuthorSession(message());
+                            if (id) props.openAgent(id);
+                          }}
+                          style={{ paddingVertical: 4 }}
+                        >
+                          <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.text }}>
+                            {author(message())}
+                          </Text>
+                        </Button>
+                        <Text style={{ ...captionTextStyle, color: C.muted }}>
+                          {time(message().at)}
+                        </Text>
+                        <View style={{ flex: 1 }} />
+                        <View
+                          class={
+                            platform.idiom === 'terminal'
+                              ? undefined
+                              : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                          }
+                        >
                           <Button
-                            accessibilityLabel={props.name(id())}
-                            onPress={() => props.openAgent(id())}
+                            accessibilityLabel={tr('Reply to message')}
+                            onPress={() => composer?.reply(message())}
+                            style={{ ...controlStyle, minHeight: 24, paddingVertical: 2 }}
+                            hoverStyle={{ backgroundColor: C.surface }}
+                            focusStyle={controlFocusStyle()}
                           >
-                            <Text style={{ ...captionTextStyle, color: C.accent }}>
-                              @{props.name(id())}
-                            </Text>
+                            <Icon name="undo" size={14} color={C.muted} />
                           </Button>
+                        </View>
+                      </View>
+                      <If when={message().replyTo}>
+                        <Button
+                          accessibilityLabel={tr('View replied message')}
+                          onPress={() => void focusMessage(message().replyTo!)}
+                          style={{
+                            borderLeftWidth: 2,
+                            borderLeftColor: C.line,
+                            paddingLeft: 10,
+                            paddingVertical: 4,
+                          }}
+                          hoverStyle={{ backgroundColor: C.surface }}
+                        >
+                          <Text
+                            style={[
+                              { ...captionTextStyle, color: C.secondary },
+                              { numberOfLines: 1 },
+                            ]}
+                          >
+                            {map().get(message().replyTo!)?.content.text ||
+                              tr('View replied message')}
+                          </Text>
+                        </Button>
+                      </If>
+                      <If when={message().mentions.length > 0}>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                          <Each of={message().mentions} key={(id) => id}>
+                            {(id) => (
+                              <Button
+                                accessibilityLabel={props.name(id())}
+                                onPress={() => props.openAgent(id())}
+                              >
+                                <Text style={{ ...captionTextStyle, color: C.accent }}>
+                                  @{props.name(id())}
+                                </Text>
+                              </Button>
+                            )}
+                          </Each>
+                        </View>
+                      </If>
+                      <If when={message().content.text}>
+                        <MarkdownBody
+                          selectable={false}
+                          row={() => ({
+                            key: message().id,
+                            messageId: message().id,
+                            field: 'body',
+                            role: message().author.kind === 'human' ? 'user' : 'assistant',
+                            text: message().content.text,
+                            closedAt: message().at,
+                          })}
+                          sourceId={message().id}
+                          sessionId={props.sessionId}
+                          openLink={props.openLink}
+                          userScroll={() => {}}
+                        />
+                      </If>
+                      <If when={message().content.attachments.length > 0}>
+                        <HistoryAttachments
+                          sessionId={props.sessionId}
+                          through={through}
+                          roomMessageId={message().id}
+                          attachments={message().content.attachments}
+                          preview={(image) => viewer.set(image)}
+                          userScroll={() => {}}
+                        />
+                      </If>
+                      <Each
+                        of={message().deliveries.filter((delivery) => delivery.kind === 'rejected')}
+                        key={(delivery) => delivery.sessionId}
+                      >
+                        {(delivery) => (
+                          <Text style={{ ...captionTextStyle, color: C.warning }}>
+                            {delivery().kind === 'rejected'
+                              ? tr('Mention delivery failed: {reason}', {
+                                  reason: delivery().reason,
+                                })
+                              : ''}
+                          </Text>
                         )}
                       </Each>
                     </View>
-                  </If>
-                  <If when={message().content.text}>
-                    <MarkdownBody
-                      row={() => ({
-                        key: message().id,
-                        messageId: message().id,
-                        field: 'body',
-                        role: message().author.kind === 'human' ? 'user' : 'assistant',
-                        text: message().content.text,
-                        closedAt: message().at,
-                      })}
-                      sourceId={message().id}
-                      sessionId={props.sessionId}
-                      openLink={props.openLink}
-                      userScroll={() => {}}
-                    />
-                  </If>
-                  <If when={message().content.attachments.length > 0}>
-                    <HistoryAttachments
-                      sessionId={props.sessionId}
-                      through={through}
-                      roomMessageId={message().id}
-                      attachments={message().content.attachments}
-                      preview={(image) => viewer.set(image)}
-                      userScroll={() => {}}
-                    />
-                  </If>
-                  <Each
-                    of={message().deliveries.filter((delivery) => delivery.kind === 'rejected')}
-                    key={(delivery) => delivery.sessionId}
-                  >
-                    {(delivery) => (
-                      <Text style={{ ...captionTextStyle, color: C.warning }}>
-                        {delivery().kind === 'rejected'
-                          ? tr('Mention delivery failed: {reason}', { reason: delivery().reason })
-                          : ''}
-                      </Text>
-                    )}
-                  </Each>
-                </View>
-              </View>
+                  </View>
+                }
+              >
+                <RoomMenuItem
+                  label={tr('Reply to message')}
+                  select={() => composer?.reply(message())}
+                />
+                <If when={message().content.text}>
+                  <RoomMenuItem
+                    label={tr('Copy message')}
+                    select={() => {
+                      void Clipboard.writeText(message().content.text).catch((reason) => {
+                        if (alive) error.set(reasonText(reason));
+                      });
+                    }}
+                  />
+                </If>
+              </ContextMenu>
             )}
           </Each>
         </View>
@@ -894,5 +1035,21 @@ function RoomTimeline(props: {
         />
       </If>
     </View>
+  );
+}
+
+function RoomMenuItem(props: { label: string; danger?: boolean; select(): void }) {
+  return (
+    <MenuItem
+      accessibilityLabel={props.label}
+      onSelect={props.select}
+      style={{ ...menuRowStyle(), minWidth: 160 }}
+      hoverStyle={menuRowHoverStyle()}
+      focusStyle={menuRowHoverStyle()}
+    >
+      <Text style={{ ...captionTextStyle, color: props.danger ? C.danger : C.text }}>
+        {props.label}
+      </Text>
+    </MenuItem>
   );
 }

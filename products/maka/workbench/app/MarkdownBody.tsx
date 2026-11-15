@@ -34,6 +34,8 @@ export function MarkdownBody(props: {
   sourceId: string;
   sessionId: string;
   compact?: boolean;
+  /** False when the surrounding message owns text selection. */
+  selectable?: boolean;
   /** Compact size in the full text color, for a message another agent sent. */
   fullColor?: boolean;
   /** The complete text, read apart from the row, shown in place of the row's own. */
@@ -89,11 +91,11 @@ export function MarkdownBody(props: {
   const blockGap = props.compact ? 6 : 16;
 
   return (
-    <View selectable>
+    <View selectable={props.selectable ?? true}>
       <If
         when={props.text !== undefined || hasTextPrefix(props.row())}
         else={
-          <Text style={[{ ...readingStyle, color: color() }, { userSelect: 'text' }]}>
+          <Text style={{ ...readingStyle, color: color() }}>
             <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
         }
@@ -129,7 +131,6 @@ export function MarkdownBody(props: {
                       const s = seg();
                       return s.kind === 'markdown' && s.atStart ? props.sourceId : undefined;
                     })()}
-                    selectable
                     contentStyle={{ rowGap: blockGap }}
                     options={{ streaming: true, preserveLineBreaks: true }}
                     labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
@@ -212,7 +213,7 @@ export function MarkdownBody(props: {
           </Each>
         </View>
         <If when={failure()}>
-          <Text style={[{ ...readingStyle, color: color() }, { userSelect: 'text' }]}>
+          <Text style={{ ...readingStyle, color: color() }}>
             <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
         </If>

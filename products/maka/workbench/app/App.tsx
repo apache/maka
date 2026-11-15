@@ -31,7 +31,7 @@ import {
   type Signal,
 } from 'nsh';
 import { host as nativeHost } from 'maka/host';
-import { Button } from 'nsh/base';
+import { Button, Collapsible } from 'nsh/base';
 import type { UiModule, UiRootProps } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type {
   ModelSelection,
@@ -58,14 +58,8 @@ import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workb
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
-import {
-  bodyTextStyle,
-  C,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
-  ViewSegment,
-} from './ui';
+import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import { Icon } from './Icon';
 
 type Configuration = {
   navigation: UiTarget;
@@ -102,6 +96,7 @@ function App(
   const selected = signal(saved === null ? nativeHost.initialSession : saved.sessionId);
   const sidebarExpanded = signal(saved?.sidebarExpanded ?? true);
   const workspaceMode = signal<'conversations' | 'rooms'>(saved?.workspaceMode ?? 'conversations');
+  const moreNavigation = signal(false);
   const roomWorkspace = signal<RoomWorkspaceHandle | null>(null);
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
@@ -323,27 +318,59 @@ function App(
   const modeSwitch = () => (
     <View
       role="tablist"
-      accessibilityLabel={tr('Conversations')}
+      accessibilityLabel={tr('Workspace mode')}
       style={{
         flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
         backgroundColor: C.background,
         padding: 3,
         borderRadius: 10,
       }}
     >
-      <ViewSegment
-        label={tr('Conversations')}
-        selected={workspaceMode() === 'conversations'}
-        onPress={() => void switchWorkspace('conversations')}
-      />
-      <ViewSegment
-        label={tr('Rooms')}
-        selected={workspaceMode() === 'rooms'}
-        onPress={() => void switchWorkspace('rooms')}
-      />
+      <Each of={['conversations', 'rooms'] as const} key={(mode) => mode}>
+        {(mode) => (
+          <Button
+            role="tab"
+            accessibilityLabel={mode() === 'rooms' ? tr('Rooms') : tr('Conversations')}
+            selected={workspaceMode() === mode()}
+            onPress={() => void switchWorkspace(mode())}
+            style={{
+              flex: 1,
+              height: 30,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: 8,
+              backgroundColor: workspaceMode() === mode() ? C.card : 'transparent',
+            }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+          >
+            <Text
+              style={{ fontSize: 12, color: workspaceMode() === mode() ? C.text : C.secondary }}
+            >
+              {mode() === 'rooms' ? tr('Rooms') : tr('Conversations')}
+            </Text>
+          </Button>
+        )}
+      </Each>
     </View>
+  );
+  const navigationMore = () => (
+    <Collapsible open={moreNavigation()} reveal content={modeSwitch()}>
+      <View
+        role="button"
+        accessibilityLabel={moreNavigation() ? tr('Less navigation') : tr('More navigation')}
+        accessibilityState={{ expanded: moreNavigation() }}
+        onPress={() => moreNavigation.set(!moreNavigation())}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderRadius: 8 }}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
+      >
+        <Text style={{ color: C.muted, fontSize: 12 }}>
+          {moreNavigation() ? tr('Less navigation') : tr('More navigation')}
+        </Text>
+        <Icon name={moreNavigation() ? 'up' : 'down'} size={12} color={C.muted} />
+      </View>
+    </Collapsible>
   );
   function openBeside(id: string) {
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
@@ -468,14 +495,12 @@ function App(
             else preview()?.close();
           }}
           sides={sides}
-          navigation={() => (
-            <View style={{ flex: 1, minHeight: 0 }}>
-              {runtime.renderView(configuration.navigation, conversationNavigationView, { shell })}
-              <View style={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 4 }}>
-                {modeSwitch()}
-              </View>
-            </View>
-          )}
+          navigation={() =>
+            runtime.renderView(configuration.navigation, conversationNavigationView, {
+              shell,
+              navigationMore,
+            })
+          }
           preview={(docked) =>
             plugins.panel() !== null ? (
               <PluginPanel docked={docked} controller={plugins} />

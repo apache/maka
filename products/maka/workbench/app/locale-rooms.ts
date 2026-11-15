@@ -22,6 +22,9 @@ import type { Catalog } from '../../../../plugins/shared/locale.js';
 export const roomMessages = {
   You: ['You', '你', '你'],
   Rooms: ['Rooms', '房间', '房間'],
+  'More navigation': ['Show more', '更多', '更多'],
+  'Less navigation': ['Show less', '收起', '收合'],
+  'Workspace mode': ['Workspace mode', '工作模式', '工作模式'],
   'New room': ['New room', '新建房间', '新增房間'],
   'Room name': ['Room name', '房间名称', '房間名稱'],
   'Message room': ['Message room', '发送到房间', '傳送到房間'],
@@ -36,6 +39,14 @@ export const roomMessages = {
   'Earlier messages': ['Earlier messages', '更早的消息', '較早的訊息'],
   'Select a room': ['Select a room', '选择一个房间', '選擇一個房間'],
   'Rename room': ['Rename room', '重命名房间', '重新命名房間'],
+  'Confirm delete room': ['Confirm delete room', '确认删除房间', '確認刪除房間'],
+  'Delete room': ['Delete room', '删除房间', '刪除房間'],
+  'Room actions': ['Room actions', '房间操作', '房間操作'],
+  'Delete “{title}” and its messages?': [
+    'Delete “{title}” and its messages?',
+    '删除“{title}”及其消息？',
+    '刪除「{title}」及其訊息？',
+  ],
   'Room messages': ['Room messages', '房间消息', '房間訊息'],
   'Could not load rooms.': ['Could not load rooms.', '无法加载房间。', '無法載入房間。'],
   'Could not load room messages.': [
