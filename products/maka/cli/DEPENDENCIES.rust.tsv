@@ -803,6 +803,7 @@ num@0.4.3		X										X
 objc-sys@0.3.5												X							
 objc2-app-kit@0.2.2												X							
 objc2-app-kit@0.3.2		X										X							X
+objc2-cf-network@0.3.2		X										X							X
 objc2-cloud-kit@0.3.2		X										X							X
 objc2-core-data@0.3.2		X										X							X
 objc2-core-foundation@0.3.2		X										X							X

@@ -28,7 +28,9 @@ use std::{
 };
 
 mod environment;
+mod system;
 use environment::Environment;
+use system::System;
 
 /// Secret-bearing immutable routing snapshot. No Debug or serialization:
 /// configuration/vault own persistence, not transport or conversation logs.
@@ -39,6 +41,7 @@ pub struct Policy(Option<Arc<Route>>);
 enum Route {
     Manual(ProxyRoute),
     Environment(Environment),
+    System(System),
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -48,10 +51,11 @@ struct ProxyRoute {
 }
 
 impl Policy {
-    pub(crate) fn proxy_for(&self, scheme: &str, host: &str) -> Option<&Url> {
+    pub(crate) fn proxy_for(&self, scheme: &str, host: &str, port: u16) -> Option<Url> {
         match self.0.as_deref()? {
-            Route::Manual(route) => (!bypasses(host, &route.bypass)).then_some(&route.url),
-            Route::Environment(route) => route.proxy_for(scheme, host),
+            Route::Manual(route) => (!bypasses(host, &route.bypass)).then(|| route.url.clone()),
+            Route::Environment(route) => route.proxy_for(scheme, host).cloned(),
+            Route::System(route) => route.proxy_for(scheme, host, port),
         }
     }
 
@@ -81,7 +85,11 @@ impl Policy {
         }
         if url.scheme() == "http"
             && self
-                .proxy_for(url.scheme(), url.host_str().unwrap_or_default())
+                .proxy_for(
+                    url.scheme(),
+                    url.host_str().unwrap_or_default(),
+                    url.port_or_known_default().unwrap_or_default(),
+                )
                 .is_some_and(|proxy| {
                     matches!(proxy.scheme(), "http" | "https")
                         && (!proxy.username().is_empty() || proxy.password().is_some())
@@ -103,18 +111,27 @@ impl Policy {
         Ok(())
     }
 
-    /// Host routing: an enabled manual proxy wins; otherwise capture the Host's
-    /// environment. Credentials stay in this immutable, non-serializable value.
+    /// Host routing: an enabled manual proxy wins, then proxy environment
+    /// variables, then the operating system's proxy configuration. Credentials
+    /// stay in this immutable, non-serializable value.
     pub fn from_host_settings(
         settings: &NetworkProxy,
         password: Option<&str>,
     ) -> Result<Self, Error> {
         if settings.enabled {
-            Self::from_settings(settings, password)
-        } else {
-            let route = Environment::capture(|name| std::env::var(name))?;
-            Ok(Self(Some(Arc::new(Route::Environment(route)))))
+            return Self::from_settings(settings, password);
         }
+        let environment = Environment::capture(|name| std::env::var(name))?;
+        let route = match environment
+            .is_empty()
+            .then(System::capture)
+            .transpose()?
+            .flatten()
+        {
+            Some(system) => Route::System(system),
+            None => Route::Environment(environment),
+        };
+        Ok(Self(Some(Arc::new(route))))
     }
     pub fn from_settings(settings: &NetworkProxy, password: Option<&str>) -> Result<Self, Error> {
         if !settings.enabled {
@@ -197,9 +214,11 @@ impl Policy {
         if self.0.is_some() {
             let policy = self.clone();
             builder = builder.proxy(Proxy::custom(move |url| {
-                policy
-                    .proxy_for(url.scheme(), url.host_str().unwrap_or_default())
-                    .cloned()
+                policy.proxy_for(
+                    url.scheme(),
+                    url.host_str().unwrap_or_default(),
+                    url.port_or_known_default().unwrap_or_default(),
+                )
             }));
         }
         builder

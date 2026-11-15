@@ -1915,11 +1915,14 @@ mod socks {
         };
 
         if let DnsResolve::Local = dns_mode {
+            // SOCKS4 carries only IPv4, so skip AAAA results a dual-stack
+            // resolver may list first.
+            let ipv4_only = proxy.uri().scheme_str() == Some("socks4");
             let maybe_new_target = resolver
                 .http_resolve(&dst)
                 .await
                 .map_err(SocksProxyError::SocksLocalResolve)?
-                .next();
+                .find(|address| !ipv4_only || address.is_ipv4());
             if let Some(new_target) = maybe_new_target {
                 log::trace!("socks local dns resolved {new_target:?}");
                 // If the resolved IP is IPv6, wrap it in brackets for URI formatting

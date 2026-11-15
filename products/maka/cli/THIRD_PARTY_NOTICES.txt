@@ -9140,6 +9140,7 @@ SOFTWARE.
 block2@0.6.2 (MIT); authors declared by package: Mads Marquart <mads@marquart.dk>
 dispatch2@0.3.1 (Zlib OR Apache-2.0 OR MIT); authors declared by package: Mads Marquart <mads@marquart.dk>, Mary <mary@mary.zone>
 objc2-app-kit@0.3.2 (Zlib OR Apache-2.0 OR MIT)
+objc2-cf-network@0.3.2 (Zlib OR Apache-2.0 OR MIT)
 objc2-cloud-kit@0.3.2 (Zlib OR Apache-2.0 OR MIT)
 objc2-core-data@0.3.2 (Zlib OR Apache-2.0 OR MIT)
 objc2-core-foundation@0.3.2 (Zlib OR Apache-2.0 OR MIT)
