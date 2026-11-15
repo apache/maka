@@ -46354,7 +46354,7 @@ export const contracts: {
             },
           },
         },
-        readImage: {
+        read: {
           mode: 'subscription',
           input: {
             type: 'object',
@@ -46382,134 +46382,113 @@ export const contracts: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           output: {
-            oneOf: [
+            anyOf: [
               {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'chunk',
-                  },
-                  mimeType: {
-                    type: 'string',
-                    pattern: '^image/(png|jpeg|gif|webp)$',
-                  },
-                  totalBytes: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
-                  offset: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 0,
-                    maximum: 9007199254740991,
-                  },
-                  data: {
-                    type: 'string',
-                    minLength: 1,
-                    maxLength: 43692,
-                  },
-                },
-                required: ['kind', 'mimeType', 'totalBytes', 'offset', 'data'],
+                $ref: '#/$defs/AgentToolImageFrame',
               },
               {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'complete',
-                  },
-                  detail: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/ImageDetail',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                required: ['kind'],
+                $ref: '#/$defs/WorkspaceFileResult',
               },
             ],
-            description:
-              'Bounded image bytes from a selected subscription. Complete is a producer\nreturn value, never an emitted item or an executor-cleanup acknowledgement.',
-            title: 'AgentToolImageFrame',
+            title: 'WorkspaceReadFrame',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
+              AgentToolImageFrame: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'chunk',
+                      },
+                      mimeType: {
+                        type: 'string',
+                        pattern: '^image/(png|jpeg|gif|webp)$',
+                      },
+                      totalBytes: {
+                        type: 'integer',
+                        format: 'uint',
+                        minimum: 1,
+                        maximum: 9007199254740991,
+                      },
+                      offset: {
+                        type: 'integer',
+                        format: 'uint',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                      data: {
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 43692,
+                      },
+                    },
+                    required: ['kind', 'mimeType', 'totalBytes', 'offset', 'data'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'complete',
+                      },
+                      detail: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ImageDetail',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                ],
+                description:
+                  'Bounded image bytes from a selected subscription. Complete is a producer\nreturn value, never an emitted item or an executor-cleanup acknowledgement.',
+              },
               ImageDetail: {
                 type: 'string',
                 enum: ['auto', 'low', 'high', 'original'],
               },
+              WorkspaceFileResult: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                      value: true,
+                    },
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      message: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'message'],
+                    description:
+                      'A known completed failure. Uncertain external effects use the original receipt.',
+                  },
+                ],
+              },
             },
-          },
-          resources: {},
-        },
-        readText: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              path: {
-                type: 'string',
-                minLength: 1,
-              },
-              offset: {
-                type: 'integer',
-                format: 'uint',
-                minimum: 0,
-                maximum: 9007199254740991,
-              },
-              limit: {
-                type: 'integer',
-                format: 'uint',
-                minimum: 1,
-                maximum: 9007199254740991,
-              },
-            },
-            required: ['path'],
-            title: 'ReadInput',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           resources: {},
         },

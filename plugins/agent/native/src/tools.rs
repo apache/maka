@@ -380,8 +380,7 @@ fn catalog_inner(
             // The actual binding owns the title meaning, never a tool alias.
             let title_kind = if binding.contract() == &file_contract {
                 match selection.method.as_str() {
-                    "readText" => Some(title::Kind::Read),
-                    "readImage" => Some(title::Kind::ReadImage),
+                    "read" => Some(title::Kind::Read),
                     "write" => Some(title::Kind::Write),
                     "edit" => Some(title::Kind::Edit),
                     "applyPatch" => Some(title::Kind::Patch),
@@ -485,7 +484,6 @@ fn catalog_inner(
                         || contract == &questions_contract
                         || contract == &computer_contract
                         || contract == &skill_contract
-                        || (contract == &file_contract && selection.method == "readImage")
                         || (contract == &process_contract && selection.method == "health"))
                         .then(|| format!("{}@{}/{}", contract.name, contract.version, selection.method))
                 });
@@ -541,7 +539,7 @@ fn catalog_inner(
             };
             basis.push(selected);
             let mut description = selection.description.clone();
-            if binding.contract() == &file_contract && selection.method == "readText" {
+            if binding.contract() == &file_contract && selection.method == "read" {
                 description.push_str("\n\nReads Session attachment and archived tool-result resources. Pass page.next unchanged to this tool to continue.");
             }
             Ok(ToolRegistration {
@@ -868,7 +866,6 @@ impl Service {
                 .with_sandbox_floor(&floor)
                 .map_err(ToolError::Failed)?;
             // Keep original request custody even if a native descriptor panics.
-            let expected_result = selection.result;
             let mut observation = None;
             let result = {
                 let mut business = Box::pin(
@@ -988,10 +985,9 @@ impl Service {
             }
             // finish() cancels the request itself; only the original
             // Tool token can distinguish a stopped run at publication.
-            if expected_result == ToolResult::Image && result.is_ok() && cancellation.is_cancelled()
-            {
+            if mode == MethodMode::Subscription && result.is_ok() && cancellation.is_cancelled() {
                 return Err(ToolError::Failed(
-                    "Image tool cancelled before publication".into(),
+                    "Tool subscription cancelled before publication".into(),
                 ));
             }
             match (result, observation) {

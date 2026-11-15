@@ -690,7 +690,7 @@ export type McpTransport =
  */
 export type AgentWorkspaceAccess = 'read_only' | 'workspace_write' | 'danger_full_access';
 export type AgentToolInput = ('json' | 'skill' | 'web') | 'shell';
-export type AgentToolResult = ('json' | 'image') | 'computer';
+export type AgentToolResult = 'json' | 'image' | 'computer';
 export type AgentToolConfirmation = 'required' | 'preapproved';
 /**
  * A selected service is either an imported provider or the caller's own export.

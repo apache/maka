@@ -49,7 +49,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod archive;
-pub mod attachments;
+mod attachments;
 mod permissions;
 mod publication;
 
@@ -178,9 +178,6 @@ impl Handler for Files {
                         diagnostic: error.to_string(),
                     });
                 }
-                Err(error) if name == "readImage" => {
-                    return Err(HandlerError::from(error.to_string()));
-                }
                 Err(ToolError::Failed(message) | ToolError::Io { message, .. }) => {
                     FileResult::Failed { message }
                 }
@@ -291,7 +288,6 @@ async fn execute(
         access.bind_original(context).await?;
     }
     let (tool, _) = method(name).ok_or_else(|| failed("Workspace file method unavailable"))?;
-    let image = name == "readImage";
     let cancellation = &context.scope().cancellation;
     cancelled(cancellation)?;
     let configuration = access.current().await?;
@@ -303,9 +299,6 @@ async fn execute(
             maka_agent_facts::read::parse_imported_tool_result_path(request.path())
                 .map_err(failed)?
         {
-            if image {
-                return Err(failed("Use readText for archived tool results"));
-            }
             let result = async {
                 let history = maka_agent_state::session_history::SessionHistory::new(
                     root.data_writer_for_work(custody.as_ref(), &tool_context.execution.session_id)
@@ -365,9 +358,6 @@ async fn execute(
                 ResourceAddress::Task(_) => {
                     return Err(failed("This Files service does not support task resources"));
                 }
-                ResourceAddress::ToolResult(_) if image => {
-                    return Err(failed("Use readText for archived tool results"));
-                }
                 _ => {}
             }
             cancelled(cancellation)?;
@@ -395,8 +385,7 @@ async fn execute(
                             .bind_resource(&ResourceAddress::Attachment(id.clone()))
                             .map_err(failed)?;
                     }
-                    return attachments::read(&artifacts, scope, id, request, image, cancellation)
-                        .await;
+                    return attachments::read(&artifacts, scope, id, request, cancellation).await;
                 }
                 ResourceAddress::ToolResult(id) => {
                     let history = maka_agent_state::session_history::SessionHistory::new(
@@ -511,19 +500,12 @@ async fn execute(
             )
             .await?
         {
-            ReadOutput::Text(_) if image => {
-                Err(failed("Workspace readImage requires image content"))
-            }
             ReadOutput::Text(page) => serde_json::to_value(page).map(Output::Json).map_err(failed),
-            ReadOutput::Image { bytes, mime_type } if image => {
-                Ok(Output::Image { bytes, mime_type })
-            }
-            ReadOutput::Image { .. } => {
-                Err(failed("Workspace readText accepts UTF-8 text, not images"))
-            }
+            ReadOutput::Image { bytes, mime_type } => Ok(Output::Image { bytes, mime_type }),
         }
     }
 }
+
 fn cancelled(cancellation: &CancellationToken) -> Result<(), ToolError> {
     if cancellation.is_cancelled() {
         Err(failed("Workspace file operation cancelled"))
