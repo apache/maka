@@ -125,11 +125,18 @@ struct MemoryPage {
     next_before: Option<u64>,
 }
 
+struct MemoryAccess<'a> {
+    _gate: tokio::sync::MutexGuard<'a, ()>,
+    _ordered: crate::owner::runs::Ordered,
+    worker: Option<(Option<u64>, Job)>,
+    scope: String,
+}
+
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum Input {
-    /// Newest first. Returns short previews; use get for full records. A page
-    /// examines at most 32 records. Follow next_before even when a page is empty.
+    /// Newest matching records first. Returns short previews; use get for full
+    /// records. Follow next_before for older matches.
     List {
         before: Option<u64>,
         query: Option<String>,
@@ -259,7 +266,26 @@ impl scheduler::Scheduler {
                     let captured = owner.clone();
                     owner
                         .workers
-                        .spawn(async move { captured.discovery_memory(context, input).await })
+                        .spawn(async move {
+                            match input {
+                                Input::List {
+                                    before,
+                                    query,
+                                    related,
+                                } => {
+                                    captured
+                                        .list_discovery_memory(
+                                            &context,
+                                            before,
+                                            query.as_deref(),
+                                            related.as_deref(),
+                                            &cancel,
+                                        )
+                                        .await
+                                }
+                                input => captured.discovery_memory(context, input).await,
+                            }
+                        })
                         .await
                         .map_err(|e| ToolError::OutcomeUnknown(e.to_string()))?
                         .map(Into::into)
@@ -468,11 +494,10 @@ impl Owner {
         .await
         .map(|_| ())
     }
-    async fn discovery_memory(
+    async fn discovery_memory_access(
         &self,
-        context: ToolCallContext,
-        input: Input,
-    ) -> Result<Value, ToolError> {
+        context: &ToolCallContext,
+    ) -> Result<MemoryAccess<'_>, ToolError> {
         let _gate = self.scheduler.gate.lock().await;
         let fail = ToolError::Failed;
         if !self.settings.scheduled_tasks {
@@ -497,12 +522,12 @@ impl Owner {
             return Err(fail("agent_closed".into()));
         }
         let scope = if let Some((_, job)) = &worker {
-            self.check_discovery_invocation(&context, job)
+            self.check_discovery_invocation(context, job)
                 .await
                 .map_err(fail)?;
             job_scope(job).map_err(fail)?
         } else {
-            self.check_bot_invocation(&context).await.map_err(fail)?;
+            self.check_bot_invocation(context).await.map_err(fail)?;
             let session = self
                 .session(&context.execution.session_id)
                 .await
@@ -521,35 +546,78 @@ impl Owner {
             )
             .map_err(fail)?
         };
-        match &input {
-            Input::List {
-                before,
-                query,
-                related,
-            } => {
-                if query.as_ref().is_some_and(|q| q.len() > 1024) {
-                    return Err(fail("query_too_long".into()));
-                }
+        Ok(MemoryAccess {
+            _gate,
+            _ordered,
+            worker,
+            scope,
+        })
+    }
+
+    async fn list_discovery_memory(
+        &self,
+        context: &ToolCallContext,
+        mut before: Option<u64>,
+        query: Option<&str>,
+        related: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<Value, ToolError> {
+        let fail = ToolError::Failed;
+        if query.is_some_and(|q| q.len() > 1024) {
+            return Err(fail("query_too_long".into()));
+        }
+        let mut scope = None;
+        let mut records = Vec::new();
+        loop {
+            // Release ordering between storage windows and verify the same source again.
+            let access = self.discovery_memory_access(context).await?;
+            if cancellation.is_cancelled() {
+                return Err(fail("Discovery memory cancelled".into()));
+            }
+            if scope.is_none() {
                 if let Some(id) = related {
                     self.scheduler
-                        .memory_entry(&scope, id)
+                        .memory_entry(&access.scope, id)
                         .await
                         .map_err(fail)?;
                 }
-                let page = self
-                    .scheduler
-                    .memory_page(
-                        &scope,
-                        *before,
-                        query.as_deref(),
-                        related.as_deref(),
-                        PAGE_SIZE,
-                    )
-                    .await
-                    .map_err(fail)?;
-                let records: Vec<_> = page.records.iter().map(Entry::preview).collect();
-                return Ok(serde_json::json!({"records":records,"next_before":page.next_before}));
+                scope = Some(access.scope.clone());
+            } else if scope.as_deref() != Some(access.scope.as_str()) {
+                return Err(fail("discovery_source_changed".into()));
             }
+            let page = self
+                .scheduler
+                .memory_page(
+                    &access.scope,
+                    before,
+                    query,
+                    related,
+                    PAGE_SIZE - records.len(),
+                )
+                .await
+                .map_err(fail)?;
+            records.extend(page.records.iter().map(Entry::preview));
+            before = page.next_before;
+            if before.is_none() || records.len() == PAGE_SIZE {
+                return Ok(serde_json::json!({"records":records,"next_before":before}));
+            }
+        }
+    }
+
+    async fn discovery_memory(
+        &self,
+        context: ToolCallContext,
+        input: Input,
+    ) -> Result<Value, ToolError> {
+        let MemoryAccess {
+            _gate,
+            _ordered,
+            worker,
+            scope,
+        } = self.discovery_memory_access(&context).await?;
+        let bot = worker.is_none();
+        let fail = ToolError::Failed;
+        match &input {
             Input::Get { record } => {
                 return serde_json::to_value(
                     self.scheduler

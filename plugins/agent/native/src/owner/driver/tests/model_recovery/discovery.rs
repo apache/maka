@@ -1116,7 +1116,7 @@ async fn discovery_plain_completion_fails_but_preserves_its_checkpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_search_continues_past_an_empty_bounded_page() {
+async fn discovery_memory_search_fills_pages_across_older_records() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     let task = f.create("Older useful record").await;
@@ -1125,30 +1125,58 @@ async fn discovery_search_continues_past_an_empty_bounded_page() {
     tool(
         &mut socket,
         "DiscoveryComplete",
-        json!({"kind":"report","text":"unique-original-search-marker"}),
+        json!({"kind":"report","text":"Migration original-search-marker"}),
     )
     .await;
     let (mut socket, _) = next(&listener).await;
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     let record = page["records"][0]["id"].clone();
-    for index in 0..33 {
-        let (next_socket, saved) = memory(&listener, &mut socket, json!({"action":"correct","record":record,"note":{"text":format!("Additional observation {index}")}})).await;
+    for index in 0..38 {
+        let text = if index < 4 || index == 37 {
+            format!("Migration observation {index}")
+        } else {
+            format!("Unrelated observation {index}")
+        };
+        let (next_socket, saved) = memory(
+            &listener,
+            &mut socket,
+            json!({"action":"correct","record":record,"note":{"text":text}}),
+        )
+        .await;
         assert_eq!(saved["recorded"], true, "{saved}");
         socket = next_socket;
     }
+    let sequences = |page: &Value| {
+        page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record["sequence"].as_u64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let (mut socket, first) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"list","query":"migration"}),
+    )
+    .await;
+    assert_eq!(sequences(&first), [39, 5, 4, 3]);
+    let (mut socket, second) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"list","query":"migration","before":first["next_before"]}),
+    )
+    .await;
+    assert_eq!(sequences(&second), [2, 1]);
+    assert_eq!(second["next_before"], Value::Null);
+
     let (mut socket, page) = memory(
         &listener,
         &mut socket,
-        json!({"action":"list","query":"unique-original-search-marker"}),
+        json!({"action":"list","query":"original-search-marker"}),
     )
     .await;
-    assert_eq!(page["records"], json!([]));
-    assert!(
-        page["next_before"].is_number(),
-        "an empty filtered page is not EOF"
-    );
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list","query":"unique-original-search-marker","before":page["next_before"]})).await;
-    assert_eq!(page["records"].as_array().unwrap().len(), 1);
+    assert_eq!(sequences(&page), [1]);
     assert_eq!(page["records"][0]["id"], record);
     assert_eq!(page["next_before"], Value::Null);
     quiet(&f, &listener, &mut socket).await;
