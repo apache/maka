@@ -62,7 +62,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const ENTRY: &str = "__maka-cua-desktop";
-const PROTOCOL: u32 = 3;
+const PROTOCOL: u32 = 4;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -89,6 +89,20 @@ pub(crate) enum Request {
         session: String,
         target: crate::preview::PreviewTarget,
         pixels: bool,
+    },
+    PreviewPresent {
+        owner: String,
+        epoch: String,
+        session: String,
+        target: crate::preview::PreviewTarget,
+        area: crate::preview::PresentationArea,
+    },
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativePresent {
+        key: native_owner::NativeKey,
+        generation: String,
+        binding: crate::ComputerAppBinding,
+        step: native_owner::NativePresentStep,
     },
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
     NativeInvoke {

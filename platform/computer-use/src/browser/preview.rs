@@ -19,7 +19,8 @@
 
 use super::*;
 use crate::preview::{
-    Capture, CaptureFuture, CapturedImage, PreviewAuthority, PreviewKind, PreviewRegistry,
+    Capture, CaptureFuture, CapturedImage, ForegroundAuthority, PresentationArea,
+    PresentationFuture, PresentationResult, PreviewAuthority, PreviewKind, PreviewRegistry,
     PreviewSubject,
 };
 use std::sync::Arc;
@@ -75,14 +76,12 @@ impl BrowserCapture {
             access: self.proof.access(),
         }
     }
-    fn socket(&self, authority: &dyn PreviewAuthority) -> Result<Cdp, ToolError> {
+    fn socket(&self, scope: Option<Arc<dyn crate::BrowserEffectScope>>) -> Result<Cdp, ToolError> {
         match &self.socket.preparation {
             extension::PreparationTransport::NotRequired => Ok(self.socket.clone()),
-            _ => Ok(self
-                .socket
-                .with_effect_scope(authority.browser_effect_scope().ok_or_else(|| {
-                    failed("preview extension transport requires its current Host read-only scope")
-                })?)),
+            _ => Ok(self.socket.with_effect_scope(scope.ok_or_else(|| {
+                failed("browser presentation requires its current Host preparation scope")
+            })?)),
         }
     }
     async fn verify(&self, socket: &Cdp) -> Result<(), ToolError> {
@@ -106,6 +105,142 @@ impl BrowserCapture {
     }
 }
 impl Capture for BrowserCapture {
+    fn present(
+        &self,
+        authority: Arc<dyn ForegroundAuthority>,
+        area: PresentationArea,
+        stop: CancellationToken,
+    ) -> PresentationFuture {
+        let capture = self.clone();
+        Box::pin(async move {
+            let socket = capture.socket(authority.browser_effect_scope())?;
+            let checkpoint = || async {
+                check_input(&stop)?;
+                capture.verify(&socket).await?;
+                authority.authorize(capture.subject(), stop.clone()).await?;
+                capture.verify(&socket).await?;
+                check_input(&stop)
+            };
+            checkpoint().await?;
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Bounds {
+                left: i32,
+                top: i32,
+                width: i32,
+                height: i32,
+                window_state: String,
+            }
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Window {
+                window_id: i32,
+                bounds: Bounds,
+            }
+            let window: Window = serde_json::from_value(
+                socket
+                    .request("Browser.getWindowForTarget", json!({}))
+                    .await?,
+            )
+            .map_err(failed)?;
+            if window.bounds.window_state != "normal"
+                || window.bounds.width <= 0
+                || window.bounds.height <= 0
+            {
+                return Err(failed(
+                    "Browser presentation requires a normal, non-minimized bound window",
+                ));
+            }
+            let width = f64::from(window.bounds.width).min(area.width).round();
+            let height = f64::from(window.bounds.height).min(area.height).round();
+            let left = (area.x + (area.width - width) / 2.0).round();
+            let top = (area.y + (area.height - height) / 2.0).round();
+            if ![left, top, width, height]
+                .into_iter()
+                .all(|value| (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&value))
+            {
+                return Err(failed(
+                    "Browser presentation coordinates exceed its desktop range",
+                ));
+            }
+            let requested = json!({"left":left as i32,"top":top as i32,"width":width as i32,"height":height as i32});
+            let same_window = || async {
+                checkpoint().await?;
+                let current: Window = serde_json::from_value(
+                    socket
+                        .request("Browser.getWindowForTarget", json!({}))
+                        .await?,
+                )
+                .map_err(failed)?;
+                if current.window_id != window.window_id {
+                    return Err(failed("Browser target moved to another window"));
+                }
+                Ok(())
+            };
+            same_window().await?;
+            socket
+                .request(
+                    "Browser.setWindowBounds",
+                    json!({"windowId":window.window_id,"bounds":requested}),
+                )
+                .await?;
+            let mut details = json!({"windowId":window.window_id,"placementRequested":requested});
+            if let Err(error) = same_window().await {
+                return crate::preview::presentation_failure(error, details);
+            }
+            let observed = match socket
+                .request(
+                    "Browser.getWindowBounds",
+                    json!({"windowId":window.window_id}),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(ToolError::OutcomeUnknown(message)) => {
+                    return Err(ToolError::OutcomeUnknown(format!(
+                        "{message}; requested placement: {details}"
+                    )));
+                }
+                Err(error) => {
+                    return crate::preview::presentation_failure(error, details);
+                }
+            };
+            details["placementObserved"] = observed.clone();
+            let observed: Bounds =
+                serde_json::from_value(observed["bounds"].clone()).map_err(failed)?;
+            if observed.left != left as i32
+                || observed.top != top as i32
+                || observed.width != width as i32
+                || observed.height != height as i32
+                || observed.window_state != "normal"
+            {
+                return Ok(PresentationResult::Partial {
+                    message: "Browser window placement was not verified".into(),
+                    details,
+                });
+            }
+            if let Err(error) = same_window().await {
+                return crate::preview::presentation_failure(error, details);
+            }
+            let activation = match socket.request("Page.bringToFront", json!({})).await {
+                Ok(value) => value,
+                Err(ToolError::OutcomeUnknown(message)) => {
+                    return Err(ToolError::OutcomeUnknown(format!(
+                        "{message}; completed placement: {details}"
+                    )));
+                }
+                Err(error) => {
+                    return crate::preview::presentation_failure(error, details);
+                }
+            };
+            details["activationRequested"] = activation;
+            if let Err(error) = same_window().await {
+                return crate::preview::presentation_failure(error, details);
+            }
+            // CDP acknowledges selecting this exact tab, without OS foreground proof.
+            Ok(PresentationResult::Requested { details })
+        })
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -125,7 +260,7 @@ impl Capture for BrowserCapture {
     ) -> crate::AuthorizationFuture {
         let capture = self.clone();
         Box::pin(async move {
-            let socket = capture.socket(authority.as_ref())?;
+            let socket = capture.socket(authority.browser_effect_scope())?;
             check_input(&stop)?;
             capture.verify(&socket).await?;
             authority.authorize(capture.subject(), stop.clone()).await?;
@@ -140,7 +275,7 @@ impl Capture for BrowserCapture {
     ) -> CaptureFuture {
         let capture = self.clone();
         Box::pin(async move {
-            let socket = capture.socket(authority.as_ref())?;
+            let socket = capture.socket(authority.browser_effect_scope())?;
             check_input(&stop)?;
             capture.verify(&socket).await?;
             authority.authorize(capture.subject(), stop.clone()).await?;

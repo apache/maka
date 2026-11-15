@@ -170,15 +170,23 @@ pub(crate) fn state(hwnd: HWND) -> Option<WindowState> {
         // A window hidden while it had the keyboard can stay the foreground
         // one: the user sees nothing take keys there.
         state.focused = foreground && shown;
-        state.content_bounds = content_bounds(hwnd, &screen).unwrap_or(state.bounds);
+        if let Some(content) = native_content_bounds(hwnd) {
+            state.content_bounds = screen.bounds(content);
+            state.native_content_bounds = Some(nsh_core::desktop::NativeDesktopBounds {
+                x: content.left as f64,
+                y: content.top as f64,
+                width: (content.right - content.left) as f64,
+                height: (content.bottom - content.top) as f64,
+            });
+        }
         state.display = Some(screen.display.id);
         state.scale_factor = window::dpi(hwnd) as f32 / 96.0;
         Some(state)
     })
 }
 
-/// The client area of `hwnd` in screen points.
-fn content_bounds(hwnd: HWND, screen: &Screen) -> Option<Bounds<Points>> {
+/// The client area of `hwnd` in native screen pixels.
+fn native_content_bounds(hwnd: HWND) -> Option<RECT> {
     let mut client = RECT::default();
     let mut origin = POINT::default();
     // SAFETY: queries with local out values.
@@ -186,7 +194,7 @@ fn content_bounds(hwnd: HWND, screen: &Screen) -> Option<Bounds<Points>> {
         GetClientRect(hwnd, &mut client).ok()?;
         ClientToScreen(hwnd, &mut origin).ok().ok()?;
     }
-    Some(screen.bounds(offset(client, (origin.x, origin.y))))
+    Some(offset(client, (origin.x, origin.y)))
 }
 
 fn zoomed(hwnd: HWND) -> bool {

@@ -27,6 +27,7 @@ import {
   type ComputerFrameSource,
 } from './computerFrames';
 import type { ComputerStageController, ComputerTarget } from './computerStageController';
+import { computerText } from './computerText';
 
 function frameAuthority(value: ComputerFrame): string {
   return JSON.stringify([value.sessionId, value.bindingId, value.targetId, value.revision]);
@@ -151,13 +152,32 @@ export function ComputerStageView(props: {
                       return !!value && ready().get(id) === frameAuthority(value);
                     }}
                     frameError={(id) => failures().get(id) ?? live.errors().get(id)}
-                    renderExpandedFrame={(target) => (
-                      <LiveImage
-                        frame={frameFor(target())}
-                        onError={(event) => props.report(new Error(event.message))}
-                        style={{ width: '100%', height: '100%' }}
-                      />
-                    )}
+                    onPresent={(target) => {
+                      const state = parent.state();
+                      const content = state?.contentBounds;
+                      const area = !state?.nativeContentBounds
+                        ? undefined
+                        : target.kind === 'browser' && content
+                          ? {
+                              x: content.origin.x,
+                              y: content.origin.y,
+                              width: content.size.width,
+                              height: content.size.height,
+                            }
+                          : state?.nativeContentBounds;
+                      const action = area
+                        ? live.present(target, {
+                            x: area.x + 24,
+                            y: area.y + 24,
+                            width: area.width - 48,
+                            height: area.height - 48,
+                          })
+                        : Promise.reject(new Error(computerText('Window placement unavailable')));
+                      void action.catch((reason) => {
+                        if (frameFor(target)) props.controller.fault.set(reason);
+                        props.report(reason);
+                      });
+                    }}
                     renderFrame={(target) => {
                       const id = target().id;
                       return (

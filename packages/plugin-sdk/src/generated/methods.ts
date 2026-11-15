@@ -3150,6 +3150,11 @@ export interface ServiceMethods {
       input: Runtime.ComputerEvaluate;
       output: Runtime.ComputerResult;
     };
+    presentTarget: {
+      mode: 'mutation';
+      input: Runtime.ComputerPresentTarget;
+      output: Runtime.ComputerPresentationResult;
+    };
     readFrame: {
       mode: 'query';
       input: Runtime.ComputerReadFrame;

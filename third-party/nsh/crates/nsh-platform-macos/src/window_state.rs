@@ -30,7 +30,7 @@ use std::{
 use block2::RcBlock;
 use nsh_core::{
     NodeId,
-    desktop::{Display, DisplayId, WindowMode, WindowPlacement, WindowState},
+    desktop::{Display, DisplayId, NativeDesktopBounds, WindowMode, WindowPlacement, WindowState},
     geometry::{Bounds, Points, point, px, size},
 };
 use objc2::{
@@ -300,6 +300,12 @@ pub(crate) fn read_window(watch: &Watch, window: &NSWindow) -> WindowState {
     state.visible = !hidden && !minimized;
     state.focused = crate::window::is_key(window);
     state.content_bounds = to_bounds(window.contentRectForFrameRect(frame), primary);
+    state.native_content_bounds = Some(NativeDesktopBounds {
+        x: state.content_bounds.origin.x.0 as f64,
+        y: state.content_bounds.origin.y.0 as f64,
+        width: state.content_bounds.size.width.0 as f64,
+        height: state.content_bounds.size.height.0 as f64,
+    });
     state.display = window
         .screen()
         .and_then(|s| screen_number(&s))

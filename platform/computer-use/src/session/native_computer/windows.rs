@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::driver::NativeWindowsCall;
 
 impl Session {
     pub(super) async fn raw_windows(
@@ -26,7 +27,7 @@ impl Session {
         invocation: &crate::InvocationContext<'_>,
         cancellation: &CancellationToken,
         language: Language,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<NativeWindowsCall<Value>, ToolError> {
         let NativeComputerCall::Invoke { operation, args } = call else {
             return Err(failed("drag_handle is not installed for Windows"));
         };
@@ -34,10 +35,8 @@ impl Session {
         use NativeComputerMethod::*;
         match operation {
             ListApps => {
-                // Preserve the source-provided installed identity. Neither a
-                // display name nor a caller-selected pid becomes an app ID.
-                let apps: ListAppsOutput = decode(
-                    self.raw_tool(
+                let call = self
+                    .raw_windows_tool(
                         RawTool::ListApps,
                         json!({}),
                         false,
@@ -45,51 +44,55 @@ impl Session {
                         language,
                         invocation,
                     )
-                    .await?,
-                )?;
-                return Ok(json!(
-                    apps.apps
-                        .iter()
-                        .filter_map(|app| {
-                            let id = app.bundle_id.as_ref().or(app.launch_path.as_ref())?;
-                            Some(json!({"id":id,"name":app.name}))
-                        })
-                        .collect::<Vec<_>>()
-                ));
+                    .await?;
+                let apps: ListAppsOutput = decode(call.value)?;
+                return Ok(NativeWindowsCall {
+                    value: json!(
+                        apps.apps
+                            .iter()
+                            .filter_map(|app| {
+                                let id = app.bundle_id.as_ref().or(app.launch_path.as_ref())?;
+                                Some(json!({"id":id,"name":app.name}))
+                            })
+                            .collect::<Vec<_>>()
+                    ),
+                    source: call.source,
+                });
             }
             ListWindows | GetWindow => {
                 let windows = self
                     .windows(None, cancellation, language, invocation)
                     .await?;
                 if matches!(operation, ListWindows) {
-                    return Ok(json!(
+                    return Ok(NativeWindowsCall::metadata(json!(
                         windows
                             .iter()
                             .map(public_windows_window)
                             .collect::<Vec<_>>()
-                    ));
+                    )));
                 }
                 let id = input["id"].as_u64().unwrap();
                 let window = windows
                     .iter()
                     .find(|window| window.window_id == id)
                     .ok_or_else(|| failed("window was not found"))?;
-                return Ok(public_windows_window(window));
+                return Ok(NativeWindowsCall::metadata(public_windows_window(window)));
             }
             LaunchApp => {
                 // Original accepts explicit executable identifiers. The
                 // actual Cua launcher still validates and records this value;
                 // it is never interpolated into a shell command here.
-                self.raw_tool(
-                    RawTool::LaunchApp,
-                    json!({"launch_path":input["app"]}),
-                    false,
-                    cancellation,
-                    language,
-                    invocation,
-                )
-                .await?;
-                return Ok(Value::Null);
+                let call = self
+                    .raw_windows_tool(
+                        RawTool::LaunchApp,
+                        json!({"launch_path":input["app"]}),
+                        false,
+                        cancellation,
+                        language,
+                        invocation,
+                    )
+                    .await?;
+                return Ok(call.map(|_| Value::Null));
             }
             _ => {}
         }
@@ -248,9 +251,10 @@ impl Session {
                 .get_mut(&id)
                 .filter(|record| record.binding == binding && record.generation == expected)
                 .ok_or_else(|| failed("native observation omitted its commit"))?;
-            return Ok(
-                json!({"window":input["window"],"screenshots":screenshots,"accessibility":accessibility}),
-            );
+            return Ok(NativeWindowsCall {
+                value: json!({"window":input["window"],"screenshots":screenshots,"accessibility":accessibility}),
+                source: observed.source,
+            });
         }
         if let Some(observation) = self.raw_computer.windows.get_mut(&id) {
             if observation.binding != binding {
@@ -356,7 +360,7 @@ impl Session {
                 arguments[x] = mapped.0.into();
                 arguments[y] = mapped.1.into();
             }
-            Driver::invoke_native_window_frame_in_generation(
+            let call = Driver::invoke_native_window_frame_in_generation(
                 &self.native,
                 tool.name(),
                 arguments,
@@ -367,7 +371,7 @@ impl Session {
                 invocation,
             )
             .await?;
-            return Ok(Value::Null);
+            return Ok(call.map(|_| Value::Null));
         }
         let expected = if input.get("element_index").is_some()
             || input.get("screenshotId").is_some()
@@ -388,7 +392,7 @@ impl Session {
         } else {
             None
         };
-        if let Some(generation) = expected {
+        let call = if let Some(generation) = expected {
             // NativeOwner compares this opaque expected generation under the
             // same slot lock that selects its actual child. It retains that
             // exact Arc<Slot>, with no replacement spawn/reroute/replay.
@@ -402,12 +406,34 @@ impl Session {
                 language,
                 invocation,
             )
-            .await?;
+            .await?
         } else {
-            self.raw_tool(tool, arguments, false, cancellation, language, invocation)
-                .await?;
-        }
-        Ok(Value::Null)
+            self.raw_windows_tool(tool, arguments, false, cancellation, language, invocation)
+                .await?
+        };
+        Ok(call.map(|_| Value::Null))
+    }
+
+    async fn raw_windows_tool(
+        &self,
+        tool: RawTool,
+        arguments: Value,
+        pixels: bool,
+        cancellation: &CancellationToken,
+        language: Language,
+        invocation: &crate::InvocationContext<'_>,
+    ) -> Result<NativeWindowsCall<CallResult>, ToolError> {
+        Driver::invoke_raw_windows(
+            &self.native,
+            tool,
+            arguments,
+            self.epoch,
+            cancellation,
+            language,
+            pixels,
+            invocation,
+        )
+        .await
     }
 
     fn raw_windows_element(

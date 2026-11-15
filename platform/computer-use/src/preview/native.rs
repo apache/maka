@@ -19,8 +19,14 @@
 
 use super::*;
 
+mod presentation;
+
 #[derive(Clone)]
 pub(crate) struct NativeCapture {
+    pub driver: std::sync::Weak<tokio::sync::Mutex<crate::Driver>>,
+    pub native_epoch: NativeEpochId,
+    #[cfg(target_os = "windows")]
+    pub windows_source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
     pub binding: crate::ComputerAppBinding,
     pub subject: PreviewSubject,
     pub execution: crate::ExecutionCorrelation,
@@ -62,14 +68,36 @@ impl NativeCapture {
     }
 }
 impl Capture for NativeCapture {
+    fn present(
+        &self,
+        authority: Arc<dyn ForegroundAuthority>,
+        area: PresentationArea,
+        stop: CancellationToken,
+    ) -> PresentationFuture {
+        #[cfg(target_os = "windows")]
+        if self.windows_source.is_none() {
+            return Box::pin(async {
+                Err(failed(
+                    "Computer preview has no accepted Windows presentation source",
+                ))
+            });
+        }
+        presentation::present(self.clone(), authority, area, stop)
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
     fn same_source(&self, other: &dyn Capture) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|other| self.binding == other.binding && self.execution == other.execution)
+        other.as_any().downcast_ref::<Self>().is_some_and(|other| {
+            #[cfg(target_os = "windows")]
+            if self.windows_source != other.windows_source {
+                return false;
+            }
+            self.binding == other.binding
+                && self.execution == other.execution
+                && self.native_epoch == other.native_epoch
+                && std::sync::Weak::ptr_eq(&self.driver, &other.driver)
+        })
     }
     fn authorize(
         &self,

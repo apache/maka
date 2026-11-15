@@ -35,6 +35,13 @@ struct Peer {
     url: String,
     created: bool,
     methods: Vec<String>,
+    preview_screenshots: usize,
+    window_bounds: Value,
+    canonical_sent: Option<tokio::sync::oneshot::Sender<()>>,
+    canonical_ready: Option<tokio::sync::oneshot::Receiver<()>>,
+    presentation_done: Option<tokio::sync::oneshot::Sender<()>>,
+    resume_model: Option<tokio::sync::oneshot::Receiver<()>>,
+    close_result_seen: bool,
     model_requests: usize,
     model_result: Option<Value>,
     model_pages: String,
@@ -62,7 +69,6 @@ await tab.goto({url});
 const ax = await tab.getAXState({{emit:false,disableDiffing:true}});
 if (!ax.includes({marker})) throw new Error('AX marker missing');
 const pixels = Array.from(await tab.screenshot({{fullPage:true}}));
-await tab.close();
 nodeRepl.write(JSON.stringify({{marker:{marker},ax,pixels}}));"#,
             url = json!(format!("{}/fixture", self.origin)),
             marker = json!(self.marker)
@@ -71,7 +77,12 @@ nodeRepl.write(JSON.stringify({{marker:{marker},ax,pixels}}));"#,
     fn cdp(&mut self, request: &Value) -> Result<(Value, Option<Value>)> {
         let method = request["method"].as_str().ok_or("CDP method missing")?;
         let p = &request["params"];
-        self.methods.push(method.into());
+        // Preserve original-tool counts while observing live viewport reads separately.
+        if method == "Page.captureScreenshot" && p["quality"] == 75 {
+            self.preview_screenshots += 1;
+        } else {
+            self.methods.push(method.into());
+        }
         let mut event = None;
         let result = match method {
             "Target.createTarget" => {
@@ -142,10 +153,47 @@ nodeRepl.write(JSON.stringify({{marker:{marker},ax,pixels}}));"#,
                 "cssVisualViewport":{"pageX":0,"pageY":0,"clientWidth":2,"clientHeight":2,"scale":1}}),
             "Page.captureScreenshot" => {
                 assert_eq!(p["format"], "jpeg");
-                assert_eq!(p["quality"], 80);
-                assert_eq!(p["clip"]["width"], 2.0);
-                assert_eq!(p["clip"]["height"], 2.0);
+                if p["quality"] == 75 {
+                    assert_eq!(
+                        p,
+                        &json!({"format":"jpeg","quality":75,"captureBeyondViewport":false}),
+                    );
+                } else {
+                    assert_eq!(p["quality"], 80);
+                    assert_eq!(p["clip"]["width"], 2.0);
+                    assert_eq!(p["clip"]["height"], 2.0);
+                }
                 json!({"data":self.pixels})
+            }
+            "Browser.getWindowForTarget" | "Browser.getWindowBounds" => {
+                assert!(self.created, "window queried after owned tab closed");
+                if method == "Browser.getWindowForTarget" {
+                    assert_eq!(p, &json!({}));
+                    json!({"windowId":7,"bounds":self.window_bounds})
+                } else {
+                    assert_eq!(p, &json!({"windowId":7}));
+                    json!({"bounds":self.window_bounds})
+                }
+            }
+            "Browser.setWindowBounds" => {
+                assert!(self.created);
+                assert_eq!(p["windowId"], 7);
+                assert_eq!(
+                    p["bounds"],
+                    json!({"left":200,"top":100,"width":800,"height":600})
+                );
+                self.window_bounds = p["bounds"].clone();
+                self.window_bounds["windowState"] = json!("normal");
+                json!({})
+            }
+            "Page.bringToFront" => {
+                assert!(self.created);
+                assert_eq!(p, &json!({}));
+                assert_eq!(
+                    self.window_bounds,
+                    json!({"left":200,"top":100,"width":800,"height":600,"windowState":"normal"})
+                );
+                json!({})
             }
             "Page.close" => {
                 assert!(self.created);
@@ -167,6 +215,7 @@ async fn connection(
     let accepted = upgrade.clone();
     let service = service_fn(|mut request: Request<Incoming>| {
         let (state, upgrade) = (state.clone(), accepted.clone());
+        let stop = stop.clone();
         async move {
             let path = request.uri().path().to_owned();
             assert_eq!(
@@ -203,6 +252,7 @@ async fn connection(
                 .await
                 .map_err(|e| e.to_string())?
                 .to_bytes();
+            let mut wait_for_presentation = None;
             let (body, mime) = {
                 let mut peer = state.lock().unwrap();
                 match path.as_str() {
@@ -255,6 +305,25 @@ async fn connection(
                                     json!({"tool_calls":[{"index":0,"id":peer.marker,"type":"function","function":{
                                     "name":"cua_repl","arguments":json!({"code":peer.script(),"title":"Owned protocol stack regression"}).to_string()}}]}),
                                     "tool_calls",
+                                ),
+                                "text/event-stream",
+                            )
+                        } else if peer.model_result.is_some() {
+                            assert!(!peer.close_result_seen, "close result replayed");
+                            let result = input["messages"]
+                                .as_array()
+                                .ok_or("model messages missing")?
+                                .iter()
+                                .rev()
+                                .find(|m| m["role"] == "tool")
+                                .ok_or("close tool result missing")?;
+                            assert_eq!(result["tool_call_id"], "close_owned");
+                            assert!(!peer.created, "fresh close call left the owned tab open");
+                            peer.close_result_seen = true;
+                            (
+                                sse(
+                                    json!({"content":"owned Browser regression complete"}),
+                                    "stop",
                                 ),
                                 "text/event-stream",
                             )
@@ -311,10 +380,22 @@ async fn connection(
                             } else {
                                 peer.model_result =
                                     Some(json!(std::mem::take(&mut peer.model_pages)));
+                                wait_for_presentation = Some(
+                                    peer.resume_model
+                                        .take()
+                                        .ok_or("model hold already consumed")?,
+                                );
+                                peer.canonical_sent
+                                    .take()
+                                    .ok_or("canonical signal already consumed")?
+                                    .send(())
+                                    .map_err(|_| "canonical observer closed")?;
                                 (
                                     sse(
-                                        json!({"content":"owned Browser regression complete"}),
-                                        "stop",
+                                        json!({"tool_calls":[{"index":0,"id":"close_owned","type":"function","function":{
+                                            "name":"cua_repl","arguments":json!({"code":"await tab.close();","title":"Close the owned regression tab"}).to_string()
+                                        }}]}),
+                                        "tool_calls",
                                     ),
                                     "text/event-stream",
                                 )
@@ -324,6 +405,17 @@ async fn connection(
                     other => return Err(format!("unexpected HTTP path {other}")),
                 }
             };
+            if let Some(resume) = wait_for_presentation {
+                // The Peer mutex is released: CDP must remain serviceable during this hold.
+                tokio::select! {
+                    biased;
+                    () = stop.cancelled() => return Err("protocol peer stopped during model hold".into()),
+                    result = tokio::time::timeout(Duration::from_secs(30), resume) => {
+                        result.map_err(|_| "presentation release deadline")?
+                            .map_err(|_| "presentation observer closed")?;
+                    }
+                }
+            }
             Ok::<_, String>(response(body, mime))
         }
     });
@@ -557,8 +649,196 @@ async fn scenario(
     let sid = session["id"].as_str().unwrap();
     mutate(client,"agent","metadata",json!({"sessionId":sid,"expectedRevision":session["revision"],"title":session["title"],"labels":[],
         "permissions":{"settings":{"access":"danger_full_access","requestPermissions":true},"revokeGrants":false}}),Attachments::new()).await?;
+    let (canonical_ready, presentation_done) = {
+        let mut state = peer.lock().unwrap();
+        (
+            state
+                .canonical_ready
+                .take()
+                .ok_or("canonical receiver already consumed")?,
+            state
+                .presentation_done
+                .take()
+                .ok_or("presentation sender already consumed")?,
+        )
+    };
     progress["phase"] = json!("admit original Browser Run");
     let sent=mutate(client,"agent","send",json!({"sessionId":sid,"message":"Explicitly authorize nonisolated Computer only for the owned-stack loopback protocol peer and its /fixture URL. Perform the one Browser regression and close only its owned tab.","delivery":"queue"}),Attachments::new()).await?;
+    progress["phase"] = json!("settled original tool and Read results; model response held");
+    phase("original canonical tool and Read results", async {
+        canonical_ready
+            .await
+            .map_err(|_| "canonical sender closed".into())
+    })
+    .await?;
+    let held_requests = {
+        let state = peer.lock().unwrap();
+        check_report(
+            state
+                .model_result
+                .as_ref()
+                .ok_or("canonical model result missing")?,
+            &state.marker,
+        );
+        assert!(
+            state.created,
+            "original tool closed its tab before client presentation"
+        );
+        assert!(
+            !state
+                .methods
+                .iter()
+                .any(|method| method == "Page.bringToFront")
+        );
+        state.model_requests
+    };
+    let work_target = json!({"kind":"message","messageId":sent["messageId"]});
+    let held = client
+        .query(
+            "agent",
+            "work",
+            json!({"sessionId":sid,"target":work_target}),
+        )
+        .await?;
+    assert_eq!(held["kind"], "delivered");
+    assert_eq!(held["execution"]["state"]["kind"], "running");
+    let held_run = held["execution"]["runId"].clone();
+    let stage = client
+        .subscribe("computer", "watchStage", json!({"sessionId":sid}))
+        .await?;
+    let snapshot = match phase("live stage snapshot", stage.next()).await? {
+        Some(maka_app_client::SubscriptionEvent::Item(value)) => value,
+        _ => return Err("stage ended before its snapshot".into()),
+    };
+    let binding = snapshot["bindingId"]
+        .as_str()
+        .ok_or("stage binding missing")?;
+    let targets = snapshot["targets"]
+        .as_array()
+        .ok_or("stage targets missing")?;
+    assert_eq!(targets.len(), 1);
+    let target = &targets[0];
+    assert_eq!(target["kind"], "browser");
+    let frames = client.subscribe("computer", "watchFrames", json!({
+        "sessionId":sid,"bindingId":binding,"targetIds":[target["id"]],"selectedTargetId":target["id"]
+    })).await?;
+    let notice = match phase("live viewport frame notice", frames.next()).await? {
+        Some(maka_app_client::SubscriptionEvent::Item(value)) => value,
+        _ => return Err("frame stream ended before its notice".into()),
+    };
+    assert_eq!(notice["sessionId"], sid);
+    assert_eq!(notice["bindingId"], binding);
+    assert_eq!(notice["targetId"], target["id"]);
+    assert!(
+        notice["sequence"]
+            .as_u64()
+            .is_some_and(|sequence| sequence > 0)
+    );
+    {
+        let value = client.query("computer", "readFrame", json!({
+            "sessionId":sid,"bindingId":binding,"feedId":notice["feedId"],"targetId":target["id"],"after":0
+        })).await?;
+        assert_eq!(value["kind"], "frame", "live frame was not available");
+        let frame = &value["frame"];
+        assert_eq!(frame["sessionId"], sid);
+        assert_eq!(frame["bindingId"], binding);
+        assert_eq!(frame["targetId"], target["id"]);
+        assert_eq!(frame["revision"], target["revision"]);
+        assert!(
+            frame["sequence"].as_u64().ok_or("frame sequence missing")?
+                >= notice["sequence"]
+                    .as_u64()
+                    .ok_or("notice sequence missing")?
+        );
+        assert_eq!(frame["mimeType"], "image/jpeg");
+        assert_eq!(
+            (frame["width"].as_u64(), frame["height"].as_u64()),
+            (Some(2), Some(2))
+        );
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(frame["dataBase64"].as_str().ok_or("frame data missing")?)
+            .map_err(|_| "invalid live frame encoding")?;
+        let image = image::load_from_memory(&bytes).map_err(|_| "invalid live frame image")?;
+        assert_eq!((image.width(), image.height()), (2, 2));
+    }
+    progress["phase"] = json!("new client foreground operation after original tool settlement");
+    let foreground_id = Uuid::new_v4();
+    let foreground = client.mutation(
+        foreground_id, "computer", "presentTarget",
+        json!({"sessionId":sid,"bindingId":binding,"feedId":notice["feedId"],"targetId":target["id"],
+            "revision":target["revision"],"area":{"x":100,"y":50,"width":1000,"height":700}}),
+        Attachments::new(), None, json!({"kind":"post-settled-browser-presentation"}),
+    ).await?;
+    phase("foreground operation prepared", foreground.prepare()).await?;
+    let foreground_reply = phase("foreground operation confirmed", foreground.confirm()).await?;
+    let presented = success(&foreground_reply);
+    assert_eq!(presented["kind"], "requested");
+    assert_eq!(presented["details"]["windowId"], 7);
+    assert_eq!(
+        presented["details"]["placementRequested"],
+        json!({"left":200,"top":100,"width":800,"height":600})
+    );
+    assert_eq!(
+        presented["details"]["placementObserved"]["bounds"],
+        json!({"left":200,"top":100,"width":800,"height":600,"windowState":"normal"})
+    );
+    assert_eq!(presented["details"]["activationRequested"], json!({}));
+    {
+        let state = peer.lock().unwrap();
+        assert_eq!(
+            state.model_requests, held_requests,
+            "model hold ended before presentation"
+        );
+        assert!(!state.close_result_seen);
+        assert!(state.created);
+        assert!(state.preview_screenshots > 0);
+        assert_eq!(
+            state.window_bounds,
+            json!({"left":200,"top":100,"width":800,"height":600,"windowState":"normal"})
+        );
+        assert_eq!(
+            state
+                .methods
+                .iter()
+                .filter(|method| method.as_str() == "Page.bringToFront")
+                .count(),
+            1
+        );
+        let window_methods: Vec<_> = state
+            .methods
+            .iter()
+            .map(String::as_str)
+            .filter(|method| {
+                matches!(
+                    *method,
+                    "Browser.getWindowForTarget"
+                        | "Browser.setWindowBounds"
+                        | "Browser.getWindowBounds"
+                        | "Page.bringToFront"
+                )
+            })
+            .collect();
+        assert_eq!(
+            window_methods,
+            vec![
+                "Browser.getWindowForTarget",
+                "Browser.getWindowForTarget",
+                "Browser.setWindowBounds",
+                "Browser.getWindowForTarget",
+                "Browser.getWindowBounds",
+                "Browser.getWindowForTarget",
+                "Page.bringToFront",
+                "Browser.getWindowForTarget",
+            ]
+        );
+    }
+    progress["foreground"] =
+        json!({"operationId":foreground_id,"kind":presented["kind"],"cleanup":"confirmed"});
+    phase("viewport subscription closed", frames.close()).await?;
+    phase("stage subscription closed", stage.close()).await?;
+    presentation_done
+        .send(())
+        .map_err(|_| "held model response disappeared")?;
     progress["phase"] = json!("original Run completed");
     let execution = execution(
         client,
@@ -568,6 +848,10 @@ async fn scenario(
         None,
     )
     .await?;
+    assert_eq!(
+        execution["runId"], held_run,
+        "presentation must not replace the original Run"
+    );
     let marker = peer.lock().unwrap().marker.clone();
     let model_result = peer
         .lock()
@@ -628,6 +912,36 @@ async fn scenario(
         })
         .collect();
     assert_eq!(returned.len(), 1);
+    let close_results: Vec<_> = inspection["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| {
+            let recorded = &row["item"]["recorded"];
+            recorded["run"] == *run
+                && recorded["fact"]["kind"] == "host_tool_result_recorded"
+                && recorded["fact"]["tool"]["call"] == "close_owned"
+        })
+        .collect();
+    assert_eq!(
+        close_results.len(),
+        1,
+        "fresh close call has one canonical result"
+    );
+    assert_eq!(
+        close_results[0]["item"]["recorded"]["fact"]["is_error"],
+        false
+    );
+    let close_tool = &close_results[0]["item"]["recorded"]["fact"]["tool"];
+    for kind in ["tool_admitted", "tool_result_accepted"] {
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|row| row["fact"]["kind"] == kind && row["fact"]["tool"] == *close_tool)
+                .count(),
+            1
+        );
+    }
     let fact = &returned[0]["item"]["recorded"]["fact"];
     assert_eq!(fact["is_error"], false);
     let tool = &fact["tool"];
@@ -743,6 +1057,8 @@ async fn scenario(
         let state = peer.lock().unwrap();
         assert!(state.model_requests > 3, "original archive fully read");
         assert!(!state.created);
+        assert!(state.close_result_seen);
+        assert!(state.preview_screenshots > 0);
         for method in [
             "Target.createTarget",
             "Page.navigate",
@@ -783,6 +1099,8 @@ async fn browser_root_bridge_completes_on_normal_worker_stack() {
     image::RgbImage::from_pixel(2, 2, image::Rgb([17, 71, 139]))
         .write_to(&mut jpeg, image::ImageFormat::Jpeg)
         .unwrap();
+    let (canonical_sent, canonical_ready) = tokio::sync::oneshot::channel();
+    let (presentation_done, resume_model) = tokio::sync::oneshot::channel();
     let peer = Arc::new(Mutex::new(Peer {
         origin: format!("http://{}", listener.local_addr().unwrap()),
         marker: Uuid::new_v4().to_string(),
@@ -790,6 +1108,13 @@ async fn browser_root_bridge_completes_on_normal_worker_stack() {
         url: "about:blank".into(),
         created: false,
         methods: Vec::new(),
+        preview_screenshots: 0,
+        window_bounds: json!({"left":20,"top":30,"width":800,"height":600,"windowState":"normal"}),
+        canonical_sent: Some(canonical_sent),
+        canonical_ready: Some(canonical_ready),
+        presentation_done: Some(presentation_done),
+        resume_model: Some(resume_model),
+        close_result_seen: false,
         model_requests: 0,
         model_result: None,
         model_pages: String::new(),

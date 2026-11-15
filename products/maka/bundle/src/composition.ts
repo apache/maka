@@ -559,7 +559,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
     endpoints.computer = expose(
       'gateway',
       'computer',
-      ['watchStage', 'watchFrames', 'readFrame'],
+      ['watchStage', 'watchFrames', 'readFrame', 'presentTarget'],
       false,
     );
   }

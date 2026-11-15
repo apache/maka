@@ -20,6 +20,8 @@
 //! Native-only Windows SDK owner, using the existing inherited worker channel.
 //! Browser, JavaScript and the embedding Host never execute in this child.
 
+mod presentation;
+
 use super::{
     Connection, EXIT_TIMEOUT, Failure, Hello, PROTOCOL, ParentFrame, Process, Request, WorkerFrame,
     read_sync, write,
@@ -158,9 +160,41 @@ impl From<cua_driver_sdk::ToolResult> for NativeResult {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NativePresentationSource {
+    generation: NativeGeneration,
+    key: NativeKey,
+}
+
 pub(crate) struct NativeReply {
+    pub source: NativePresentationSource,
     pub result: NativeResult,
     pub audio: Option<NativeAudioCompletion>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum NativePresentStep {
+    ReadFrame,
+    SetFrame {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
+    Raise,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(crate) enum NativePresentReply {
+    Frame(cua_driver_contract::WindowBounds),
+    Effect(NativeResult),
 }
 
 /// Exact transport custody of a real native capture, not a model-selected ID.
@@ -486,6 +520,10 @@ impl NativeOwner {
                 "Computer Use cancelled before native dispatch".into(),
             ));
         }
+        let presentation_source = NativePresentationSource {
+            generation: slot.generation,
+            key: key.clone(),
+        };
         let reply = slot
             .connection
             .invoke_native(
@@ -528,7 +566,11 @@ impl NativeOwner {
         } else {
             None
         };
-        Ok(NativeReply { result, audio })
+        Ok(NativeReply {
+            result,
+            audio,
+            source: presentation_source,
+        })
     }
     pub(crate) async fn generation(
         &self,
@@ -640,6 +682,10 @@ impl NativeOwner {
 }
 
 enum NativeEvent {
+    Presented {
+        id: u64,
+        result: Result<NativePresentReply, Failure>,
+    },
     Escape {
         key: NativeKey,
         operation_id: Option<String>,
@@ -715,6 +761,11 @@ fn native_task_finished(result: Result<(), JoinError>) -> io::Result<()> {
         Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
         Err(error) => Err(io::Error::other(error)),
     }
+}
+
+enum NativeActive {
+    Input(u64),
+    Presentation { id: u64, stop: CancellationToken },
 }
 
 struct Bound {
@@ -802,8 +853,15 @@ async fn serve(
                     if let Err(error) = result { eprintln!("native input retirement: {error:?}"); continue; }
                     std::process::exit(130);
                 },
+                NativeEvent::Presented { id, result } => {
+                    if !matches!(active.take(), Some(NativeActive::Presentation { id: expected, .. }) if expected == id) {
+                        return Err(io::Error::other("native presentation completion identity mismatch"));
+                    }
+                    let result = result.and_then(|result| serde_json::to_value(result).map_err(|error| Failure::OutcomeUnknown(error.to_string())));
+                    write(&mut output, &WorkerFrame::Response { id, result }).await?;
+                },
                 NativeEvent::Completed { id, audio_start, result } => {
-                    if active.take() != Some(id) { return Err(io::Error::other("native completion identity mismatch")); }
+                    if !matches!(active.take(), Some(NativeActive::Input(expected)) if expected == id) { return Err(io::Error::other("native completion identity mismatch")); }
                     let (reply, completion) = match result {
                         Ok((result, completion)) => (serde_json::to_value(result).map_err(|error| Failure::OutcomeUnknown(error.to_string())), completion),
                         Err(error) => (Err(error), None),
@@ -840,6 +898,22 @@ async fn serve(
                         last_request = id;
                         match *request {
                             Request::Shutdown => { closing = true; shutdown = Some(id); },
+                            Request::NativePresent { key, binding, step, .. } => {
+                                if quarantined.is_some() || interrupted || active.is_some()
+                                    || !bound.as_ref().is_some_and(|bound| bound.key == key)
+                                {
+                                    write(&mut output, &WorkerFrame::Response { id, result: Err(Failure::Failed("native presentation source is unavailable or busy".into())) }).await?;
+                                    continue;
+                                }
+                                let session = bound.as_ref().expect("checked bound").session.clone();
+                                let stop = disconnected.child_token();
+                                active = Some(NativeActive::Presentation { id, stop: stop.clone() });
+                                let events = events.clone();
+                                tasks.spawn(async move {
+                                    let result = presentation::execute(session, binding, step, stop).await.map_err(Failure::from);
+                                    let _ = events.send(NativeEvent::Presented { id, result });
+                                });
+                            },
                             Request::NativeInvoke { key, operation, operation_id, arguments, coordinate_frame, .. } => {
                                 if let Some(reason) = &quarantined {
                                     write(&mut output, &WorkerFrame::Response { id, result: Err(Failure::Failed(format!("native input producer is quarantined: {reason}"))) }).await?;
@@ -875,7 +949,7 @@ async fn serve(
                                 }
                                 let bound = bound.as_ref().expect("created native binding");
                                 let session = bound.session.clone(); let monitor = bound.monitor.as_ref().expect("created actual input producer").clone(); let events = events.clone();
-                                active = Some(id);
+                                active = Some(NativeActive::Input(id));
                                 tasks.spawn(async move {
                                     let call = match coordinate_frame {
                                         NativeCoordinateFrame::RawWindowObservation => {
@@ -939,7 +1013,11 @@ async fn serve(
                             _ => write(&mut output, &WorkerFrame::Response { id, result: Err(Failure::Failed("native-only helper refuses non-native requests".into())) }).await?,
                         }
                     },
-                    Some(ParentFrame::Cancel { id }) if active == Some(id) || id <= last_request => {},
+                    Some(ParentFrame::Cancel { id }) if id <= last_request => {
+                        if let Some(NativeActive::Presentation { id: current, stop }) = &active
+                            && *current == id
+                        { stop.cancel(); }
+                    },
                     None => closing = true,
                     _ => return Err(io::Error::other("native-only helper received a foreign capability frame")),
                 }

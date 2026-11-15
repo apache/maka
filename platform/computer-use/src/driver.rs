@@ -169,7 +169,33 @@ pub(crate) enum WindowsCaptureCommit {
     Replaced { id: String },
 }
 #[cfg(target_os = "windows")]
+pub(crate) struct NativeWindowsCall<T> {
+    pub value: T,
+    pub source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
+}
+#[cfg(target_os = "windows")]
+impl<T> NativeWindowsCall<T> {
+    pub(crate) fn metadata(value: T) -> Self {
+        Self {
+            value,
+            source: None,
+        }
+    }
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> NativeWindowsCall<U> {
+        NativeWindowsCall {
+            value: f(self.value),
+            source: self.source,
+        }
+    }
+}
+#[cfg(target_os = "windows")]
+type CoordinateCall = NativeWindowsCall<CallResult>;
+#[cfg(not(target_os = "windows"))]
+type CoordinateCall = CallResult;
+
+#[cfg(target_os = "windows")]
 pub(crate) struct WindowsObservationResult {
+    pub source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
     pub commit: Option<WindowsObservationCommit>,
     pub result: Result<CallResult, ToolError>,
 }
@@ -194,7 +220,7 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         invocation: &crate::InvocationContext<'_>,
-    ) -> Result<CallResult, ToolError> {
+    ) -> Result<NativeWindowsCall<CallResult>, ToolError> {
         Self::invoke_with_coordinates(
             driver,
             name,
@@ -222,7 +248,7 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         invocation: &crate::InvocationContext<'_>,
-    ) -> Result<CallResult, ToolError> {
+    ) -> Result<NativeWindowsCall<CallResult>, ToolError> {
         Self::invoke_with_coordinates(
             driver,
             name,
@@ -261,7 +287,7 @@ impl Driver {
         .await?;
         // Read the producer's commit before the ordinary error mapper discards
         // the failed response. A failed observation is never a rollback ACK.
-        let call: CallResult = serde_json::from_str(&result.raw_json).map_err(|error| {
+        let call: CallResult = serde_json::from_str(&result.value.raw_json).map_err(|error| {
             ToolError::OutcomeUnknown(format!("invalid native observation result: {error}"))
         })?;
         let commit = call
@@ -273,12 +299,13 @@ impl Driver {
             .map_err(|error| {
                 ToolError::OutcomeUnknown(format!("invalid native observation commit: {error}"))
             })?;
-        let mapped = if result.is_error {
-            windows_native_result(result, language)
+        let mapped = if result.value.is_error {
+            windows_native_result(result.value, language)
         } else {
             Ok(call)
         };
         Ok(WindowsObservationResult {
+            source: result.source,
             commit,
             result: mapped,
         })
@@ -771,7 +798,7 @@ impl Driver {
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
-        Self::invoke_with_coordinates(
+        let result = Self::invoke_with_coordinates(
             driver,
             name,
             input,
@@ -784,7 +811,15 @@ impl Driver {
             #[cfg(target_os = "windows")]
             invocation,
         )
-        .await
+        .await?;
+        #[cfg(target_os = "windows")]
+        {
+            Ok(result.value)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(result)
+        }
     }
 
     pub(crate) async fn invoke_native_window_pixels(
@@ -796,7 +831,7 @@ impl Driver {
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
-        Self::invoke_with_coordinates(
+        let result = Self::invoke_with_coordinates(
             driver,
             name,
             input,
@@ -809,7 +844,15 @@ impl Driver {
             #[cfg(target_os = "windows")]
             invocation,
         )
-        .await
+        .await?;
+        #[cfg(target_os = "windows")]
+        {
+            Ok(result.value)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(result)
+        }
     }
 
     /// Match the selected Cua dispatch backend; DISPLAY alone is not XID proof.
@@ -987,7 +1030,8 @@ impl Driver {
         coordinates: NativeCoordinates,
         expected_generation: Option<crate::desktop::worker::native_owner::NativeGeneration>,
         invocation: &crate::InvocationContext<'_>,
-    ) -> Result<crate::desktop::worker::native_owner::NativeResult, ToolError> {
+    ) -> Result<NativeWindowsCall<crate::desktop::worker::native_owner::NativeResult>, ToolError>
+    {
         use crate::desktop::worker::native_owner::NativeCoordinateFrame;
 
         if cancellation.is_cancelled() {
@@ -1021,7 +1065,10 @@ impl Driver {
                 invocation,
             )
             .await?;
-        Ok(reply.result)
+        Ok(NativeWindowsCall {
+            value: reply.result,
+            source: Some(reply.source),
+        })
     }
 
     async fn invoke_with_coordinates(
@@ -1036,7 +1083,7 @@ impl Driver {
             crate::desktop::worker::native_owner::NativeGeneration,
         >,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
-    ) -> Result<CallResult, ToolError> {
+    ) -> Result<CoordinateCall, ToolError> {
         if ![
             "list_apps",
             "list_windows",
@@ -1140,7 +1187,10 @@ impl Driver {
         };
         #[cfg(target_os = "windows")]
         {
-            windows_native_result(result, language)
+            Ok(NativeWindowsCall {
+                value: windows_native_result(result.value, language)?,
+                source: result.source,
+            })
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1167,6 +1217,77 @@ impl Driver {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn present_native_window(
+        driver: &Arc<Mutex<Self>>,
+        capture: &crate::preview::native::NativeCapture,
+        authority: Arc<dyn crate::preview::ForegroundAuthority>,
+        area: crate::preview::PresentationArea,
+        cancellation: CancellationToken,
+    ) -> Result<crate::preview::PresentationResult, ToolError> {
+        let owner = {
+            let mut current = driver.lock().await;
+            current.admit_epoch(capture.native_epoch)?;
+            current.native_owner.clone()
+        };
+        let source = capture.windows_source.as_ref().ok_or_else(|| {
+            ToolError::Failed("native presentation has no accepted source".into())
+        })?;
+        owner
+            .present(
+                source,
+                &capture.binding,
+                capture.subject.clone(),
+                authority,
+                area,
+                cancellation,
+            )
+            .await
+    }
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) async fn presentation_session(
+        driver: &Arc<Mutex<Self>>,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<CuaDriverSession>, ToolError> {
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed("Computer presentation cancelled".into()));
+        }
+        let bound = driver.lock().await.bind_epoch(epoch, Language::En)?;
+        let session = bound.ready(Language::En).await?;
+        let mut current = driver.lock().await;
+        current.admit_epoch(epoch)?;
+        if cancellation.is_cancelled()
+            || !current
+                .sessions
+                .get(&epoch)
+                .is_some_and(|current| Arc::ptr_eq(current, &bound))
+        {
+            return Err(ToolError::Failed(
+                "Computer presentation epoch retired".into(),
+            ));
+        }
+        Ok(session)
+    }
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) async fn check_presentation_session(
+        driver: &Arc<Mutex<Self>>,
+        epoch: NativeEpochId,
+        session: &Arc<CuaDriverSession>,
+    ) -> Result<(), ToolError> {
+        let mut current = driver.lock().await;
+        current.admit_epoch(epoch)?;
+        if !current
+            .sessions
+            .get(&epoch)
+            .is_some_and(|bound| Arc::ptr_eq(&bound.session, session))
+        {
+            return Err(ToolError::Failed(
+                "Computer presentation session changed".into(),
+            ));
+        }
+        Ok(())
+    }
     fn bind_epoch(
         &mut self,
         epoch: NativeEpochId,
@@ -1450,7 +1571,7 @@ fn refusal(code: &str, reason: &str, language: Language) -> String {
     message
 }
 
-fn native_error(error: &DriverError, language: Language) -> ToolError {
+pub(crate) fn native_error(error: &DriverError, language: Language) -> ToolError {
     match error {
         DriverError::Shutdown => ToolError::Failed(crate::language::inactive(language).into()),
         DriverError::ActionInterrupted {

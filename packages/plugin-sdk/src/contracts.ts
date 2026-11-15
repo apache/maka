@@ -66960,6 +66960,109 @@ export const contracts: {
           },
           resources: {},
         },
+        presentTarget: {
+          mode: 'mutation',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              feedId: {
+                type: 'string',
+              },
+              targetId: {
+                type: 'string',
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              area: {
+                $ref: '#/$defs/ComputerPresentationArea',
+              },
+            },
+            required: ['sessionId', 'bindingId', 'feedId', 'targetId', 'revision', 'area'],
+            title: 'ComputerPresentTarget',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ComputerPresentationArea: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  x: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  y: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  width: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  height: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                },
+                required: ['x', 'y', 'width', 'height'],
+              },
+            },
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'presented',
+                  },
+                  details: true,
+                },
+                required: ['kind', 'details'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'requested',
+                  },
+                  details: true,
+                },
+                required: ['kind', 'details'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'partial',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                  details: true,
+                },
+                required: ['kind', 'message', 'details'],
+              },
+            ],
+            title: 'ComputerPresentationResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
         readFrame: {
           mode: 'query',
           input: {

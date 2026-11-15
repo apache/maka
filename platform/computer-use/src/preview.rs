@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Ephemeral read-only capabilities, independent of agent observation identities.
+//! Ephemeral presentation capabilities, independent of agent observation identities.
 
 use crate::{
     AuthorizationFuture, BrowserAccess, BrowserEffectScope, ComputerAppTarget, NativeEpochId,
@@ -61,11 +61,80 @@ pub trait PreviewAuthority: Send + Sync {
     fn browser_effect_scope(&self) -> Option<Arc<dyn BrowserEffectScope>>;
 }
 
+/// Issued for one actual client mutation. Observation authority cannot construct it.
+/// It permits presenting the bound target, never synthetic mouse or keyboard input.
+pub trait ForegroundAuthority: Send + Sync {
+    fn authorize(
+        &self,
+        subject: PreviewSubject,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture;
+    fn browser_effect_scope(&self) -> Option<Arc<dyn BrowserEffectScope>>;
+}
+
+/// Destination in the target's window coordinate system, never image pixels.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresentationArea {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PresentationResult {
+    Presented {
+        details: serde_json::Value,
+    },
+    Requested {
+        details: serde_json::Value,
+    },
+    Partial {
+        message: String,
+        details: serde_json::Value,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewKind {
     App,
     Tab,
+}
+
+pub(crate) fn presentation_failure(
+    error: ToolError,
+    details: serde_json::Value,
+) -> Result<PresentationResult, ToolError> {
+    let evidence = format!("; completed presentation: {details}");
+    match error {
+        ToolError::CleanupUnconfirmed(message) => Err(ToolError::CleanupUnconfirmed(format!(
+            "{message}{evidence}"
+        ))),
+        ToolError::OperationCleanupUnconfirmed {
+            message,
+            observation,
+        } => Err(ToolError::OperationCleanupUnconfirmed {
+            message: format!("{message}{evidence}"),
+            observation,
+        }),
+        ToolError::OutcomeUnknown(message) => {
+            Err(ToolError::OutcomeUnknown(format!("{message}{evidence}")))
+        }
+        ToolError::OperationUnknown {
+            message,
+            observation,
+        } => Err(ToolError::OperationUnknown {
+            message: format!("{message}{evidence}"),
+            observation,
+        }),
+        error => Ok(PresentationResult::Partial {
+            message: error.to_string(),
+            details,
+        }),
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -103,6 +172,9 @@ pub(crate) enum CapturedImage {
 }
 pub(crate) type CaptureFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<CapturedImage, ToolError>> + Send>>;
+pub(crate) type PresentationFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<PresentationResult, ToolError>> + Send>,
+>;
 pub(crate) trait Capture: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
     fn same_source(&self, other: &dyn Capture) -> bool;
@@ -116,6 +188,12 @@ pub(crate) trait Capture: Send + Sync {
         authority: Arc<dyn PreviewAuthority>,
         stop: CancellationToken,
     ) -> CaptureFuture;
+    fn present(
+        &self,
+        authority: Arc<dyn ForegroundAuthority>,
+        area: PresentationArea,
+        stop: CancellationToken,
+    ) -> PresentationFuture;
 }
 struct Entry {
     target: PreviewTarget,
@@ -412,6 +490,59 @@ impl PreviewRegistry {
             return Err(failed("preview target retired"));
         }
         Ok(())
+    }
+    pub async fn present(
+        &self,
+        id: &str,
+        revision: u64,
+        authority: Arc<dyn ForegroundAuthority>,
+        area: PresentationArea,
+        cancellation: CancellationToken,
+    ) -> Result<PresentationResult, ToolError> {
+        let (producer, retired, source) = {
+            let state = self.state.lock().unwrap();
+            let entry = state
+                .entries
+                .iter()
+                .find(|entry| entry.target.id == id && entry.target.revision == revision)
+                .ok_or_else(|| failed("preview target is unavailable or changed"))?;
+            (
+                entry.capture.clone(),
+                entry.stop.clone(),
+                entry.source.clone(),
+            )
+        };
+        if retired.is_cancelled() || cancellation.is_cancelled() {
+            return Err(failed("preview target retired"));
+        }
+        let stop = cancellation.child_token();
+        let action = producer.present(authority, area, stop.clone());
+        tokio::pin!(action);
+        let result = tokio::select! {
+            result = &mut action => result,
+            _ = retired.cancelled() => {
+                stop.cancel();
+                action.await
+            }
+        };
+        let state = self.state.lock().unwrap();
+        if retired.is_cancelled()
+            || cancellation.is_cancelled()
+            || !state.entries.iter().any(|entry| {
+                entry.target.id == id
+                    && entry.target.revision == revision
+                    && Arc::ptr_eq(&entry.source, &source)
+            })
+        {
+            return match result {
+                Ok(result) => Ok(PresentationResult::Partial {
+                    message: "preview target retired during presentation".into(),
+                    details: serde_json::to_value(result).map_err(failed)?,
+                }),
+                Err(error) => Err(error),
+            };
+        }
+        result
     }
     pub async fn capture(
         &self,

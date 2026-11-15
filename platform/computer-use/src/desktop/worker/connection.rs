@@ -470,6 +470,7 @@ impl Connection {
                 settlement: invocation.operation_settlement(),
                 native_interruption: invocation.native_interruption_observer(),
                 preview: None,
+                foreground: None,
             },
             cancellation,
         )
@@ -494,6 +495,22 @@ impl Connection {
         )
         .await
     }
+    pub(in crate::desktop) async fn invoke_foreground(
+        &self,
+        request: Request,
+        authority: Arc<dyn crate::preview::ForegroundAuthority>,
+        cancellation: CancellationToken,
+    ) -> Result<Reply, ToolError> {
+        self.invoke_capabilities(
+            request,
+            ParentCapabilities {
+                foreground: Some(authority),
+                ..Default::default()
+            },
+            cancellation,
+        )
+        .await
+    }
     async fn invoke_capabilities(
         &self,
         request: Request,
@@ -502,6 +519,23 @@ impl Connection {
     ) -> Result<Reply, ToolError> {
         self.begin_capabilities(request, capabilities, cancellation)?
             .await
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    pub(super) async fn invoke_native_present(
+        &self,
+        request: Request,
+        cancellation: CancellationToken,
+        admission: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<Reply, ToolError> {
+        self.begin_capabilities_with_native(
+            request,
+            ParentCapabilities::default(),
+            cancellation,
+            Some(admission),
+            None,
+        )?
+        .await
     }
 
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
@@ -1220,9 +1254,22 @@ impl ConnectionTask {
                             native.observation.send_modify(|state| state.source = Some(Arc::new(source.clone())));
                         }
                     }
-                    let cancel_native = matches!(&invocation.request, Request::Invoke { .. } | Request::LeaseChild { .. } | Request::PreviewRead { .. } | Request::PreviewWatch { .. });
                     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
-                    let cancel_native = cancel_native || matches!(&invocation.request, Request::NativeInvoke { .. });
+                    if let Request::NativePresent { ref key, ref generation, .. } = invocation.request {
+                        let valid = self.native.as_ref().is_some_and(|native| {
+                            native.key == *key && native.generation.observed() == *generation
+                                && !native.observation.borrow().interrupted
+                                && native.observation.borrow().retired.is_none()
+                        });
+                        if !valid {
+                            drop(invocation.native_admission);
+                            let _ = invocation.reply.send(Err(ToolError::Failed("native presentation source retired before dispatch".into())));
+                            continue;
+                        }
+                    }
+                    let cancel_native = matches!(&invocation.request, Request::Invoke { .. } | Request::LeaseChild { .. } | Request::PreviewRead { .. } | Request::PreviewWatch { .. } | Request::PreviewPresent { .. });
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    let cancel_native = cancel_native || matches!(&invocation.request, Request::NativeInvoke { .. } | Request::NativePresent { .. });
                     let is_audio = matches!(&invocation.request, Request::Invoke { command, .. } if matches!(command.as_ref(), Command::StartAudioRecording { .. }));
                     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
                     let is_audio = is_audio || matches!(&invocation.request, Request::NativeInvoke { operation: super::native_owner::NativeOperation::StartAudioRecording, .. });
@@ -1450,7 +1497,7 @@ async fn invoke_routed(
                 let callback_cancellation = cancellation.child_token();
                 let _callback_lifetime = callback_cancellation.clone().drop_guard();
                 let mut decision: crate::AuthorizationFuture = match request {
-                    BrowserAuthorizationRequest::Preview(request) => super::preview::decide(capabilities.preview.clone(), request, callback_cancellation.clone()),
+                    BrowserAuthorizationRequest::Preview(request) => super::preview::decide(capabilities.preview.clone(), capabilities.foreground.clone(), request, callback_cancellation.clone()),
                     BrowserAuthorizationRequest::SessionPreparation {
                         identity: observed,
                         preparation,

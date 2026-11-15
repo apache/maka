@@ -201,9 +201,23 @@ fn grabbable(bounds: Bounds<Points>, area: Bounds<Points>) -> bool {
         && on.size.height >= GRAB.height.min(strip.size.height)
 }
 
+/// An OS desktop rectangle: macOS points, Windows/X11 native pixels.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, JsObject)]
+pub struct NativeDesktopBounds {
+    /// The left edge in native desktop units.
+    pub x: f64,
+    /// The top edge in native desktop units.
+    pub y: f64,
+    /// The width in native desktop units.
+    pub width: f64,
+    /// The height in native desktop units.
+    pub height: f64,
+}
+
 /// A window as the platform reports it (TS `WindowRef.state()` and
 /// `windowState()`, Rust [`crate::element::desktop::WindowRef::state`]).
-/// A move or a resize is reported once the window stops for a moment; a
+/// A move or a resize is reported once the window stops for a moment, or
+/// before a press handler reads it; a
 /// change of mode, of display, of the focus or of being minimized or
 /// hidden at once.
 #[non_exhaustive]
@@ -224,6 +238,8 @@ pub struct WindowState {
     pub bounds: Bounds<Points>,
     /// Its content area now, in screen coordinates.
     pub content_bounds: Bounds<Points>,
+    /// Content in native OS desktop units, when global positioning is available.
+    pub native_content_bounds: Option<NativeDesktopBounds>,
     /// Its mode and normal bounds: what to save to open it the same way
     /// next time.
     pub placement: WindowPlacement,

@@ -128,7 +128,10 @@ impl Computer {
         input: Value,
         context: Context,
     ) -> Result<HandlerValue, ToolError> {
-        if matches!(name, "watchStage" | "watchFrames" | "readFrame") {
+        if matches!(
+            name,
+            "watchStage" | "watchFrames" | "readFrame" | "presentTarget"
+        ) {
             return preview::call(self, name, input, &context).await;
         }
         let authority = context

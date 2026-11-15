@@ -45,13 +45,22 @@ impl Session {
             window_id: window.window_id,
             process_generation: process.to_owned(),
         };
-        self.publish_binding_preview(binding, window.app_name.clone(), invocation);
+        self.publish_binding_preview(
+            binding,
+            window.app_name.clone(),
+            invocation,
+            #[cfg(target_os = "windows")]
+            None,
+        );
     }
     pub(super) fn publish_binding_preview(
         &self,
         binding: crate::ComputerAppBinding,
         label: String,
         invocation: &crate::InvocationContext<'_>,
+        #[cfg(target_os = "windows")] windows_source: Option<
+            crate::desktop::worker::native_owner::NativePresentationSource,
+        >,
     ) {
         let Some(operation_id) = invocation.operation_id() else {
             return;
@@ -75,6 +84,10 @@ impl Session {
             crate::preview::PreviewKind::App,
             label,
             std::sync::Arc::new(crate::preview::native::NativeCapture {
+                driver: std::sync::Arc::downgrade(&self.native),
+                native_epoch: self.epoch,
+                #[cfg(target_os = "windows")]
+                windows_source,
                 binding,
                 subject,
                 execution: invocation.execution_correlation().clone(),

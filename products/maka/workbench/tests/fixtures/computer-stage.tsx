@@ -18,6 +18,8 @@
  */
 
 import { cleanup, effect, host, mount, signal, untracked, Text, View, type ViewRef } from 'nsh';
+import { currentWindow } from 'nsh/desktop';
+import { Button } from 'nsh/base';
 import { ComputerStage } from '../../../../../plugins/agent/conversations/ui/ComputerStage';
 import {
   createComputerStage,
@@ -35,6 +37,7 @@ import type {
   ComputerReadFrame,
   ComputerFrameNotice,
   ComputerFrameResult,
+  ComputerPresentTarget,
 } from '../../../../../packages/plugin-sdk/src/generated/runtime.js';
 
 // Only the service boundary is controlled; NSH owns every signal/effect and cleanup.
@@ -116,6 +119,7 @@ mount(() => {
   let select: (id: string) => void;
   const streams: Stream[] = [];
   const reads: Read[] = [];
+  const presentations = signal<ComputerPresentTarget[]>([]);
   let hold: string | null = null;
   let maxBusy = 0;
   const active = (method: string) =>
@@ -169,8 +173,39 @@ mount(() => {
         changed();
       });
     },
-    mutation() {
-      throw new Error('Stage must not mutate Computer');
+    async mutation(method, input) {
+      if (method !== 'presentTarget') throw new Error(`Unexpected Stage mutation ${method}`);
+      presentations.set([...presentations(), input as ComputerPresentTarget]);
+      changed();
+      const operationId = `presentation-${presentations().length}`;
+      return {
+        operationId,
+        reply: {
+          reference: {
+            source: { stateDomain: 'fixture', deployment: 'fixture', revision: 1 },
+            namespace: ['computer'],
+            export: 'computer',
+            method,
+            operation: operationId,
+            fingerprint: 'fixture',
+            recovery: 'journal_v1',
+            contract: {
+              name: 'maka.workspace.Computer',
+              version: 1,
+              transport: 'remote',
+              digest: 'fixture',
+            },
+          },
+          receipt: {
+            kind: 'recorded',
+            cleanup: { kind: 'confirmed' },
+            outcome: {
+              kind: 'returned',
+              result: { kind: 'success', value: { kind: 'presented', details: {} } },
+            },
+          },
+        },
+      };
     },
     beginMutation() {
       throw new Error('Stage must not send Computer input');
@@ -289,6 +324,8 @@ mount(() => {
     }
   });
   function StageOwner() {
+    const parent = currentWindow();
+    const placement = signal<number | null>(null);
     const stage = createComputerStage({
       source,
       visible,
@@ -323,6 +360,12 @@ mount(() => {
     });
     return (
       <View style={{ flex: 1 }}>
+        <Button
+          accessibilityLabel="Read native placement"
+          onPress={() => placement.set(parent.state()?.nativeContentBounds?.x ?? null)}
+        >
+          <Text>{`Placement ${placement() ?? 'none'}`}</Text>
+        </Button>
         <Text>{`Slots ${
           stage
             .targets()
@@ -330,6 +373,14 @@ mount(() => {
             .join(',') || 'none'
         }`}</Text>
         <Text>{`Selected ${stage.selected() ?? 'none'} pinned ${stage.pinned()}`}</Text>
+        <Text>{`Presented ${
+          presentations()
+            .map(
+              (request) =>
+                `${request.targetId}@${request.revision}:${request.bindingId}:${request.feedId}`,
+            )
+            .join(',') || 'none'
+        }`}</Text>
         <Text>{`Pixels ${
           [...live.frames().values()]
             .map((frame) => `${frame.targetId}:${frame.dataBase64}`)
@@ -348,11 +399,17 @@ mount(() => {
             cachedReady() || (decoded().has(id) && decoded().get(id) === identity(id))
           }
           viewport={pane()}
-          renderExpandedFrame={(target) => (
-            <View style={{ width: '100%', height: '100%' }}>
-              <Text>{`Expanded frame ${target().id} ${live.frames().get(target().id)?.dataBase64 ?? 'waiting'}`}</Text>
-            </View>
-          )}
+          onPresent={(target) => {
+            const area = pane();
+            void live
+              .present(target, {
+                x: area.left + 24,
+                y: area.top + 24,
+                width: area.width - 48,
+                height: area.height - 48,
+              })
+              .catch((reason) => fault.set(String(reason)));
+          }}
           renderFrame={(target, presented) => {
             const id = target().id;
             const counts = lifetimes.get(id) ?? { mounted: 0, disposed: 0 };

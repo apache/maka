@@ -34,6 +34,8 @@ use std::sync::{Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
 
+mod foreground;
+
 const MAX_FEEDS: usize = 16;
 const FRAME_INTERVAL: Duration = Duration::from_millis(125);
 const THUMBNAIL_INTERVAL: Duration = Duration::from_millis(750);
@@ -230,14 +232,17 @@ pub(super) async fn call(
     input: Value,
     context: &Context,
 ) -> Result<HandlerValue, ToolError> {
-    // A viewer cannot acquire the original native input capability. Trusted UI
-    // observes only a resource this Computer owner already owns in this Root.
+    // Client presentation never acquires the original native input capability.
     if context.scope().identity.agent().is_some() {
         return Err(failed(
-            "Computer Stage is a client observation, not an Agent tool",
+            "Computer Stage is a client capability, not an Agent tool",
         ));
     }
     let value = match name {
+        "presentTarget" => {
+            let input: api::PresentTarget = serde_json::from_value(input).map_err(failed)?;
+            return foreground::present_target(owner, input, context).await;
+        }
         "watchStage" => {
             let input: WatchStage = serde_json::from_value(input).map_err(failed)?;
             check_session(owner, &input.session_id).await?;
@@ -622,25 +627,13 @@ async fn read_frame(
     input: ReadFrame,
     context: &Context,
 ) -> Result<FrameResult, ToolError> {
-    let feed = owner
-        .previews
-        .0
-        .lock()
-        .unwrap()
-        .get(&input.feed_id)
-        .and_then(Weak::upgrade)
-        .ok_or_else(|| failed("Computer preview subscription is closed"))?;
-    if feed.session != input.session_id
-        || feed.binding != input.binding_id
-        || feed.requester != *context.requester()
-        || feed.caller.as_ref() != context.caller()
-        || feed.stop.is_cancelled()
-    {
-        return Err(failed(
-            "Computer preview belongs to another viewer, Session or binding",
-        ));
-    }
-    current_epoch(owner, &input.session_id, &input.binding_id)?;
+    let feed = viewer_feed(
+        owner,
+        &input.session_id,
+        &input.binding_id,
+        &input.feed_id,
+        context,
+    )?;
     let authority = epoch_authority(&feed.epoch, &feed.stop)
         .ok_or_else(|| failed("Computer preview has no admitted execution"))?;
     if let Err(error) = feed
@@ -672,6 +665,34 @@ async fn read_frame(
         input.after,
         &feed.epoch.preview.snapshot(),
     ))
+}
+fn viewer_feed(
+    owner: &Arc<Computer>,
+    session: &str,
+    binding: &str,
+    feed_id: &str,
+    context: &Context,
+) -> Result<Arc<Feed>, ToolError> {
+    let feed = owner
+        .previews
+        .0
+        .lock()
+        .unwrap()
+        .get(feed_id)
+        .and_then(Weak::upgrade)
+        .ok_or_else(|| failed("Computer preview subscription is closed"))?;
+    if feed.session != session
+        || feed.binding != binding
+        || feed.requester != *context.requester()
+        || feed.caller.as_ref() != context.caller()
+        || feed.stop.is_cancelled()
+    {
+        return Err(failed(
+            "Computer preview belongs to another viewer, Session or binding",
+        ));
+    }
+    current_epoch(owner, session, binding)?;
+    Ok(feed)
 }
 
 #[cfg(test)]

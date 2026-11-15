@@ -106,6 +106,8 @@ export type RuntimeProtocol =
   | ComputerWatchFrames
   | ComputerFrameNotice
   | ComputerReadFrame
+  | ComputerPresentTarget
+  | ComputerPresentationResult
   | ComputerFrameResult
   | ProtocolProcessLaunch
   | AcpExecutorConfiguration
@@ -1040,6 +1042,20 @@ export type ComputerResult =
       state: ComputerReplState;
     };
 export type ComputerStageTargetKind = 'app' | 'browser';
+export type ComputerPresentationResult =
+  | {
+      kind: 'presented';
+      details: unknown;
+    }
+  | {
+      kind: 'requested';
+      details: unknown;
+    }
+  | {
+      kind: 'partial';
+      message: string;
+      details: unknown;
+    };
 export type ComputerFrameResult =
   | {
       kind: 'frame';
@@ -6031,6 +6047,20 @@ export interface ComputerReadFrame {
   feedId: string;
   targetId: string;
   after: number;
+}
+export interface ComputerPresentTarget {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  revision: number;
+  area: ComputerPresentationArea;
+}
+export interface ComputerPresentationArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 export interface ComputerStageFrame {
   revision: number;

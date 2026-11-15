@@ -206,13 +206,18 @@ impl Session {
             let result = self
                 .raw_windows(call, invocation, cancellation, language)
                 .await;
-            if result.is_ok()
+            if let Ok(call) = &result
                 && let Some(approved) = invocation.app_target()
                 && let Some(binding) = approved.binding.clone()
             {
-                self.publish_binding_preview(binding, approved.display.name.clone(), invocation);
+                self.publish_binding_preview(
+                    binding,
+                    approved.display.name.clone(),
+                    invocation,
+                    call.source.clone(),
+                );
             }
-            return result;
+            return result.map(|call| call.value);
         }
         #[cfg(target_os = "macos")]
         {

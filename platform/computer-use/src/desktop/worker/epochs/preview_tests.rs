@@ -33,6 +33,31 @@ struct Pixels {
     calls: Arc<AtomicUsize>,
 }
 impl Capture for Pixels {
+    fn present(
+        &self,
+        authority: Arc<dyn crate::preview::ForegroundAuthority>,
+        _: crate::preview::PresentationArea,
+        stop: CancellationToken,
+    ) -> crate::preview::PresentationFuture {
+        Box::pin(async move {
+            authority
+                .authorize(
+                    PreviewSubject::NativeWindow {
+                        operation_id: "retained-operation".into(),
+                        binding: crate::ComputerAppBinding {
+                            pid: 7,
+                            window_id: 9,
+                            process_generation: "process".into(),
+                        },
+                    },
+                    stop,
+                )
+                .await?;
+            Ok(crate::preview::PresentationResult::Presented {
+                details: serde_json::json!({}),
+            })
+        })
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

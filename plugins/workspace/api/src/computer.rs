@@ -245,6 +245,10 @@ pub fn contract() -> Contract {
                 stage::method::<WatchStage, StageSnapshot>("watchStage", MethodMode::Subscription),
                 stage::method::<WatchFrames, FrameNotice>("watchFrames", MethodMode::Subscription),
                 stage::method::<ReadFrame, FrameResult>("readFrame", MethodMode::Query),
+                stage::method::<PresentTarget, PresentationResult>(
+                    "presentTarget",
+                    MethodMode::Mutation,
+                ),
                 (
                     "evaluate".into(),
                     Method {

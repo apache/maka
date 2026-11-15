@@ -20,9 +20,10 @@
 use super::{Connection, Request, failed};
 use crate::desktop::{NativeCleanup, NativeEpochId};
 use crate::preview::{
-    Capture, CaptureFuture, CapturedImage, MAX_PREVIEW_BYTES, MAX_PREVIEW_DIMENSION,
-    MAX_PREVIEW_TARGETS, PreviewAuthority, PreviewFrame, PreviewRegistry, PreviewSnapshot,
-    PreviewSubject, PreviewTarget,
+    Capture, CaptureFuture, CapturedImage, ForegroundAuthority, MAX_PREVIEW_BYTES,
+    MAX_PREVIEW_DIMENSION, MAX_PREVIEW_TARGETS, PresentationArea, PresentationFuture,
+    PreviewAuthority, PreviewFrame, PreviewRegistry, PreviewSnapshot, PreviewSubject,
+    PreviewTarget,
 };
 use crate::{AuthorizationFuture, BrowserPreparationBinding};
 use base64::Engine;
@@ -36,28 +37,51 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum AuthorizationRequest {
     Subject(PreviewSubject),
     Preparation(BrowserPreparationBinding),
+    Foreground(PreviewSubject),
+    ForegroundPreparation(BrowserPreparationBinding),
 }
 pub(super) fn decide(
     authority: Option<Arc<dyn PreviewAuthority>>,
+    foreground: Option<Arc<dyn ForegroundAuthority>>,
     request: AuthorizationRequest,
     cancellation: CancellationToken,
 ) -> AuthorizationFuture {
     Box::pin(async move {
-        let authority =
-            authority.ok_or_else(|| failed("preview requires its actual Host authority"))?;
         if cancellation.is_cancelled() {
             return Err(failed("preview authorization cancelled"));
         }
         match request {
             AuthorizationRequest::Subject(subject) => {
-                authority.authorize(subject, cancellation).await
+                authority
+                    .ok_or_else(|| failed("preview requires its actual Host authority"))?
+                    .authorize(subject, cancellation)
+                    .await
             }
             AuthorizationRequest::Preparation(binding) => {
                 authority
+                    .ok_or_else(|| failed("preview requires its actual Host authority"))?
                     .browser_effect_scope()
                     .ok_or_else(|| {
                         failed("preview requires its current read-only preparation scope")
                     })?
+                    .check_session_preparation(binding, cancellation)
+                    .await
+            }
+            AuthorizationRequest::Foreground(subject) => {
+                foreground
+                    .ok_or_else(|| {
+                        failed("presentation requires its actual client mutation authority")
+                    })?
+                    .authorize(subject, cancellation)
+                    .await
+            }
+            AuthorizationRequest::ForegroundPreparation(binding) => {
+                foreground
+                    .ok_or_else(|| {
+                        failed("presentation requires its actual client mutation authority")
+                    })?
+                    .browser_effect_scope()
+                    .ok_or_else(|| failed("presentation requires its current preparation scope"))?
                     .check_session_preparation(binding, cancellation)
                     .await
             }
@@ -188,6 +212,31 @@ impl Capture for RemoteCapture {
             Ok(CapturedImage::Frame(decode_frame(value, &source.target)?))
         })
     }
+    fn present(
+        &self,
+        authority: Arc<dyn ForegroundAuthority>,
+        area: PresentationArea,
+        cancellation: CancellationToken,
+    ) -> PresentationFuture {
+        let source = self.clone();
+        Box::pin(async move {
+            let reply = source
+                .connection
+                .invoke_foreground(
+                    Request::PreviewPresent {
+                        owner: source.owner,
+                        epoch: source.epoch,
+                        session: source.session,
+                        target: source.target,
+                        area,
+                    },
+                    authority,
+                    cancellation,
+                )
+                .await?;
+            serde_json::from_value(reply.value).map_err(failed)
+        })
+    }
 }
 
 pub(in crate::desktop) struct Bridge {
@@ -278,6 +327,87 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Gates {
+        reads: AtomicUsize,
+        presentations: AtomicUsize,
+    }
+    impl PreviewAuthority for Gates {
+        fn authorize(&self, _: PreviewSubject, _: CancellationToken) -> AuthorizationFuture {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn browser_effect_scope(&self) -> Option<Arc<dyn crate::BrowserEffectScope>> {
+            None
+        }
+    }
+    impl ForegroundAuthority for Gates {
+        fn authorize(&self, _: PreviewSubject, _: CancellationToken) -> AuthorizationFuture {
+            self.presentations.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn browser_effect_scope(&self) -> Option<Arc<dyn crate::BrowserEffectScope>> {
+            None
+        }
+    }
+    #[tokio::test]
+    async fn readonly_callback_cannot_authorize_presentation_but_a_current_foreground_callback_can()
+    {
+        let gates = Arc::new(Gates::default());
+        let subject = || PreviewSubject::NativeWindow {
+            operation_id: "original-observation".into(),
+            binding: crate::ComputerAppBinding {
+                pid: 7,
+                window_id: 9,
+                process_generation: "original-process".into(),
+            },
+        };
+        let stop = CancellationToken::new();
+        decide(
+            Some(gates.clone()),
+            None,
+            AuthorizationRequest::Subject(subject()),
+            stop.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            decide(
+                Some(gates.clone()),
+                None,
+                AuthorizationRequest::Foreground(subject()),
+                stop.clone()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(gates.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(gates.presentations.load(Ordering::SeqCst), 0);
+        decide(
+            None,
+            Some(gates.clone()),
+            AuthorizationRequest::Foreground(subject()),
+            stop.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gates.presentations.load(Ordering::SeqCst), 1);
+        stop.cancel();
+        assert!(
+            decide(
+                None,
+                Some(gates.clone()),
+                AuthorizationRequest::Foreground(subject()),
+                stop
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(gates.presentations.load(Ordering::SeqCst), 1);
+    }
+
     fn target() -> PreviewTarget {
         PreviewTarget {
             id: "opaque-target".into(),

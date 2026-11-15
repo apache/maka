@@ -406,7 +406,41 @@ mod tests {
         }
 
         #[test]
-        fn stage_front_card_expands_live_frames_and_dismissal_preserves_selection_and_pin() {
+        fn a_presentation_action_reads_new_window_geometry_before_the_settle_deadline() {
+            use nsh_core::{
+                Bounds, EventKind, EventPayload,
+                desktop::{WindowMode, WindowPlacement, WindowState},
+                geometry::{point, size},
+            };
+            let mut app = start_with_clock(
+                true,
+                nsh_core::time::Clock::manual(std::time::SystemTime::UNIX_EPOCH),
+            );
+            let button = app.screen().id("label:Read native placement").unwrap();
+            for x in [10., 350.] {
+                let bounds = Bounds::new(point(px(x as f32), px(20.)), size(px(900.), px(720.)));
+                let mut state =
+                    WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
+                state.native_content_bounds = Some(nsh_core::desktop::NativeDesktopBounds {
+                    x,
+                    y: 20.,
+                    width: 900.,
+                    height: 720.,
+                });
+                let control = app.engine().control();
+                control.set_environment(Environment {
+                    os: Os::MacOs,
+                    reduce_motion: true,
+                    window_state: Some(state),
+                    ..Environment::default()
+                });
+                control.dispatch_event(button, EventKind::Press, EventPayload::None);
+                app.wait_for(&format!("text:Placement {x}")).unwrap();
+            }
+        }
+
+        #[test]
+        fn stage_rear_selects_and_front_presents_current_target_without_changing_pin() {
             let mut app = start();
             stage(
                 &mut app,
@@ -427,46 +461,39 @@ mod tests {
             app.press("label:Target b").unwrap();
             app.wait_for("text:Selected b pinned true").unwrap();
             app.wait_for("text:Frame b presented true image-b").unwrap();
-            assert!(!app.shows("Expanded frame b image-b"));
-            app.press("label:Target b").unwrap();
-            app.wait_for("text:Expanded frame b image-b").unwrap();
+            app.wait_for("text:Presented none").unwrap();
             streams(&mut app, 1, 1);
-            app.wait_for("text:Reads 2 maxBusy 1 after 0,0").unwrap();
+            load(&mut app, "b", 2, 1200, 800);
+            decode(&mut app, "b", true);
+            app.press("label:Target b").unwrap();
+            app.wait_for("text:Presented b@1:binding:feed-2").unwrap();
+            app.wait_for("text:Selected b pinned true").unwrap();
             send(
                 &mut app,
                 json!({"kind":"notice", "targetId":"b", "sequences":[2]}),
             );
             send(
                 &mut app,
-                json!({"kind":"resolve", "index":2, "sequence":2, "revision":1,
+                json!({"kind":"resolve", "index":3, "sequence":2, "revision":1,
                 "marker":"updated-b", "width":1200, "height":800}),
             );
-            app.wait_for("text:Expanded frame b updated-b").unwrap();
-            app.press("label:Close expanded view").unwrap();
-            app.wait_for("text:Selected b pinned true").unwrap();
-            assert!(!app.shows("Expanded frame b updated-b"));
-            app.wait_for("text:Lifetimes a:1/0,b:1/0").unwrap();
-            app.press("label:Target b").unwrap();
-            app.wait_for("text:Expanded frame b updated-b").unwrap();
-            app.press_key("escape").unwrap();
-            assert!(!app.shows("Expanded frame b updated-b"));
-            app.wait_for("text:Selected b pinned true").unwrap();
-            app.press("label:Target b").unwrap();
-            app.wait_for("text:Expanded frame b updated-b").unwrap();
-            app.press_at(
-                "id:computer-expanded-backdrop",
-                nsh_core::Point::new(nsh_core::Points(16.0), nsh_core::Points(16.0)),
-            )
-            .unwrap();
-            assert!(!app.shows("Expanded frame b updated-b"));
+            app.wait_for("text:Frame b presented true updated-b")
+                .unwrap();
             app.wait_for("text:Selected b pinned true").unwrap();
             app.wait_for("text:Lifetimes a:1/0,b:1/0").unwrap();
+            app.press("label:Target b").unwrap();
+            app.wait_for("text:Presented b@1:binding:feed-2,b@1:binding:feed-2")
+                .unwrap();
+            app.wait_for("text:Selected b pinned true").unwrap();
             streams(&mut app, 1, 1);
-            app.wait_for("text:Reads 3 maxBusy 1 after 0,0,0").unwrap();
+            app.wait_for("text:Reads 4 maxBusy 1 after 0,0,0,1")
+                .unwrap();
+            app.wait_for("text:Fault none").unwrap();
         }
 
         #[test]
-        fn stage_expanded_frames_close_at_target_binding_source_and_visibility_boundaries() {
+        fn stage_presentations_require_fresh_frames_after_target_binding_source_and_visibility_boundaries()
+         {
             for boundary in ["removal", "revision", "binding", "source", "visibility"] {
                 let mut app = start();
                 stage(&mut app, "session-1", "binding", 1, &["a"], Some("a"), 1);
@@ -475,7 +502,7 @@ mod tests {
                 decode(&mut app, "a", true);
                 app.wait_for("text:Frame a presented true image-a").unwrap();
                 app.press("label:Target a").unwrap();
-                app.wait_for("text:Expanded frame a image-a").unwrap();
+                app.wait_for("text:Presented a@1:binding:feed-1").unwrap();
                 match boundary {
                     "removal" => stage(&mut app, "session-1", "binding", 2, &[], None, 1),
                     "revision" => stage(&mut app, "session-1", "binding", 2, &["a"], Some("a"), 2),
@@ -493,16 +520,20 @@ mod tests {
                     _ => unreachable!(),
                 }
                 pixels(&mut app, "none");
-                assert!(!app.shows("Expanded frame a image-a"), "{boundary}");
+                assert!(
+                    app.press("label:Target a").is_err(),
+                    "{boundary} exposed a retired target action"
+                );
+                app.wait_for("text:Presented a@1:binding:feed-1").unwrap();
                 if boundary == "removal" {
                     stage(&mut app, "session-1", "binding", 3, &["a"], Some("a"), 1);
                     load(&mut app, "a", 1, 800, 1200);
                     decode(&mut app, "a", true);
                     app.wait_for("text:Frame a presented true image-a").unwrap();
-                    assert!(
-                        !app.shows("Expanded frame a image-a"),
-                        "removed overlay revived"
-                    );
+                    app.wait_for("text:Presented a@1:binding:feed-1").unwrap();
+                    app.press("label:Target a").unwrap();
+                    app.wait_for("text:Presented a@1:binding:feed-1,a@1:binding:feed-2")
+                        .unwrap();
                 }
             }
         }
@@ -924,6 +955,99 @@ mod tests {
                     );
                 }
             }
+        }
+
+        #[test]
+        fn stage_docks_at_all_four_corners_and_keeps_the_chosen_corner_on_resize_hide_and_cancel() {
+            use nsh_core::{EventKind, EventPayload, geometry::point};
+            let mut app = start();
+            stage(
+                &mut app,
+                "session-1",
+                "binding",
+                1,
+                &["a", "b"],
+                Some("a"),
+                1,
+            );
+            streams(&mut app, 1, 1);
+            load(&mut app, "a", 0, 1200, 800);
+            decode(&mut app, "a", true);
+            load(&mut app, "b", 1, 800, 1200);
+            decode(&mut app, "b", true);
+            app.hover("label:Target a").unwrap();
+            app.press("label:Pin target").unwrap();
+            let anchored =
+                |app: &nsh_testing::Headless, left: bool, bottom: bool, width: f32, height: f32| {
+                    let screen = app.screen();
+                    let id = screen.id("label:Computer").unwrap();
+                    let node = screen
+                        .layout_nodes()
+                        .into_iter()
+                        .find(|node| node.id == id)
+                        .unwrap();
+                    let bounds = node.bounds;
+                    let horizontal = if left {
+                        bounds.origin.x.0 - 140.
+                    } else {
+                        140. + width - bounds.origin.x.0 - bounds.size.width.0
+                    };
+                    let vertical = if bottom {
+                        80. + height - bounds.origin.y.0 - bounds.size.height.0
+                    } else {
+                        bounds.origin.y.0 - 80.
+                    };
+                    assert!(
+                        (horizontal - 8.).abs() < 0.6 && (vertical - 8.).abs() < 0.6,
+                        "corner did not stay anchored: {bounds:?}, left={left}, bottom={bottom}"
+                    );
+                };
+            anchored(&app, false, false, 700., 600.);
+            for (dx, dy, left, bottom) in [
+                (-500., 0., true, false),
+                (0., 450., true, true),
+                (500., 0., false, true),
+                (0., -450., false, false),
+                (-500., 450., true, true),
+            ] {
+                app.drag_and_hold("label:Target b", point(px(dx), px(dy)))
+                    .unwrap();
+                app.drop_held().unwrap();
+                anchored(&app, left, bottom, 700., 600.);
+                app.wait_for("text:Selected a pinned true").unwrap();
+                app.wait_for("text:Presented none").unwrap();
+            }
+            send(
+                &mut app,
+                json!({"kind":"pane","left":140,"top":80,"width":600,"height":520}),
+            );
+            anchored(&app, true, true, 600., 520.);
+            let node = app.screen().id("label:Computer").unwrap();
+            app.engine().control().dispatch_event(
+                node,
+                EventKind::PanEnd,
+                EventPayload::PanCancelled {
+                    translation: point(px(500.), px(-450.)),
+                    velocity_x: 0.,
+                    velocity_y: 0.,
+                    value_x: None,
+                    value_y: None,
+                },
+            );
+            app.next_frame(std::time::Duration::from_millis(16))
+                .unwrap();
+            anchored(&app, true, true, 600., 520.);
+            app.press("label:Hide live view").unwrap();
+            app.press("label:Show live view").unwrap();
+            streams(&mut app, 1, 1);
+            load(&mut app, "a", 2, 1200, 800);
+            decode(&mut app, "a", true);
+            load(&mut app, "b", 3, 800, 1200);
+            decode(&mut app, "b", true);
+            anchored(&app, true, true, 600., 520.);
+            app.wait_for("text:Selected a pinned true").unwrap();
+            app.wait_for("text:Presented none").unwrap();
+            app.wait_for("text:Fault none").unwrap();
         }
 
         #[test]

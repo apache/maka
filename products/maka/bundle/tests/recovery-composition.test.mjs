@@ -196,9 +196,9 @@ test('built recovery gateway binds the exact ReceiptReader query without caller 
   assert.deepEqual(read.input.$defs.RecoveryProtocol.enum, ['journal_v1']);
 });
 
-test('Computer Stage exposes only transient read-only methods and disappears without Computer tools', () => {
+test('Computer Stage exposes transient reads and a separate presentation mutation, and disappears without Computer tools', () => {
   const target = [{ kind: 'instance', path: ['workspace-computer'], export: 'computer' }];
-  const methods = ['watchStage', 'watchFrames', 'readFrame'];
+  const methods = ['watchStage', 'watchFrames', 'readFrame', 'presentTarget'];
   assert.deepEqual(instances.gateway.bindings.computer, target);
   assert.deepEqual(source.endpoints.computer, {
     consumer: [keys.gateway],
@@ -211,6 +211,7 @@ test('Computer Stage exposes only transient read-only methods and disappears wit
     ['watchStage', 'subscription'],
     ['watchFrames', 'subscription'],
     ['readFrame', 'query'],
+    ['presentTarget', 'mutation'],
   ]) {
     assert.equal(provider.interface.methods[method].mode, mode);
     assert.deepEqual(consumer.interface.methods[method], provider.interface.methods[method]);

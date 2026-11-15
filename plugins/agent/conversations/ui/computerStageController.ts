@@ -26,6 +26,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 
 export type ComputerTarget = ComputerStageTarget;
+export type ComputerCorner = 'top left' | 'top right' | 'bottom left' | 'bottom right';
 export type ComputerSnapshot = Omit<Required<ComputerStageSnapshot>, 'targets'> & {
   targets: Readonly<ComputerStageSnapshot['targets']>;
 };
@@ -47,6 +48,7 @@ export function createComputerStage(props: {
   const chosen = signal<string | null>(null);
   const pinned = signal(false);
   const hidden = signal(false);
+  const corner = signal<ComputerCorner>('top right');
   const fault = signal<unknown | null>(null);
   const selected = computed(() => {
     const value = snapshot();
@@ -74,6 +76,7 @@ export function createComputerStage(props: {
       chosen.set(null);
       pinned.set(false);
       hidden.set(false);
+      corner.set('top right');
       snapshot.set(null);
       slots.set([]);
       fault.set(null);
@@ -169,6 +172,7 @@ export function createComputerStage(props: {
     targets,
     pinned,
     hidden,
+    corner,
     fault,
     select(id: string) {
       chosen.set(id);

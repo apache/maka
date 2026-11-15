@@ -26,13 +26,12 @@ import {
   inputAction,
   reduceMotion,
   signal,
-  windowSize,
   Text,
   View,
   type JSX,
   type ViewStyle,
 } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import {
   C,
@@ -40,14 +39,17 @@ import {
   controlHoverStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { errorMessage } from '../../../../products/maka/workbench/app/text';
-import type { ComputerStageController, ComputerTarget } from './computerStageController';
+import type {
+  ComputerCorner,
+  ComputerStageController,
+  ComputerTarget,
+} from './computerStageController';
 import { computerText } from './computerText';
 
 type Size = { width: number; height: number };
 const OFFSET_X = 18;
 const OFFSET_Y = 14;
 
-/** The stage has no Computer input capability; clicks only select a presentation. */
 export function ComputerStage(props: {
   controller: ComputerStageController;
   frameSize(targetId: string): Size | undefined;
@@ -55,7 +57,7 @@ export function ComputerStage(props: {
   frameReady(targetId: string): boolean;
   viewport: Size;
   renderFrame(target: () => ComputerTarget, selected: () => boolean): JSX.Element;
-  renderExpandedFrame(target: () => ComputerTarget): JSX.Element;
+  onPresent(target: ComputerTarget): void;
 }) {
   const stage = props.controller;
   const label = computerText;
@@ -72,49 +74,14 @@ export function ComputerStage(props: {
     else if (!targets.some((target) => target.id === presented()))
       presented.set(targets[0]?.id ?? null);
   });
-  const expanded = signal<{ id: string; revision: number; bindingId: string | null } | null>(null);
-  const expandedTarget = computed(() => {
-    const identity = expanded();
-    if (!identity || stage.hidden() || stage.snapshot()?.bindingId !== identity.bindingId)
-      return undefined;
-    return stage
-      .targets()
-      .find(
-        (target) =>
-          target.id === identity.id &&
-          target.revision === identity.revision &&
-          props.frameReady(target.id) &&
-          !props.frameError(target.id),
-      );
-  });
-  effect(() => {
-    if (expanded() && !expandedTarget()) expanded.set(null);
-  });
-  const dismissExpanded = () => expanded.set(null);
   const interact = (id: string) => {
     if (presented() !== id) {
       stage.select(id);
       return;
     }
-    const target = stage.targets().find((target) => target.id === id)!;
-    expanded.set({
-      id,
-      revision: target.revision,
-      bindingId: stage.snapshot()?.bindingId ?? null,
-    });
+    const target = stage.targets().find((target) => target.id === id);
+    if (target && props.frameReady(id) && !props.frameError(id)) props.onPresent(target);
   };
-  const expandedSize = computed(() => {
-    const target = expandedTarget();
-    const original = target && props.frameSize(target.id);
-    if (!original) return { width: 0, height: 0 };
-    const space = windowSize();
-    const scale = Math.min(
-      1,
-      Math.max(1, space.width - 48) / original.width,
-      Math.max(1, space.height - 96) / original.height,
-    );
-    return { width: original.width * scale, height: original.height * scale };
-  });
   const ordered = computed(() => {
     const targets = candidates();
     return [
@@ -166,6 +133,20 @@ export function ComputerStage(props: {
   );
   const offsetX = createAnimatedValue(0);
   const offsetY = createAnimatedValue(0);
+  const left = () => stage.corner().endsWith('left');
+  const bottom = () => stage.corner().startsWith('bottom');
+  const home = (corner: ComputerCorner) => ({
+    x: corner.endsWith('left') ? 8 : props.viewport.width - content().width - 8,
+    y: corner.startsWith('bottom') ? props.viewport.height - content().height - 8 : 8,
+  });
+  const front = (corner: ComputerCorner) => {
+    const origin = home(corner);
+    const size = layout().items.get(presented() ?? '');
+    return {
+      x: origin.x + (size && !corner.endsWith('left') ? layout().width - size.width : 0),
+      y: origin.y + (size && corner.startsWith('bottom') ? layout().height - size.height : 0),
+    };
+  };
   const returnHome = () => {
     if (reduceMotion()) {
       offsetX.set(0);
@@ -196,11 +177,30 @@ export function ComputerStage(props: {
     <View
       accessibilityLabel={label('Computer')}
       pan={{ x: offsetX, y: offsetY }}
-      onPanEnd={returnHome}
+      onPanEnd={(event) => {
+        if (event.cancelled) {
+          returnHome();
+          return;
+        }
+        const previous = home(stage.corner());
+        const previousFront = front(stage.corner());
+        const { x, y } = event.value as { x: number; y: number };
+        const toLeft = previous.x + x + content().width / 2 < props.viewport.width / 2;
+        const toBottom = previous.y + y + content().height / 2 > props.viewport.height / 2;
+        stage.corner.set(
+          toBottom ? (toLeft ? 'bottom left' : 'bottom right') : toLeft ? 'top left' : 'top right',
+        );
+        const next = front(stage.corner());
+        offsetX.set(x + previousFront.x - next.x);
+        offsetY.set(y + previousFront.y - next.y);
+        returnHome();
+      }}
       style={{
         position: 'absolute',
-        top: 8,
-        right: 8,
+        top: bottom() ? undefined : 8,
+        bottom: bottom() ? 8 : undefined,
+        left: left() ? 8 : undefined,
+        right: left() ? undefined : 8,
         zIndex: 10,
         translate: [offsetX, offsetY],
         width: content().width,
@@ -266,14 +266,16 @@ export function ComputerStage(props: {
                         onPress={inputAction(interact, target().id)}
                         style={{
                           position: 'absolute',
-                          top: (size()?.depth ?? 0) * OFFSET_Y,
-                          right: (size()?.depth ?? 0) * OFFSET_X,
+                          top: bottom() ? undefined : (size()?.depth ?? 0) * OFFSET_Y,
+                          bottom: bottom() ? (size()?.depth ?? 0) * OFFSET_Y : undefined,
+                          left: left() ? (size()?.depth ?? 0) * OFFSET_X : undefined,
+                          right: left() ? undefined : (size()?.depth ?? 0) * OFFSET_X,
                           width: size()?.width,
                           height: size()?.height,
                           zIndex: 5 - (size()?.depth ?? 0),
                           opacity: visible() ? 1 : 0,
                           pointerEvents: visible() ? 'auto' : 'none',
-                          transformOrigin: 'top right',
+                          transformOrigin: stage.corner(),
                           transform: [{ scale }],
                           padding: 0,
                           alignItems: 'stretch',
@@ -411,78 +413,6 @@ export function ComputerStage(props: {
           </View>
         </View>
       </If>
-      <Each
-        of={expandedTarget() ? [expandedTarget()!] : []}
-        key={(target) => JSON.stringify([target.id, target.revision])}
-      >
-        {(target) => (
-          <Dialog
-            testID="computer-expanded"
-            accessibilityLabel={label('Expanded live view')}
-            animation="none"
-            onCancel={dismissExpanded}
-            backdropTestID="computer-expanded-backdrop"
-            backdropStyle={{ backgroundColor: C.scrim }}
-            style={{
-              flex: 1,
-              alignItems: 'center',
-              justifyContent: 'center',
-              pointerEvents: 'box-none',
-            }}
-          >
-            <View
-              style={{
-                width: Math.max(160, expandedSize().width),
-                borderRadius: 16,
-                overflow: 'hidden',
-                backgroundColor: C.background,
-                boxShadow: `0 16px 48px ${C.shadow}`,
-              }}
-            >
-              <View
-                style={{
-                  height: 40,
-                  paddingHorizontal: 6,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  backgroundColor: C.raised,
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 12,
-                    color: C.secondary,
-                    flexShrink: 1,
-                    numberOfLines: 1,
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {target().title}
-                </Text>
-                <Button
-                  accessibilityLabel={label('Close expanded view')}
-                  onPress={dismissExpanded}
-                  style={iconButton}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                >
-                  <Icon name="close" size={14} color={C.secondary} />
-                </Button>
-              </View>
-              <View
-                style={{
-                  width: expandedSize().width,
-                  height: expandedSize().height,
-                  alignSelf: 'center',
-                }}
-              >
-                {untracked(() => props.renderExpandedFrame(target))}
-              </View>
-            </View>
-          </Dialog>
-        )}
-      </Each>
     </View>
   );
 }

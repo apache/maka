@@ -279,6 +279,40 @@ impl crate::BrowserEffectScope for Authorization {
         )
     }
 }
+struct ForegroundAuthorization(Arc<Authorization>);
+impl crate::preview::ForegroundAuthority for ForegroundAuthorization {
+    fn authorize(
+        &self,
+        subject: crate::preview::PreviewSubject,
+        cancellation: CancellationToken,
+    ) -> crate::AuthorizationFuture {
+        self.0.request(
+            AuthorizationMode::Check,
+            BrowserAuthorizationRequest::Preview(super::preview::AuthorizationRequest::Foreground(
+                subject,
+            )),
+            cancellation,
+        )
+    }
+    fn browser_effect_scope(&self) -> Option<Arc<dyn crate::BrowserEffectScope>> {
+        Some(Arc::new(Self(self.0.clone())))
+    }
+}
+impl crate::BrowserEffectScope for ForegroundAuthorization {
+    fn check_session_preparation(
+        &self,
+        binding: crate::BrowserPreparationBinding,
+        cancellation: CancellationToken,
+    ) -> crate::AuthorizationFuture {
+        self.0.request(
+            AuthorizationMode::Check,
+            BrowserAuthorizationRequest::Preview(
+                super::preview::AuthorizationRequest::ForegroundPreparation(binding),
+            ),
+            cancellation,
+        )
+    }
+}
 fn preview_registry(
     owners: &HashMap<String, Owner>,
     owner: &str,
@@ -1310,6 +1344,51 @@ fn dispatch(
                         }
                     }
                     .await;
+                    let _ = events.send(Event::Response {
+                        id,
+                        result: result.map_err(Failure::from),
+                        audio: None,
+                    });
+                }));
+            Ok(())
+        }
+        Request::PreviewPresent {
+            owner,
+            epoch,
+            session,
+            target,
+            area,
+        } => {
+            let (registry, native_epoch) = preview_registry(owners, &owner, &epoch, &session)?;
+            if !registry
+                .snapshot_epoch(native_epoch)
+                .targets
+                .iter()
+                .any(|current| {
+                    current.id == target.id
+                        && current.binding_id == target.binding_id
+                        && current.revision == target.revision
+                        && current.epoch == target.epoch
+                })
+            {
+                return Err(failed("preview source generation changed"));
+            }
+            let authority = Arc::new(ForegroundAuthorization(Arc::new(Authorization {
+                callbacks: callbacks.clone(),
+                id,
+                events: events.clone(),
+                identity: None,
+            })));
+            let events = events.clone();
+            owners
+                .get_mut(&owner)
+                .expect("validated preview owner")
+                .preview_tasks
+                .push(tokio::spawn(async move {
+                    let result = registry
+                        .present(&target.id, target.revision, authority, area, cancellation)
+                        .await
+                        .and_then(|result| serde_json::to_value(result).map_err(failed));
                     let _ = events.send(Event::Response {
                         id,
                         result: result.map_err(Failure::from),

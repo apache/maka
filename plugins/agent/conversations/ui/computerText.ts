@@ -30,14 +30,13 @@ const copy = {
   'Follow agent': ['跟随 Agent', '跟隨 Agent'],
   'Show live view': ['显示实时画面', '顯示即時畫面'],
   'Hide live view': ['隐藏实时画面', '隱藏即時畫面'],
-  'Expanded live view': ['放大的实时画面', '放大的即時畫面'],
-  'Close expanded view': ['关闭放大画面', '關閉放大畫面'],
   'Hiding the view does not stop the agent.': [
     '隐藏画面不会停止 Agent。',
     '隱藏畫面不會停止 Agent。',
   ],
   'Retry live view': ['重试实时画面', '重試即時畫面'],
   'Live view unavailable': ['实时画面不可用', '即時畫面無法使用'],
+  'Window placement unavailable': ['当前桌面无法定位目标窗口', '目前桌面無法定位目標視窗'],
   'Waiting for live frame…': ['等待实时画面…', '等待即時畫面…'],
 } as const;
 export function computerText(key: keyof typeof copy): string {

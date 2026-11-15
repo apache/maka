@@ -40,6 +40,14 @@ impl PreviewAuthority for Authority {
         None
     }
 }
+impl ForegroundAuthority for Authority {
+    fn authorize(&self, subject: PreviewSubject, stop: CancellationToken) -> AuthorizationFuture {
+        PreviewAuthority::authorize(self, subject, stop)
+    }
+    fn browser_effect_scope(&self) -> Option<Arc<dyn BrowserEffectScope>> {
+        None
+    }
+}
 fn authority() -> Arc<Authority> {
     Arc::new(Authority(AtomicBool::new(true)))
 }
@@ -51,6 +59,7 @@ struct Producer {
     release: Semaphore,
     finished: Semaphore,
     calls: AtomicUsize,
+    presentations: AtomicUsize,
     capture_error: AtomicBool,
 }
 impl Producer {
@@ -62,6 +71,7 @@ impl Producer {
             release: Semaphore::new(0),
             finished: Semaphore::new(0),
             calls: AtomicUsize::new(0),
+            presentations: AtomicUsize::new(0),
             capture_error: AtomicBool::new(false),
         })
     }
@@ -92,6 +102,39 @@ impl Producer {
     }
 }
 impl Capture for Arc<Producer> {
+    fn present(
+        &self,
+        authority: Arc<dyn ForegroundAuthority>,
+        _: PresentationArea,
+        stop: CancellationToken,
+    ) -> PresentationFuture {
+        let source = self.clone();
+        Box::pin(async move {
+            if !source.current.load(Ordering::SeqCst) || stop.is_cancelled() {
+                return Err(failed("source no longer current"));
+            }
+            authority
+                .authorize(
+                    PreviewSubject::NativeWindow {
+                        operation_id: "actual-operation".into(),
+                        binding: crate::ComputerAppBinding {
+                            pid: 7,
+                            window_id: 9,
+                            process_generation: "actual-process".into(),
+                        },
+                    },
+                    stop,
+                )
+                .await?;
+            source.presentations.fetch_add(1, Ordering::SeqCst);
+            source.started.add_permits(1);
+            source.release.acquire().await.unwrap().forget();
+            source.finished.add_permits(1);
+            Ok(PresentationResult::Presented {
+                details: serde_json::json!({"generation":source.generation}),
+            })
+        })
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -172,6 +215,175 @@ fn capture(
     let registry = registry.clone();
     let id = target.id.clone();
     tokio::spawn(async move { registry.capture(&id, authority, cancellation).await })
+}
+
+#[test]
+fn cleanup_failure_after_placement_is_not_reported_as_partial_success() {
+    let details =
+        serde_json::json!({"placement":{"effect":"confirmed","marker":"original-placement"}});
+    let error = presentation_failure(
+        ToolError::CleanupUnconfirmed("actual worker still active".into()),
+        details.clone(),
+    )
+    .err()
+    .expect("cleanup failure became a partial success");
+    assert!(
+        matches!(error, ToolError::CleanupUnconfirmed(message) if message.contains("actual worker still active") && message.contains("original-placement"))
+    );
+    let operation = uuid::Uuid::new_v4();
+    let observation = serde_json::from_value(serde_json::json!({
+        "reference": {
+            "source":{"stateDomain":uuid::Uuid::new_v4().to_string(),"deployment":uuid::Uuid::new_v4().to_string(),"revision":1},
+            "namespace":[uuid::Uuid::new_v4().to_string()],"export":"computer","method":"presentTarget","operation":operation,
+            "fingerprint":"fixture","contract":{"name":"maka.workspace.Computer","version":1,"transport":"remote","digest":"fixture"},"recovery":"journal_v1"
+        },
+        "receipt":{"kind":"recorded","outcome":{"kind":"unknown","diagnostic":"actual worker still active"},"cleanup":{"kind":"unconfirmed"}}
+    })).unwrap();
+    let error = presentation_failure(
+        ToolError::OperationCleanupUnconfirmed {
+            message: "actual worker still active".into(),
+            observation: Box::new(observation),
+        },
+        details,
+    )
+    .err()
+    .expect("operation cleanup failure became a partial success");
+    assert!(
+        matches!(error, ToolError::OperationCleanupUnconfirmed { message, observation } if message.contains("original-placement") && observation.reference.operation == operation)
+    );
+}
+
+#[tokio::test]
+async fn presentation_checks_current_revision_grant_and_epoch_before_dispatch() {
+    let registry = PreviewRegistry::default();
+    let epoch = NativeEpochId::new();
+    registry.open_epoch(epoch);
+    let first = Producer::new(1);
+    let target = publish(&registry, epoch, "tab", &first);
+    let auth = authority();
+    let area = PresentationArea {
+        x: 10.,
+        y: 20.,
+        width: 800.,
+        height: 600.,
+    };
+    first.release.add_permits(1);
+    assert!(matches!(
+        registry
+            .present(
+                &target.id,
+                target.revision,
+                auth.clone(),
+                area,
+                CancellationToken::new()
+            )
+            .await
+            .unwrap(),
+        PresentationResult::Presented { .. }
+    ));
+    assert_eq!(first.presentations.load(Ordering::SeqCst), 1);
+    auth.0.store(false, Ordering::SeqCst);
+    assert!(
+        registry
+            .present(
+                &target.id,
+                target.revision,
+                auth.clone(),
+                area,
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(first.presentations.load(Ordering::SeqCst), 1);
+    auth.0.store(true, Ordering::SeqCst);
+    let second = Producer::new(2);
+    let current = publish(&registry, epoch, "tab", &second);
+    assert!(
+        registry
+            .present(
+                &target.id,
+                target.revision,
+                auth.clone(),
+                area,
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(first.presentations.load(Ordering::SeqCst), 1);
+    second.release.add_permits(1);
+    assert!(matches!(
+        registry
+            .present(
+                &current.id,
+                current.revision,
+                auth.clone(),
+                area,
+                CancellationToken::new()
+            )
+            .await
+            .unwrap(),
+        PresentationResult::Presented { .. }
+    ));
+    registry.retire_epoch(epoch);
+    assert!(
+        registry
+            .present(
+                &current.id,
+                current.revision,
+                auth,
+                area,
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(second.presentations.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn presentation_retirement_waits_for_the_accepted_effect_and_preserves_its_receipt() {
+    let registry = PreviewRegistry::default();
+    let epoch = NativeEpochId::new();
+    registry.open_epoch(epoch);
+    let source = Producer::new(1);
+    let target = publish(&registry, epoch, "tab", &source);
+    let action = {
+        let registry = registry.clone();
+        let id = target.id.clone();
+        tokio::spawn(async move {
+            registry
+                .present(
+                    &id,
+                    target.revision,
+                    authority(),
+                    PresentationArea {
+                        x: 0.,
+                        y: 0.,
+                        width: 800.,
+                        height: 600.,
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+        })
+    };
+    signal(&source.started).await;
+    registry.retire_epoch(epoch);
+    tokio::task::yield_now().await;
+    assert!(
+        !action.is_finished(),
+        "retirement dropped the actual owned action"
+    );
+    assert_eq!(source.finished.available_permits(), 0);
+    source.release.add_permits(1);
+    let result = action.await.unwrap().unwrap();
+    signal(&source.finished).await;
+    assert!(
+        matches!(result, PresentationResult::Partial { details, .. } if details["details"]["generation"] == 1)
+    );
+    assert_eq!(source.presentations.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

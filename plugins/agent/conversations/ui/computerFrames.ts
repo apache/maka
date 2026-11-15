@@ -19,12 +19,18 @@
 
 import { cleanup, computed, effect, signal, untracked } from 'nsh';
 import type { UiService, UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
-import type { ComputerStageController, ComputerStageSource } from './computerStageController';
+import type {
+  ComputerStageController,
+  ComputerStageSource,
+  ComputerTarget,
+} from './computerStageController';
 
 import type {
   ComputerStageFrame,
   ComputerFrameNotice,
   ComputerFrameResult,
+  ComputerPresentationArea,
+  ComputerPresentationResult,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 
 export type ComputerFrame = ComputerStageFrame;
@@ -42,6 +48,9 @@ export function createComputerFrames(props: {
 }) {
   const frames = signal<ReadonlyMap<string, ComputerFrame>>(new Map());
   const errors = signal<ReadonlyMap<string, string>>(new Map());
+  let presentation:
+    | ((target: ComputerTarget, area: ComputerPresentationArea) => Promise<void>)
+    | null = null;
   // Control revisions and title changes must not restart capture.
   const request = computed(() =>
     JSON.stringify({
@@ -91,6 +100,52 @@ export function createComputerFrames(props: {
       string,
       { last: number; newest: number; busy: boolean; feedId: string }
     >();
+    const present = async (target: ComputerTarget, area: ComputerPresentationArea) => {
+      const reader = readers.get(target.id);
+      const currentFrame = (() => {
+        const frame = frames().get(target.id);
+        return (
+          !!frame &&
+          frame.revision === target.revision &&
+          frame.sessionId === sessionId &&
+          frame.bindingId === bindingId
+        );
+      })();
+      if (!current || !reader || !currentFrame || !props.visible() || props.stage.hidden())
+        throw new Error('Computer presentation frame is no longer current');
+      const operation = await source.service.mutation('presentTarget', {
+        sessionId,
+        bindingId,
+        feedId: reader.feedId,
+        targetId: target.id,
+        revision: target.revision,
+        area,
+      });
+      const receipt = operation.reply.receipt;
+      if (receipt.kind !== 'recorded')
+        throw new Error(
+          receipt.kind === 'unavailable'
+            ? receipt.diagnostic
+            : 'Computer presentation was not recorded',
+        );
+      if (receipt.cleanup.kind !== 'confirmed')
+        throw new Error(
+          receipt.cleanup.kind === 'failed'
+            ? receipt.cleanup.diagnostic
+            : 'Computer presentation cleanup is unconfirmed',
+        );
+      if (receipt.outcome.kind !== 'returned')
+        throw new Error(
+          receipt.outcome.kind === 'unknown'
+            ? receipt.outcome.diagnostic
+            : `Computer presentation has no returned result (${receipt.outcome.kind})`,
+        );
+      if (receipt.outcome.result.kind === 'failure')
+        throw new Error(receipt.outcome.result.diagnostic);
+      const result = receipt.outcome.result.value as ComputerPresentationResult;
+      if (result.kind === 'partial') throw new Error(result.message);
+    };
+    presentation = present;
     const close = () => {
       const owned = stream;
       stream = null;
@@ -98,6 +153,7 @@ export function createComputerFrames(props: {
     };
     cleanup(() => {
       current = false;
+      if (presentation === present) presentation = null;
       close();
       readers.clear();
     });
@@ -207,5 +263,12 @@ export function createComputerFrames(props: {
       props.report(reason);
     });
   });
-  return { frames, errors };
+  return {
+    frames,
+    errors,
+    present(target: ComputerTarget, area: ComputerPresentationArea) {
+      if (!presentation) return Promise.reject(new Error('Computer viewer is no longer current'));
+      return presentation(target, area);
+    },
+  };
 }

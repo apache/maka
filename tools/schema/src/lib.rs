@@ -125,6 +125,8 @@ pub fn catalog() -> Value {
         root::<maka_workspace_api::computer::WatchFrames>(&mut g),
         root::<maka_workspace_api::computer::FrameNotice>(&mut g),
         root::<maka_workspace_api::computer::ReadFrame>(&mut g),
+        root::<maka_workspace_api::computer::PresentTarget>(&mut g),
+        root::<maka_workspace_api::computer::PresentationResult>(&mut g),
         root::<maka_workspace_api::computer::FrameResult>(&mut g),
         root::<maka_workspace_api::protocol::Launch>(&mut g),
         root::<maka_agent_api::acp::Configuration>(&mut g),

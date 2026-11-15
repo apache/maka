@@ -90,6 +90,37 @@ pub struct ReadFrame {
     pub after: u64,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ComputerPresentTarget")]
+pub struct PresentTarget {
+    pub session_id: String,
+    pub binding_id: String,
+    pub feed_id: String,
+    pub target_id: String,
+    pub revision: u64,
+    pub area: PresentationArea,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ComputerPresentationArea")]
+pub struct PresentationArea {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "ComputerPresentationResult")]
+pub enum PresentationResult {
+    Presented { details: Value },
+    Requested { details: Value },
+    Partial { message: String, details: Value },
+}
+
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "ComputerStageFrame")]
