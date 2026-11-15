@@ -18,21 +18,15 @@
  */
 
 use super::*;
-#[cfg(windows)]
-use junction::create as link_profile;
-#[cfg(windows)]
-use std::fs::remove_dir as unlink_profile;
 use std::{
     fs,
     io::{self, Write},
     path::Path,
 };
-#[cfg(unix)]
-use std::{fs::remove_file as unlink_profile, os::unix::fs::symlink as link_profile};
 
 pub(super) const HOST_AGENT: &str = "maka";
-const OWNERS: &str = "# Apache Maka installations: ";
-const PROFILE: &str = "name: maka
+const PROFILE: &str = "---
+name: maka
 description: Antigravity agent for Maka conversations
 mainAgent: true
 subagent: false
@@ -41,177 +35,35 @@ tools: [search_web, define_subagent, invoke_subagent, manage_subagents, send_mes
 Use the Maka MCP tools for workspace operations, automation and conversation work.
 ";
 
-fn agents_directory(home: &Path) -> PathBuf {
-    home.join(".gemini/config/agents")
-}
-
-fn managed_directory(home: &Path) -> PathBuf {
-    home.join(".maka/external-agents/antigravity")
-}
-
-pub(crate) async fn sync_host_agent(
-    home: Option<PathBuf>,
-    installation: String,
-    enabled: bool,
-) -> Result<(), String> {
-    let Some(home) = home else {
-        return if enabled {
-            Err("Cannot locate the account home for Antigravity".into())
-        } else {
-            Ok(())
-        };
-    };
-    tokio::task::spawn_blocking(move || {
-        sync_profile(&home, &installation, enabled).map_err(|error| {
-            format!(
-                "Antigravity agent {}: {error}",
-                agents_directory(&home).join(HOST_AGENT).display()
-            )
-        })
-    })
-    .await
-    .map_err(|error| format!("Antigravity agent setup failed: {error}"))?
-}
-
-#[derive(PartialEq, Eq)]
-enum Registration {
-    Missing,
-    Managed,
-    User,
-}
-
-fn registration(path: &Path, target: &Path) -> io::Result<Registration> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_symlink() => {
-            let link = fs::read_link(path)?;
-            Ok(if dunce::simplified(&link) == dunce::simplified(target) {
-                Registration::Managed
-            } else {
-                Registration::User
-            })
-        }
-        Ok(_) => Ok(Registration::User),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Registration::Missing),
-        Err(error) => Err(error),
-    }
-}
-
-fn name_in_use() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "a user agent already uses the name maka",
-    )
-}
-
-fn read_profile(path: &Path) -> io::Result<Option<String>> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => fs::read_to_string(path).map(Some),
-        Ok(_) => Err(name_in_use()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-fn profile_parts(profile: &str) -> Option<(&str, &str)> {
-    let (owners, body) = profile.strip_prefix("---\n")?.split_once('\n')?;
-    Some((owners.strip_prefix(OWNERS)?, body))
-}
-
-fn sync_profile(home: &Path, installation: &str, enabled: bool) -> io::Result<()> {
-    let agents = agents_directory(home);
-    let path = agents.join(HOST_AGENT);
-    let directory = managed_directory(home);
-    let target = directory.join("agent");
-    let profile = target.join("agent.md");
-    if !enabled && !profile.try_exists()? && registration(&path, &target)? != Registration::Managed
-    {
-        return Ok(());
-    }
-    fs::create_dir_all(&directory)?;
-    let lock = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join("profile.lock"))?;
-    lock.lock()?;
-
-    let registration = registration(&path, &target)?;
-    if enabled && (registration == Registration::User || agents.join("maka.md").try_exists()?) {
-        return Err(name_in_use());
-    }
-
-    let current = read_profile(&profile)?;
-    let mut owners = std::collections::BTreeSet::new();
-    if let Some(current) = &current {
-        let (ids, _) = profile_parts(current).ok_or_else(name_in_use)?;
-        owners.extend(ids.split_whitespace());
-    }
-    if enabled {
-        owners.insert(installation);
-    } else if !owners.remove(installation)
-        && (current.is_some() || registration != Registration::Managed)
-    {
-        return Ok(());
-    }
-
-    if owners.is_empty() {
-        if registration == Registration::Managed {
-            unlink_profile(&path)?;
-        }
-        if current.is_some() {
-            fs::remove_file(profile)?;
-        }
-    } else {
-        let rendered = format!(
-            "---\n{OWNERS}{}\n{PROFILE}",
-            owners.iter().copied().collect::<Vec<_>>().join(" ")
-        );
-        if current.as_deref() != Some(rendered.as_str()) {
-            fs::create_dir_all(&target)?;
-            let mut staging = tempfile::NamedTempFile::new_in(&directory)?;
-            staging.write_all(rendered.as_bytes())?;
-            if current.is_some() {
-                staging.persist(&profile)?;
-            } else {
-                staging.persist_noclobber(&profile)?;
-            }
-        }
-        if registration == Registration::Missing {
-            fs::create_dir_all(&agents)?;
-            link_profile(&target, &path)?;
-        }
-    }
-
-    Ok(())
-}
-
-pub(super) async fn require_host_agent() -> Result<(), Error> {
+pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
     let home = std::env::home_dir()
         .ok_or_else(|| Error::Invalid("Cannot locate the account home for Antigravity".into()))?;
-    let path = agents_directory(&home).join(HOST_AGENT);
-    let target = managed_directory(&home).join("agent");
-    let link = tokio::fs::read_link(&path).await.map_err(|error| {
-        Error::Invalid(format!(
-            "Cannot read Antigravity agent link {}: {error}",
-            path.display()
-        ))
-    })?;
-    if dunce::simplified(&link) == dunce::simplified(&target) {
-        let profile = path.join("agent.md");
-        let text = tokio::fs::read_to_string(&profile).await.map_err(|error| {
-            Error::Invalid(format!(
-                "Cannot read Antigravity agent {}: {error}",
-                profile.display()
+    tokio::task::spawn_blocking(move || prepare_profile(&home))
+        .await
+        .map_err(|error| Error::Provider(format!("Antigravity agent setup task failed: {error}")))?
+        .map_err(|error| {
+            Error::Provider(format!(
+                "Cannot prepare the Maka Antigravity agent: {error}"
             ))
-        })?;
-        if profile_parts(&text).is_some_and(|(_, body)| body == PROFILE) {
-            return Ok(());
-        }
+        })
+}
+
+fn prepare_profile(home: &Path) -> io::Result<PathBuf> {
+    let root = home.join(".maka/external-agents/antigravity/agent");
+    let agents = root.join(".agents/agents");
+    let profile = agents.join("maka.md");
+
+    match fs::read(&profile) {
+        Ok(current) if current == PROFILE.as_bytes() => return Ok(root),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    Err(Error::Invalid(format!(
-        "Antigravity agent {} does not match Maka's definition",
-        path.display()
-    )))
+    fs::create_dir_all(&agents)?;
+    let mut staging = tempfile::NamedTempFile::new_in(&agents)?;
+    staging.write_all(PROFILE.as_bytes())?;
+    staging.persist(&profile)?;
+    Ok(root)
 }
 
 pub(super) async fn models(
@@ -474,66 +326,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn roots_share_the_profile_until_the_last_one_disables_antigravity() -> io::Result<()> {
+    fn antigravity_uses_one_static_agent_directory_in_maka() -> io::Result<()> {
         let home = tempfile::tempdir()?;
         let home = home.path();
-        let link = home.join(".gemini/config/agents/maka");
-        let target = home.join(".maka/external-agents/antigravity/agent");
-        sync_profile(home, "primary", false)?;
-        assert!(!home.join(".gemini").try_exists()?);
-        assert!(!home.join(".maka").try_exists()?);
-        sync_profile(home, "primary", true)?;
-        sync_profile(home, "secondary", true)?;
-        assert_eq!(
-            dunce::simplified(&fs::read_link(&link)?),
-            dunce::simplified(&target)
-        );
-        assert!(!home.join(".gemini/config/.maka.lock").try_exists()?);
-        sync_profile(home, "primary", false)?;
-        sync_profile(home, "primary", false)?;
-        let definition = fs::read_to_string(link.join("agent.md"))?;
-        assert!(definition.contains("# Apache Maka installations: secondary\n"));
-        assert!(definition.contains("tools: [search_web"));
-        sync_profile(home, "secondary", false)?;
-        assert_eq!(
-            fs::symlink_metadata(&link).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
-        assert!(!target.join("agent.md").try_exists()?);
-        Ok(())
-    }
+        let user_agents = home.join(".gemini/config/agents");
+        fs::create_dir_all(&user_agents)?;
+        fs::write(user_agents.join("mine.md"), "my own agent")?;
 
-    #[test]
-    fn a_user_agent_is_neither_replaced_nor_removed() -> io::Result<()> {
-        let home = tempfile::tempdir()?;
-        let home = home.path();
-        let agents = home.join(".gemini/config/agents");
-        let profile = agents.join("maka.md");
-        fs::create_dir_all(&agents)?;
-        let user_agent = format!("---\n{OWNERS}primary\n{PROFILE}My own instructions.\n");
-        fs::write(&profile, &user_agent)?;
+        let root = home.join(".maka/external-agents/antigravity/agent");
+        assert_eq!(prepare_profile(home)?, root);
+        let profile = root.join(".agents/agents/maka.md");
+        let definition = fs::read_to_string(&profile)?;
+        assert!(definition.starts_with("---\nname: maka\n"));
+        assert!(definition.contains("tools: [search_web, define_subagent"));
+        assert_eq!(prepare_profile(home)?, root);
+        assert_eq!(fs::read_to_string(profile)?, definition);
         assert_eq!(
-            sync_profile(home, "primary", true).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
+            fs::read_to_string(user_agents.join("mine.md"))?,
+            "my own agent"
         );
-        sync_profile(home, "primary", false)?;
-        assert_eq!(fs::read_to_string(&profile)?, user_agent);
-
-        let user_target = home.join("user-agent");
-        fs::create_dir(&user_target)?;
-        fs::rename(&profile, user_target.join("agent.md"))?;
-        let link = agents.join("maka");
-        link_profile(&user_target, &link)?;
-        assert_eq!(
-            sync_profile(home, "primary", true).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        sync_profile(home, "primary", false)?;
-        assert_eq!(
-            dunce::simplified(&fs::read_link(&link)?),
-            dunce::simplified(&user_target)
-        );
-        assert_eq!(fs::read_to_string(link.join("agent.md"))?, user_agent);
+        assert_eq!(fs::read_dir(user_agents)?.count(), 1);
         Ok(())
     }
 

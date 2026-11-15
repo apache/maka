@@ -8394,7 +8394,6 @@ dependencies = [
  "image",
  "jiff",
  "jsonschema 0.60.1",
- "junction",
  "libc",
  "maka-acp-native",
  "maka-agent-api",
