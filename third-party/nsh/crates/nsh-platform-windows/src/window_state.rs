@@ -172,12 +172,12 @@ pub(crate) fn state(hwnd: HWND) -> Option<WindowState> {
         state.focused = foreground && shown;
         if let Some(content) = native_content_bounds(hwnd) {
             state.content_bounds = screen.bounds(content);
-            state.native_content_bounds = Some(nsh_core::desktop::NativeDesktopBounds {
-                x: content.left as f64,
-                y: content.top as f64,
-                width: (content.right - content.left) as f64,
-                height: (content.bottom - content.top) as f64,
-            });
+            let mut native = nsh_core::desktop::NativeDesktopBounds::default();
+            native.x = content.left as f64;
+            native.y = content.top as f64;
+            native.width = (content.right - content.left) as f64;
+            native.height = (content.bottom - content.top) as f64;
+            state.native_content_bounds = Some(native);
         }
         state.display = Some(screen.display.id);
         state.scale_factor = window::dpi(hwnd) as f32 / 96.0;

@@ -495,12 +495,12 @@ mod tests {
                 let bounds = Bounds::new(point(px(x as f32), px(20.)), size(px(900.), px(720.)));
                 let mut state =
                     WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
-                state.native_content_bounds = Some(nsh_core::desktop::NativeDesktopBounds {
-                    x,
-                    y: 20.,
-                    width: 900.,
-                    height: 720.,
-                });
+                let mut native = nsh_core::desktop::NativeDesktopBounds::default();
+                native.x = x;
+                native.y = 20.;
+                native.width = 900.;
+                native.height = 720.;
+                state.native_content_bounds = Some(native);
                 let control = app.engine().control();
                 control.set_environment(Environment {
                     os: Os::MacOs,

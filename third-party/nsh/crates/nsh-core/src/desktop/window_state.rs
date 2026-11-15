@@ -202,7 +202,10 @@ fn grabbable(bounds: Bounds<Points>, area: Bounds<Points>) -> bool {
 }
 
 /// An OS desktop rectangle: macOS points, Windows/X11 native pixels.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, JsObject)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, JsObject,
+)]
+#[non_exhaustive]
 pub struct NativeDesktopBounds {
     /// The left edge in native desktop units.
     pub x: f64,
