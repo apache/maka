@@ -448,6 +448,17 @@ impl Desktop {
         .await
     }
 
+    /// Opens the one folded step group and lets it finish gliding open, so
+    /// its rows are inside its bounds before they are pressed.
+    async fn open_group(&self) {
+        self.press("Process group").await;
+        self.wait(
+            "the step group did not finish opening",
+            tokio::time::sleep(Duration::from_millis(300)),
+        )
+        .await;
+    }
+
     /// Clicks the one control labelled `label` once the window shows it.
     async fn press(&self, label: &str) {
         let bounds = self.control(label).await;
@@ -1265,6 +1276,7 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
             .await;
     }
     let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.open_group().await;
     let thumb = desktop.control("Thinking · Activity line 34").await;
     assert!(desktop.controls("Return to latest").is_empty());
     let at = point(thumb.right() - px(5.), thumb.center().y);
@@ -1300,8 +1312,10 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
         .await;
     let outer = point(at.x + px(16.), at.y);
     scroll(outer, point(outer.x, outer.y - px(120.)));
-    desktop.control("Copy user message").await;
+    let user = desktop.control("Copy user message").await;
     assert!(desktop.controls("Thinking · Activity line 34").is_empty());
+    // The outer thumb now rests at the top of its track, level with the prompt.
+    let outer = point(outer.x, user.top() + px(32.));
     desktop
         .retry(
             "scroll down to resume without clicking Latest",
@@ -1577,13 +1591,19 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .tool_call("exec", json!({"code":"text(await tools.GetGoal({}));"}))
         .await;
     let mut answer = desktop.request(&mut fixture).await;
-    // A running turn is open under its summary row, with no group header of its own.
+    // A running turn is open under its summary row, and its steps fold into a
+    // group row on the summary's lane.
     let summary = desktop.control("Turn work details").await;
+    assert_eq!(
+        desktop.control("Process group").await.left(),
+        summary.left()
+    );
+    assert!(desktop.controls("Toggle tool Read goal").is_empty());
+    desktop.open_group().await;
+    // An open group's steps sit one lane in, and an open tool card starts on
+    // that lane.
     let nested = desktop.control("Toggle tool Read goal").await;
-    assert!(desktop.controls("Process group").is_empty());
-    // A turn has two lanes and no indent: each step's icon sits under the
-    // summary's chevron, and an open tool card starts on that same lane.
-    assert_eq!(nested.left(), summary.left());
+    assert_eq!(nested.left(), summary.left() + px(24.));
     assert!(desktop.controls("Toggle tool Run script").is_empty());
     desktop.press("Toggle tool Read goal").await;
     let lane = nested.left() + px(8.);
@@ -1690,6 +1710,7 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .await;
     desktop.artifact("completed-answer-folded-work");
     desktop.press("Turn work details").await;
+    desktop.open_group().await;
     desktop.control("Toggle tool Read goal").await;
     assert_eq!(
         desktop.control("Turn work details").await.origin,
@@ -1812,6 +1833,7 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     assert!(desktop.controls("Toggle tool Read goal").is_empty());
 
     desktop.press("Turn work details").await;
+    desktop.open_group().await;
     desktop.control("Toggle tool Read goal").await;
     if desktop.controls("Inspect in execution process").is_empty() {
         desktop.press("Toggle tool Read goal").await;
@@ -1858,6 +1880,7 @@ async fn desktop_presents_session_tools_in_chat_and_trajectory() {
     );
     let title = "Send message to agent · Check the compiler output.";
     let row = format!("Toggle tool {title}");
+    desktop.open_group().await;
     desktop.control(&row).await;
     desktop.artifact("session-send-collapsed");
     desktop.press(&row).await;
@@ -1993,6 +2016,7 @@ async fn desktop_previews_an_incoming_session_message() {
     roles.sort_unstable();
     assert_eq!(roles, ["tool", "user"]);
     desktop.press("Open conversation Build review").await;
+    desktop.open_group().await;
     let summary = "From NSH real Agent · The build passed. Please review the compiler warnings.";
     desktop.control(summary).await;
     desktop.artifact("incoming-session-message-collapsed");
@@ -2101,6 +2125,7 @@ async fn desktop_folds_work_when_responses_starts_the_final_answer() {
         }}))
         .await;
     let thought = "Thinking · Checking the log";
+    desktop.open_group().await;
     desktop.control(thought).await;
     let message = |id, phase, content| json!({"type":"message","role":"assistant","id":id,"phase":phase,"content":content});
     let added = |id, phase| json!({"type":"response.output_item.added","item":message(id, phase, json!([]))});
@@ -2141,6 +2166,7 @@ async fn desktop_folds_work_when_responses_starts_the_final_answer() {
     desktop.control("Copy message").await;
     assert!(desktop.controls(thought).is_empty());
     desktop.press("Turn work details").await;
+    desktop.open_group().await;
     desktop.control(thought).await;
 
     // Reopen to exercise cold Chat history. Live previews already knew the
@@ -2179,6 +2205,7 @@ async fn desktop_folds_work_when_responses_starts_the_final_answer() {
     assert!(desktop.controls(thought).is_empty());
     desktop.artifact("reopened-history-collapsed");
     desktop.press("Turn work details").await;
+    desktop.open_group().await;
     desktop.control(thought).await;
     desktop.artifact("reopened-history-expanded");
     desktop.close().await;
@@ -3456,6 +3483,7 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
             desktop.controls(toggle).is_empty().then_some(())
         })
         .await;
+    desktop.open_group().await;
     desktop.control("Toggle tool Update checklist").await;
     // Progress on the same list leaves it closed, fenced on the rendered tool disclosure.
     running
