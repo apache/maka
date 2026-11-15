@@ -32,7 +32,7 @@ use maka_agent_ports::executor::Error;
 use maka_agent_state::{
     Change, ContentBlob, DriverClaim, Head, Store,
     artifacts::{ArtifactStore, SessionScope},
-    external_steering::{ExternalSteeringSource, ExternalSteeringSpec, attributed_source},
+    external_steering::{ExternalSteeringSource, ExternalSteeringSpec},
     fold::RunView,
     queue::Consume,
     session_history::{HistoryCut, SessionHistory},
@@ -193,7 +193,7 @@ impl NativeInputs {
                     "Original external steering source changed".into(),
                 ));
             }
-            messages.push(attributed_source(source, self.access.spec().language));
+            messages.push(source.into_attributed_input(self.access.spec().language));
             sources.push(ExternalSteeringSource {
                 request: entry.request.id.clone(),
                 source: entry.request.source.clone(),

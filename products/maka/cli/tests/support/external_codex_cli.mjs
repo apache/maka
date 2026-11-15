@@ -325,6 +325,33 @@ async function acp(id, method, params) {
       });
     }
     await record('ready', { thread, checkpoint, promptId: id });
+    if (job.label === 'ACP-room') {
+      const [header] = text.split('\n');
+      if (header === text || !header.endsWith(']'))
+        throw Error('Room mention source missing from ACP prompt');
+      const source = JSON.parse(header.slice(header.indexOf('{'), -1));
+      if (source.kind !== 'room' || source.author.kind !== 'human')
+        throw Error('ACP prompt did not identify the Room and human sender');
+      const { sessionId, messageId } = source;
+      const history = await codeResult(
+        `text(await tools.SessionHistory(${JSON.stringify({
+          sessionId,
+          position: { kind: 'before_message', messageId },
+        })}));`,
+      );
+      if (history.kind !== 'room' || history.page.items[0]?.id !== source.replyTo)
+        throw Error('ACP agent did not read the earlier Room post');
+      const posted = await codeResult(
+        `text(await tools.SessionSend(${JSON.stringify({
+          sessionId,
+          replyTo: messageId,
+          message: 'ACP reply in the Room',
+        })}));`,
+      );
+      if (posted.kind !== 'posted') throw Error('ACP agent did not reply in the Room');
+      await record('room_replied');
+      return reply(id, { stopReason: 'end_turn' });
+    }
     if (job.label === 'ACP-schedule') {
       const task = await codeResult(
         'text(await tools.ScheduledTask(' +

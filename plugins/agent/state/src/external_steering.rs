@@ -120,18 +120,3 @@ pub(crate) fn apply(view: &mut RunView, event: &ExternalSteeringEvent) -> Result
     }
     Ok(())
 }
-
-/// Host-only provenance is not part of the visible text used by inline offsets.
-pub fn attributed_source(
-    source: maka_agent_facts::message::RootSourceMessage,
-    language: maka_agent_facts::language::Language,
-) -> maka_agent_facts::input::MessageInput {
-    let mut content = source.message.content;
-    if let Some(origin) = source.message.origin {
-        content
-            .display_text
-            .get_or_insert_with(|| content.text.clone());
-        content.text.insert_str(0, &origin.prompt_header(language));
-    }
-    content
-}
