@@ -27,7 +27,7 @@ use maka_agent_facts::{
         CredentialMutationResult, ModelInfo, ModelOverride, SetCredentialInput,
         SetDefaultConnectionTargetInput, UpdateCatalogConnectionInput,
         policy::{
-            NetworkProxy,
+            ChatDefaults, NetworkProxy, RuntimePolicyMutationResult,
             network_update::{CredentialUpdate, Update, UpdateResult},
         },
         validation,
@@ -41,13 +41,14 @@ use maka_config::{
     oauth::enrollment::{LoginCompletion, LoginPreparation},
 };
 use maka_event_log::root::{RootNamespaces, RootOwner, initialize};
-use maka_host_runtime::HostError;
+use maka_host_runtime::{DirectoryRootSpec, HostError};
 use maka_plugin_core::scope::Scope;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
+    path::{Component, Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -70,6 +71,8 @@ struct Settings {
     proxy_password: Option<String>,
     connections: Option<Vec<ConnectionSettings>>,
     default_target: Option<DefaultTargetSettings>,
+    chat_defaults: Option<ChatDefaults>,
+    project_directory_roots: Option<Vec<DirectoryRootSpec>>,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +102,8 @@ struct PreparedSettings {
     proxy_update: Option<Update>,
     connections: Vec<PreparedConnection>,
     default_target: Option<DefaultTargetSettings>,
+    chat_defaults: Option<ChatDefaults>,
+    project_directory_roots: Option<Vec<DirectoryRootSpec>>,
 }
 
 struct PreparedConnection {
@@ -114,18 +119,40 @@ impl Init {
         let id = if self.settings_stdin {
             let settings = Settings::parse(&settings_input().await?)?;
             let prepared = settings.prepare().await?;
+            if let Some(roots) = &prepared.project_directory_roots {
+                let target_root = resolve_root_path(&self.root.root)
+                    .map_err(|_| "invalid initial settings: invalid project directory roots")?;
+                let control_root = resolve_root_path(&namespaces.control)?;
+                let ownership_root = resolve_root_path(&namespaces.ownership)?;
+                if roots.iter().any(|r| {
+                    r.path.starts_with(&target_root)
+                        || r.path.starts_with(&control_root)
+                        || r.path.starts_with(&ownership_root)
+                }) {
+                    return Err("invalid initial settings: invalid project directory roots".into());
+                }
+            }
             // Never reconfigure an existing root or race its running Host.
             let owner = Arc::new(RootOwner::create(&self.root.root, &namespaces)?);
             let id = owner.root_id().to_owned();
-            let store = Arc::new(ConfigurationStore::for_root(owner).await?);
+            let store = Arc::new(ConfigurationStore::for_root(owner.clone()).await?);
+            let mut policy_revision = 0;
             if let Some(update) = prepared.proxy_update {
                 let now = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
-                if !matches!(
-                    store.update_network_proxy(update, now).await?,
-                    UpdateResult::Committed { .. }
-                ) {
+                let UpdateResult::Committed { revision, .. } =
+                    store.update_network_proxy(update, now).await?
+                else {
                     return Err("initial proxy settings were not committed".into());
-                }
+                };
+                policy_revision = revision;
+            }
+            if let Some(chat_defaults) = prepared.chat_defaults {
+                let RuntimePolicyMutationResult::Committed { .. } = store
+                    .set_chat_defaults(policy_revision, chat_defaults)
+                    .await?
+                else {
+                    return Err("initial chat defaults were not committed".into());
+                };
             }
             let mut catalog_revision = 0;
             let mut connection_ids = BTreeMap::new();
@@ -279,6 +306,9 @@ impl Init {
                 }
             }
             store.shutdown().await?;
+            if let Some(roots) = prepared.project_directory_roots {
+                crate::application::configure_workspace_locations(owner, roots).await?;
+            }
             id
         } else {
             initialize(&self.root.root, &namespaces)?
@@ -308,6 +338,34 @@ pub(crate) async fn validate_settings_input(bytes: &[u8]) -> std::io::Result<()>
         .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
+fn resolve_root_path(path: &Path) -> std::io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                resolved.push(prefix.as_os_str());
+                continue;
+            }
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => resolved.push(other.as_os_str()),
+        }
+        match resolved.canonicalize() {
+            Ok(canonical) => resolved = canonical,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(resolved)
+}
+
 fn provider_identity(name: String) -> Identity {
     let package = if name == "chatgpt" {
         maka_providers::codex::ID
@@ -327,7 +385,7 @@ impl Settings {
         serde_json::from_slice(bytes).map_err(|_| std::io::Error::other("invalid initial settings"))
     }
 
-    async fn prepare(&self) -> Result<PreparedSettings, HostError> {
+    async fn prepare(self) -> Result<PreparedSettings, HostError> {
         let proxy_update = self.proxy_update()?;
         let connections = match &self.connections {
             Some(connections) if !connections.is_empty() => {
@@ -485,10 +543,25 @@ impl Settings {
             }
             None => None,
         };
+        let project_directory_roots = match self.project_directory_roots {
+            Some(roots) => {
+                if roots.is_empty() {
+                    return Err("invalid initial settings: invalid project directory roots".into());
+                }
+                Some(
+                    tokio::task::spawn_blocking(move || DirectoryRootSpec::normalize(roots))
+                        .await?
+                        .map_err(|_| "invalid initial settings: invalid project directory roots")?,
+                )
+            }
+            None => None,
+        };
         Ok(PreparedSettings {
             proxy_update,
             connections,
             default_target,
+            chat_defaults: self.chat_defaults,
+            project_directory_roots,
         })
     }
 
