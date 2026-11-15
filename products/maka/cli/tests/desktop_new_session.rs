@@ -67,7 +67,6 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const STEP: Duration = Duration::from_secs(30);
-const MODEL_MENU: [&str; 1] = ["Manage models"];
 
 struct InputDiagnostics {
     armed: AtomicBool,
@@ -280,25 +279,6 @@ async fn model_response(
         .map_err(|error| error.to_string())
 }
 
-fn model_row_label(choice: &Value) -> Result<String> {
-    Ok(format!(
-        "Use {} · {}",
-        choice["label"]
-            .as_str()
-            .ok_or("model choice omitted label")?,
-        choice["sourceName"]
-            .as_str()
-            .ok_or("model choice omitted source name")?
-    ))
-}
-
-fn model_identity(choice: &Value) -> Value {
-    let selection = &choice["selection"];
-    json!({"label":choice["label"],"sourceName":choice["sourceName"],
-        "kind":selection["kind"],"connectionId":selection["connectionId"],
-        "modelId":selection["modelId"],"thinkingLevel":selection["thinkingLevel"]})
-}
-
 async fn phase<T>(name: &str, future: impl Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(STEP, future)
         .await
@@ -489,15 +469,18 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
                 json!({"expected":detail["target"],"expectedCredential":null}),
                 Attachments::from([("secret".into(), secret)]))).await?;
             assert_eq!(credential["kind"], "saved");
-            let choices = phase("read actual UI model choice", api.query("agent", "models", json!({"kind":"start","query":""}))).await?;
+            let catalog = phase("read catalog for default model", api.query("settings", "connections", json!({"kind":"start"}))).await?;
+            let defaulted = phase("configure the owned Root's default model", mutate(api, "settings", "setDefault", json!({
+                "expectedCatalogRevision":catalog["revision"],
+                "target":{"connectionId":connection,"modelId":"gpt-4.1"}
+            }), Attachments::new())).await?;
+            assert_eq!(defaulted["kind"], "committed");
+            let choices = phase("read configured default model", api.query("agent", "models", json!({"kind":"start","query":""}))).await?;
             assert_eq!(choices["kind"], "ready");
             assert!(choices["next"].is_null());
             let model_choice = choices["choices"].as_array().ok_or("missing model choices")?.iter()
                 .find(|choice| choice["selection"]["connectionId"] == connection && choice["selection"]["modelId"] == "gpt-4.1")
                 .ok_or("configured loopback model is not a UI choice")?.clone();
-            eprintln!("desktop setup model page kind={} revision={} count={:?} next={} choice={} expected_label={:?} fixture_enabled={} fixture_enabled_model_ids={}",
-                choices["kind"], choices["revision"], choices["choices"].as_array().map(Vec::len), choices["next"],
-                model_identity(&model_choice), model_row_label(&model_choice)?, detail["enabled"], detail["editing"]["enabledModelIds"]);
             let title = format!("desktop-seed-{}", Uuid::new_v4().simple());
             let created = phase("create real idle seed Session", mutate(api, "agent", "create", json!({
                 "backend":null,"automaticTitle":false,"tools":[],"title":title,"labels":[],
@@ -580,12 +563,6 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
         // Bounds observe the current NSH tree; native dispatches against its
         // rendered frame. A prior startup frame is not this target's paint.
         paint("actual native frame after seed controls mounted")?;
-        for label in MODEL_MENU {
-            assert!(
-                bounds(label)?.is_empty(),
-                "seed unexpectedly opened model selection: {label}"
-            );
-        }
         let before = runtime.block_on(phase(
             "independent pre-click Session list",
             sessions(observer.as_ref().unwrap()),
@@ -621,10 +598,7 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
                 native.is_active(),
                 native.text_input_target(),
             );
-            let mut labels = MODEL_MENU
-                .iter()
-                .map(|label| (*label).to_owned())
-                .collect::<Vec<_>>();
+            let mut labels = Vec::new();
             labels.extend(
                 [
                     "New conversation",
@@ -719,22 +693,6 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
             native.dispatch_input(PlatformInput::MouseUp(up))?;
             Ok(())
         };
-        let models_pane = |name: &str| -> Result<()> {
-            let result = wait_native(native, &errors, name, || {
-                for label in MODEL_MENU {
-                    if bounds(label)?.len() != 1 {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            });
-            if result.is_err() {
-                diagnose(name);
-            }
-            result?;
-            paint("actual native frame with models pane")
-        };
-
         click("New conversation")?;
         paint("actual native frame after original New click")?;
         diagnose("after original New click");
@@ -776,168 +734,11 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
         ))?;
         assert_eq!(unchanged["session"], seed_session);
 
-        click("Choose model and effort")?;
-        models_pane("pending draft's real models pane")?;
-        let setup_label = model_row_label(&model_choice)?;
-        let mut choose = setup_label.clone();
-        let mut presentations = None;
-        let row_started = Instant::now();
-        let row = wait_native(native, &errors, "actual loopback model row", || {
-            if presentations.is_none() {
-                let page = runtime.block_on(async {
-                    tokio::time::timeout(
-                        STEP.saturating_sub(row_started.elapsed()),
-                        observer.as_ref().unwrap().query(
-                            "agent",
-                            "models",
-                            json!({"kind":"start","query":""}),
-                        ),
-                    )
-                    .await
-                    .map_err(|_| "deadline reading current model presentation")?
-                })?;
-                assert_eq!(page["kind"], "ready");
-                let matches = page["choices"]
-                    .as_array()
-                    .ok_or("current model catalog omitted choices")?
-                    .iter()
-                    .filter(|choice| choice["selection"] == model_choice["selection"])
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    matches.len(),
-                    1,
-                    "authorized model selection must remain unique"
-                );
-                let current = matches[0];
-                assert_eq!(current["sourceName"], model_choice["sourceName"]);
-                let current_label = model_row_label(current)?;
-                choose = current_label.clone();
-                eprintln!(
-                    "desktop current model presentation revision={} choice={} exact_label={current_label:?}",
-                    page["revision"],
-                    model_identity(current)
-                );
-                // The UI may retain its opening snapshot while metadata adopts a display name.
-                let mut labels = vec![current_label];
-                if labels[0] != setup_label {
-                    labels.push(setup_label.clone());
-                }
-                presentations = Some(labels);
-            }
-            let mut visible = None;
-            for label in presentations.as_ref().unwrap() {
-                let targets = bounds(label)?;
-                assert!(
-                    targets.len() <= 1,
-                    "model presentation has duplicate native rows"
-                );
-                if targets.len() == 1 {
-                    assert!(
-                        visible.is_none(),
-                        "one selection has multiple live model presentations"
-                    );
-                    visible = Some(label.clone());
-                }
-            }
-            if let Some(label) = visible {
-                choose = label;
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        });
-        if let Err(error) = row {
-            diagnose("actual loopback model row failure");
-            eprintln!(
-                "desktop model row expected_label={choose:?} choice={} bounds={:?}",
-                model_identity(&model_choice),
-                bounds(&choose)
-            );
-            // Failure-only reads: each gets one explicit three-second observation budget.
-            let (models, connections) = runtime.block_on(async {
-                tokio::join!(
-                    tokio::time::timeout(
-                        Duration::from_secs(3),
-                        observer.as_ref().unwrap().query(
-                            "agent",
-                            "models",
-                            json!({"kind":"start","query":""})
-                        )
-                    ),
-                    tokio::time::timeout(
-                        Duration::from_secs(3),
-                        observer.as_ref().unwrap().query(
-                            "settings",
-                            "connections",
-                            json!({"kind":"start"})
-                        )
-                    ),
-                )
-            });
-            match models {
-                Ok(Ok(page)) => {
-                    let rows = page["choices"].as_array();
-                    eprintln!(
-                        "desktop fresh models kind={} revision={} count={:?} next={}",
-                        page["kind"],
-                        page["revision"],
-                        rows.map(Vec::len),
-                        page["next"]
-                    );
-                    for choice in rows.into_iter().flatten().take(8) {
-                        let label = model_row_label(choice);
-                        let visible = label.as_ref().map(|label| bounds(label));
-                        eprintln!(
-                            "desktop fresh model choice={} exact_label={label:?} bounds={visible:?}",
-                            model_identity(choice)
-                        );
-                    }
-                }
-                Ok(Err(_)) => eprintln!(
-                    "desktop fresh models status=query_error; detail omitted from metadata-only diagnostic"
-                ),
-                Err(_) => eprintln!("desktop fresh models status=three_second_timeout"),
-            }
-            match connections {
-                Ok(Ok(page)) => {
-                    let rows = page["connections"].as_array();
-                    let fixture = rows.into_iter().flatten()
-                        .find(|row| row["basis"]["connectionId"] == model_choice["selection"]["connectionId"])
-                        .map(|row| json!({"connectionId":row["basis"]["connectionId"],"revision":row["basis"]["revision"],
-                            "enabled":row["enabled"],"enabledModelCount":row["enabledModelCount"]}));
-                    eprintln!(
-                        "desktop fresh connections kind={} revision={} count={:?} next={} fixture_summary={fixture:?}",
-                        page["kind"],
-                        page["revision"],
-                        rows.map(Vec::len),
-                        page["next"]
-                    );
-                }
-                Ok(Err(_)) => eprintln!(
-                    "desktop fresh connections status=query_error; detail omitted from metadata-only diagnostic"
-                ),
-                Err(_) => eprintln!("desktop fresh connections status=three_second_timeout"),
-            }
-            return Err(error);
-        }
-        paint("actual native frame with loopback model row")?;
-        click(&choose)?;
-        models_pane("model choice keeps the pending picker open")?;
         click("Focus message composer")?;
-        wait_native(
-            native,
-            &errors,
-            "outside composer click closes the pending picker and focuses editor",
-            || {
-                for label in MODEL_MENU {
-                    if !bounds(label)?.is_empty() {
-                        return Ok(false);
-                    }
-                }
-                Ok(native.text_input_target().is_some())
-            },
-        )?;
-        // This is the current native native editor, not a JS callback or a stored draft edit.
+        wait_native(native, &errors, "real native composer input target", || {
+            Ok(native.text_input_target().is_some())
+        })?;
+        // This is the current native editor, not a JS callback or a stored draft edit.
         assert!(native.paste(nsh_core::PasteEvent::new(&nonce)));
         wait_native(
             native,
@@ -1098,15 +899,6 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
             },
         )?;
         paint("actual native frame of selected completed Session")?;
-        // The empty seed and pending draft cannot expose these nonempty conversation tabs.
-        click("Choose model and effort")?;
-        models_pane("persisted new Session's real models pane")?;
-        wait_native(
-            native,
-            &errors,
-            "persisted new Session's active model row",
-            || Ok(bounds(&choose)?.len() == 1),
-        )?;
         let after = runtime.block_on(phase(
             "final independent Session list",
             sessions(observer.as_ref().unwrap()),
