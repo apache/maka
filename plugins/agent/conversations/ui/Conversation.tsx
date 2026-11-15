@@ -18,7 +18,11 @@
  */
 
 import { createTrajectoryRequests } from './trajectoryRequests';
-import { sendReceiptFailure } from './sendReceipt';
+import {
+  sendReceiptFailure,
+  shouldHideAcceptedQueuedStatus,
+  shouldProjectPendingSend,
+} from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
@@ -2797,11 +2801,23 @@ export function Conversation(props: ConversationProps) {
         });
     }
   };
-  const settleReply = (reply: any, text?: string, files: DraftAttachment[] = []) => {
+  const inTranscript = (messageId: string) =>
+    historyRows().byMessage.has(`${messageId}/body`) ||
+    (atHistoryTail() && pendingMessages().some((row) => row.messageId === messageId));
+  const settleReply = (
+    reply: any,
+    text?: string,
+    files: DraftAttachment[] = [],
+    immediate = false,
+  ) => {
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
     if (
-      accepted.kind === 'started' &&
+      shouldProjectPendingSend(accepted, {
+        immediate,
+        activeRunId: runId(),
+        atHistoryTail: atHistoryTail(),
+      }) &&
       text !== undefined &&
       !historyRows().byMessage.has(`${accepted.messageId}/body`)
     ) {
@@ -2913,7 +2929,13 @@ export function Conversation(props: ConversationProps) {
         return;
       }
       const sent = await confirmSend(client, id);
-      if (alive) settleReply(sent.reply, frozen.text, frozen.files);
+      if (alive)
+        settleReply(
+          sent.reply,
+          frozen.text,
+          frozen.files,
+          frozen.selection.expectedRunId === undefined,
+        );
     } catch (reason) {
       sendError(id, reason);
     } finally {
@@ -3060,6 +3082,7 @@ export function Conversation(props: ConversationProps) {
             reply,
             original.correlation.draft.text,
             original.correlation.draft.attachments,
+            original.correlation.selection.expectedRunId === undefined,
           );
       }
       const delivery = await sendDelivery(client, id);
@@ -3157,11 +3180,15 @@ export function Conversation(props: ConversationProps) {
       const checking = checkingSends().has(original.id);
       const detail = sendErrors().get(original.id);
       if (
-        !failed &&
-        !detail &&
         acceptedQueued(original) &&
-        sendDeliveries().get(original.id) !== 'unknown' &&
-        followups.has(acceptedSend({ receipt: original.receipt }, sessionId).messageId)
+        shouldHideAcceptedQueuedStatus({
+          failed,
+          detail,
+          delivery: sendDeliveries().get(original.id),
+          messageId: acceptedSend({ receipt: original.receipt }, sessionId).messageId,
+          followups,
+          inTranscript,
+        })
       )
         continue;
       statuses.set(original.id, {
@@ -3358,6 +3385,34 @@ export function Conversation(props: ConversationProps) {
           ? 'occupied'
           : 'empty';
     untracked(() => messagePrediction.eligible(eligible, composer));
+  });
+  effect(() => {
+    const current = pendingMessages();
+    if (!current.length) return;
+    if (!atHistoryTail()) {
+      pendingMessages.set([]);
+      return;
+    }
+    const cancelledIds = new Set(
+      unresolved()
+        .filter((item) => sendDeliveries().get(item.id) === 'cancelled')
+        .map((item) => acceptedSend({ receipt: item.receipt }, sessionId)?.messageId)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    const waitingFollowups =
+      runId() !== null
+        ? new Set(
+            queued()
+              ?.entries.filter((entry) => entry.kind === 'followup')
+              .map((entry) => entry.messageId),
+          )
+        : null;
+    const next = current.filter(
+      (row) =>
+        row.messageId === undefined ||
+        (!cancelledIds.has(row.messageId) && !waitingFollowups?.has(row.messageId)),
+    );
+    if (next.length !== current.length) pendingMessages.set(next);
   });
   const queueSession: ComposerQueue = {
     sessionId,
