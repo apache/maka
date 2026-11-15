@@ -157,7 +157,7 @@ impl Source {
         thinking_level: Option<ThinkingLevel>,
         session: String,
         mut revision: SourceRevision,
-    ) -> Result<(Self, PreparedModel), RunError> {
+    ) -> Result<Self, RunError> {
         let span = tracing::warn_span!("agent_model_preparation", session_id = %session,
             connection_id = %selection.connection_id, activation = %revision.activation);
         async move {
@@ -190,6 +190,7 @@ impl Source {
             };
             let (mut public_model, mut definition) = define(&snapshot, &material.connection)?;
             let row = &material.connection;
+            let has_model = row.models.iter().any(|info| info.id == selection.model_id);
             let material = if row.provider.package_id == maka_providers::codex::ID
                 && row.provider.name == "chatgpt"
             {
@@ -198,16 +199,27 @@ impl Source {
                     connection_slug: row.slug.clone(),
                     model: selection.model_id.clone(),
                 };
-                credentials.inventory.ensure(
-                    configuration.clone(), credentials.clone(), definition.clone(),
-                    binding.clone(), &material,
-                ).await;
-                let public_guard = catalog.snapshot.read().await;
-                let current_snapshot = public_guard.as_ref().map_err(|_| unavailable())?;
-                let current = configuration.observe_selected_model(selection.clone()).await
-                    .map_err(|_| unavailable())?.ok_or(RunError::ModelUnavailable)?;
-                (public_model, definition) = define(current_snapshot, &current.connection)?;
-                current
+                if has_model {
+                    credentials.inventory.warm(
+                        configuration.clone(),
+                        credentials.clone(),
+                        definition.clone(),
+                        binding,
+                        &material,
+                    );
+                    material
+                } else {
+                    credentials.inventory.ensure(
+                        configuration.clone(), credentials.clone(), definition.clone(),
+                        binding, &material,
+                    ).await;
+                    let public_guard = catalog.snapshot.read().await;
+                    let current_snapshot = public_guard.as_ref().map_err(|_| unavailable())?;
+                    let current = configuration.observe_selected_model(selection.clone()).await
+                        .map_err(|_| unavailable())?.ok_or(RunError::ModelUnavailable)?;
+                    (public_model, definition) = define(current_snapshot, &current.connection)?;
+                    current
+                }
             } else {
                 material
             };
@@ -234,7 +246,7 @@ impl Source {
             };
             revision.name = row.provider.name.clone();
             let source = Self {
-                pricing:Arc::new(ConfigPricing(configuration.clone())),
+                pricing: Arc::new(ConfigPricing(configuration.clone())),
                 configuration,
                 credentials,
                 accepted: AcceptedModel {
@@ -262,8 +274,8 @@ impl Source {
                 session,
                 revision,
             };
-            let prepared = source.prepare(material, model).await?;
-            Ok((source, prepared))
+            source.prepare_with(material, model, false).await?;
+            Ok(source)
         }.instrument(span).await
     }
 
@@ -305,6 +317,14 @@ impl Source {
         material: ConnectionObservation,
         model: Model,
     ) -> Result<PreparedModel, RunError> {
+        self.prepare_with(material, model, true).await
+    }
+    async fn prepare_with(
+        &self,
+        material: ConnectionObservation,
+        model: Model,
+        refresh_credential: bool,
+    ) -> Result<PreparedModel, RunError> {
         #[cfg(test)]
         let (model, observed_context) = {
             let mut model = model;
@@ -337,34 +357,40 @@ impl Source {
             unavailable()
         })?;
         let credential = match material.credential.as_ref() {
-            Some(snapshot) if snapshot.credential().refresh_at.is_some() => Some(
-                self.credentials
-                    .refresh
-                    .bind(snapshot.clone())
-                    .map_err(|_| RunError::InvalidInput("agent_authentication_unavailable".into()))?
-                    .resolve_native(
-                        self.accepted.provider.clone(),
-                        self.definition.clone(),
-                        maka_agent_ports::provider::Context {
-                            transport: self.credentials.executor.transport(&network).map_err(
-                                |error| {
-                                    diagnostics::model(
-                                        "credential_transport",
-                                        &error,
-                                        &self.accepted.binding.connection_id,
-                                    );
-                                    unavailable()
-                                },
-                            )?,
-                            cancellation: tokio_util::sync::CancellationToken::new(),
-                            interaction: None,
-                        },
-                    )
-                    .await
-                    .map_err(|_| RunError::InvalidInput("agent_authentication_unavailable".into()))?
-                    .credential()
-                    .clone(),
-            ),
+            Some(snapshot) if refresh_credential && snapshot.credential().refresh_at.is_some() => {
+                Some(
+                    self.credentials
+                        .refresh
+                        .bind(snapshot.clone())
+                        .map_err(|_| {
+                            RunError::InvalidInput("agent_authentication_unavailable".into())
+                        })?
+                        .resolve_native(
+                            self.accepted.provider.clone(),
+                            self.definition.clone(),
+                            maka_agent_ports::provider::Context {
+                                transport: self.credentials.executor.transport(&network).map_err(
+                                    |error| {
+                                        diagnostics::model(
+                                            "credential_transport",
+                                            &error,
+                                            &self.accepted.binding.connection_id,
+                                        );
+                                        unavailable()
+                                    },
+                                )?,
+                                cancellation: tokio_util::sync::CancellationToken::new(),
+                                interaction: None,
+                            },
+                        )
+                        .await
+                        .map_err(|_| {
+                            RunError::InvalidInput("agent_authentication_unavailable".into())
+                        })?
+                        .credential()
+                        .clone(),
+                )
+            }
             Some(snapshot) => Some(snapshot.credential().clone()),
             None => None,
         };
