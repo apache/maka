@@ -2332,6 +2332,7 @@ export type SkillPreparation =
       invocation: SkillInvocationResult;
     };
 export type SkillInvocationFailure = SkillRequestFailure;
+export type AgentSessionKind = 'agent' | 'room';
 export type AgentSessionFilter = 'all' | 'archived' | 'needs_you';
 export type AgentSessionPosition =
   | {
@@ -4037,6 +4038,12 @@ export type QuestionResult =
     };
 export type AgentSendResult =
   | {
+      kind: 'posted';
+      sessionId: string;
+      messageId: string;
+      deliveries: RoomDelivery[];
+    }
+  | {
       kind: 'rejected';
       sessionId: string;
       reason: AgentSendRejection;
@@ -4059,6 +4066,17 @@ export type AgentSendResult =
   | {
       kind: 'not_your_worker';
       sessionId: string;
+    };
+export type RoomDelivery =
+  | {
+      kind: 'accepted';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
     };
 export type AgentSendRejection =
   | 'model_unavailable'
@@ -4286,6 +4304,18 @@ export type HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'message';
+      messageId: string;
+    }
+  | {
+      kind: 'before_message';
+      messageId: string;
+    }
+  | {
+      kind: 'after_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
       position: HistoryRowAddress;
       field: HistoryField;
@@ -4325,6 +4355,13 @@ export type MessageOrigin =
       execution: ExecutionIdentity;
     }
   | {
+      kind: 'room';
+      sessionId: string;
+      messageId: string;
+      author: RoomAuthor;
+      replyTo?: string | null;
+    }
+  | {
       kind: 'automation';
       automationId: string;
       title: string;
@@ -4338,7 +4375,19 @@ export type MessageOrigin =
       kind: 'bot_worker';
       sessionId: string;
     };
+export type RoomAuthor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      execution: ExecutionIdentity;
+    };
 export type AgentDeliveryPage =
+  | {
+      kind: 'room';
+      through: number;
+    }
   | {
       kind: 'events';
       through: number;
@@ -4503,13 +4552,18 @@ export type ExternalToolTarget =
       kind: 'search';
       query: string;
     };
-export type AgentHistoryPage = {
-  kind: 'ready';
-  through: number | null;
-  chunks: AgentHistoryChunk[];
-  before: Cursor | null;
-  after: Cursor | null;
-};
+export type AgentHistoryPage =
+  | {
+      kind: 'room';
+      page: AgentRoomHistoryPage;
+    }
+  | {
+      kind: 'ready';
+      through: number | null;
+      chunks: AgentHistoryChunk[];
+      before: Cursor | null;
+      after: Cursor | null;
+    };
 export type AgentHistorySearchPage = {
   kind: 'ready';
   through: number;
@@ -4769,6 +4823,11 @@ export type AgentToolImagePage = {
 };
 export type AgentAttachmentImageSource =
   | {
+      kind: 'room';
+      messageId: string;
+      attachmentIndex: number;
+    }
+  | {
       kind: 'uploaded';
       id: string;
     }
@@ -4896,6 +4955,8 @@ export interface ClientDraft {
   revision: number;
   text: string;
   attachments: ClientDraftAttachment[];
+  mentions?: string[];
+  replyTo?: string | null;
 }
 /**
  * Display metadata for an immutable Host upload in this exact draft owner.
@@ -4913,6 +4974,8 @@ export interface ClientDraftEdit {
   text: string;
   attachments?: ClientDraftAttachment[];
   settledUploads?: string[];
+  mentions?: string[];
+  replyTo?: string | null;
 }
 /**
  * Stable product owner, independent of endpoint aliases, VM instances and UI nodes.
@@ -7055,6 +7118,10 @@ export interface SkillRequestFailure {
   reason: SkillFailureReason;
 }
 export interface AgentList {
+  /**
+   * Omission includes both Agent conversations and Rooms.
+   */
+  kind?: AgentSessionKind | null;
   filter: AgentSessionFilter;
   /**
    * Include archived conversations alongside active ones.
@@ -7072,6 +7139,10 @@ export interface AgentList {
   titleQuery?: string;
 }
 export interface AgentCreate {
+  /**
+   * Rooms receive messages without running a model. Their mentions address Agent sessions.
+   */
+  kind?: AgentSessionKind & string;
   /**
    * Apply a preset at creation; mutually exclusive with backend.
    */
@@ -7257,6 +7328,7 @@ export interface AgentRecallPage {
   gaps: string[];
 }
 export interface AgentSession {
+  kind: AgentSessionKind;
   appliedPreset?: AppliedPreset | null;
   /**
    * Session that initiated creation, independent of fork ancestry and task ownership.
@@ -7493,6 +7565,14 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  /**
+   * Agent Session IDs explicitly addressed by this Room message.
+   */
+  mentions?: string[];
+  /**
+   * Original message ID in the destination Room.
+   */
+  replyTo?: string | null;
   /**
    * Best-effort notification to the caller when this message finishes,
    * fails or is cancelled, and once per pending interaction or authority blocker
@@ -8305,6 +8385,26 @@ export interface HistoryToolResult {
    */
   images: number;
   details?: ToolResultDetails | null;
+}
+export interface AgentRoomHistoryPage {
+  items: AgentRoomMessage[];
+  through: number;
+  before?: string | null;
+  after?: string | null;
+}
+export interface AgentRoomMessage {
+  id: string;
+  sequence: number;
+  at: number;
+  author: RoomAuthor;
+  content: AgentRoomContent;
+  replyTo?: string | null;
+  mentions: string[];
+  deliveries: RoomDelivery[];
+}
+export interface AgentRoomContent {
+  text: string;
+  attachments: AgentHistoryAttachment[];
 }
 export interface AgentHistorySearch {
   sessionId: string;

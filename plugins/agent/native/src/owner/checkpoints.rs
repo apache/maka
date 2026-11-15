@@ -130,6 +130,7 @@ impl Owner {
                 None,
                 maka_agent_state::session_catalog::Position::Start,
                 maka_agent_state::session_catalog::Filter {
+                    room: None,
                     base: maka_event_log::sessions::CatalogFilter {
                         roots_only: false,
                         archived_only: false,

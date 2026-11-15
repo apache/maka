@@ -96,6 +96,7 @@ import {
   compareRows,
   HistoryRows,
   mergeHistoryPage,
+  type ConversationHistoryPage,
   openingUserMessage,
   replayStartCursor,
   senderSession,
@@ -221,7 +222,6 @@ import type {
   AgentHistoryAttachment,
   AgentHistoryChunk,
   AgentHistoryLandmark,
-  AgentHistoryPage,
   AgentMarkReadResult,
   AgentSession,
   AgentRunBackend,
@@ -245,7 +245,7 @@ type HistoryNavigation =
   | { kind: 'start' | 'tail' }
   | { kind: 'turn'; item: TurnNavigationItem }
   | { kind: 'message'; anchor: ConversationAnchor };
-type HistoryWindow = Pick<AgentHistoryPage, 'before' | 'after'> & {
+type HistoryWindow = Pick<ConversationHistoryPage, 'before' | 'after'> & {
   through: number;
   identity: object;
   view: HistoryListView;
@@ -553,7 +553,7 @@ export function Conversation(props: ConversationProps) {
     string,
     {
       through: number;
-      after: AgentHistoryPage['after'];
+      after: ConversationHistoryPage['after'];
       task?: Promise<void>;
     }
   >();
@@ -1590,6 +1590,7 @@ export function Conversation(props: ConversationProps) {
       includeThinking: true,
       view,
     });
+    if (page.kind !== 'ready') throw new Error('Expected conversation history.');
     if (page.through !== through) throw new UiError('History changed its requested fence.');
     return { ...page, through: page.through };
   };
@@ -1599,7 +1600,7 @@ export function Conversation(props: ConversationProps) {
   const resetHistory = (
     position: HistoryPosition,
     through: number,
-    verify?: (page: AgentHistoryPage) => void,
+    verify?: (page: ConversationHistoryPage) => void,
     current: () => boolean = () => true,
     view: HistoryListView = chatHistoryView(),
   ): Promise<boolean> => {

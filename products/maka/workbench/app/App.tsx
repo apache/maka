@@ -17,7 +17,19 @@
  * under the License.
  */
 
-import { batch, cleanup, effect, platform, signal, Text, View, type JSX, type Signal } from 'nsh';
+import {
+  batch,
+  cleanup,
+  createAnimatedValue,
+  effect,
+  platform,
+  reduceMotion,
+  signal,
+  Text,
+  View,
+  type JSX,
+  type Signal,
+} from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import { Button } from 'nsh/base';
 import type { UiModule, UiRootProps } from '../../../../packages/plugin-sdk/src/workbench.js';
@@ -29,6 +41,8 @@ import {
   conversationNavigationView,
   conversationSessionView,
   conversationPreviewView,
+  roomWorkspaceView,
+  type RoomWorkspaceHandle,
   settingsViewContract,
   type ConversationCompact,
   type SettingsPageInput,
@@ -39,22 +53,32 @@ import {
 import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
 import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
-import { ownTitleBar } from './chrome';
+import { ownTitleBar, windowTitle } from './chrome';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
-import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import {
+  bodyTextStyle,
+  C,
+  controlStyle,
+  controlHoverStyle,
+  controlFocusStyle,
+  ViewSegment,
+} from './ui';
 
 type Configuration = {
   navigation: UiTarget;
   session: UiTarget;
   preview: UiTarget;
   settings: UiTarget;
+  rooms: UiTarget;
 };
 type SavedRoot = {
   sessionId: string | null;
   sideSessionIds?: string[];
+  workspaceMode?: 'conversations' | 'rooms';
+  roomSessionId?: string | null;
   sidebarExpanded: boolean;
   settings: { model?: ModelSelection; page?: string } | null;
   panel: PanelRoute | null;
@@ -77,10 +101,17 @@ function App(
   const saved = context.restored as SavedRoot | null;
   const selected = signal(saved === null ? nativeHost.initialSession : saved.sessionId);
   const sidebarExpanded = signal(saved?.sidebarExpanded ?? true);
+  const workspaceMode = signal<'conversations' | 'rooms'>(saved?.workspaceMode ?? 'conversations');
+  const roomWorkspace = signal<RoomWorkspaceHandle | null>(null);
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
+  windowTitle(() =>
+    workspaceMode() === 'rooms'
+      ? (roomWorkspace()?.title() ?? tr('Rooms'))
+      : (session()?.title() ?? null),
+  );
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
   const besides = () => sides().map((pane) => pane.id());
@@ -190,6 +221,15 @@ function App(
     }
   };
   const openSession = async (id: string | null): Promise<boolean> => {
+    if (id !== null) {
+      if ((await session()?.kind(id)) === 'room') {
+        if (!(await roomWorkspace()?.open(id))) return false;
+        workspaceMode.set('rooms');
+        settingsOpened.set(false);
+        return true;
+      }
+    }
+    await roomWorkspace()?.flush();
     if (!alive || blocked() || !(await releaseAssistant(id))) return false;
     // A conversation is open in one pane at a time; selecting a side one moves it here.
     const from = id === null ? undefined : sideFor(id);
@@ -209,6 +249,7 @@ function App(
         return false;
       batch(() => {
         settingsOpened.set(false);
+        workspaceMode.set('conversations');
         selected.set(id);
       });
       return true;
@@ -234,7 +275,10 @@ function App(
   };
   const shell: ConversationShell = {
     sessionId: selected,
-    visible: () => !settingsOpened() && !(plugins.panel() && !canDockPreview()),
+    visible: () =>
+      workspaceMode() === 'conversations' &&
+      !settingsOpened() &&
+      !(plugins.panel() && !canDockPreview()),
     blocked,
     connectionLost: () => runtime.updateError() !== null,
     openSession,
@@ -267,6 +311,40 @@ function App(
     },
     ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
   };
+  const switchWorkspace = async (mode: 'conversations' | 'rooms') => {
+    if (blocked() || mode === workspaceMode()) return;
+    if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
+    else if (session() && !(await session()!.leave())) return;
+    batch(() => {
+      settingsOpened.set(false);
+      workspaceMode.set(mode);
+    });
+  };
+  const modeSwitch = () => (
+    <View
+      role="tablist"
+      accessibilityLabel={tr('Conversations')}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: C.background,
+        padding: 3,
+        borderRadius: 10,
+      }}
+    >
+      <ViewSegment
+        label={tr('Conversations')}
+        selected={workspaceMode() === 'conversations'}
+        onPress={() => void switchWorkspace('conversations')}
+      />
+      <ViewSegment
+        label={tr('Rooms')}
+        selected={workspaceMode() === 'rooms'}
+        onPress={() => void switchWorkspace('rooms')}
+      />
+    </View>
+  );
   function openBeside(id: string) {
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
     if (assistant()?.id() === id) {
@@ -342,13 +420,18 @@ function App(
     if (id !== undefined && (await closeLauncher())) await showSession(id);
   };
   cleanup(
-    props.saveWith(async () => ({
-      sessionId: selected(),
-      sideSessionIds: besides(),
-      sidebarExpanded: sidebarExpanded(),
-      settings: settingsOpened() ? { model: settingsModel(), page: settingsPage() } : null,
-      panel: plugins.panelRoute(),
-    })),
+    props.saveWith(async () => {
+      await roomWorkspace()?.flush();
+      return {
+        workspaceMode: workspaceMode(),
+        roomSessionId: roomWorkspace()?.selected() ?? saved?.roomSessionId ?? null,
+        sessionId: selected(),
+        sideSessionIds: besides(),
+        sidebarExpanded: sidebarExpanded(),
+        settings: settingsOpened() ? { model: settingsModel(), page: settingsPage() } : null,
+        panel: plugins.panelRoute(),
+      };
+    }),
   );
   return (
     <View
@@ -371,44 +454,69 @@ function App(
           closed={launcherClosed}
         />
       </If>
-      <Workbench
-        expanded={sidebarExpanded}
-        previewShown={previewShown}
-        previewSuppressed={() =>
-          plugins.panel() === null && (preview()?.modalSuppressed() ?? false)
-        }
-        previewFocused={() => plugins.panel() !== null || (preview()?.focused() ?? false)}
-        closePreview={() => {
-          const panel = plugins.panel();
-          if (panel) plugins.closePanel(panel.instance);
-          else preview()?.close();
-        }}
-        sides={sides}
-        navigation={() =>
-          runtime.renderView(configuration.navigation, conversationNavigationView, { shell })
-        }
-        preview={(docked) =>
-          plugins.panel() !== null ? (
-            <PluginPanel docked={docked} controller={plugins} />
-          ) : (
-            runtime.renderView(configuration.preview, conversationPreviewView, {
-              shell,
-              surface: 'pane' as const,
-              docked,
-              attach(handle) {
-                if (preview() !== handle) preview.set(handle);
-              },
-            })
-          )
-        }
-      >
-        {runtime.renderView(configuration.session, conversationSessionView, {
-          shell,
-          attach(handle) {
-            if (session() !== handle) session.set(handle);
+      <WorkspaceSurface visible={() => workspaceMode() === 'conversations'}>
+        <Workbench
+          expanded={sidebarExpanded}
+          previewShown={previewShown}
+          previewSuppressed={() =>
+            plugins.panel() === null && (preview()?.modalSuppressed() ?? false)
+          }
+          previewFocused={() => plugins.panel() !== null || (preview()?.focused() ?? false)}
+          closePreview={() => {
+            const panel = plugins.panel();
+            if (panel) plugins.closePanel(panel.instance);
+            else preview()?.close();
+          }}
+          sides={sides}
+          navigation={() => (
+            <View style={{ flex: 1, minHeight: 0 }}>
+              {runtime.renderView(configuration.navigation, conversationNavigationView, { shell })}
+              <View style={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 4 }}>
+                {modeSwitch()}
+              </View>
+            </View>
+          )}
+          preview={(docked) =>
+            plugins.panel() !== null ? (
+              <PluginPanel docked={docked} controller={plugins} />
+            ) : (
+              runtime.renderView(configuration.preview, conversationPreviewView, {
+                shell,
+                surface: 'pane' as const,
+                docked,
+                attach(handle) {
+                  if (preview() !== handle) preview.set(handle);
+                },
+              })
+            )
+          }
+        >
+          {runtime.renderView(configuration.session, conversationSessionView, {
+            shell,
+            attach(handle) {
+              if (session() !== handle) session.set(handle);
+            },
+          })}
+        </Workbench>
+      </WorkspaceSurface>
+      <WorkspaceSurface visible={() => workspaceMode() === 'rooms'}>
+        {runtime.renderView(configuration.rooms, roomWorkspaceView, {
+          initialSessionId: saved?.roomSessionId ?? null,
+          agentSessionId: selected,
+          visible: () => workspaceMode() === 'rooms' && !settingsOpened(),
+          blocked,
+          sidebarExpanded,
+          setSidebarExpanded: (expanded) => sidebarExpanded.set(expanded),
+          openSession: (id) => {
+            void openSession(id);
+          },
+          openSettings: () => shell.openSettings(),
+          modeSwitch,
+          attach: (handle) => {
+            if (roomWorkspace() !== handle) roomWorkspace.set(handle);
           },
         })}
-      </Workbench>
+      </WorkspaceSurface>
       <If when={runtime.updateError() !== null}>
         <View
           style={{
@@ -479,6 +587,28 @@ function App(
         },
         { loading: false },
       )}
+    </View>
+  );
+}
+
+function WorkspaceSurface(props: { visible(): boolean; children: JSX.Element }) {
+  const opacity = createAnimatedValue(props.visible() ? 1 : 0);
+  effect(() => {
+    void opacity.timing(props.visible() ? 1 : 0, { duration: reduceMotion() ? 0 : 160 });
+  });
+  return (
+    <View
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: props.visible() ? 'flex' : 'none',
+        opacity,
+        transform: [
+          { translateY: opacity.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) },
+        ],
+      }}
+    >
+      {props.children}
     </View>
   );
 }

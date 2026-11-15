@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { InstanceId, ModelSelection } from './generated/runtime.js';
+import type { AgentSessionKind, InstanceId, ModelSelection } from './generated/runtime.js';
 import { defineUiViewContract } from './workbench.js';
 import type { ComposerViewInput } from './composer-view.js';
 
@@ -47,6 +47,8 @@ export interface ConversationShell {
 }
 
 export interface ConversationSessionHandle {
+  title(): string | null;
+  kind(sessionId: string): Promise<AgentSessionKind>;
   leave(): Promise<boolean>;
   /** Finds or creates the Maka Bot conversation and returns its id. */
   openBot(): Promise<string>;
@@ -171,6 +173,30 @@ export const conversationSessionView = defineUiViewContract<ConversationSessionI
 );
 export const conversationPreviewView = defineUiViewContract<ConversationPreviewInput>(
   'maka.conversations.preview',
+);
+
+export interface RoomWorkspaceHandle {
+  selected(): string | null;
+  title(): string;
+  open(sessionId: string): Promise<boolean>;
+  flush(): Promise<void>;
+}
+
+export interface RoomWorkspaceInput<Element = unknown> {
+  initialSessionId: string | null;
+  agentSessionId(): string | null;
+  visible(): boolean;
+  blocked(): boolean;
+  sidebarExpanded(): boolean;
+  setSidebarExpanded(expanded: boolean): void;
+  openSession(sessionId: string): void;
+  openSettings(): void;
+  modeSwitch(): Element;
+  attach(handle: RoomWorkspaceHandle): void;
+}
+
+export const roomWorkspaceView = defineUiViewContract<RoomWorkspaceInput>(
+  'maka.conversations.rooms',
 );
 
 export const quickToolView = defineUiViewContract<QuickToolInput>('maka.quick-launcher.tool');

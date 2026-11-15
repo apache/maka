@@ -1459,6 +1459,14 @@ impl DraftSend {
         );
         input.insert("message".into(), Value::String(snapshot.draft.text));
         input.insert(
+            "mentions".into(),
+            serde_json::to_value(snapshot.draft.mentions).map_err(error)?,
+        );
+        input.insert(
+            "replyTo".into(),
+            serde_json::to_value(snapshot.draft.reply_to).map_err(error)?,
+        );
+        input.insert(
             "attachments".into(),
             serde_json::to_value(
                 snapshot

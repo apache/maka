@@ -565,7 +565,10 @@ async fn failed_run_history(client: &Client, session: &str, execution: &Value) -
         chunks,
         before,
         after,
-    } = page;
+    } = page
+    else {
+        return Err("producer history unexpectedly selected a Room".into());
+    };
     let mut remaining = 2048;
     let mut failures = Vec::new();
     for row in chunks

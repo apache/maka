@@ -174,6 +174,26 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      messageId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      attachmentIndex: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'attachmentIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'uploaded',
                       },
                       id: {
@@ -363,6 +383,26 @@ export const contracts: {
             $defs: {
               AgentAttachmentImageSource: {
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room',
+                      },
+                      messageId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      attachmentIndex: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'attachmentIndex'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -645,6 +685,17 @@ export const contracts: {
             title: 'AgentList',
             type: 'object',
             properties: {
+              kind: {
+                description: 'Omission includes both Agent conversations and Rooms.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
@@ -678,6 +729,10 @@ export const contracts: {
             additionalProperties: false,
             required: ['filter', 'position'],
             $defs: {
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
+              },
               AgentSessionFilter: {
                 type: 'string',
                 enum: ['all', 'archived', 'needs_you'],
@@ -846,6 +901,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -946,6 +1004,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -964,6 +1023,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -1906,6 +1969,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -2006,6 +2072,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -2024,6 +2091,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -6188,6 +6259,12 @@ export const contracts: {
             title: 'AgentCreate',
             type: 'object',
             properties: {
+              kind: {
+                description:
+                  'Rooms receive messages without running a model. Their mentions address Agent sessions.',
+                $ref: '#/$defs/AgentSessionKind',
+                default: 'agent',
+              },
               presetId: {
                 description: 'Apply a preset at creation; mutually exclusive with backend.',
                 type: ['string', 'null'],
@@ -6239,6 +6316,10 @@ export const contracts: {
             additionalProperties: false,
             required: ['title', 'labels', 'workspace'],
             $defs: {
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -6445,6 +6526,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -6545,6 +6629,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -6563,6 +6648,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -10288,6 +10377,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -10388,6 +10480,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -10406,6 +10499,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -11075,6 +11172,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -11175,6 +11275,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -11193,6 +11294,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -12287,6 +12392,51 @@ export const contracts: {
                     additionalProperties: false,
                   },
                   {
+                    description: 'A Room message and its following messages.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages preceding this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages following this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
                     description:
                       'Reveal this exact row field from its beginning, including empty tool rows.',
                     type: 'object',
@@ -12517,6 +12667,20 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'room',
+                  },
+                  page: {
+                    $ref: '#/$defs/AgentRoomHistoryPage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'page'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'ready',
                   },
                   through: {
@@ -12556,6 +12720,199 @@ export const contracts: {
               },
             ],
             $defs: {
+              AgentRoomHistoryPage: {
+                type: 'object',
+                properties: {
+                  items: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomMessage',
+                    },
+                  },
+                  through: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  before: {
+                    type: ['string', 'null'],
+                  },
+                  after: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['items', 'through'],
+              },
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/RoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
@@ -12719,10 +13076,6 @@ export const contracts: {
                   'tool',
                 ],
               },
-              RunId: {
-                type: 'string',
-                format: 'uuid',
-              },
               ModelPartIdentity: {
                 type: 'object',
                 properties: {
@@ -12825,6 +13178,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -12871,22 +13247,6 @@ export const contracts: {
                   },
                 ],
               },
-              ExecutionIdentity: {
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    $ref: '#/$defs/RunId',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId'],
-              },
               HistoryCompaction: {
                 description:
                   'Duration of a successfully adopted context checkpoint, in recorded milliseconds.',
@@ -12901,31 +13261,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['durationMs'],
-              },
-              AgentHistoryAttachment: {
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  mimeType: {
-                    type: 'string',
-                  },
-                  bytes: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  kind: {
-                    $ref: '#/$defs/AttachmentKind',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'mimeType', 'bytes', 'kind'],
-              },
-              AttachmentKind: {
-                type: 'string',
-                enum: ['image', 'pdf', 'doc', 'code', 'other'],
               },
               HistoryTurnTiming: {
                 description:
@@ -14433,6 +14768,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -14494,6 +14852,35 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'turnId', 'runId'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
             },
           },
@@ -15471,6 +15858,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -15571,6 +15961,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -15589,6 +15980,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -16675,6 +17070,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -16775,6 +17173,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -16793,6 +17192,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -18687,6 +19090,17 @@ export const contracts: {
             title: 'AgentList',
             type: 'object',
             properties: {
+              kind: {
+                description: 'Omission includes both Agent conversations and Rooms.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
@@ -18720,6 +19134,10 @@ export const contracts: {
             additionalProperties: false,
             required: ['filter', 'position'],
             $defs: {
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
+              },
               AgentSessionFilter: {
                 type: 'string',
                 enum: ['all', 'archived', 'needs_you'],
@@ -18888,6 +19306,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -18988,6 +19409,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -19006,6 +19428,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -20427,6 +20853,51 @@ export const contracts: {
                     additionalProperties: false,
                   },
                   {
+                    description: 'A Room message and its following messages.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages preceding this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages following this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
                     description:
                       'Reveal this exact row field from its beginning, including empty tool rows.',
                     type: 'object',
@@ -20657,6 +21128,20 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'room',
+                  },
+                  page: {
+                    $ref: '#/$defs/AgentRoomHistoryPage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'page'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'ready',
                   },
                   through: {
@@ -20696,6 +21181,199 @@ export const contracts: {
               },
             ],
             $defs: {
+              AgentRoomHistoryPage: {
+                type: 'object',
+                properties: {
+                  items: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomMessage',
+                    },
+                  },
+                  through: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  before: {
+                    type: ['string', 'null'],
+                  },
+                  after: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['items', 'through'],
+              },
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/RoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
@@ -20859,10 +21537,6 @@ export const contracts: {
                   'tool',
                 ],
               },
-              RunId: {
-                type: 'string',
-                format: 'uuid',
-              },
               ModelPartIdentity: {
                 type: 'object',
                 properties: {
@@ -20965,6 +21639,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -21011,22 +21708,6 @@ export const contracts: {
                   },
                 ],
               },
-              ExecutionIdentity: {
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    $ref: '#/$defs/RunId',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId'],
-              },
               HistoryCompaction: {
                 description:
                   'Duration of a successfully adopted context checkpoint, in recorded milliseconds.',
@@ -21041,31 +21722,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['durationMs'],
-              },
-              AgentHistoryAttachment: {
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  mimeType: {
-                    type: 'string',
-                  },
-                  bytes: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  kind: {
-                    $ref: '#/$defs/AttachmentKind',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'mimeType', 'bytes', 'kind'],
-              },
-              AttachmentKind: {
-                type: 'string',
-                enum: ['image', 'pdf', 'doc', 'code', 'other'],
               },
               HistoryTurnTiming: {
                 description:
@@ -22097,6 +22753,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -22162,6 +22841,35 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               HistoryRowAddress: {
                 description:
@@ -23241,6 +23949,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -23341,6 +24052,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -23359,6 +24071,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -24187,6 +24903,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -24287,6 +25006,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -24305,6 +25025,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -25450,6 +26174,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -25550,6 +26277,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -25568,6 +26296,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -27760,6 +28492,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -27825,6 +28580,35 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               AgentQueueKind: {
                 type: 'string',
@@ -28547,6 +29331,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -28647,6 +29434,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -28665,6 +29453,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -33461,6 +34253,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -33561,6 +34356,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -33579,6 +34375,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -34216,6 +35016,18 @@ export const contracts: {
             title: 'AgentSend',
             type: 'object',
             properties: {
+              mentions: {
+                description: 'Agent Session IDs explicitly addressed by this Room message.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                default: [],
+              },
+              replyTo: {
+                description: 'Original message ID in the destination Room.',
+                type: ['string', 'null'],
+              },
               onComplete: {
                 description:
                   'Best-effort notification to the caller when this message finishes,\nfails or is cancelled, and once per pending interaction or authority blocker\nthat needs attention. An attention notification keeps the completion watch.\nWhen registration is confirmed, the caller can yield rather than poll.\nThe watch and task admission commit together;\ncheck the completion field of the send receipt.',
@@ -34405,6 +35217,29 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'posted',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId', 'messageId', 'deliveries'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'rejected',
                   },
                   sessionId: {
@@ -34507,6 +35342,44 @@ export const contracts: {
               },
             ],
             $defs: {
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
               AgentSendRejection: {
                 type: 'string',
                 enum: [
@@ -35623,6 +36496,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -35723,6 +36599,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -35741,6 +36618,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -37138,6 +38019,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -37203,6 +38107,35 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               HistoryRowAddress: {
                 description:
@@ -38696,6 +39629,22 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'room',
+                  },
+                  through: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'through'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'events',
                   },
                   through: {
@@ -39422,6 +40371,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -39483,6 +40455,35 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'turnId', 'runId'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               AgentQueueKind: {
                 type: 'string',

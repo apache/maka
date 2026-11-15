@@ -31,6 +31,7 @@ pub mod interactions;
 pub mod operation;
 pub mod queue;
 pub mod recall;
+pub mod room;
 pub mod session_catalog;
 pub mod session_history;
 mod sql;
@@ -219,5 +220,10 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         version: 39,
         description: "index external assistant messages in the session catalog",
         sql: include_str!("../migrations/0039_external_catalog_messages.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 40,
+        description: "session rooms and messages",
+        sql: include_str!("../migrations/0040_rooms.sql"),
     },
 ];

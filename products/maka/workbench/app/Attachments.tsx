@@ -311,6 +311,7 @@ export function HistoryAttachments(props: {
   sessionId: string;
   through: number;
   position?: HistoryRowAddress;
+  roomMessageId?: string;
   attachments: AgentHistoryAttachment[];
   preview(image: ImagePreview): void;
   userScroll(): void;
@@ -334,12 +335,19 @@ export function HistoryAttachments(props: {
               const read = {
                 sessionId: props.sessionId,
                 offset: 0,
-                source: {
-                  kind: 'history' as const,
-                  through: props.through,
-                  position: { ...props.position! },
-                  attachmentIndex: original.index,
-                },
+                source:
+                  props.roomMessageId !== undefined
+                    ? {
+                        kind: 'room' as const,
+                        messageId: props.roomMessageId,
+                        attachmentIndex: original.index,
+                      }
+                    : {
+                        kind: 'history' as const,
+                        through: props.through,
+                        position: { ...props.position! },
+                        attachmentIndex: original.index,
+                      },
               };
               return (
                 <ImageThumbnail
@@ -354,7 +362,10 @@ export function HistoryAttachments(props: {
             };
             return (
               <If
-                when={image(original.mimeType) && props.position !== undefined}
+                when={
+                  image(original.mimeType) &&
+                  (props.position !== undefined || props.roomMessageId !== undefined)
+                }
                 else={
                   <View
                     tooltip={textTooltip(

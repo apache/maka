@@ -54,6 +54,7 @@ pub(crate) use query::records_in_snapshot;
 pub struct Filter {
     pub base: CatalogFilter,
     pub needs_you_only: bool,
+    pub room: Option<bool>,
 }
 #[derive(Clone, Debug)]
 pub enum Position {
@@ -100,6 +101,7 @@ pub struct Status {
 #[derive(Clone, Debug)]
 pub struct Record {
     pub metadata: SessionRecord,
+    pub is_room: bool,
     pub control_revision: u64,
     pub status: Status,
     pub read_state: ReadState,
@@ -216,6 +218,7 @@ impl SessionCatalog {
                         include_archived: true,
                     },
                     needs_you_only: false,
+                    room: None,
                 },
                 1,
             )

@@ -47,12 +47,17 @@ impl Owner {
                 .map_err(|error| error.to_string())??;
         sandbox.intersect(floor).map_err(|error| error.to_string())
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Admission captures source content with target-specific identity and original call authority"
+    )]
     pub(super) async fn freeze_request(
         &self,
         session_id: &str,
         source: RootSourceMessage,
         basis: &CapturedRun,
         required_tools: BTreeSet<String>,
+        key: &str,
         operation: &RecoveryRef,
         parent: &Scope,
     ) -> Result<(PreparedRequest, Vec<ContentBlob>), String> {
@@ -61,7 +66,7 @@ impl Owner {
             source,
             basis,
             required_tools,
-            &self.operation_id(operation),
+            key,
             Some(operation.fingerprint.clone()),
             parent,
         )

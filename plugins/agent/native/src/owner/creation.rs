@@ -28,6 +28,7 @@ use maka_sandbox::workspace::BindingRef;
 
 pub(super) enum Purpose {
     Session,
+    Room,
     Bot {
         guard: Arc<tokio::sync::OwnedMutexGuard<()>>,
         mutations: Vec<Mutation>,
@@ -75,8 +76,10 @@ impl Owner {
     where
         F: FnOnce(BindingRef) -> StoredSessionConfiguration + std::marker::Send + 'static,
     {
+        let is_room = matches!(purpose, Purpose::Room);
         let (guard, mutations) = match purpose {
             Purpose::Session => (None, self.prepare_bot_watch(scope, id).await?),
+            Purpose::Room => (None, Vec::new()),
             Purpose::Bot { guard, mutations } => (Some(guard), mutations),
         };
         let writer = match scope.identity.agent() {
@@ -108,6 +111,12 @@ impl Owner {
             .canonical_catalog()?
             .planned_empty(id)
             .map_err(|error| error.to_string())?;
+        let room = is_room
+            .then(|| {
+                self.rooms()
+                    .map(|rooms| rooms.create_statement(id.to_owned()))
+            })
+            .transpose()?;
         let source = self.data_source.clone();
         let change = writer
             .prepare_result(|accepted| {
@@ -118,6 +127,7 @@ impl Owner {
                 };
                 Ok(Creation {
                     creation,
+                    room,
                     preset,
                     extra,
                     planned,
@@ -134,6 +144,7 @@ impl Owner {
 
 struct Creation<S, B> {
     creation: S,
+    room: Option<maka_agent_state::room::CreateRoom>,
     preset: Option<presets::CreationFence>,
     extra: Option<(Option<usize>, B)>,
     planned: maka_agent_state::session_catalog::PlannedCatalog,
@@ -236,6 +247,12 @@ where
                 let creation = self.creation.execute(connection)?;
                 let mut changed = creation.changed;
                 let mut notification = creation.notification;
+                let is_room = self.room.is_some();
+                if let Some(room) = self.room {
+                    let room = room.execute(connection)?;
+                    changed |= room.changed;
+                    notification = notification.combine(room.notification);
+                }
                 let mut registration = None;
                 let mut extra_value = None;
                 if let Some((index, extra)) = self.extra {
@@ -248,7 +265,8 @@ where
                     }
                     extra_value = Some(extra.value);
                 }
-                let record = self.planned.record(creation.value.clone())?;
+                let mut record = self.planned.record(creation.value.clone())?;
+                record.is_room = is_room;
                 let reply = if is_bot {
                     serde_json::to_value(BotOpened::Opened {
                         session_id: record.metadata.id,

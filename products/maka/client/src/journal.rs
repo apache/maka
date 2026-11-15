@@ -122,6 +122,9 @@ pub struct Draft {
     pub revision: u64,
     pub text: String,
     pub attachments: Vec<DraftAttachment>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    pub reply_to: Option<String>,
 }
 
 /// A send owns this frozen content after the editor moves to its next draft.
@@ -153,6 +156,9 @@ pub struct DraftEdit {
     pub attachments: Vec<DraftAttachment>,
     #[serde(default)]
     pub settled_uploads: Vec<Uuid>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    pub reply_to: Option<String>,
 }
 impl From<String> for DraftEdit {
     fn from(text: String) -> Self {
@@ -186,6 +192,8 @@ pub struct DraftReference {
 }
 
 mod recovery;
+#[cfg(test)]
+mod room_tests;
 mod workspaces;
 mod write;
 pub use workspaces::RecentWorkspace;
@@ -403,7 +411,7 @@ impl Journal {
                 sqlx::query(index).execute(&mut *transaction).await
                     .map_err(|error| format!("client journal creating recovery index: {error}"))?;
             }
-            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
+            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', reply_to TEXT)")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 .execute(&mut *transaction).await.map_err(error)?;
@@ -430,7 +438,7 @@ impl Journal {
         })
     }
     pub(crate) async fn load_draft(&self, key: &DraftKey) -> Result<Option<Draft>> {
-        let row = sqlx::query("SELECT revision,CASE WHEN consumed=1 THEN '' ELSE text END AS text,CASE WHEN consumed=1 THEN '[]' ELSE attachments END AS attachments FROM drafts WHERE owner=?")
+        let row = sqlx::query("SELECT revision,CASE WHEN consumed=1 THEN '' ELSE text END AS text,CASE WHEN consumed=1 THEN '[]' ELSE attachments END AS attachments,CASE WHEN consumed=1 THEN '[]' ELSE mentions END AS mentions,CASE WHEN consumed=1 THEN NULL ELSE reply_to END AS reply_to FROM drafts WHERE owner=?")
             .bind(serde_json::to_string(key).map_err(error)?)
             .fetch_optional(&self.pool)
             .await
@@ -441,6 +449,9 @@ impl Journal {
                 text: row.try_get("text").map_err(error)?,
                 attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)
                     .map_err(error)?,
+                mentions: serde_json::from_str(row.try_get("mentions").map_err(error)?)
+                    .map_err(error)?,
+                reply_to: row.try_get("reply_to").map_err(error)?,
             })
         })
         .transpose()
@@ -661,6 +672,7 @@ fn accepted_send(receipt: &Receipt, session: &str) -> bool {
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty())
         && match value.get("kind").and_then(Value::as_str) {
+            Some("posted") => true,
             Some("started") => value
                 .get("runId")
                 .and_then(Value::as_str)

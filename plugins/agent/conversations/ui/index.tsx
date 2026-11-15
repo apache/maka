@@ -28,6 +28,8 @@ import {
   conversationNavigationView,
   conversationSessionView,
   conversationPreviewView,
+  roomWorkspaceView,
+  type RoomWorkspaceInput,
   type ConversationNavigationInput,
   type ConversationSessionInput,
   type ConversationPreviewInput,
@@ -35,6 +37,7 @@ import {
 import { createConversationUi, type ConversationWindow } from './SessionSurface';
 import { invokeFocusedConversation } from '../../../../products/maka/workbench/app/conversationCommands';
 import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/workspace-view.js';
+import { RoomView } from './RoomView';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
@@ -93,6 +96,13 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   return {
     exports: {
       ...commands,
+      rooms: {
+        kind: 'view',
+        contract: roomWorkspaceView.id,
+        render({ input }: UiEmbeddedViewProps<RoomWorkspaceInput<JSX.Element>, JSX.Element>) {
+          return <RoomView host={host} input={input} />;
+        },
+      },
       navigation: {
         kind: 'view',
         contract: conversationNavigationView.id,

@@ -177,8 +177,33 @@ pub(crate) async fn attachment_image(
     scope: &Scope,
     input: ui::AttachmentImageRead,
 ) -> Result<ui::AttachmentImagePage, String> {
-    let history = open(owner, scope, &input.session_id).await?;
+    authorize(owner, scope, &input.session_id).await?;
     let image = match &input.source {
+        ui::AttachmentImageSource::Room {
+            message_id,
+            attachment_index,
+        } => {
+            let message = scoped_state(owner, scope)?
+                .rooms(owner.run_owner())
+                .get(&input.session_id, message_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("agent_image_source_invalid")?;
+            let attachment = message
+                .content
+                .attachments
+                .as_ref()
+                .and_then(|attachments| attachments.get(*attachment_index as usize))
+                .ok_or("agent_image_source_invalid")?;
+            uploaded(
+                owner,
+                scope,
+                &input.session_id,
+                id(&attachment.storage_ref, &input.session_id)?,
+                input.offset,
+            )
+            .await?
+        }
         ui::AttachmentImageSource::Uploaded { id } => {
             uploaded(owner, scope, &input.session_id, id.clone(), input.offset).await?
         }
@@ -187,6 +212,7 @@ pub(crate) async fn attachment_image(
             position,
             attachment_index,
         } => {
+            let history = open(owner, scope, &input.session_id).await?;
             let cut = cut(&history, Some(*through)).await?;
             let tree =
                 maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
