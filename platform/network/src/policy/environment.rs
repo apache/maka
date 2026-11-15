@@ -297,4 +297,49 @@ mod tests {
         .await
         .unwrap();
     }
+
+    #[tokio::test]
+    async fn socks4_http_skips_ipv6_results_listed_first() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("socks4://{}", listener.local_addr().unwrap());
+            let policy = super::super::Policy(Some(std::sync::Arc::new(
+                super::super::Route::Environment(capture(&[("ALL_PROXY", &url)])),
+            )));
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut head = [0; 8];
+                stream.read_exact(&mut head).await.unwrap();
+                assert_eq!(&head[..4], &[4, 1, 0x20, 0xfb]);
+                assert_eq!(&head[4..], &[127, 0, 0, 1], "SOCKS4 needs the IPv4 result");
+                while stream.read_u8().await.unwrap() != 0 {}
+                stream.write_all(&[0, 90, 0, 0, 0, 0, 0, 0]).await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                stream
+                    .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+            });
+            let client = policy
+                .client_builder()
+                .resolve_to_addrs(
+                    "dual.test",
+                    &[
+                        "[::1]:8443".parse().unwrap(),
+                        "127.0.0.1:8443".parse().unwrap(),
+                    ],
+                )
+                .build()
+                .unwrap();
+            let response = client.get("http://dual.test:8443/").send().await.unwrap();
+            assert_eq!(response.status(), 204);
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }

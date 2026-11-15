@@ -21,6 +21,7 @@
 //! settings and by WinHTTP's PAC/WPAD results.
 
 use reqwest::Url;
+use std::net::IpAddr;
 
 /// `host:port` applies to every scheme; `http=a;https=b;socks=c` selects by
 /// destination scheme, with `socks=` (SOCKS4 in WinINet) as the fallback. The
@@ -75,21 +76,15 @@ pub(super) fn bypassed(list: &str, target: &Url) -> bool {
                 Some((scheme, rest)) => (Some(scheme), rest),
                 None => (None, pattern.as_str()),
             };
-            let (pattern_host, pattern_port) = match rest.strip_prefix('[') {
-                Some(bracketed) => match bracketed.split_once(']') {
-                    Some((host, after)) => (host, after.strip_prefix(':')),
-                    None => (rest, None),
-                },
-                // A bare IPv6 literal has several colons and no port.
-                None => match rest.rsplit_once(':') {
-                    Some((host, port)) if !host.contains(':') => (host, Some(port)),
-                    _ => (rest, None),
-                },
+            let (pattern_host, pattern_port) = super::split_port(rest);
+            let same_host = match (pattern_host.parse::<IpAddr>(), host.parse::<IpAddr>()) {
+                (Ok(pattern), Ok(host)) => pattern == host,
+                _ => wildcard(pattern_host.as_bytes(), host.as_bytes()),
             };
             scheme.is_none_or(|scheme| scheme == target.scheme())
                 && pattern_port
                     .is_none_or(|wanted| wanted == "*" || wanted.parse::<u16>().ok() == port)
-                && wildcard(pattern_host.as_bytes(), host.as_bytes())
+                && same_host
         })
 }
 
@@ -201,6 +196,7 @@ mod tests {
             "https://api.corp.example/"
         ));
         assert!(bypassed("[fd00::1]", "https://[fd00::1]/"));
+        assert!(bypassed("[fd00:0:0:0:0:0:0:1]", "https://[fd00::1]/"));
         assert!(bypassed("fd00::1", "https://[fd00::1]/"));
         assert!(bypassed("[fd00::1]:443", "https://[fd00::1]/"));
         assert!(!bypassed("[fd00::1]:8443", "https://[fd00::1]/"));

@@ -101,6 +101,21 @@ fn is_loopback(host: &str) -> bool {
         || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// Splits a `host[:port]` exception entry; IPv6 hosts are bracketed or bare.
+#[cfg(any(target_os = "linux", windows, test))]
+fn split_port(entry: &str) -> (&str, Option<&str>) {
+    match entry.strip_prefix('[') {
+        Some(bracketed) => match bracketed.split_once(']') {
+            Some((host, after)) => (host, after.strip_prefix(':')),
+            None => (entry, None),
+        },
+        None => match entry.rsplit_once(':') {
+            Some((host, port)) if !host.contains(':') => (host, Some(port)),
+            _ => (entry, None),
+        },
+    }
+}
+
 /// Proxy endpoint reported by the platform. `scheme` names the protocol spoken
 /// to the proxy itself, not the destination's scheme.
 fn endpoint(scheme: &str, address: &str) -> Option<Url> {

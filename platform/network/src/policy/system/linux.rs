@@ -32,8 +32,7 @@ pub(super) struct Config {
     http: Option<Url>,
     https: Option<Url>,
     socks: Option<Url>,
-    /// `NO_PROXY` syntax.
-    exceptions: String,
+    exceptions: Vec<Exception>,
     /// KDE's "use proxy only for the listed hosts".
     reversed: bool,
 }
@@ -63,13 +62,30 @@ pub(super) fn capture() -> Result<Option<Config>, Error> {
     }
 }
 
+/// A desktop exception: `<local>` (names without a dot), or a host in
+/// `NO_PROXY` syntax (domains include their subdomains, CIDRs allowed) with
+/// an optional port restriction.
+#[derive(PartialEq, Eq, Hash)]
+enum Exception {
+    Local,
+    Host { host: String, port: Option<u16> },
+}
+
 pub(super) fn resolve(config: &Config, target: &Url) -> Option<Url> {
-    let excepted = Matcher::builder()
-        .all("http://excepted.invalid")
-        .no(config.exceptions.as_str())
-        .build()
-        .intercept(&target.as_str().parse().ok()?)
-        .is_none();
+    let uri = target.as_str().parse().ok()?;
+    let host = target.host_str()?.trim_matches(['[', ']']);
+    let excepted = config.exceptions.iter().any(|exception| match exception {
+        Exception::Local => !host.contains(['.', ':']),
+        Exception::Host { host, port } => {
+            port.is_none_or(|port| Some(port) == target.port_or_known_default())
+                && Matcher::builder()
+                    .all("http://excepted.invalid")
+                    .no(host.as_str())
+                    .build()
+                    .intercept(&uri)
+                    .is_none()
+        }
+    });
     if excepted != config.reversed {
         return None;
     }
@@ -166,6 +182,13 @@ fn kde(text: &str, environment: impl Fn(&str) -> Option<String>) -> Option<Confi
     let proxy = |key: &str, scheme: &str| {
         let value = get(key)?;
         let value = value.as_str();
+        // Only an explicit socks4:// keeps SOCKS4; plain socks:// means SOCKS5.
+        let scheme = match value.get(..9) {
+            Some(prefix) if scheme == "socks5h" && prefix.eq_ignore_ascii_case("socks4://") => {
+                "socks4"
+            }
+            _ => scheme,
+        };
         let address = value.split_once("://").map_or(value, |(_, rest)| rest);
         let address = match address.rsplit_once(' ') {
             Some((host, port)) => format!("{}:{}", host.trim(), port.trim()),
@@ -200,20 +223,32 @@ fn strings(value: &str) -> Vec<String> {
     found
 }
 
-/// Desktop exception lists accept `*.example.com`; NO_PROXY spells it `.example.com`.
-fn exceptions(entries: Vec<String>) -> String {
+/// Desktop exception lists accept `*.example.com`, which NO_PROXY spells
+/// `.example.com`, and `host:port`. An unparsable port matches nothing.
+fn exceptions(entries: Vec<String>) -> Vec<Exception> {
     entries
         .iter()
         .map(|entry| entry.trim())
         .filter(|entry| !entry.is_empty())
-        .map(|entry| {
-            entry
+        .filter_map(|entry| {
+            if entry.eq_ignore_ascii_case("<local>") {
+                return Some(Exception::Local);
+            }
+            let (host, port) = super::split_port(entry);
+            let port = match port {
+                Some(port) => Some(port.parse::<u16>().ok()?),
+                None => None,
+            };
+            let host = host
                 .strip_prefix('*')
                 .filter(|rest| !rest.is_empty())
-                .unwrap_or(entry)
+                .unwrap_or(host);
+            Some(Exception::Host {
+                host: host.to_owned(),
+                port,
+            })
         })
-        .collect::<Vec<_>>()
-        .join(",")
+        .collect()
 }
 
 #[cfg(test)]
@@ -341,6 +376,36 @@ org.gnome.system.proxy.socks port 0
         assert_eq!(
             resolved(&reversed, "https://a.corp.example:443/").as_deref(),
             Some("socks5h://127.0.0.1:7892")
+        );
+    }
+
+    #[test]
+    fn desktop_exceptions_keep_ports_and_local_names() {
+        let config = kde_text(
+            "[Proxy Settings]\nProxyType=1\nhttpsProxy=http://127.0.0.1 7891\n\
+             NoProxyFor=<local>,model.internal:8443,[fd00::1]:443\n",
+        )
+        .unwrap();
+        for url in [
+            "https://intranet/",
+            "https://model.internal:8443/",
+            "https://[fd00:0:0:0:0:0:0:1]/",
+        ] {
+            assert_eq!(resolved(&config, url), None, "{url}");
+        }
+        for url in ["https://model.internal:8444/", "https://[fd00::1]:8443/"] {
+            assert!(resolved(&config, url).is_some(), "{url}");
+        }
+    }
+
+    #[test]
+    fn kde_explicit_socks4_is_kept() {
+        let config =
+            kde_text("[Proxy Settings]\nProxyType=1\nsocksProxy=SOCKS4://127.0.0.1 1080\n")
+                .unwrap();
+        assert_eq!(
+            resolved(&config, "https://example.com/").as_deref(),
+            Some("socks4://127.0.0.1:1080")
         );
     }
 

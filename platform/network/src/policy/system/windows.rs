@@ -19,16 +19,20 @@
 
 use super::wininet::{bypassed, select};
 use reqwest::Url;
-use std::{ffi::c_void, ptr, sync::OnceLock};
+use std::{
+    ffi::c_void,
+    ptr,
+    sync::{Arc, Mutex},
+};
 use windows_sys::{
     Win32::{
         Foundation::{GetLastError, GlobalFree},
         Networking::WinHttp::{
-            ERROR_WINHTTP_LOGIN_FAILURE, WINHTTP_ACCESS_TYPE_NAMED_PROXY,
-            WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_AUTO_DETECT_TYPE_DHCP,
-            WINHTTP_AUTO_DETECT_TYPE_DNS_A, WINHTTP_AUTOPROXY_AUTO_DETECT,
-            WINHTTP_AUTOPROXY_CONFIG_URL, WINHTTP_AUTOPROXY_OPTIONS,
-            WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WINHTTP_PROXY_INFO,
+            ERROR_WINHTTP_AUTO_PROXY_SERVICE_ERROR, ERROR_WINHTTP_LOGIN_FAILURE,
+            ERROR_WINHTTP_TIMEOUT, WINHTTP_ACCESS_TYPE_NAMED_PROXY, WINHTTP_ACCESS_TYPE_NO_PROXY,
+            WINHTTP_AUTO_DETECT_TYPE_DHCP, WINHTTP_AUTO_DETECT_TYPE_DNS_A,
+            WINHTTP_AUTOPROXY_AUTO_DETECT, WINHTTP_AUTOPROXY_CONFIG_URL, WINHTTP_AUTOPROXY_OPTIONS,
+            WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WINHTTP_PROXY_INFO, WinHttpCloseHandle,
             WinHttpGetIEProxyConfigForCurrentUser, WinHttpGetProxyForUrl, WinHttpOpen,
             WinHttpSetTimeouts,
         },
@@ -81,29 +85,41 @@ struct Session(*mut c_void);
 // SAFETY: WinHTTP session handles may be used from any thread.
 unsafe impl Send for Session {}
 unsafe impl Sync for Session {}
+impl Drop for Session {
+    fn drop(&mut self) {
+        unsafe { WinHttpCloseHandle(self.0) };
+    }
+}
+
+/// One process-wide session keeps WinHTTP's PAC download and result cache.
+/// After an RPC timeout or autoproxy-service failure the session stays broken,
+/// so it is replaced; resolutions still holding it finish before it closes.
+static SESSION: Mutex<Option<Arc<Session>>> = Mutex::new(None);
+
+fn session() -> Option<Arc<Session>> {
+    let mut current = SESSION.lock().ok()?;
+    if current.is_none() {
+        let handle = unsafe {
+            WinHttpOpen(
+                ptr::null(),
+                WINHTTP_ACCESS_TYPE_NO_PROXY,
+                ptr::null(),
+                ptr::null(),
+                0,
+            )
+        };
+        if handle.is_null() {
+            return None;
+        }
+        unsafe { WinHttpSetTimeouts(handle, 10_000, 10_000, 10_000, 10_000) };
+        *current = Some(Arc::new(Session(handle)));
+    }
+    current.clone()
+}
 
 /// `None` when auto-configuration failed; `Some(None)` for a direct result.
 fn automatic(config: &Config, target: &Url) -> Option<Option<String>> {
-    // One process-wide session keeps WinHTTP's PAC download and result cache.
-    static SESSION: OnceLock<Option<Session>> = OnceLock::new();
-    let session = SESSION
-        .get_or_init(|| {
-            let handle = unsafe {
-                WinHttpOpen(
-                    ptr::null(),
-                    WINHTTP_ACCESS_TYPE_NO_PROXY,
-                    ptr::null(),
-                    ptr::null(),
-                    0,
-                )
-            };
-            if handle.is_null() {
-                return None;
-            }
-            unsafe { WinHttpSetTimeouts(handle, 10_000, 10_000, 10_000, 10_000) };
-            Some(Session(handle))
-        })
-        .as_ref()?;
+    let session = session()?;
     let script = config.auto_config_url.as_deref().map(wide);
     let mut options = WINHTTP_AUTOPROXY_OPTIONS {
         dwFlags: if config.auto_detect {
@@ -127,19 +143,33 @@ fn automatic(config: &Config, target: &Url) -> Option<Option<String>> {
     };
     let target = wide(target.as_str());
     let mut info = WINHTTP_PROXY_INFO::default();
-    let mut resolved =
-        unsafe { WinHttpGetProxyForUrl(session.0, target.as_ptr(), &mut options, &mut info) } != 0;
+    let resolve = |options: &mut WINHTTP_AUTOPROXY_OPTIONS, info: &mut WINHTTP_PROXY_INFO| {
+        if unsafe { WinHttpGetProxyForUrl(session.0, target.as_ptr(), options, info) } != 0 {
+            Ok(())
+        } else {
+            Err(unsafe { GetLastError() })
+        }
+    };
+    let mut result = resolve(&mut options, &mut info);
     // Domain credentials go only to a PAC URL the user configured, never to a
     // server the network advertised through WPAD (Microsoft's retry pattern).
-    if !resolved && script.is_some() && unsafe { GetLastError() } == ERROR_WINHTTP_LOGIN_FAILURE {
+    if result == Err(ERROR_WINHTTP_LOGIN_FAILURE) && script.is_some() {
         options.dwFlags = WINHTTP_AUTOPROXY_CONFIG_URL;
         options.dwAutoDetectFlags = 0;
         options.fAutoLogonIfChallenged = 1;
-        resolved =
-            unsafe { WinHttpGetProxyForUrl(session.0, target.as_ptr(), &mut options, &mut info) }
-                != 0;
+        result = resolve(&mut options, &mut info);
     }
-    if !resolved {
+    if let Err(error) = result {
+        if matches!(
+            error,
+            ERROR_WINHTTP_TIMEOUT | ERROR_WINHTTP_AUTO_PROXY_SERVICE_ERROR
+        ) && let Ok(mut current) = SESSION.lock()
+            && current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+        {
+            *current = None;
+        }
         return None;
     }
     let list = take(info.lpszProxy);

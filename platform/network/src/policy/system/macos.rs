@@ -126,10 +126,12 @@ fn first(proxies: &CFArray, target: &CFURL) -> Option<Url> {
                 .get(unsafe { kCFProxyAutoConfigurationJavaScriptKey })?
                 .downcast::<CFString>()
                 .ok()?;
-            let proxies = unsafe {
+            match unsafe {
                 CFNetworkCopyProxiesForAutoConfigurationScript(&script, target, ptr::null_mut())
-            }?;
-            return first(&proxies, target);
+            } {
+                Some(proxies) => return first(&proxies, target),
+                None => continue,
+            }
         } else {
             continue;
         };
@@ -316,6 +318,24 @@ mod tests {
         ]);
         assert_eq!(
             resolved(&settings(&with_manual), "https://example.com:443/").as_deref(),
+            Some("http://10.0.0.2:8443/")
+        );
+    }
+
+    #[test]
+    fn invalid_inline_pac_falls_through_to_the_next_configured_proxy() {
+        let config = settings(&[
+            (unsafe { kCFNetworkProxiesProxyAutoConfigEnable }, number(1)),
+            (
+                unsafe { kCFNetworkProxiesProxyAutoConfigJavaScript },
+                string("this is not javascript ("),
+            ),
+            (unsafe { kCFNetworkProxiesHTTPSEnable }, number(1)),
+            (unsafe { kCFNetworkProxiesHTTPSProxy }, string("10.0.0.2")),
+            (unsafe { kCFNetworkProxiesHTTPSPort }, number(8443)),
+        ]);
+        assert_eq!(
+            resolved(&config, "https://example.com:443/").as_deref(),
             Some("http://10.0.0.2:8443/")
         );
     }
