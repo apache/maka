@@ -25,8 +25,8 @@ use std::{
 };
 
 pub(super) const HOST_AGENT: &str = "maka";
-const OWNERS: &str = "# Apache Maka installations: ";
-const PROFILE: &str = "name: maka
+const PROFILE: &str = "---
+name: maka
 description: Antigravity agent for Maka conversations
 mainAgent: true
 subagent: false
@@ -35,133 +35,35 @@ tools: [search_web, define_subagent, invoke_subagent, manage_subagents, send_mes
 Use the Maka MCP tools for workspace operations, automation and conversation work.
 ";
 
-fn profile_path(home: &Path) -> PathBuf {
-    home.join(".gemini")
-        .join("config")
-        .join("agents")
-        .join("maka.md")
-}
-
-pub(crate) async fn sync_host_agent(
-    home: Option<PathBuf>,
-    installation: String,
-    enabled: bool,
-) -> Result<(), String> {
-    let Some(home) = home else {
-        return if enabled {
-            Err("Cannot locate the account home for Antigravity".into())
-        } else {
-            Ok(())
-        };
-    };
-    let path = profile_path(&home);
-    tokio::task::spawn_blocking(move || {
-        sync_profile(&path, &installation, enabled)
-            .map_err(|error| format!("Antigravity agent {}: {error}", path.display()))
-    })
-    .await
-    .map_err(|error| format!("Antigravity agent setup failed: {error}"))?
-}
-
-fn read_profile(path: &Path) -> io::Result<Option<String>> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => fs::read_to_string(path).map(Some),
-        Ok(_) => Err(name_in_use()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-fn name_in_use() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "a user agent already uses the name maka",
-    )
-}
-
-fn profile_owners(profile: &str) -> Option<&str> {
-    profile.lines().nth(1)?.strip_prefix(OWNERS)
-}
-
-fn sync_profile(path: &Path, installation: &str, enabled: bool) -> io::Result<()> {
-    if !enabled && !path.try_exists()? {
-        return Ok(());
-    }
-    let directory = path.parent().expect("agent profile directory");
-    if enabled {
-        fs::create_dir_all(directory)?;
-    }
-    // Roots share the configuration file. Hold the lock only while reconciling it.
-    let lock = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.with_file_name(".maka.lock"))?;
-    lock.lock()?;
-    let current = match read_profile(path) {
-        Ok(current) => current,
-        Err(error)
-            if !enabled
-                && matches!(
-                    error.kind(),
-                    io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidData
-                ) =>
-        {
-            return Ok(());
-        }
-        Err(error) => return Err(error),
-    };
-    let mut owners = std::collections::BTreeSet::new();
-    if let Some(current) = current.as_deref() {
-        match profile_owners(current) {
-            Some(ids) => owners.extend(ids.split_whitespace()),
-            None if enabled => return Err(name_in_use()),
-            None => return Ok(()),
-        }
-    }
-    if enabled {
-        if directory.join(HOST_AGENT).join("agent.md").try_exists()? {
-            return Err(name_in_use());
-        }
-        owners.insert(installation);
-    } else if !owners.remove(installation) {
-        return Ok(());
-    }
-    if owners.is_empty() {
-        return fs::remove_file(path);
-    }
-    let rendered = format!(
-        "---\n{OWNERS}{}\n{PROFILE}",
-        owners.into_iter().collect::<Vec<_>>().join(" ")
-    );
-    if current.as_deref() == Some(rendered.as_str()) {
-        return Ok(());
-    }
-    let mut staging = tempfile::NamedTempFile::new_in(directory)?;
-    staging.write_all(rendered.as_bytes())?;
-    if current.is_some() {
-        staging.persist(path)?;
-    } else {
-        staging.persist_noclobber(path)?;
-    }
-    Ok(())
-}
-
-pub(super) async fn require_host_agent() -> Result<(), Error> {
+pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
     let home = std::env::home_dir()
         .ok_or_else(|| Error::Invalid("Cannot locate the account home for Antigravity".into()))?;
-    let path = profile_path(&home);
-    match tokio::fs::read_to_string(&path).await {
-        Ok(text) if profile_owners(&text).is_some() && text.ends_with(PROFILE) => Ok(()),
-        Ok(_) => Err(Error::Invalid(format!(
-            "Antigravity agent {} does not match Maka's definition",
-            path.display()
-        ))),
-        Err(error) => Err(Error::Invalid(format!(
-            "Cannot read Antigravity agent {}: {error}",
-            path.display()
-        ))),
+    tokio::task::spawn_blocking(move || prepare_profile(&home))
+        .await
+        .map_err(|error| Error::Provider(format!("Antigravity agent setup task failed: {error}")))?
+        .map_err(|error| {
+            Error::Provider(format!(
+                "Cannot prepare the Maka Antigravity agent: {error}"
+            ))
+        })
+}
+
+fn prepare_profile(home: &Path) -> io::Result<PathBuf> {
+    let root = home.join(".maka/external-agents/antigravity/agent");
+    let agents = root.join(".agents/agents");
+    let profile = agents.join("maka.md");
+
+    match fs::read(&profile) {
+        Ok(current) if current == PROFILE.as_bytes() => return Ok(root),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
+    fs::create_dir_all(&agents)?;
+    let mut staging = tempfile::NamedTempFile::new_in(&agents)?;
+    staging.write_all(PROFILE.as_bytes())?;
+    staging.persist(&profile)?;
+    Ok(root)
 }
 
 pub(super) async fn models(
@@ -424,33 +326,29 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn roots_share_the_profile_until_the_last_one_disables_antigravity() -> io::Result<()> {
+    fn antigravity_uses_one_static_agent_directory_in_maka() -> io::Result<()> {
         let home = tempfile::tempdir()?;
-        let profile = profile_path(home.path());
-        sync_profile(&profile, "primary", true)?;
-        sync_profile(&profile, "secondary", true)?;
-        sync_profile(&profile, "primary", false)?;
-        assert!(fs::read_to_string(&profile)?.contains("tools: [search_web"));
-        sync_profile(&profile, "secondary", false)?;
-        assert!(!profile.try_exists()?);
+        let home = home.path();
+        let user_agents = home.join(".gemini/config/agents");
+        fs::create_dir_all(&user_agents)?;
+        fs::write(user_agents.join("mine.md"), "my own agent")?;
+
+        let root = home.join(".maka/external-agents/antigravity/agent");
+        assert_eq!(prepare_profile(home)?, root);
+        let profile = root.join(".agents/agents/maka.md");
+        let definition = fs::read_to_string(&profile)?;
+        assert!(definition.starts_with("---\nname: maka\n"));
+        assert!(definition.contains("tools: [search_web, define_subagent"));
+        assert_eq!(prepare_profile(home)?, root);
+        assert_eq!(fs::read_to_string(profile)?, definition);
+        assert_eq!(
+            fs::read_to_string(user_agents.join("mine.md"))?,
+            "my own agent"
+        );
+        assert_eq!(fs::read_dir(user_agents)?.count(), 1);
         Ok(())
     }
 
-    #[test]
-    fn a_user_agent_is_neither_replaced_nor_removed() -> io::Result<()> {
-        let home = tempfile::tempdir()?;
-        let profile = profile_path(home.path());
-        fs::create_dir_all(profile.parent().unwrap())?;
-        let user_agent = "---\nname: maka\ndescription: Custom agent\n---\n";
-        fs::write(&profile, user_agent)?;
-        assert_eq!(
-            sync_profile(&profile, "primary", true).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        sync_profile(&profile, "primary", false)?;
-        assert_eq!(fs::read_to_string(&profile)?, user_agent);
-        Ok(())
-    }
     #[test]
     fn headless_usage_keeps_account_groups_and_disabled_windows() {
         let output = br#"{"event":"command_result","command":{"name":"usage"}}

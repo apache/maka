@@ -19,14 +19,23 @@
 
 import net from 'node:net';
 import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-const invocation = process.argv.slice(2).join(' ');
+const args = process.argv.slice(2);
+const managedAgent = join(process.env.HOME, '.maka', 'external-agents', 'antigravity', 'agent');
 const antigravity =
-  invocation === 'acp --process-per-session --dangerously-skip-permissions --agent maka';
-if (!antigravity && invocation !== 'app-server --listen stdio://')
+  args.length === 7 &&
+  args.slice(0, 6).join(' ') ===
+    'acp --process-per-session --dangerously-skip-permissions --agent maka --add-dir' &&
+  args[6] === managedAgent;
+if (!antigravity && args.join(' ') !== 'app-server --listen stdio://')
   throw Error('Unexpected external agent invocation');
+if (antigravity) {
+  const profile = await readFile(join(managedAgent, '.agents', 'agents', 'maka.md'), 'utf8');
+  if (!profile.startsWith('---\nname: maka\n')) throw Error('Missing Maka agent definition');
+}
 const address = new URL(process.env.FAKE_CONTROL);
 if (address.hostname !== '127.0.0.1') throw Error('Controller must be owned loopback');
 const rootPid = Number(process.env.FAKE_ROOT_PID);
@@ -157,7 +166,7 @@ async function callTool(name, args) {
   return result;
 }
 async function codeResult(code) {
-  let result = await callTool('maka_exec', { code: '// @exec: {"yield_time_ms": 1}\n' + code });
+  let result = await callTool('exec', { code: '// @exec: {"yield_time_ms": 1}\n' + code });
   const emitted = [];
   for (;;) {
     const output = result.content.filter((part) => part.type === 'text');
@@ -170,8 +179,30 @@ async function codeResult(code) {
       return JSON.parse(emitted.join('\n'));
     }
     if (summary.state !== 'running') throw Error(JSON.stringify(summary));
-    result = await callTool('maka_wait', { cell_id: summary.cell_id });
+    result = await callTool('wait', { cell_id: summary.cell_id });
   }
+}
+async function readArchivedResult() {
+  const tail = 'end of archived output';
+  const result = await callTool('exec', {
+    code: `text('x'.repeat(10000) + ${JSON.stringify(tail)});`,
+    yield_time_ms: 10000,
+  });
+  const archived = JSON.parse(result.content[0].text);
+  if (archived.kind !== 'maka.archived_tool_result' || !archived.page.next)
+    throw Error('Expected a continuation for the large tool result');
+  const suffix = await codeResult(`
+    let request = ${JSON.stringify(archived.page.next)};
+    let content = '';
+    while (request) {
+      const page = await tools.Read(request);
+      if (page.kind !== 'completed') throw Error(page.message);
+      content += page.value.content;
+      request = page.value.next;
+    }
+    text({ suffix: content.slice(-${tail.length}) });
+  `);
+  if (suffix.suffix !== tail) throw Error('Archive continuation did not reach the original output');
 }
 async function hostEffect() {
   await rpc(
@@ -187,16 +218,15 @@ async function hostEffect() {
   const tools = await rpc('tools/list', {}, 102);
   const names = tools.tools.map((tool) => tool.name);
   if (
-    !names.includes('maka_exec') ||
-    !names.includes('maka_wait') ||
-    !names.includes('maka_cua_repl') ||
-    names.includes('maka_Shell') ||
-    names.includes('maka_SendUser') ||
-    names.includes('maka_sleep')
+    !names.includes('exec') ||
+    !names.includes('wait') ||
+    !names.includes('cua_repl') ||
+    names.includes('ReadImage') ||
+    names.includes('Shell') ||
+    names.includes('SendUser') ||
+    names.includes('sleep')
   )
     throw Error('Authorized Maka tools unavailable');
-  if (names.some((name) => !name.startsWith('maka_')))
-    throw Error('Maka tool is missing its namespace');
   if (antigravity) return;
   const path = 'host-patch-' + job.label;
   await codeResult(
@@ -285,10 +315,15 @@ async function acp(id, method, params) {
     if (job) throw Error('Duplicate ACP task prompt');
     job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length));
     const checkpoint = `ACP checkpoint ${job.label}`;
-    await event('session/update', {
-      sessionId: thread,
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: checkpoint } },
-    });
+    if (job.label !== 'ACP-followup') {
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: checkpoint },
+        },
+      });
+    }
     await record('ready', { thread, checkpoint, promptId: id });
     if (job.label === 'ACP-schedule') {
       const task = await codeResult(
@@ -307,6 +342,29 @@ async function acp(id, method, params) {
       if (!task.taskId) throw Error('ScheduledTask omitted the automation ID');
       await record('scheduled', { thread, taskId: task.taskId, promptId: id });
       return;
+    }
+    if (job.label === 'ACP-followup') {
+      await readArchivedResult();
+      const png =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3XcAAAAASUVORK5CYII=';
+      await writeFile('read-fixture.png', Buffer.from(png, 'base64'));
+      const image = await callTool('exec', {
+        code: "image(await tools.Read({ path: 'read-fixture.png' }));",
+        yield_time_ms: 10000,
+      });
+      if (
+        !image.content.some(
+          (part) => part.type === 'image' && part.mimeType === 'image/png' && part.data === png,
+        )
+      )
+        throw Error('Read did not return the original PNG as MCP image content');
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'ACP follow-up final reply' },
+        },
+      });
     }
     if (job.label === 'ACP-followup' || job.label === 'ACP-wake')
       return reply(id, { stopReason: 'end_turn' });

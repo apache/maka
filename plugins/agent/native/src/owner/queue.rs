@@ -22,7 +22,10 @@ use super::*;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use maka_agent_facts::durable::*;
 use maka_agent_facts::tools::ToolError;
-use maka_agent_state::{Admission, ReadyCause, queue::Consume};
+use maka_agent_state::{
+    Admission, ContentBlob, ReadyCause,
+    queue::{Consume, QueueCommand, QueueEdit},
+};
 use maka_plugin_core::operation::OperationCleanup;
 
 type AdmissionWaits = FuturesUnordered<BoxFuture<'static, ()>>;
@@ -59,10 +62,10 @@ impl Owner {
         if let Err(error) = self
             .durable
             .queue()
-            .recover_stopped_goal_steering(self.run_owner(), UnixMillis(now() as i64))
+            .recover_undelivered_steering(self.run_owner(), UnixMillis(now() as i64))
             .await
         {
-            tracing::error!(%error, "Failed to recover steering from stopped Goals");
+            tracing::error!(%error, "Failed to recover undelivered steering");
         }
         let mut sources = root.capability_changes();
         let mut cause = ReadyCause::CapabilitySourceChanged;
@@ -339,19 +342,30 @@ impl Owner {
         };
         let guard =
             self.restore_budget_guard(&entry.request.spec, basis, &entry.request.message_id)?;
-        let mut admission =
-            Admission::new(entry.request.spec.clone(), UnixMillis(now() as i64), vec![])
-                .with_queue(Consume {
-                    session: session.into(),
-                    requests: vec![request],
-                    expected_revision: queue.revision,
-                });
-        if let Some(guard) = guard {
-            admission = admission.with_guard(guard);
-        }
-        let run = admission.run();
+        let at = UnixMillis(now() as i64);
+        let mut queued = entry.request.clone();
+        let replacement = match &mut queued.spec.backend {
+            BackendSpec::Executor {
+                selection,
+                descriptor,
+            } if selection.executor == "external"
+                && selection.settings.runtime.as_deref() == Some("antigravity")
+                && queued.spec.budget_basis.is_none()
+                && matches!(&queued.spec.trigger, Trigger::Message { .. }) =>
+            {
+                let accepted = self.executors.select(selection.clone())?.accepted;
+                let current = ContentBlob::json(&accepted).map_err(|error| error.to_string())?;
+                if current.reference() == descriptor {
+                    None
+                } else {
+                    *descriptor = current.reference().clone();
+                    Some(current)
+                }
+            }
+            _ => None,
+        };
         let (lease, effects) = scope.accept(self.stop.child_token());
-        let committed: Result<bool, String> = async {
+        let committed: Result<Option<RunId>, String> = async {
             let selected = lease.store();
             let custody = selected.work_custody().map_err(|error| error.to_string())?;
             let writer = self
@@ -362,16 +376,58 @@ impl Owner {
                 .durable
                 .with_data_writer(writer)
                 .map_err(|error| error.to_string())?;
-            for retry in [false, true] {
-                let error = match state.admit(admission.clone()).await {
-                    Ok(_) => return Ok(true),
+            // A pending message has no admitted execution. Keep its identity,
+            // input and policy, and commit the current executor before consuming it.
+            let expected_revision = if let Some(descriptor) = replacement {
+                let update = state
+                    .queue()
+                    .execute(
+                        session.into(),
+                        QueueCommand {
+                            id: FactId::new(),
+                            at,
+                            expected_revision: queue.revision,
+                            edit: QueueEdit::Update {
+                                request: Box::new(queued.clone()),
+                            },
+                        },
+                        vec![descriptor],
+                    )
+                    .await;
+                match update {
+                    Ok(commit) => commit.revision,
                     Err(error)
                         if matches!(
                             error.underlying(),
                             maka_event_log::StoreError::RevisionConflict { .. }
                         ) =>
                     {
-                        return Ok(false);
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            } else {
+                queue.revision
+            };
+            let mut admission = Admission::new(queued.spec, at, vec![]).with_queue(Consume {
+                session: session.into(),
+                requests: vec![request],
+                expected_revision,
+            });
+            if let Some(guard) = guard {
+                admission = admission.with_guard(guard);
+            }
+            let run = admission.run();
+            for retry in [false, true] {
+                let error = match state.admit(admission.clone()).await {
+                    Ok(_) => return Ok(Some(run)),
+                    Err(error)
+                        if matches!(
+                            error.underlying(),
+                            maka_event_log::StoreError::RevisionConflict { .. }
+                        ) =>
+                    {
+                        return Ok(None);
                     }
                     Err(error) => error,
                 };
@@ -389,7 +445,7 @@ impl Owner {
                     .await
                     .map_err(|error| error.to_string())?
                 {
-                    return Ok(true);
+                    return Ok(Some(run));
                 }
                 if retry {
                     return Err(error.to_string());
@@ -403,9 +459,9 @@ impl Owner {
             return Err("agent_admission_cleanup_unconfirmed".into());
         }
         lease.finish();
-        if !committed? {
+        let Some(run) = committed? else {
             return Ok(());
-        }
+        };
         drop(ordered);
         drop(goal);
         self.wake_run(run).await

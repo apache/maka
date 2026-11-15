@@ -341,7 +341,7 @@ impl ArtifactStore {
         }
         Ok(self.data.prepare(session::Write::copy(copy)))
     }
-    pub(crate) fn copy_statement(
+    pub fn copy_statement(
         &self,
         copy: CopyArtifact,
         selected_writer: &DataWriter,

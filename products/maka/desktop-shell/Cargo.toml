@@ -35,6 +35,9 @@ uuid.workspace = true
 [build-dependencies]
 embed-resource = "3.0"
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-platform-linux.workspace = true
 

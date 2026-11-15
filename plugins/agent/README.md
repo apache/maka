@@ -32,6 +32,12 @@ This family owns Agent business behavior. Leaf `package.ts` files declare indepe
 
 The [workbench](../../products/maka/workbench/README.md), which the terminal and desktop shells run, consumes these public Host contracts. Product assembly belongs to [products/maka](../../products/maka/README.md); the workbench owns its draft editor and interaction lifecycle.
 
+## Rooms
+
+`SessionCreate` with `kind: "room"` creates a shared message journal without an Agent loop. The workbench's Rooms view keeps ordinary conversations and their drafts separate. Humans and agents both post through `SessionSend`; `mentions` addresses Agent session IDs, and `replyTo` links an existing message in the destination Room. Mentioned agents receive the original author, Room address and reply context, and use `SessionSend` to reply in that Room.
+
+Room messages and admitted mentions commit together. Delivery receipts distinguish unavailable targets; recovering an operation does not post or wake an agent twice. `SessionHistory` returns Room messages with stable IDs and cursor paging. See [the public contract](api/src/contract.rs) and [Room storage](state/src/room.rs).
+
 ## Subagent preset management
 
 The Agent service exposes `presets`, `preset`, `createPreset`, `updatePreset` and `deletePreset`; see the [wire contract](api/src/preset.rs). Presets start empty and persist within the Host's Agent scope. Lists omit instructions; details preserve the complete text. Model references contain no credentials.

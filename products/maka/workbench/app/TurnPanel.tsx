@@ -19,10 +19,10 @@
 
 import { formatDuration } from './duration';
 import { executorUsageLabel } from './TurnUsage';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, ShimmerText } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
-import { Canvas, cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
+import { Canvas, cleanup, computed, effect, inputAction, List, signal, Text, View } from 'nsh';
 import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
@@ -31,10 +31,20 @@ import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
 import { turnOutcome } from './processGroups';
-import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
+import {
+  C,
+  captionTextStyle,
+  controlStyle,
+  animateDisclosure,
+  Disclosure,
+  DisclosureChevron,
+  disclosureTitleStyle,
+} from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
 import { LiveToolRow } from './ToolCard';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
+import { activityIcon, activityPresentation, activityTitle } from './toolActivityPresentation';
+import { cardFamily, type ToolFamily } from './toolCards';
 
 const panelStyle = {
   marginVertical: 8,
@@ -98,6 +108,14 @@ export function activityCounts(
     const value = row(id);
     return value?.role === 'user' && activityMessage(value.origin);
   }).length;
+  return activityCountLabel({ thoughts, tools, messages });
+}
+
+function activityCountLabel({
+  thoughts,
+  tools,
+  messages,
+}: Pick<NonNullable<Row['foldedWork']>, 'thoughts' | 'tools' | 'messages'>) {
   return [
     thoughts
       ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', { count: thoughts })
@@ -126,6 +144,7 @@ export function TurnSummary(props: {
     sessionId: string;
     through: () => number;
     refs: () => ToolImageRef[];
+    total?: () => number | undefined;
     preview(image: ImagePreview): void;
   };
 }) {
@@ -165,7 +184,9 @@ export function TurnSummary(props: {
             : '';
     const counts =
       platform.idiom !== 'terminal' && props.canFold()
-        ? activityCounts(props.groups(), props.row)
+        ? turn.foldedWork
+          ? activityCountLabel(turn.foldedWork)
+          : activityCounts(props.groups(), props.row)
         : '';
     const usage = turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
     return (
@@ -194,6 +215,7 @@ export function TurnSummary(props: {
                 sessionId={props.images!.sessionId}
                 through={props.images!.through}
                 images={props.images!.refs}
+                total={props.images!.total}
                 preview={props.images!.preview}
               />
             </If>
@@ -278,11 +300,13 @@ function ActivityLog(props: {
   through: () => number;
   viewport: () => { width: number; height: number };
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
   inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
+  resumed(): void;
   /** Whether the activity list is scrolled to its end, following or not. */
   settled?(atEnd: boolean): void;
   reveal(): void;
@@ -308,7 +332,7 @@ function ActivityLog(props: {
   const opening = state.opening;
   state.opening = undefined;
   let ownList: ListRef | undefined;
-  let activityScrollIntent = false;
+  let scrollInput: 'idle' | 'pending' | 'dragging' = 'idle';
   let nearEnd = false;
   let atEnd = false;
   let lastOffset = 0;
@@ -317,11 +341,10 @@ function ActivityLog(props: {
     const resuming = !state.following();
     state.following.set(true);
     props.reading(false);
-    // Returning from a reading pause must replace the native reading pin that
-    // was captured while end-following was disabled.
     if (resuming) {
-      if (atEnd) ownList?.scrollToEnd({ animated: false });
-      else ownList?.scrollToOffset({ offset: lastOffset, animated: false });
+      // Replace the native reading pin captured while following was paused.
+      ownList?.scrollToEnd({ animated: false });
+      props.resumed();
     }
   };
   cleanup(() => {
@@ -358,7 +381,7 @@ function ActivityLog(props: {
     return Math.min(bodyMaxHeight(), Math.max(16, measured));
   };
   // Read before binding: the new List's first layout writes its scroll gauge.
-  if (opening) initial.set({ y: 0 });
+  if (opening || state.following()) initial.set({ y: 0 });
   else
     void state.offset
       .getValue()
@@ -393,14 +416,24 @@ function ActivityLog(props: {
             state.following() ? { autoscrollToBottomThreshold: activityFollowThreshold } : {}
           }
           scrollbar={true}
-          onScrollIntent={() => {
+          onScrollDragStart={() => {
             if (!alive || lease !== state.lease) return;
-            activityScrollIntent = true;
+            scrollInput = 'dragging';
             props.userScroll();
-            if (nearEnd) resumeFollowing();
+          }}
+          onScrollEnd={({ offset }) => {
+            if (alive && lease === state.lease && scrollInput !== 'idle')
+              scrollInput = offset.y === lastOffset ? 'idle' : 'pending';
+          }}
+          onScrollIntent={({ intent, delta }) => {
+            if (!alive || lease !== state.lease) return;
+            if (scrollInput !== 'dragging') scrollInput = 'pending';
+            props.userScroll();
+            if (intent === 'end' || (nearEnd && (delta ?? 0) > 0)) resumeFollowing();
           }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
+            const movement = event.offset.y - lastOffset;
             lastOffset = event.offset.y;
             const end = Math.max(0, event.contentSize.height - event.size.height);
             const distance = end - lastOffset;
@@ -411,23 +444,11 @@ function ActivityLog(props: {
             nearEnd = distance <= activityFollowThreshold;
             atEnd = distance <= 1;
             props.settled?.(atEnd);
-            // Layout scroll reports must not release a tool-reading pause;
-            // user input on the activity list does, even with the tool still open.
-            if (
-              nearEnd &&
-              !activityScrollIntent &&
-              !state.following() &&
-              props.group().rowIds.some((id) => {
-                const row = props.row(id);
-                return (
-                  (row?.tool != null || row?.role === 'tool_call' || row?.role === 'tool_result') &&
-                  props.rowState(id).expanded() === true
-                );
-              })
-            )
-              return;
-            if (nearEnd) resumeFollowing();
-            else {
+            // Reflow and restoring a saved offset also report scroll geometry.
+            if (movement === 0 || scrollInput === 'idle') return;
+            if (scrollInput === 'pending') scrollInput = 'idle';
+            if (movement > 0 && nearEnd) resumeFollowing();
+            else if (movement < 0 && !nearEnd) {
               state.following.set(false);
               props.reading(true);
             }
@@ -440,7 +461,8 @@ function ActivityLog(props: {
               const index = props.group().rowIds.indexOf(state.revealRow);
               if (index >= 0) node.scrollToIndex({ index, viewPosition: 0, animated: false });
               state.revealRow = undefined;
-            } else if (opening === 'bottom') node.scrollToEnd({ animated: false });
+            } else if (opening === 'bottom' || (opening === undefined && state.following()))
+              node.scrollToEnd({ animated: false });
             else if (opening === 'top') node.scrollToOffset({ offset: 0, animated: false });
             if (state.requestFocus) {
               state.requestFocus = false;
@@ -511,19 +533,20 @@ function ActivityLog(props: {
                           !props.rowState(key).expanded()
                         )
                           return;
-                        activityScrollIntent = false;
+                        scrollInput = 'idle';
                         state.following.set(false);
                         props.reading(true);
                       }}
                       sessionId={props.sessionId}
                       through={props.through}
                       previewImage={props.previewImage}
+                      previewTerminal={props.previewTerminal}
                       openLink={props.openLink}
                       senders={props.senders}
                       userScroll={props.userScroll}
                       onExpand={(key) => {
                         if (!alive || !ownList) return;
-                        activityScrollIntent = false;
+                        scrollInput = 'idle';
                         state.following.set(false);
                         props.reading(true);
                         const index = props.group().rowIds.indexOf(key);
@@ -572,40 +595,78 @@ type TurnPanelProps = {
   activity: () => LiveActivity;
   reveal(): void;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
   inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
+  resumed(): void;
   settled?(atEnd: boolean): void;
 };
 
 export function TurnPanel(props: TurnPanelProps) {
-  // On the desktop the turn's summary row is the only disclosure: groups have no
-  // header of their own and show their members whenever the turn is open.
-  if (platform.idiom !== 'terminal')
-    effect(() => {
-      if (props.state.open() || !props.group().rowIds.length) return;
-      const live = !props.group().closed;
-      props.state.opening = live ? 'bottom' : 'top';
-      props.state.following.set(live);
-      props.state.open.set(true);
-    });
+  const desktop = platform.idiom !== 'terminal';
   return (
-    <View style={platform.idiom === 'terminal' ? panelStyle : { ...panelStyle, gap: 0 }}>
-      <If when={platform.idiom === 'terminal'}>
-        <GroupHeader {...props} />
-      </If>
-      <If when={props.state.open() && props.group().rowIds.length > 0}>
-        <ActivityLog {...props} />
-      </If>
-      <If when={platform.idiom !== 'terminal'}>
-        <Each of={props.liveTools()} key={(tool: ToolActivity) => tool.toolUseId}>
-          {(tool) => <LiveToolRow activity={tool} />}
-        </Each>
+    <View style={desktop ? { ...panelStyle, gap: 0 } : panelStyle}>
+      <GroupHeader {...props} />
+      <If when={props.state.open()}>
+        <View
+          style={
+            desktop
+              ? { marginLeft: 7, paddingLeft: 16, borderLeftWidth: 1, borderColor: C.line }
+              : {}
+          }
+        >
+          <If when={props.group().rowIds.length > 0}>
+            <ActivityLog {...props} />
+          </If>
+          <If when={desktop}>
+            <Each of={props.liveTools()} key={(tool: ToolActivity) => tool.toolUseId}>
+              {(tool) => <LiveToolRow activity={tool} />}
+            </Each>
+          </If>
+        </View>
       </If>
     </View>
   );
+}
+
+const familyVerbs = {
+  read: 'Read files',
+  write: 'Edited files',
+  edit: 'Edited files',
+  patch: 'Edited files',
+  glob: 'Searched files',
+  grep: 'Searched files',
+  execute: 'Ran commands',
+  processRead: 'Ran commands',
+  stdin: 'Ran commands',
+  stop: 'Ran commands',
+  fetch: 'Read web pages',
+  webSearch: 'Searched the web',
+} as const satisfies Partial<Record<NonNullable<ToolFamily>, string>>;
+
+/** What a finished group did, one phrase per kind of step in the order they first came. */
+function activityVerbs(group: ProcessGroup, row: (id: string) => Row | undefined): string {
+  const verbs: string[] = [];
+  const add = (verb: string) => {
+    if (!verbs.includes(verb)) verbs.push(verb);
+  };
+  for (const id of group.rowIds) {
+    const value = row(id);
+    if (!value) continue;
+    const call = value.tool?.call;
+    if (value.tool) {
+      const family = cardFamily(call?.presentation);
+      const verb = family ? familyVerbs[family as keyof typeof familyVerbs] : undefined;
+      add(
+        verb ? tr(verb) : (activityPresentation(call?.presentation)?.title() ?? tr('Used tools')),
+      );
+    } else if (value.field === 'thinking') add(tr('Thought'));
+    else if (value.role === 'user' && activityMessage(value.origin)) add(tr('Agent messages'));
+  }
+  return verbs.join(tr(', '));
 }
 
 function GroupHeader(props: TurnPanelProps) {
@@ -620,7 +681,11 @@ function GroupHeader(props: TurnPanelProps) {
     const timer = setInterval(() => clock.set(Date.now()), 1000);
     cleanup(() => clearInterval(timer));
   });
-  const counts = () => activityCounts([props.group()], props.row) || tr('Process');
+  const desktop = platform.idiom !== 'terminal';
+  const counts = () =>
+    (desktop ? activityVerbs(props.group(), props.row) : '') ||
+    activityCounts([props.group()], props.row) ||
+    tr('Process');
   const desiredTitle = computed(() => {
     if (!active()) return counts();
     const activity = props.activity();
@@ -638,29 +703,69 @@ function GroupHeader(props: TurnPanelProps) {
       props.group().rowIds.includes(activity.rowId)
     )
       return `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
-    return tr('Working…');
+    const latest = props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
+    return latest ? activityTitle(latest) : tr('Working…');
   });
   const stableTitle = stableActivityTitle(desiredTitle, active);
+  const foldable = () =>
+    props.group().rowIds.length > 0 || (desktop && props.liveTools().length > 0);
   const choose = (action: { sessionId: string; key: string; open: boolean }) => {
-    if (
-      action.sessionId !== props.sessionId ||
-      action.key !== props.group().key ||
-      !props.group().rowIds.length
-    )
+    if (action.sessionId !== props.sessionId || action.key !== props.group().key || !foldable())
       return;
     if (action.open) {
       props.state.opening = props.group().closed ? 'top' : 'bottom';
       props.state.following.set(!props.group().closed);
     }
     props.reading(action.open && props.group().closed);
+    animateDisclosure();
     props.state.open.set(action.open);
     if (action.open) props.reveal();
   };
+  const icon = () => {
+    const last = props.row(props.group().rowIds.at(-1) ?? '');
+    if (last?.tool) return activityIcon(last.tool.call?.presentation);
+    return last?.field === 'thinking' ? 'thinking' : 'activity';
+  };
+  if (desktop)
+    return (
+      <Disclosure
+        label={tr('Process group')}
+        open={props.state.open()}
+        foldable={foldable()}
+        icon={icon()}
+        onPress={inputAction(choose, {
+          sessionId: props.sessionId,
+          key: props.group().key,
+          open: !props.state.open(),
+        })}
+      >
+        <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <If
+            when={active()}
+            else={
+              <Text
+                style={[
+                  { ...captionTextStyle, color: C.muted, flexShrink: 1, minWidth: 0 },
+                  { numberOfLines: 1, textOverflow: 'ellipsis' },
+                ]}
+              >
+                {desiredTitle()}
+              </Text>
+            }
+          >
+            <ShimmerText text={stableTitle()} style={captionTextStyle} />
+          </If>
+          <If when={foldable()}>
+            <DisclosureChevron open={props.state.open()} size={12} color={C.muted} />
+          </If>
+        </View>
+      </Disclosure>
+    );
   return (
     <Disclosure
       label={tr('Process group')}
       open={props.state.open()}
-      foldable={props.group().rowIds.length > 0}
+      foldable={foldable()}
       onPress={inputAction(choose, {
         sessionId: props.sessionId,
         key: props.group().key,

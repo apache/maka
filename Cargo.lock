@@ -8876,6 +8876,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "embed-resource",
+ "libc",
  "maka-event-log",
  "maka-host-runtime",
  "maka-workbench",
@@ -9259,6 +9260,8 @@ dependencies = [
  "hyper-util",
  "maka-agent-facts",
  "maka-sandbox",
+ "objc2-cf-network",
+ "objc2-core-foundation",
  "percent-encoding",
  "reqwest",
  "rustls-platform-verifier",
@@ -11120,6 +11123,15 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+]
+
+[[package]]
+name = "objc2-cf-network"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b4c9e30e636e2cd7d7414f320af2e0aa86f686adfc6f1bbe50b92366e4309c8"
+dependencies = [
+ "objc2-core-foundation",
 ]
 
 [[package]]

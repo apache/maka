@@ -164,6 +164,10 @@ async fn run(
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
     let headers = headers(&request)?;
     let mut decoder = Decoder::new(plaintext, &request.tools).operation(request.operation);
+    // DeepSeek's Responses endpoint streams over HTTP.
+    let lane = lane.filter(|_| {
+        !(plaintext.is_some() && crate::is_deepseek_endpoint(&request.provider.base_url))
+    });
     if lane.as_ref().is_some_and(|lane| {
         lane.retry_transport_phase() == maka_agent_ports::model::RetryTransportPhase::Primary
     }) && (!request.provider.headers.is_empty()

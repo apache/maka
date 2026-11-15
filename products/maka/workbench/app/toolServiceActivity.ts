@@ -237,11 +237,6 @@ function computerOutput(value: unknown, reset: boolean): ToolSection[] | null {
 }
 
 export const serviceToolPresentations: Record<string, ActivityPresentation> = {
-  'maka.workspace.Files@1/readImage': {
-    title: () => tr('Read image'),
-    icon: 'image',
-    arguments: (value) => section('File', record(value)?.path, 'code'),
-  },
   'maka.workspace.Processes@1/health': {
     title: () => tr('Check background process'),
     icon: 'terminal',

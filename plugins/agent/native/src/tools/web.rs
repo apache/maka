@@ -92,23 +92,26 @@ impl RequestBinding for Binding {
                     let name = service.selection.name.clone();
                     let projection = if !capture.available {
                         BoundTool::Unavailable
-                    } else if service.selection.method == "search"
-                        && capture.source == maka_web_api::settings::Source::Model
-                    {
-                        input
-                            .model
-                            .as_ref()
-                            .and_then(maka_web::search::native)
-                            .map_or(BoundTool::Unavailable, BoundTool::Provider)
-                    } else if service.selection.method == "search" && !capture.credential_configured
-                    {
-                        BoundTool::Unavailable
                     } else {
-                        BoundTool::Prepared(Arc::new(Service {
-                            shell: None,
-                            web_basis: Some(capture.basis.clone()),
-                            ..service
-                        }))
+                        let search = service.selection.method == "search";
+                        let prepared = || {
+                            BoundTool::Prepared(Arc::new(Service {
+                                shell: None,
+                                web_basis: Some(capture.basis.clone()),
+                                ..service
+                            }))
+                        };
+                        if search {
+                            match maka_web::search::select(&capture, input.model.as_ref()) {
+                                Some(maka_web::search::Selection::Provider(tool)) => {
+                                    BoundTool::Provider(tool)
+                                }
+                                Some(maka_web::search::Selection::Custom) => prepared(),
+                                None => BoundTool::Unavailable,
+                            }
+                        } else {
+                            prepared()
+                        }
                     };
                     (name, projection)
                 })

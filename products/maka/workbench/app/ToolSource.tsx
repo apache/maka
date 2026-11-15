@@ -107,8 +107,11 @@ export function createToolSource(
         (total() !== null && source.totalBytes !== total()) ||
         (end === offset && end !== source.totalBytes) ||
         (format() !== '' && source.format !== format()) ||
-        !['text', 'json', 'image_descriptor'].includes(source.format) ||
-        (original.field === 'arguments' && original.path === null && source.format !== 'json')
+        !(
+          source.format === 'text' ||
+          source.format === 'json' ||
+          (original.field === 'result' && source.format === 'image_descriptor')
+        )
       )
         throw new UiError('The original tool source could not be verified.');
       total.set(source.totalBytes);

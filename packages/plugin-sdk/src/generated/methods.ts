@@ -481,6 +481,18 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'message';
+      messageId: string;
+    }
+  | {
+      kind: 'before_message';
+      messageId: string;
+    }
+  | {
+      kind: 'after_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
       position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress;
       field: AgentLoadedHistoryCheckpointHistoryInput_HistoryField;
@@ -533,7 +545,10 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryField = 'thinking' |
  * Tool output is available through source reads in both views. Conversation
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
-export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView = 'text' | 'conversation';
+export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView =
+  | ('text' | 'conversation')
+  | 'chat'
+  | 'turn';
 /**
  * An original row within the actual read capability supplied by the caller.
  * Marker paths are relative to that capability; none of these fields grants access.
@@ -3179,6 +3194,53 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: Runtime.ComputerWatchStage;
       output: Runtime.ComputerStageSnapshot;
+    };
+  };
+  workspaceWeb: {
+    capture: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebCapture;
+    };
+    checkKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    deleteKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    fetch: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebFetch;
+      output: Runtime.WebResult;
+    };
+    probe: {
+      mode: 'mutation';
+      input: Runtime.WebProbe;
+      output: Runtime.WebResult;
+    };
+    save: {
+      mode: 'mutation';
+      input: Runtime.WebSet;
+      output: Runtime.WebUpdate;
+    };
+    saveKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    search: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebQuery;
+      output: Runtime.WebResult;
+    };
+    snapshot: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebSnapshot;
     };
   };
 }

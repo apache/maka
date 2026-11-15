@@ -49,3 +49,5 @@ owner/cache, rather than every request; cloned Rustls configurations share their
 bounded TLS session cache but no live connection. Regression tests cover failed
 initial builds, two concurrent clients with independent physical connection
 cleanup, and TLS snapshot/ALPN preservation through proxy connector construction.
+
+`src/connect.rs` makes SOCKS4 with local DNS pick the first IPv4 address. Upstream takes the first resolved address, which on dual-stack hosts is often IPv6 that SOCKS4 cannot carry, so HTTP and WebSocket failed where Maka's own CONNECT tunnel succeeded. Regression coverage: `maka-network` SOCKS4 tests.

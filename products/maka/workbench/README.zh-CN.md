@@ -23,6 +23,8 @@
 
 Mermaid 围栏代码块通过 Pele 在本地绘制。Markdown 仍由 `TextView` 负责，按语言扩展显示图表。Maka 落实 SVG 主题颜色，并在阻塞工作线程上使用本机字体把标签转为矢量路径，再交给 NSH 原有的图片加载器，不修改内置 NSH。流式修改会合并处理；可查看并复制源码，语法错误时保留源码。终端显示代码块。不启用图表链接、外部图片或 JavaScript 回调。更新按显示帧调度，转换进行中只保留最新输入。Maka 显式关闭 Pele 的源码、输出和边数限额，不额外设置 SVG 字节数或变量深度上限；NSH 图片加载器原有的约束仍然适用。
 
+`spec` 围栏代码块基于 `@json-render/core` 与 `@json-render/directives` 在对话消息流内嵌渲染交互式生成式 UI。`SpecSession` 增量编译流式 RFC 6902 JSONL 补丁，并在 `TextView` 更新期间保留用户在本地修改的状态；`SpecRenderer` 在桌面与终端两端直接挂载原生 NSH 组件与 `nsh/base/plot` 图表。状态绑定、动态指令、表单校验、监听器与内置动作全部在客户端本地执行，不会反向驱动 Agent 或发起 Host 业务变更；生成规范由内置 `maka-generative-ui` 技能提供。
+
 crate 只打包通用加载器 `app/Bootstrap.tsx`。shell 连接 Host，用 `host::admit` 接入，为该连接创建 `bindings::Bindings`，通过 `configuration` 提供视口、环境和数据目录。bootstrap 加载部署来源通过 `ui: { path, id }` 选择的完整 UI。默认产品选择 Maka 根界面，使用其他 UI 插件共用的不可变包构建流程，将它编译为包中的 `app/App.js`。自定义根界面拥有自己的导航、布局和交互；缺少根入口时不会加载 Maka。[终端 shell](../terminal-shell/README.zh-CN.md) 和[桌面 shell](../desktop-shell/README.zh-CN.md) 使用相同的加载器与原生运行时。在图形桌面上，默认根界面使用 `app/chrome.ts` 让顶部栏充当标题栏，并设置应用菜单。
 
 侧边会话保留各自的模型、草稿和工作区。会话级菜单操作与快捷键一样，作用于原生键盘焦点所在的会话面板。文件和图片请求携带来源会话，交给窗口共用的工作区预览区；从另一会话打开资源时，会替换预览区的标签页，不会切换任何会话。外部 URL 不改变预览区。工作区视图输入明确列出已挂载会话，不再隐式选中主会话。

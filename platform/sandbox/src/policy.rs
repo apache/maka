@@ -123,6 +123,13 @@ impl Approval {
 }
 
 impl Sandbox {
+    pub fn network(&self) -> &Network {
+        match self {
+            Self::Managed { network, .. } | Self::External { network } => network,
+            Self::Disabled => &Network::Allowed,
+        }
+    }
+
     /// Prove that an existing resource needs no authority beyond this policy.
     /// Differently written deny globs are conservatively treated as different;
     /// no glob-language equivalence solver is needed for safe rebinding.

@@ -62,18 +62,6 @@ impl Handler for Agent {
                     .operation()
                     .ok_or("agent_mutation_required")
                     .map_err(HandlerError::from)?;
-                if !owner
-                    .may_control(context.scope(), &input.session_id)
-                    .await
-                    .map_err(HandlerError::from)?
-                {
-                    return Ok(HandlerValue::Json(
-                        encode(crate::contract::SendResult::NotYourWorker {
-                            session_id: input.session_id,
-                        })
-                        .map_err(HandlerError::from)?,
-                    ));
-                }
                 owner
                     .send(input, operation, context.scope())
                     .await

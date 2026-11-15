@@ -30,8 +30,6 @@ use maka_model::prompt::{ContentPart, FileData};
 use maka_plugin_core::{operation::OperationResult, work::WorkCustody};
 use maka_tools::ToolCatalog;
 
-const TOOL_PREFIX: &str = "maka_";
-
 /// The native owner owns canonical preparation, current access, one original T1,
 /// execution custody and the full immutable return/receipt/cleanup observations.
 pub(crate) trait HostEffects: Send + Sync {
@@ -121,7 +119,7 @@ impl Tools {
 
     pub fn definitions(&self) -> Vec<Value> {
         self.tools.iter().flat_map(|tools| &tools.definitions).map(|tool| serde_json::json!({
-            "name":format!("{TOOL_PREFIX}{}", tool.name), "description":tool.description, "inputSchema":tool.input_schema,
+            "name":tool.name, "description":tool.description, "inputSchema":tool.input_schema,
         })).collect()
     }
 
@@ -141,12 +139,7 @@ impl Tools {
                 )
             });
         };
-        let Some(definition) = name.strip_prefix(TOOL_PREFIX).and_then(|name| {
-            tools
-                .definitions
-                .iter()
-                .find(|definition| definition.name == name)
-        }) else {
+        let Some(definition) = tools.definitions.iter().find(|tool| tool.name == name) else {
             return Box::pin(async {
                 (
                     mcp_error(serde_json::json!({"message":"Unknown Maka tool"})),

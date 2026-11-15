@@ -80,6 +80,7 @@ export default {
         },
       },
       contributions: {
+        rooms: { kind: 'view', contract: 'maka.conversations.rooms' },
         navigation: {
           kind: 'view',
           contract: 'maka.conversations.navigation',

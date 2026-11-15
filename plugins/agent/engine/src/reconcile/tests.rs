@@ -56,6 +56,7 @@ pub(crate) fn policy_view(tokens: Option<u64>) -> RunView {
                 sandbox: maka_sandbox::Sandbox::Disabled,
                 approval: maka_sandbox::Approval::Never,
             },
+            network_approval_ceiling: None,
             backend: BackendSpec::Model {
                 binding: ModelBinding {
                     connection_id: "policy".into(),
@@ -535,6 +536,52 @@ fn spent_budget_does_not_complete_over_child_wait_or_context_compaction_trigger(
     );
     apply_policy_fact(&mut context, Fact::BudgetCharged { tokens: 110 });
     assert!(!complete_at_budget(&context, &request, UnixMillis(1)));
+}
+
+#[test]
+fn provider_search_and_final_answer_complete_in_one_request() {
+    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (mut view, _, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Success,
+        true,
+    );
+    let key = ToolKey {
+        attempt,
+        call: "continuation".into(),
+    };
+    let tool = view
+        .tools
+        .get_mut(&maka_agent_state::fold::tool_key(&key))
+        .unwrap();
+    tool.call.provider_executed = true;
+    tool.accepted = Some(maka_agent_state::fold::ToolAcceptance {
+        result: view.spec.input.clone(),
+        outcome: AcceptedResult::Succeeded,
+    });
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    );
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Terminate(Terminal::Completed)
+    ));
 }
 
 #[test]

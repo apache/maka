@@ -20,10 +20,12 @@
 import { textTooltip } from './ui';
 import { createText, errorText } from './text';
 import {
+  Canvas,
   cleanup,
   computed,
   effect,
   inputAction,
+  platform,
   Scroll,
   signal,
   Text,
@@ -82,8 +84,11 @@ type Frame = {
 };
 // Output keeps the dark colors in every appearance, like the ANSI palette.
 const SURFACE = defaultColors(true);
-const CELL = 8;
-const LINE = 16;
+const FONT = 'monospace';
+const textTerminal = platform.idiom === 'terminal';
+const FONT_SIZE = textTerminal ? 16 : 13;
+const LINE = textTerminal ? 16 : 19;
+const TERMINAL_FONT = { fontFamily: FONT, fontSize: FONT_SIZE, lineHeight: LINE };
 const ANSI = [
   '#2c2c2e',
   '#f48a8a',
@@ -131,6 +136,7 @@ function cells(run: Run): { text: string; columns: number } {
 export function Terminal(props: { model: TerminalModel }) {
   const model = props.model;
   const dimensions = signal({ width: 0, height: LINE * 24 });
+  const cellWidth = signal(8);
   const offset = signal(0);
   const inputValue = signal('');
   const confirmation = signal(false);
@@ -143,10 +149,6 @@ export function Terminal(props: { model: TerminalModel }) {
   let mounted = true;
   let reset: ReturnType<typeof setTimeout> | null = null;
   let unbind = () => {};
-  let typed = '';
-  const typedKey = (event: { key: string }) => {
-    if (!['Enter', 'Backspace', 'Delete', 'Escape'].includes(event.key)) typed += event.key;
-  };
   const rows = () => Math.max(1, Math.min(1024, Math.floor(dimensions().height / LINE)));
   const frame = computed(() => {
     model.version();
@@ -162,14 +164,16 @@ export function Terminal(props: { model: TerminalModel }) {
   const copy = async () => {
     try {
       await Clipboard.writeText(
-        frame()
-          .rows.map((row) =>
-            row
-              .map((run) => cells(run).text)
-              .join('')
-              .trimEnd(),
-          )
-          .join('\n'),
+        model.entry().result.mode === 'pipes'
+          ? pipes()
+          : frame()
+              .rows.map((row) =>
+                row
+                  .map((run) => cells(run).text)
+                  .join('')
+                  .trimEnd(),
+              )
+              .join('\n'),
       );
       if (mounted) {
         copied.set(true);
@@ -182,6 +186,12 @@ export function Terminal(props: { model: TerminalModel }) {
       }
     }
   };
+  const focusShell = () => {
+    if (!model.focusRequested() || !input) return;
+    model.focusRequested.set(false);
+    input.focus();
+  };
+  effect(focusShell);
   const attach = (node: InputRef) => {
     input = node;
     unbind();
@@ -262,6 +272,7 @@ export function Terminal(props: { model: TerminalModel }) {
     };
     bindings['shift+pagedown'] = () => scroll?.scrollTo({ y: model.position.y + rows() * LINE });
     unbind = keymap.bind(bindings, { when: 'always', repeat: true, within: node });
+    focusShell();
   };
   const text = (value: string) => {
     const previous = inputValue();
@@ -274,18 +285,11 @@ export function Terminal(props: { model: TerminalModel }) {
       type: 'key',
       key: 'backspace',
     }));
-    const inserted = added.replace(
-      typed === added ? /[\x00-\x1f\x7f-\x9f]/g : /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g,
-      '',
-    );
-    if (inserted)
-      actions.push(
-        typed === added ? { type: 'text', text: inserted } : { type: 'paste', text: inserted },
-      );
-    typed = '';
+    const inserted = added.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+    if (inserted) actions.push({ type: 'text', text: inserted });
     if (actions.length) model.input(actions);
     inputValue.set(value);
-    // Normal input state owns IME and paste; release its completed transport buffer
+    // The editor owns IME; release its completed transport buffer
     // on a later turn, after its latest controlled value reached the native editor.
     if (value.length > 4096 && !reset)
       reset = setTimeout(() => {
@@ -311,7 +315,7 @@ export function Terminal(props: { model: TerminalModel }) {
       geometry !== dimensions()
     )
       return;
-    const column = Math.floor((x - bounds.pagePosition.x + model.position.x) / CELL);
+    const column = Math.floor((x - bounds.pagePosition.x + model.position.x) / cellWidth());
     const row = current.firstLine + Math.floor((y - bounds.pagePosition.y) / LINE);
     if (
       column < 0 ||
@@ -323,9 +327,10 @@ export function Terminal(props: { model: TerminalModel }) {
     model.input([{ type: 'mouse', event: kind, x: column, y: row, button: 'left' }]);
   };
   effect(() => {
+    if (model.agentOwned()) return;
     const size = dimensions();
     model.resize({
-      cols: Math.max(2, Math.min(1024, Math.floor(size.width / CELL))),
+      cols: Math.max(2, Math.min(1024, Math.floor(size.width / cellWidth()))),
       rows: Math.max(1, Math.min(1024, Math.floor(size.height / LINE))),
     });
   });
@@ -350,31 +355,32 @@ export function Terminal(props: { model: TerminalModel }) {
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-        <Button
-          ref={(node) => {
-            fallback = node;
-          }}
-          disabled={!model.local() || !model.running() || model.state() !== 'live'}
-          onPress={() => {
-            model.takeControl();
-            input?.focus();
-          }}
-          accessibilityLabel={tr('Focus terminal input')}
-          tooltip={textTooltip(() =>
-            model.control() === 'held'
-              ? tr('Terminal input is active')
-              : tr('Focus terminal input'),
-          )}
-          selected={model.control() === 'held'}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Icon name="terminal" color={C.secondary} />
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Input')}</Text>
-        </Button>
+        <If when={!model.agentOwned()}>
+          <Button
+            ref={(node) => {
+              fallback = node;
+            }}
+            disabled={!model.local() || !model.running() || model.state() !== 'live'}
+            onPress={() => {
+              model.takeControl();
+              input?.focus();
+            }}
+            accessibilityLabel={tr('Focus terminal input')}
+            tooltip={textTooltip(() =>
+              model.control() === 'held'
+                ? tr('Terminal input is active')
+                : tr('Focus terminal input'),
+            )}
+            selected={model.control() === 'held'}
+            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            selectedStyle={{ backgroundColor: C.raised }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="terminal" color={C.secondary} />
+          </Button>
+        </If>
         <If when={model.control() === 'held'}>
           <Button
             onPress={inputAction(model.release, null)}
@@ -385,6 +391,16 @@ export function Terminal(props: { model: TerminalModel }) {
           >
             <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Release input')}</Text>
           </Button>
+        </If>
+        <If when={model.agentOwned() || !model.local() || !model.running()}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {terminalStatus(model.entry().result.status)}
+            {model.agentOwned()
+              ? ` · ${tr('Read only')}`
+              : !model.local()
+                ? ` · ${tr('shared · view only')}`
+                : ''}
+          </Text>
         </If>
         <View style={{ flex: 1 }} />
         <Button
@@ -397,7 +413,7 @@ export function Terminal(props: { model: TerminalModel }) {
         >
           <Icon name="copy" color={C.secondary} />
         </Button>
-        <If when={model.local() && model.running()}>
+        <If when={!model.agentOwned() && model.local() && model.running()}>
           <Button
             disabled={model.stopping()}
             onPress={() => confirmation.set(true)}
@@ -414,182 +430,200 @@ export function Terminal(props: { model: TerminalModel }) {
           </Button>
         </If>
       </View>
-      <Text
-        tooltip={textTooltip(() => tr('Terminal history · Shift+PageUp / Shift+PageDown'))}
-        style={{ ...captionTextStyle, color: C.muted }}
-      >
-        {terminalStatus(model.entry().result.status)} ·{' '}
-        {model.control() === 'held'
-          ? tr('input held')
-          : model.local()
-            ? tr('viewing')
-            : tr('shared · view only')}
-      </Text>
       <View
-        ref={(node) => {
-          body = node;
-        }}
-        onLayout={({ bounds: event }) => dimensions.set(event.size)}
-        onPress={() => {
-          input?.focus();
-          if (!model.agentOwned()) model.takeControl();
-        }}
-        onStartShouldSetResponder={() => pointerInput()}
-        onResponderGrant={(event) => {
-          void mouse(event, 'press');
-          return true;
-        }}
-        onResponderMove={(event) => void mouse(event, 'move')}
-        onResponderRelease={(event) => void mouse(event, 'release')}
-        onResponderTerminate={() => model.release()}
-        accessibilityLabel={tr('Terminal output')}
         style={{
           flex: 1,
           minHeight: LINE,
           backgroundColor: SURFACE.background,
+          padding: textTerminal ? 0 : 8,
+          borderRadius: textTerminal ? 0 : 8,
           overflow: 'hidden',
         }}
       >
-        <If when={model.entry().result.mode === 'pty'}>
-          <Scroll
-            horizontal
-            onScroll={(event) => {
-              model.position.x = event.offset.x;
-            }}
-            style={{ flex: 1 }}
-          >
+        <View
+          ref={(node) => {
+            body = node;
+          }}
+          onLayout={({ bounds: event }) => dimensions.set(event.size)}
+          onPress={() => {
+            input?.focus();
+            model.takeControl();
+          }}
+          onStartShouldSetResponder={() => pointerInput()}
+          onResponderGrant={(event) => {
+            void mouse(event, 'press');
+            return true;
+          }}
+          onResponderMove={(event) => void mouse(event, 'move')}
+          onResponderRelease={(event) => void mouse(event, 'release')}
+          onResponderTerminate={() => model.release()}
+          accessibilityLabel={tr('Terminal output')}
+          style={{
+            flex: 1,
+            minHeight: LINE,
+            overflow: 'hidden',
+          }}
+        >
+          <If when={!textTerminal && model.entry().result.mode === 'pty'}>
+            <Canvas
+              style={{ position: 'absolute', width: 1, height: 1, pointerEvents: 'none' }}
+              draw={(context) => {
+                context.font = `${FONT_SIZE}px ${FONT}`;
+                const advance = context.measureText('0000000000').width / 10;
+                if (advance > 0) cellWidth.set(Math.ceil(advance * 100) / 100);
+              }}
+            />
+          </If>
+          <If when={model.entry().result.mode === 'pty'}>
             <Scroll
-              ref={(node) => {
-                scroll = node;
-              }}
-              contentOffset={model.position}
+              horizontal
               onScroll={(event) => {
-                model.position.y = event.offset.y;
-                const current = frame();
-                const distance = Math.max(
-                  0,
-                  current.totalRows - rows() - Math.floor(event.offset.y / LINE),
-                );
-                model.atBottom = distance <= 1;
-                offset.set(model.atBottom ? 0 : distance);
+                model.position.x = event.offset.x;
               }}
-              style={{
-                width: Math.max(dimensions().width, frame().metadata.size.cols * CELL),
-                height: dimensions().height,
-              }}
+              style={{ flex: 1 }}
             >
-              <View
+              <Scroll
+                ref={(node) => {
+                  scroll = node;
+                }}
+                contentOffset={model.position}
+                onScroll={(event) => {
+                  model.position.y = event.offset.y;
+                  const current = frame();
+                  const distance = Math.max(
+                    0,
+                    current.totalRows - rows() - Math.floor(event.offset.y / LINE),
+                  );
+                  model.atBottom = distance <= 1;
+                  offset.set(model.atBottom ? 0 : distance);
+                }}
                 style={{
-                  height: Math.max(rows(), frame().totalRows) * LINE,
-                  width: frame().metadata.size.cols * CELL,
+                  width: Math.max(dimensions().width, frame().metadata.size.cols * cellWidth()),
+                  height: dimensions().height,
                 }}
               >
                 <View
                   style={{
-                    position: 'absolute',
-                    top: Math.max(0, frame().scrollbackRows + frame().firstLine) * LINE,
-                    left: 0,
+                    height: Math.max(rows(), frame().totalRows) * LINE,
+                    width: frame().metadata.size.cols * cellWidth(),
                   }}
                 >
-                  <Each of={frame().rows} key={(_, index) => index}>
-                    {(row, index) => (
-                      <View style={{ flexDirection: 'row', height: LINE }}>
-                        <Each of={row()} key={(_, index) => index}>
-                          {(run) => {
-                            const foreground = () =>
-                              color(run().style.foreground, frame().metadata.palette, true);
-                            const background = () =>
-                              color(run().style.background, frame().metadata.palette, false);
-                            return (
-                              <Text
-                                style={[
-                                  {
-                                    fontFamily: 'monospace',
-                                    fontSize: 16,
-                                    lineHeight: LINE,
-                                    width: cells(run()).columns * CELL,
-                                    flexShrink: 0,
-                                    color: run().style.flags & 1 ? background() : foreground(),
-                                    backgroundColor:
-                                      run().style.flags & 1 ? foreground() : background(),
-                                    fontWeight: run().style.flags & 2 ? '700' : '400',
-                                    fontStyle: run().style.flags & 4 ? 'italic' : 'normal',
-                                    textDecorationLine:
-                                      run().style.flags & 512
-                                        ? 'line-through'
-                                        : run().style.flags & (8 | 2048 | 4096 | 8192 | 16384)
-                                          ? 'underline'
-                                          : 'none',
-                                    opacity: run().style.flags & 128 ? 0.6 : 1,
-                                  },
-                                  { numberOfLines: 1, userSelect: 'none' },
-                                ]}
-                              >
-                                {cells(run()).text}
-                              </Text>
-                            );
-                          }}
-                        </Each>
-                        <If
-                          when={
-                            model.control() === 'held' &&
-                            frame().metadata.cursor.visible &&
-                            frame().metadata.cursor.y === frame().firstLine + index()
-                          }
-                        >
-                          <View
-                            style={{
-                              position: 'absolute',
-                              left: frame().metadata.cursor.x * CELL,
-                              top: 0,
-                              width: CELL,
-                              height: LINE,
-                              borderBottomWidth: 2,
-                              borderBottomColor: SURFACE.text,
+                  <View
+                    style={{
+                      position: 'absolute',
+                      top: Math.max(0, frame().scrollbackRows + frame().firstLine) * LINE,
+                      left: 0,
+                    }}
+                  >
+                    <Each of={frame().rows} key={(_, index) => index}>
+                      {(row, index) => (
+                        <View style={{ flexDirection: 'row', height: LINE }}>
+                          <Each of={row()} key={(_, index) => index}>
+                            {(run) => {
+                              const foreground = () =>
+                                color(run().style.foreground, frame().metadata.palette, true);
+                              const background = () =>
+                                color(run().style.background, frame().metadata.palette, false);
+                              return (
+                                <Text
+                                  style={[
+                                    {
+                                      ...TERMINAL_FONT,
+                                      width: cells(run()).columns * cellWidth(),
+                                      flexShrink: 0,
+                                      color: run().style.flags & 1 ? background() : foreground(),
+                                      backgroundColor:
+                                        run().style.flags & 1 ? foreground() : background(),
+                                      fontWeight: run().style.flags & 2 ? '700' : '400',
+                                      fontStyle: run().style.flags & 4 ? 'italic' : 'normal',
+                                      textDecorationLine:
+                                        run().style.flags & 512
+                                          ? 'line-through'
+                                          : run().style.flags & (8 | 2048 | 4096 | 8192 | 16384)
+                                            ? 'underline'
+                                            : 'none',
+                                      opacity: run().style.flags & 128 ? 0.6 : 1,
+                                    },
+                                    { numberOfLines: 1, textOverflow: 'clip', userSelect: 'none' },
+                                  ]}
+                                >
+                                  {cells(run()).text}
+                                </Text>
+                              );
                             }}
-                          />
-                        </If>
-                      </View>
-                    )}
-                  </Each>
+                          </Each>
+                          <If
+                            when={
+                              model.control() === 'held' &&
+                              frame().metadata.cursor.visible &&
+                              frame().metadata.cursor.y === frame().firstLine + index()
+                            }
+                          >
+                            <View
+                              style={{
+                                position: 'absolute',
+                                left: frame().metadata.cursor.x * cellWidth(),
+                                top: 0,
+                                width: cellWidth(),
+                                height: LINE,
+                                borderBottomWidth: 2,
+                                borderBottomColor: SURFACE.text,
+                              }}
+                            />
+                          </If>
+                        </View>
+                      )}
+                    </Each>
+                  </View>
                 </View>
-              </View>
+              </Scroll>
             </Scroll>
-          </Scroll>
-        </If>
-        <If when={model.entry().result.mode === 'pipes'}>
-          <Scroll style={{ flex: 1 }}>
-            <Text style={[{ ...codeTextStyle, color: SURFACE.text }, { userSelect: 'text' }]}>
-              {pipes()}
-            </Text>
-          </Scroll>
-        </If>
-        <If when={model.entry().result.mode === 'pty' && model.local() && model.state() === 'live'}>
-          <Input
-            ref={attach}
-            value={inputValue()}
-            onChange={({ value }) => text(value)}
-            onKeyPress={typedKey}
-            onFocus={() => {
-              if (!model.agentOwned()) model.takeControl();
-            }}
-            onBlur={() => model.release()}
-            autoCapitalize="none"
-            autoCorrect={false}
-            caret={false}
-            multiline
-            submitBehavior="newline"
-            accessibilityLabel={tr('Terminal keyboard input')}
-            style={{
-              position: 'absolute',
-              width: CELL,
-              height: LINE,
-              left: 0,
-              bottom: 0,
-              opacity: 0.01,
-            }}
-          />
-        </If>
+          </If>
+          <If when={model.entry().result.mode === 'pipes'}>
+            <Scroll style={{ flex: 1 }}>
+              <Text style={[{ ...codeTextStyle, color: SURFACE.text }, { userSelect: 'text' }]}>
+                {pipes()}
+              </Text>
+            </Scroll>
+          </If>
+          <If
+            when={
+              !model.agentOwned() &&
+              model.entry().result.mode === 'pty' &&
+              model.local() &&
+              model.state() === 'live'
+            }
+          >
+            <Input
+              ref={attach}
+              value={inputValue()}
+              onChange={({ value }) => text(value)}
+              pasteBehavior="report"
+              onPaste={({ text }) => {
+                const pasted = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
+                if (pasted) model.input([{ type: 'paste', text: pasted }]);
+              }}
+              onFocus={() => {
+                model.takeControl();
+              }}
+              onBlur={() => model.release()}
+              autoCapitalize="none"
+              autoCorrect={false}
+              caret={false}
+              multiline
+              submitBehavior="newline"
+              accessibilityLabel={tr('Terminal keyboard input')}
+              style={{
+                position: 'absolute',
+                width: cellWidth(),
+                height: LINE,
+                left: 0,
+                bottom: 0,
+                opacity: 0.01,
+              }}
+            />
+          </If>
+        </View>
       </View>
       <If when={model.error()}>
         <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
@@ -622,20 +656,12 @@ export function Terminal(props: { model: TerminalModel }) {
       </If>
       <If when={model.state() === 'unavailable'}>
         <Text style={{ ...bodyTextStyle, color: C.warning }}>
-          {tr(
-            'Live output is no longer retained. Input is released; the final display will appear after the process settles.',
-          )}
+          {tr('Waiting for retained output…')}
         </Text>
       </If>
       <If when={confirmation()}>
         <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>
-          <DialogHeader
-            title={
-              model.agentOwned()
-                ? tr('Stop the agent’s running terminal? This interrupts its command.')
-                : tr('Stop this terminal and its running process?')
-            }
-          />
+          <DialogHeader title={tr('Stop this terminal and its running process?')} />
           <DialogFooter>
             <SettingsButton
               label={tr('Cancel')}

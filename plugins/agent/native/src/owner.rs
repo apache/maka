@@ -45,6 +45,7 @@ mod driver_executor;
 mod driver_executor_inputs;
 mod driver_executor_publication;
 mod driver_external_effects;
+mod rooms;
 mod send;
 use send::NativeMutation;
 mod bot;
@@ -353,7 +354,6 @@ impl Owner {
             persistence.source().deployment,
             context.activation().instance(),
         );
-        let root_id = root.root_id().to_owned();
         let managed_worktrees = root.canonical_path().join("subagent-worktrees");
         let workspace_specs = settings.workspace_roots.clone();
         let import_specs = settings.import_roots.clone();
@@ -604,25 +604,6 @@ impl Owner {
                 owner,
             ));
         }
-        let antigravity = owner
-            .settings
-            .external
-            .as_ref()
-            .is_some_and(|configuration| {
-                configuration
-                    .runtimes
-                    .enabled(maka_agent_api::executor::NativeRuntime::Antigravity)
-            });
-        let installation = format!("{}-{}", root_id, owner.prefix);
-        if let Err(error) = crate::executor::external::agy::sync_host_agent(
-            owner.home.clone(),
-            installation,
-            antigravity,
-        )
-        .await
-        {
-            tracing::warn!(%error, "Could not update the Maka Antigravity agent");
-        }
         Ok(owner)
     }
     #[cfg(test)]
@@ -643,15 +624,14 @@ impl Owner {
     fn physical_availability_changed(&self) {
         self.physical_availability_changed_after(true);
     }
-    fn physical_availability_changed_after(&self, retry_ready: bool) {
+    fn physical_availability_changed_after(&self, probe_authority: bool) {
         self.physical_changes.send_modify(|_| {});
         self.goals.execution_changed();
         self.scheduler.execution_changed();
-        if retry_ready {
-            self.wake_notify.notify_one();
-            if let Ok(root) = self.store.owned_root() {
-                root.capability_source_changed();
-            }
+        // A retired business probe can unblock cleanup without changing authority.
+        self.wake_notify.notify_one();
+        if probe_authority && let Ok(root) = self.store.owned_root() {
+            root.capability_source_changed();
         }
     }
     pub fn operation_id(&self, operation: &maka_plugin_core::operation::RecoveryRef) -> String {
@@ -832,8 +812,12 @@ impl Owner {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
+                let purpose = match input.kind {
+                    SessionKind::Agent => creation::Purpose::Session,
+                    SessionKind::Room => creation::Purpose::Room,
+                };
                 owner
-                    .create_inner(input, &operation, &scope, creation::Purpose::Session)
+                    .create_inner(input, &operation, &scope, purpose)
                     .await
                     .map(creation::PreparedCreation::into_session)
             })
@@ -849,6 +833,10 @@ impl Owner {
     ) -> Result<creation::PreparedCreation, String> {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(creation::PreparedCreation::Rejected(reason));
+        }
+        let is_room = matches!(purpose, creation::Purpose::Room);
+        if is_room && (input.preset_id.is_some() || input.backend.is_some()) {
+            return Err("agent_room_has_no_backend".into());
         }
         let applied_preset = if let Some(id) = input.preset_id {
             if input.backend.is_some() {
@@ -888,7 +876,9 @@ impl Owner {
         } else {
             None
         };
-        let backend = if let Some(p) = &applied_preset {
+        let backend = if is_room {
+            None
+        } else if let Some(p) = &applied_preset {
             Some(BackendPreference::Model {
                 connection_id: p.model.connection_id.clone(),
                 model_id: p.model.model_id.clone(),

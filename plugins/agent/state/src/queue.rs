@@ -176,7 +176,7 @@ impl QueueStore {
         command: QueueCommand,
         contents: Vec<ContentBlob>,
     ) -> maka_event_log::root_store::DataChange {
-        self.data.prepare(Write {
+        self.data.prepare(PreparedEnqueue {
             session,
             command,
             contents,
@@ -193,7 +193,7 @@ impl QueueStore {
         contents: Vec<ContentBlob>,
         followup: Followup,
     ) -> maka_event_log::root_store::DataChange {
-        self.data.prepare(Write {
+        self.data.prepare(PreparedEnqueue {
             session,
             command,
             contents,
@@ -210,7 +210,7 @@ impl QueueStore {
         contents: Vec<ContentBlob>,
         fence: SessionWorkFence,
     ) -> maka_event_log::root_store::DataChange {
-        self.data.prepare(Write {
+        self.data.prepare(PreparedEnqueue {
             session,
             command,
             contents,
@@ -228,7 +228,7 @@ impl QueueStore {
         extra: S,
     ) -> maka_event_log::root_store::DataChange {
         self.data.prepare(WithExtra {
-            queue: Write {
+            queue: PreparedEnqueue {
                 session,
                 command,
                 contents,
@@ -245,7 +245,7 @@ impl QueueStore {
         contents: Vec<ContentBlob>,
     ) -> Result<QueueCommit, StoreError> {
         self.data
-            .write(Write {
+            .write(PreparedEnqueue {
                 session,
                 command,
                 contents,
@@ -303,25 +303,25 @@ impl QueueStore {
     pub async fn rebuild(&self, session: String) -> Result<QueueCommit, StoreError> {
         self.data.write(Rebuild(session)).await
     }
-    pub async fn recover_stopped_goal_steering(
+    pub async fn recover_undelivered_steering(
         &self,
         owner: RunOwner,
         at: UnixMillis,
     ) -> Result<(), StoreError> {
         self.data
-            .write(RecoverStoppedGoalSteering { owner, at })
+            .write(RecoverUndeliveredSteering { owner, at })
             .await
     }
 }
-struct RecoverStoppedGoalSteering {
+struct RecoverUndeliveredSteering {
     owner: RunOwner,
     at: UnixMillis,
 }
-impl Statement for RecoverStoppedGoalSteering {
+impl Statement for RecoverUndeliveredSteering {
     type Value = ();
     type Output = ();
     fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
-        let sessions = sql::recover_stopped_goal_steering(c, &self.owner, self.at)?;
+        let sessions = sql::recover_undelivered_steering(c, &self.owner, self.at)?;
         Ok(Prepared {
             value: (),
             changed: !sessions.is_empty(),
@@ -334,17 +334,18 @@ impl Statement for RecoverStoppedGoalSteering {
     }
     fn committed(_: ()) {}
     fn isolated_rejection(error: &StoreError) -> bool {
-        Write::isolated_rejection(error)
+        PreparedEnqueue::isolated_rejection(error)
     }
 }
-struct Write {
-    session: String,
-    command: QueueCommand,
-    contents: Vec<ContentBlob>,
-    followup: Option<Followup>,
-    work_fence: Option<Arc<SessionWorkFence>>,
+/// A captured admission that can share a transaction with its source message.
+pub struct PreparedEnqueue {
+    pub session: String,
+    pub command: QueueCommand,
+    pub contents: Vec<ContentBlob>,
+    pub followup: Option<Followup>,
+    pub work_fence: Option<Arc<SessionWorkFence>>,
 }
-impl Statement for Write {
+impl Statement for PreparedEnqueue {
     type Value = QueueCommit;
     type Output = QueueCommit;
     fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
@@ -412,7 +413,7 @@ impl Statement for Rebuild {
         value
     }
     fn isolated_rejection(error: &StoreError) -> bool {
-        Write::isolated_rejection(error)
+        PreparedEnqueue::isolated_rejection(error)
     }
 }
 struct Read(String);
@@ -473,7 +474,7 @@ impl Query for Ready {
 }
 
 struct WithExtra<S> {
-    queue: Write,
+    queue: PreparedEnqueue,
     extra: S,
 }
 impl<S: Statement> Statement for WithExtra<S> {
@@ -503,6 +504,6 @@ impl<S: Statement> Statement for WithExtra<S> {
         queue
     }
     fn isolated_rejection(error: &StoreError) -> bool {
-        Write::isolated_rejection(error)
+        PreparedEnqueue::isolated_rejection(error)
     }
 }

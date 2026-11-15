@@ -24,6 +24,7 @@ import type {
   AgentSessionListScope,
   AgentSessionFilter,
   AgentSession,
+  AgentSessionKind,
   AgentSessionPage,
   AgentProject,
   AgentProjectsPage,
@@ -77,7 +78,7 @@ const uniqueSessions = (items: BrowserSession[]) => [
 
 // One mounted read projection serves the workspace browser and session picker.
 // Host revisions own paging; these snapshots grant no mutation authority.
-export function createBrowsing(host: Host): Browsing {
+export function createBrowsing(host: Host, kind: AgentSessionKind = 'agent'): Browsing {
   const scope = signal<BrowserScope>({ kind: 'all' });
   const filter = signal<AgentSessionFilter>('all');
   const sessions = signal<BrowserSession[]>([]);
@@ -98,6 +99,7 @@ export function createBrowsing(host: Host): Browsing {
     read.filter !== 'needs_you' && platform.idiom === 'terminal';
   const list = async (read: CatalogRead, position: AgentSessionPosition): Promise<SessionPage> =>
     host.query('agent', 'list', {
+      kind,
       filter: read.filter,
       rootsOnly: rootsOnly(read),
       scope: read.scope,
@@ -164,6 +166,7 @@ export function createBrowsing(host: Host): Browsing {
         let opened: Subscription | null = null;
         try {
           opened = await host.subscribe('agent', 'catalog', {
+            kind,
             filter: read.filter,
             rootsOnly: rootsOnly(read),
             scope: read.scope,

@@ -67,6 +67,109 @@ impl HistoryDataSource {
             Self::Snapshot(source) => source.terminated(run).await,
         }
     }
+    pub async fn final_attempt(&self, run: RunId) -> Result<Option<ModelAttemptId>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::FinalAttemptAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        run,
+                    ))
+                    .await
+            }
+            Self::Snapshot(source) => {
+                let view = source.view_at(run).await?;
+                Ok(view
+                    .current_attempt
+                    .filter(|_| view.terminal == Some(Terminal::Completed)))
+            }
+        }
+    }
+    pub async fn completed_work(
+        &self,
+        run: RunId,
+        turn: &str,
+    ) -> Result<Option<CompletedWork>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::CompletedWorkAt {
+                        namespace: history.namespace.clone(),
+                        cut: cut.clone(),
+                        run,
+                        turn: turn.to_owned(),
+                    })
+                    .await
+            }
+            Self::Snapshot(_) => Ok(None),
+        }
+    }
+    pub async fn reported_model(
+        &self,
+        run: RunId,
+        step: StepId,
+        attempt: ModelAttemptId,
+    ) -> Result<Option<String>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::ReportedModelAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        run,
+                        step,
+                        attempt,
+                    ))
+                    .await
+            }
+            Self::Snapshot(_) => Err(invalid("Native model metadata query requires live history")),
+        }
+    }
+    pub async fn projected_tool(
+        &self,
+        run: RunId,
+        tool: ToolKey,
+    ) -> Result<Option<crate::fold::Tool>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::ProjectedToolAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        run,
+                        tool,
+                    ))
+                    .await
+            }
+            Self::Snapshot(_) => Ok(None),
+        }
+    }
+
+    pub async fn projected_cell(
+        &self,
+        run: RunId,
+        cell: maka_agent_facts::cells::CellId,
+    ) -> Result<Option<maka_agent_facts::cells::CellView>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::ProjectedCellAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        run,
+                        cell,
+                    ))
+                    .await
+            }
+            Self::Snapshot(_) => Ok(None),
+        }
+    }
     pub async fn request(&self, run: RunId, step: StepId) -> Result<RequestSpec, StoreError> {
         match self {
             Self::Live { history, cut } => {
@@ -192,6 +295,7 @@ impl HistoryDataSource {
         include_internal: bool,
         min_admission: u64,
         limit: u32,
+        run_rows: Option<RunRows>,
     ) -> Result<Vec<SnapshotPosition>, StoreError> {
         match self {
             Self::Snapshot(source) => {
@@ -210,6 +314,7 @@ impl HistoryDataSource {
                         include_internal,
                         min_admission,
                         limit,
+                        run_rows,
                     ))
                     .await
             }

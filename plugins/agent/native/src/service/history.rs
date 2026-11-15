@@ -91,7 +91,7 @@ async fn cut(history: &SessionHistory, through: Option<u64>) -> Result<HistoryCu
 pub(super) async fn read(
     owner: &Owner,
     scope: &Scope,
-    input: ui::History,
+    mut input: ui::History,
 ) -> Result<ui::HistoryPage, String> {
     wire::Read {
         session_id: input.session_id.clone(),
@@ -101,7 +101,33 @@ pub(super) async fn read(
     }
     .validate()
     .map_err(|e| e.to_string())?;
+    authorize(owner, scope, &input.session_id).await?;
+    let rooms = scoped_state(owner, scope)?.rooms(owner.run_owner());
+    if rooms
+        .exists(&input.session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        use maka_agent_facts::room::RoomPosition;
+        let position = match input.position {
+            wire::Position::Start => RoomPosition::Start,
+            wire::Position::Tail => RoomPosition::Tail,
+            wire::Position::Message { message_id } => RoomPosition::Message { message_id },
+            wire::Position::BeforeMessage { message_id } => RoomPosition::Before { message_id },
+            wire::Position::AfterMessage { message_id } => RoomPosition::After { message_id },
+            _ => return Err("agent_cursor_invalid".into()),
+        };
+        let page = rooms
+            .page(input.session_id.clone(), input.through, position, 48)
+            .await
+            .map_err(|error| error.to_string())?;
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::HistoryPage::Room { page: page.into() });
+    }
     let history = open(owner, scope, &input.session_id).await?;
+    if input.view == wire::HistoryView::Chat && owner.has_bot_history(&input.session_id).await? {
+        input.view = wire::HistoryView::Conversation;
+    }
     let cut = cut(&history, input.through).await?;
     let page = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
@@ -285,7 +311,14 @@ async fn tree_window(
     view: wire::HistoryView,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<wire::Page, String> {
+    use maka_agent_state::session_history::source_tree::RunRows;
     use wire::{Position, SourcePosition};
+    if matches!(
+        position,
+        Position::Message { .. } | Position::BeforeMessage { .. } | Position::AfterMessage { .. }
+    ) {
+        return Err("agent_cursor_invalid".into());
+    }
     const PAGE_CHUNKS: usize = 8;
     let mut reverse = matches!(&position, Position::Tail | Position::Before { .. });
     let anchor = match &position {
@@ -317,8 +350,22 @@ async fn tree_window(
         _ => None,
     };
     let mut cache = source::Cache::default();
+    cache.chat = view == wire::HistoryView::Chat;
+    let mut turn = None;
+    if view == wire::HistoryView::Turn && anchor.is_none() {
+        return Err("agent_history_turn_requires_anchor".into());
+    }
     if let Some(anchor) = &anchor {
-        let selected = source::selected(tree, &anchor.position, &mut cache, stop).await?;
+        let selected = source::unpaired(tree, &anchor.position, None, &mut cache, stop).await?;
+        if view == wire::HistoryView::Turn {
+            use maka_agent_state::session_history::source_tree::SourceItem;
+            let (wire::HistoryRowAddress::Live { .. }, SourceItem::Canonical(item)) =
+                (&anchor.position, &selected.item)
+            else {
+                return Err("agent_history_turn_requires_live_run".into());
+            };
+            turn = Some((item.recorded.run, item.admission_sequence));
+        }
         if !matches!(&position, Position::Event { .. })
             && (selected.row.chunk.field != anchor.field
                 || (!include_thinking && anchor.field == wire::HistoryField::Thinking))
@@ -331,6 +378,7 @@ async fn tree_window(
             reverse = true;
         }
     }
+    let scoped = turn.map(|(run, _)| RunRows::Only { run, start: None });
     let rows = source::window(
         tree,
         anchor.as_ref().map(|cursor| cursor.position.clone()),
@@ -339,6 +387,10 @@ async fn tree_window(
         // One additional source row covers the inclusive boundary cursor.
         PAGE_CHUNKS + 1,
         &mut cache,
+        turn.map(|(run, admission)| RunRows::Only {
+            run,
+            start: matches!(position, Position::Row { .. }).then_some(admission),
+        }),
         stop,
     )
     .await?;
@@ -446,6 +498,7 @@ async fn tree_window(
             include_thinking,
             2,
             &mut cache,
+            scoped,
             stop,
         )
         .await?
@@ -463,6 +516,7 @@ async fn tree_window(
             include_thinking,
             2,
             &mut cache,
+            scoped,
             stop,
         )
         .await?
@@ -553,6 +607,31 @@ pub(super) async fn observation(
     scope: &Scope,
     input: ui::SessionRead,
 ) -> Result<ui::Observation, String> {
+    authorize(owner, scope, &input.session_id).await?;
+    let rooms = scoped_state(owner, scope)?.rooms(owner.run_owner());
+    if rooms
+        .exists(&input.session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let through = rooms
+            .capture(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let session = owner.session_summary(&input.session_id).await?;
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::Observation {
+            session,
+            through,
+            run: None,
+            parts: Vec::new(),
+            tool_seeds: Vec::new(),
+            last_completed_turn_id: None,
+            compacting: None,
+            remembered_backend: None,
+            metrics: None,
+        });
+    }
     let history = open(owner, scope, &input.session_id).await?;
     let observed = history
         .live_observation()

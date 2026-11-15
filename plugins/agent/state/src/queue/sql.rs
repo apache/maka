@@ -676,7 +676,7 @@ pub(crate) fn release_steering(
     )
 }
 
-pub(super) fn recover_stopped_goal_steering(
+pub(super) fn recover_undelivered_steering(
     c: &Connection,
     owner: &RunOwner,
     at: UnixMillis,
@@ -686,10 +686,12 @@ pub(super) fn recover_stopped_goal_steering(
             "SELECT DISTINCT q.session,q.target_run
          FROM agent_queue_items q
          JOIN agent_runs r ON r.run=q.target_run AND r.session=q.session AND r.owner=q.owner
-         JOIN agent_facts f ON f.run=r.run AND f.id=r.stop_request
-         JOIN contents b ON b.id=f.body_content_id
-         WHERE q.owner=?1 AND q.state='pending' AND q.lane='steering'
-           AND json_extract(b.payload,'$.fact.diagnostic')=?2",
+         WHERE q.owner=?1 AND q.state='pending' AND q.lane='steering' AND r.local=1
+           AND (r.terminal IS NOT NULL OR EXISTS (
+               SELECT 1 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id
+               WHERE f.id=r.stop_request AND f.run=r.run
+                 AND json_extract(b.payload,'$.fact.diagnostic')=?2
+           ))",
         )?
         .query_map(
             params![serde_json::to_string(owner)?, GOAL_CONTROL_STOP],
@@ -699,7 +701,7 @@ pub(super) fn recover_stopped_goal_steering(
     let mut sessions = BTreeSet::new();
     for (session, run) in rows {
         let run = RunId::try_from(
-            uuid::Uuid::parse_str(&run).map_err(|_| invalid("invalid stopped steering Run"))?,
+            uuid::Uuid::parse_str(&run).map_err(|_| invalid("invalid steering Run"))?,
         )
         .map_err(invalid)?;
         release_steering(c, &session, run, at)?;

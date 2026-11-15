@@ -1520,11 +1520,17 @@ pub(crate) fn append(
         };
         view.apply(&recorded)?;
         record(c, &recorded)?;
-        if let Fact::StopRequested { diagnostic } = &recorded.fact {
-            crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
-            if diagnostic == crate::queue::GOAL_CONTROL_STOP {
+        match &recorded.fact {
+            Fact::StopRequested { diagnostic } => {
+                crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
+                if diagnostic == crate::queue::GOAL_CONTROL_STOP {
+                    crate::queue::release_steering(c, &view.spec.session_id, run, recorded.at)?;
+                }
+            }
+            Fact::RunTerminated { .. } if matches!(view.spec.origin, RunOrigin::Local) => {
                 crate::queue::release_steering(c, &view.spec.session_id, run, recorded.at)?;
             }
+            _ => {}
         }
         model_evidence::validate_partial(c, &view, &recorded)?;
         model_evidence::validate_source_failure(c, &view, &recorded)?;

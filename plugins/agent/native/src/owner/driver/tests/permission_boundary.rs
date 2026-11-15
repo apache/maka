@@ -339,3 +339,79 @@ async fn retained_preview_after_input(stop: bool) {
     );
     assert!(cleanup.is_empty(), "preview fixture cleanup: {cleanup:?}");
 }
+
+#[tokio::test]
+async fn external_host_tools_respect_session_sandbox() -> TestResult<()> {
+    use maka_agent_facts::{
+        cells::{CellId, CellOwner},
+        external_effects::ExternalEffectKey,
+        tool_call::ToolOrigin,
+    };
+    use maka_sandbox::{Sandbox, filesystem::Access};
+
+    for mode in [
+        WorkspaceAccess::DangerFullAccess,
+        WorkspaceAccess::WorkspaceWrite,
+    ] {
+        let mut rig = Rig::new()?;
+        let result = async {
+            let session = rig
+                .start_configured(None, |config| {
+                    config["external"] = json!({"runtimes":{"codex":true}});
+                })
+                .await?;
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let revision = owner.mutable_session(&session).await?.revision;
+            let update = update_permissions(&rig, &session, revision, mode, false, false).await?;
+            assert_eq!(update["kind"], "committed", "{update}");
+            let budget = Budget {
+                tokens: None,
+                retries: 0,
+                deadline: None,
+            };
+            rig.assemble_backend(&session, budget, false, true).await?;
+            let access = &rig.driver.as_ref().unwrap().access;
+            let run = access.execution().run_id;
+            let key = ExternalEffectKey {
+                task: ExternalTaskId::new(),
+                operation: Uuid::new_v4(),
+            };
+            let direct = ToolOrigin::External {
+                task: key.task,
+                operation: key.operation,
+                package_id: "maka.agent".into(),
+                entry_id: "maka.agent".into(),
+                activation: "fixture".into(),
+            };
+            let nested = ToolOrigin::CodeCell {
+                cell: CellId::for_external(run, key),
+                owner: CellOwner::External { run, key },
+                parent_operation_id: "exec".into(),
+                parent_tool_call_id: "exec".into(),
+            };
+            Ok::<_, Box<dyn Error + Send + Sync>>([
+                access.sandbox_floor(&direct).await?,
+                access.sandbox_floor(&nested).await?,
+            ])
+        }
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        for floor in result? {
+            if mode == WorkspaceAccess::DangerFullAccess {
+                assert_eq!(floor, Sandbox::Disabled);
+            } else {
+                let Sandbox::Managed { filesystem, .. } = floor else {
+                    panic!("expected the workspace sandbox, got {floor:?}");
+                };
+                assert_eq!(
+                    filesystem
+                        .compile()?
+                        .access(&maka_sandbox::native_task_namespace()?),
+                    Access::Deny
+                );
+            }
+        }
+    }
+    Ok(())
+}

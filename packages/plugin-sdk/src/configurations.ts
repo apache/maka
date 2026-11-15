@@ -572,7 +572,13 @@ export const configurations = {
         oneOf: [
           {
             type: 'string',
-            enum: ['json', 'image'],
+            enum: ['json'],
+          },
+          {
+            description:
+              'A subscription that streams image data and can return JSON at completion.',
+            type: 'string',
+            const: 'image',
           },
           {
             description: 'Session-owned Computer REPL output, retained with its original receipt.',

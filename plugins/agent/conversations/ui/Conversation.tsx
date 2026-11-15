@@ -18,7 +18,11 @@
  */
 
 import { createTrajectoryRequests } from './trajectoryRequests';
-import { sendReceiptFailure } from './sendReceipt';
+import {
+  sendReceiptFailure,
+  shouldHideAcceptedQueuedStatus,
+  shouldProjectPendingSend,
+} from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
@@ -75,6 +79,7 @@ import {
   type ScopedHost,
 } from '../../../../products/maka/workbench/app/host';
 import {
+  animateDisclosure,
   C,
   Header,
   ViewSegment,
@@ -85,6 +90,7 @@ import {
 } from '../../../../products/maka/workbench/app/ui';
 import {
   acceptedSend,
+  activityMessage,
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
@@ -95,6 +101,7 @@ import {
   compareRows,
   HistoryRows,
   mergeHistoryPage,
+  type ConversationHistoryPage,
   openingUserMessage,
   replayStartCursor,
   senderSession,
@@ -220,7 +227,6 @@ import type {
   AgentHistoryAttachment,
   AgentHistoryChunk,
   AgentHistoryLandmark,
-  AgentHistoryPage,
   AgentMarkReadResult,
   AgentSession,
   AgentRunBackend,
@@ -244,10 +250,12 @@ type HistoryNavigation =
   | { kind: 'start' | 'tail' }
   | { kind: 'turn'; item: TurnNavigationItem }
   | { kind: 'message'; anchor: ConversationAnchor };
-type HistoryWindow = Pick<AgentHistoryPage, 'before' | 'after'> & {
+type HistoryWindow = Pick<ConversationHistoryPage, 'before' | 'after'> & {
   through: number;
   identity: object;
+  view: HistoryListView;
 };
+type HistoryListView = 'chat' | 'conversation';
 
 export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = Omit<
@@ -325,6 +333,7 @@ type ConversationProps = {
   files?(): void;
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
   knownSession?(sessionId: string): AgentSession | undefined;
@@ -545,6 +554,7 @@ export function Conversation(props: ConversationProps) {
     !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
+  const workPages = new Map<string, { through: number }>();
   const groupStates = new Map<string, GroupViewState>();
   const rowStates = new Map<string, MessageViewState>();
   const turnState = (id: string) => {
@@ -1095,6 +1105,7 @@ export function Conversation(props: ConversationProps) {
       if (
         turn &&
         (entry.kind === 'process' ||
+          (row?.role === 'compaction' && turn.foldedWork) ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
@@ -1408,7 +1419,15 @@ export function Conversation(props: ConversationProps) {
       reading.set('trajectory');
     });
     if (!trajectorySideBySide()) pendingTrajectoryAnchor = key;
-    jumpTrajectoryEntry(key);
+    const window = historyWindow();
+    const position = currentRow(rowId)?.position;
+    if (window?.view === 'chat' && position) {
+      void resetHistory({ kind: 'row', position, field: 'body' }, window.through)
+        .then((opened) => {
+          if (opened && reading() === 'trajectory') jumpTrajectoryEntry(key);
+        })
+        .catch(report);
+    } else jumpTrajectoryEntry(key);
   };
 
   const resumeHistoryFollowing = (animated = false) => {
@@ -1417,16 +1436,30 @@ export function Conversation(props: ConversationProps) {
     // Replace the list's reading anchor when manual scrolling reaches the end.
     list?.scrollToEnd({ animated: animated && !reduceMotion() });
   };
+  const latestActivity = (turnId = runTurn()) =>
+    reading() === 'chat'
+      ? projection().entries.findLast(
+          (entry) => entry.kind === 'process' && entry.turnKey === turnId,
+        )
+      : undefined;
+  const followLatestActivity = (turnId = runTurn()) => {
+    const entry = latestActivity(turnId);
+    if (entry?.kind !== 'process') return;
+    const state = groupState(entry.key);
+    state.following.set(true);
+    if (state.list) state.list.scrollToEnd({ animated: false });
+    else state.opening = 'bottom';
+  };
   const resumeHistoryAtEnd = (offset: number) => {
     if (
       historyMaxOffset - offset > historyFollowThreshold ||
-      !historyFollowPaused() ||
+      (!historyFollowPaused() && innerReader() === null) ||
       (reading() === 'trajectory' && trajectoryRange() !== null) ||
       !atHistoryTail()
     )
       return;
-    if (innerReader() === null) resumeHistoryFollowing();
-    else historyFollowPaused.set(false);
+    if (innerReader() !== null) followLatestActivity();
+    resumeHistoryFollowing();
   };
   let compactScroll: ScrollRef | undefined;
   let followCompact = false;
@@ -1539,14 +1572,23 @@ export function Conversation(props: ConversationProps) {
     }
     if (!current.missingAttachments.size) attachmentMetadataFailed.set(false);
   };
-  const history = async (through: number, position: HistoryPosition) => {
+  const chatHistoryView = (): HistoryListView =>
+    platform.idiom !== 'terminal' && reading() === 'chat' && botView() !== 'bot'
+      ? 'chat'
+      : 'conversation';
+  const history = async (
+    through: number,
+    position: HistoryPosition,
+    view: HistoryListView | 'turn' = 'conversation',
+  ) => {
     const page = await host.query('agent', 'history', {
       sessionId,
       through,
       position,
       includeThinking: true,
-      view: 'conversation',
+      view,
     });
+    if (page.kind !== 'ready') throw new Error('Expected conversation history.');
     if (page.through !== through) throw new UiError('History changed its requested fence.');
     return { ...page, through: page.through };
   };
@@ -1556,8 +1598,9 @@ export function Conversation(props: ConversationProps) {
   const resetHistory = (
     position: HistoryPosition,
     through: number,
-    verify?: (page: AgentHistoryPage) => void,
+    verify?: (page: ConversationHistoryPage) => void,
     current: () => boolean = () => true,
+    view: HistoryListView = chatHistoryView(),
   ): Promise<boolean> => {
     if (!current()) return Promise.resolve(false);
     const identity = {};
@@ -1589,7 +1632,7 @@ export function Conversation(props: ConversationProps) {
       let location = position;
       let page: Awaited<ReturnType<typeof history>>;
       for (;;) {
-        page = await history(through, location);
+        page = await history(through, location, view);
         if (!canPublish()) return false;
         verify?.(page);
         if (page.chunks.length) break;
@@ -1601,7 +1644,7 @@ export function Conversation(props: ConversationProps) {
       if (!canPublish()) return false;
       if (position.kind === 'tail') {
         const tail = await readHistoryTail(page, async (cursor) => {
-          const older = await history(through, { kind: 'before', cursor });
+          const older = await history(through, { kind: 'before', cursor }, view);
           return canPublish() ? older : null;
         });
         if (tail === null || !canPublish()) return false;
@@ -1609,8 +1652,10 @@ export function Conversation(props: ConversationProps) {
       }
       batch(() => {
         historyRows.set(new HistoryRows());
+        workPages.clear();
         historyWindow.set({
           identity,
+          view,
           through: page.through,
           before: page.before,
           after: page.after,
@@ -1625,6 +1670,15 @@ export function Conversation(props: ConversationProps) {
         historyFollowPaused.set(position.kind !== 'tail');
         innerReader.set(null);
       });
+      for (const [key, state] of turnStates) {
+        if (
+          state.expanded() === true &&
+          historyRows()
+            .byTurn.get(key)
+            ?.some((row) => row.foldedWork)
+        )
+          loadTurnWork(key);
+      }
       if (page.after === null && latestKnown > through) void follow().catch(report);
       return true;
     })()
@@ -1642,6 +1696,41 @@ export function Conversation(props: ConversationProps) {
       });
     windowTask = task;
     return task;
+  };
+  const loadTurnWork = (key: string) => {
+    const owner = historyWindow();
+    const first = historyRows()
+      .byTurn.get(key)
+      ?.find((row) => row.foldedWork && row.position);
+    if (!owner || !first?.position || workPages.has(key)) return;
+    const state = { through: first.metadataThrough ?? owner.through };
+    workPages.set(key, state);
+    // Folded groups need every step to name what they did, so the whole turn
+    // arrives before it is shown, not page by page.
+    const load = async () => {
+      let cursor: HistoryPosition = { kind: 'row', position: first.position!, field: 'body' };
+      const chunks: AgentHistoryChunk[] = [];
+      let through = state.through;
+      for (;;) {
+        const page = await history(state.through, cursor, 'turn');
+        if (!alive || workPages.get(key) !== state) return;
+        chunks.push(...page.chunks);
+        through = page.through;
+        if (page.after === null) break;
+        cursor = { kind: 'after', cursor: page.after };
+      }
+      const current = historyRows();
+      const changed = mergeHistoryPage(chunks, (key) => current.byKey.get(key), false, through);
+      if (changed.length) {
+        current.put(changed);
+        historyRows.set(current);
+      }
+    };
+    load().catch((reason) => {
+      if (workPages.get(key) !== state) return;
+      workPages.delete(key);
+      report(reason);
+    });
   };
   const hydrateAttachmentMetadata = () => {
     for (const rowKey of historyRows().missingAttachments) {
@@ -2112,7 +2201,7 @@ export function Conversation(props: ConversationProps) {
     const task = (async () => {
       let position: HistoryPosition = { kind: direction, cursor: edge };
       for (;;) {
-        const page = await history(owner.through, position);
+        const page = await history(owner.through, position, owner.view);
         if (!ownsWindow(owner.identity)) return false;
         const current = historyWindow()!;
         if (page.chunks.length || page[direction] === null) {
@@ -2291,6 +2380,7 @@ export function Conversation(props: ConversationProps) {
             throw new UiError('The original message could not be verified.');
         },
         () => navigation() === target && current(),
+        'conversation',
       );
       if (!opened || !alive || navigation() !== target || !current())
         throw new UiError('History navigation was cancelled.');
@@ -2687,11 +2777,23 @@ export function Conversation(props: ConversationProps) {
         });
     }
   };
-  const settleReply = (reply: any, text?: string, files: DraftAttachment[] = []) => {
+  const inTranscript = (messageId: string) =>
+    historyRows().byMessage.has(`${messageId}/body`) ||
+    (atHistoryTail() && pendingMessages().some((row) => row.messageId === messageId));
+  const settleReply = (
+    reply: any,
+    text?: string,
+    files: DraftAttachment[] = [],
+    immediate = false,
+  ) => {
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
     if (
-      accepted.kind === 'started' &&
+      shouldProjectPendingSend(accepted, {
+        immediate,
+        activeRunId: runId(),
+        atHistoryTail: atHistoryTail(),
+      }) &&
       text !== undefined &&
       !historyRows().byMessage.has(`${accepted.messageId}/body`)
     ) {
@@ -2803,7 +2905,13 @@ export function Conversation(props: ConversationProps) {
         return;
       }
       const sent = await confirmSend(client, id);
-      if (alive) settleReply(sent.reply, frozen.text, frozen.files);
+      if (alive)
+        settleReply(
+          sent.reply,
+          frozen.text,
+          frozen.files,
+          frozen.selection.expectedRunId === undefined,
+        );
     } catch (reason) {
       sendError(id, reason);
     } finally {
@@ -2950,6 +3058,7 @@ export function Conversation(props: ConversationProps) {
             reply,
             original.correlation.draft.text,
             original.correlation.draft.attachments,
+            original.correlation.selection.expectedRunId === undefined,
           );
       }
       const delivery = await sendDelivery(client, id);
@@ -3047,11 +3156,15 @@ export function Conversation(props: ConversationProps) {
       const checking = checkingSends().has(original.id);
       const detail = sendErrors().get(original.id);
       if (
-        !failed &&
-        !detail &&
         acceptedQueued(original) &&
-        sendDeliveries().get(original.id) !== 'unknown' &&
-        followups.has(acceptedSend({ receipt: original.receipt }, sessionId).messageId)
+        shouldHideAcceptedQueuedStatus({
+          failed,
+          detail,
+          delivery: sendDeliveries().get(original.id),
+          messageId: acceptedSend({ receipt: original.receipt }, sessionId).messageId,
+          followups,
+          inTranscript,
+        })
       )
         continue;
       statuses.set(original.id, {
@@ -3173,7 +3286,31 @@ export function Conversation(props: ConversationProps) {
       innerReader.set(null);
       reading.set(mode);
     });
-    if (historyFollowPaused() && anchor !== null) scrollToTurn(anchor);
+    const window = historyWindow();
+    const desired = chatHistoryView();
+    const atTail = atHistoryTail() && !historyFollowPaused();
+    const rowsAtAnchor = anchor === null ? undefined : historyRows().byTurn.get(anchor);
+    const row =
+      rowsAtAnchor?.find((row) => row.role === 'user' && !activityMessage(row.origin)) ??
+      rowsAtAnchor?.find((row) => row.finalOutput) ??
+      rowsAtAnchor?.[0];
+    if (window && window.view !== desired) {
+      const position: HistoryPosition =
+        !atTail && row?.position
+          ? {
+              kind: 'row',
+              position: row.position,
+              field: row.field === 'thinking' ? 'thinking' : 'body',
+            }
+          : { kind: 'tail' };
+      void resetHistory(position, window.through, undefined, () => reading() === mode, desired)
+        .then((opened) => {
+          if (!opened || reading() !== mode) return;
+          if (position.kind === 'tail') resumeHistoryFollowing();
+          else if (anchor !== null) scrollToTurn(anchor);
+        })
+        .catch(report);
+    } else if (historyFollowPaused() && anchor !== null) scrollToTurn(anchor);
     else if (atHistoryTail()) resumeHistoryFollowing();
   };
   const sendRendered = ({
@@ -3224,6 +3361,34 @@ export function Conversation(props: ConversationProps) {
           ? 'occupied'
           : 'empty';
     untracked(() => messagePrediction.eligible(eligible, composer));
+  });
+  effect(() => {
+    const current = pendingMessages();
+    if (!current.length) return;
+    if (!atHistoryTail()) {
+      pendingMessages.set([]);
+      return;
+    }
+    const cancelledIds = new Set(
+      unresolved()
+        .filter((item) => sendDeliveries().get(item.id) === 'cancelled')
+        .map((item) => acceptedSend({ receipt: item.receipt }, sessionId)?.messageId)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    const waitingFollowups =
+      runId() !== null
+        ? new Set(
+            queued()
+              ?.entries.filter((entry) => entry.kind === 'followup')
+              .map((entry) => entry.messageId),
+          )
+        : null;
+    const next = current.filter(
+      (row) =>
+        row.messageId === undefined ||
+        (!cancelledIds.has(row.messageId) && !waitingFollowups?.has(row.messageId)),
+    );
+    if (next.length !== current.length) pendingMessages.set(next);
   });
   const queueSession: ComposerQueue = {
     sessionId,
@@ -3394,23 +3559,17 @@ export function Conversation(props: ConversationProps) {
       if (!alive) return;
       const showLatest = (animated = false) => {
         if (reading() === 'trajectory' && trajectoryRange() !== null) selectTrajectoryRange(null);
-        const group =
-          reading() === 'chat'
-            ? projection().entries.findLast(
-                (entry) => entry.kind === 'process' && entry.turnKey === (turnId ?? runTurn()),
-              )
-            : undefined;
-        if (group?.kind === 'process') {
-          const state = groupState(group.key);
-          state.following.set(true);
-          if (state.list) state.list.scrollToEnd({ animated: false });
-          else state.opening = 'bottom';
-        }
+        followLatestActivity(turnId ?? runTurn());
         resumeHistoryFollowing(animated);
       };
       // The loaded window already reaches the latest row and follows new ones:
       // scroll it in place, keeping the rows above, without waiting on the Host.
-      if (!reload && atHistoryTail() && navigation() === null) {
+      if (
+        !reload &&
+        atHistoryTail() &&
+        navigation() === null &&
+        historyWindow()?.view === chatHistoryView()
+      ) {
         props.focusComposer();
         showLatest(true);
         return;
@@ -3804,12 +3963,19 @@ export function Conversation(props: ConversationProps) {
             const first = projectedTurn(initial.turnKey);
             if (!first) return <View />;
             const turn = () => projectedTurn(initial.turnKey) ?? first;
-            const images = computed(() =>
-              turnImages(
-                projectedSection(initial.turnKey)?.rowsById.values() ?? [],
-                initial.turnKey,
-              ),
-            );
+            const images = computed(() => {
+              const folded = turn().foldedWork;
+              return folded
+                ? folded.images.map(({ position, image }) => ({
+                    key: `${historyRowKey(position)}/${image ?? 'content'}`,
+                    position,
+                    image: image ?? undefined,
+                  }))
+                : turnImages(
+                    projectedSection(initial.turnKey)?.rowsById.values() ?? [],
+                    initial.turnKey,
+                  );
+            });
             const groups = computed(() =>
               (projectedSection(initial.turnKey)?.entries ?? []).filter(
                 (item): item is ProcessGroup =>
@@ -3828,14 +3994,19 @@ export function Conversation(props: ConversationProps) {
                   sessionId,
                   through: () => latestKnown,
                   refs: images,
+                  total: () => turn().foldedWork?.imageCount,
                   preview: props.previewImage,
                 }}
                 toggle={(open) => {
                   if (open) {
+                    // Reopened work starts from its group rows again.
+                    for (const group of groups()) groupStates.get(group.key)?.open.set(false);
                     historyFollowPaused.set(true);
+                    if (turn().foldedWork) loadTurnWork(initial.turnKey);
                     // Replace the source reading anchor before the folded rows return.
                     list?.scrollToOffset({ offset: historyOffset, animated: false });
                   }
+                  animateDisclosure();
                   turnState(initial.turnKey).expanded.set(open);
                 }}
               />
@@ -3879,6 +4050,7 @@ export function Conversation(props: ConversationProps) {
                 sessionId={sessionId}
                 through={() => latestKnown}
                 previewImage={props.previewImage}
+                previewTerminal={props.previewTerminal}
                 openLink={props.openLink}
                 senders={senders}
                 userScroll={() => cancelNavigation()}
@@ -3889,6 +4061,10 @@ export function Conversation(props: ConversationProps) {
                   changedReadExposure();
                   if (away) innerReader.set(initial.group.key);
                   else if (innerReader() === initial.group.key) innerReader.set(null);
+                }}
+                resumed={() => {
+                  if (historyFollowPaused() && latestActivity()?.key === initial.group.key)
+                    resumeHistoryAtEnd(historyOffset);
                 }}
                 settled={(atEnd) => {
                   if (atEnd) readerAtEnd.set(initial.group.key);
@@ -3946,6 +4122,7 @@ export function Conversation(props: ConversationProps) {
                     : undefined
                 }
                 messages={() => bot.forTurn(initial.turnId)}
+                sessionId={sessionId}
                 openLink={props.openLink}
                 userScroll={() => cancelNavigation()}
               />
@@ -3970,6 +4147,7 @@ export function Conversation(props: ConversationProps) {
               sessionId={sessionId}
               through={() => latestKnown}
               previewImage={props.previewImage}
+              previewTerminal={props.previewTerminal}
               openLink={props.openLink}
               senders={senders}
               userScroll={() => cancelNavigation()}
@@ -4293,8 +4471,10 @@ export function Conversation(props: ConversationProps) {
                     if (nearHistoryEnd()) prefetchNewer();
                     // At the edge, further downward input may leave the offset unchanged.
                     if ((event.delta ?? 0) > 0) resumeHistoryAtEnd(historyOffset);
-                  } else if (atHistoryTail()) resumeHistoryFollowing();
-                  else ownHandle.jumpLatest(null);
+                  } else if (atHistoryTail()) {
+                    followLatestActivity();
+                    resumeHistoryFollowing();
+                  } else ownHandle.jumpLatest(null);
                 }
               }}
               onBlur={() => {
@@ -4463,6 +4643,7 @@ export function Conversation(props: ConversationProps) {
                   sessionId={sessionId}
                   through={() => latestKnown}
                   previewImage={props.previewImage}
+                  previewTerminal={props.previewTerminal}
                   openLink={props.openLink}
                   toolProgress={toolProgress}
                   maxHeight={() => Math.max(32, readingSize().height - 80)}

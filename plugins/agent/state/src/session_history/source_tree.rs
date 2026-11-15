@@ -41,8 +41,27 @@ pub enum HistoryDataSource {
     },
     Snapshot(Snapshot),
 }
+/// An optional constraint on a canonical Run's contribution to a history window.
+#[derive(Clone, Copy)]
+pub enum RunRows {
+    /// Fetch only rows of the named Run within the anchor's source.
+    Only { run: RunId, start: Option<u64> },
+    /// Retain public input, output from the final attempt and checkpoint markers.
+    Folded { run: RunId, attempt: ModelAttemptId },
+}
+#[derive(Clone)]
+pub struct CompletedWork {
+    pub attempt: ModelAttemptId,
+    pub thoughts: u64,
+    pub messages: u64,
+    pub tools: u64,
+    pub image_sources: Vec<HistoryRowAddress>,
+    pub image_count: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct QualifiedRow {
+    pub run: Option<RunId>,
     pub address: HistoryRowAddress,
     pub order: HistoryOrder,
 }
@@ -217,7 +236,14 @@ impl SourceTree {
         let section = &self.segments[index];
         let row = section
             .source
-            .positions(Some(coordinate), false, true, section.after_admission, 1)
+            .positions(
+                Some(coordinate),
+                false,
+                true,
+                section.after_admission,
+                1,
+                None,
+            )
             .await?
             .into_iter()
             .next()
@@ -352,6 +378,7 @@ impl SourceTree {
                         include_internal,
                         section.after_admission,
                         1,
+                        None,
                     )
                     .await?
             }
@@ -389,6 +416,18 @@ impl SourceTree {
         include_internal: bool,
         limit: u32,
     ) -> Result<Vec<QualifiedRow>, StoreError> {
+        self.positions_filtered(anchor, reverse, include_internal, limit, None)
+            .await
+    }
+
+    pub async fn positions_filtered(
+        &self,
+        anchor: Option<HistoryRowAddress>,
+        reverse: bool,
+        include_internal: bool,
+        limit: u32,
+        run_rows: Option<RunRows>,
+    ) -> Result<Vec<QualifiedRow>, StoreError> {
         if limit == 0 {
             return Ok(vec![]);
         }
@@ -397,12 +436,22 @@ impl SourceTree {
             let (path, snapshot, coordinate) = location(address);
             let index = self.section(path, snapshot)?;
             self.validate_address(address).await?;
-            (index, Some(coordinate))
+            (
+                index,
+                match run_rows {
+                    Some(RunRows::Only {
+                        start: Some(sequence),
+                        ..
+                    }) => Some((sequence, 0)),
+                    _ => Some(coordinate),
+                },
+            )
         } else if reverse {
             (self.segments.len() - 1, None)
         } else {
             (0, None)
         };
+        let anchored_section = section;
         let mut output = Vec::new();
         loop {
             let current = &self.segments[section];
@@ -419,6 +468,7 @@ impl SourceTree {
                         include_internal,
                         current.after_admission,
                         batch,
+                        (section == anchored_section).then_some(run_rows).flatten(),
                     )
                     .await?;
                 let full = rows.len() == batch as usize;
@@ -442,6 +492,9 @@ impl SourceTree {
                 let Some(last) = last else { break };
                 bound = Some(last);
                 exclude_anchor = true;
+            }
+            if matches!(run_rows, Some(RunRows::Only { .. })) {
+                break;
             }
             bound = None;
             if reverse {

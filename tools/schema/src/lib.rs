@@ -96,6 +96,7 @@ pub fn catalog() -> Value {
         root::<maka_web_api::contract::Set>(&mut g),
         root::<maka_web_api::contract::Key>(&mut g),
         root::<maka_web_api::contract::Update>(&mut g),
+        root::<maka_web_api::settings::Snapshot>(&mut g),
         root::<maka_web_api::contract::ResultValue>(&mut g),
         root::<maka_web_api::probe::Input>(&mut g),
         root::<maka_web_api::probe::Endpoint>(&mut g),

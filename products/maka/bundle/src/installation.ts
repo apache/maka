@@ -51,8 +51,13 @@ export function installation(
       confirmation: 'preapproved',
       nestable: ['files', 'processes', 'web', 'skills', 'ui'].includes(service),
     });
-  add('files', 'readText', 'Read', 'Read text from a file in the selected workspace.');
-  add('files', 'readImage', 'ReadImage', 'Read an image in the selected workspace.', 'image');
+  add(
+    'files',
+    'read',
+    'Read',
+    'Read UTF-8 text or a PNG, JPEG, GIF, or WebP image. Images are returned as image content. In Code Mode, pass an image result to image() to show it to the model.',
+    'image',
+  );
   add('files', 'write', 'Write', 'Write a file in the selected workspace.');
   add('files', 'edit', 'Edit', 'Edit a file in the selected workspace.');
   add('files', 'applyPatch', 'ApplyPatch', 'Apply a patch in the selected workspace.');
@@ -67,7 +72,12 @@ export function installation(
   add('processes', 'writeStdin', 'ProcessInput', 'Send input to a previously started command.');
   add('processes', 'stop', 'ProcessStop', 'Stop a previously started command.');
   add('web', 'fetch', 'WebFetch', 'Read a web page. Network destinations require permission.');
-  add('web', 'search', 'WebSearch', 'Search using the selected model or Tavily.');
+  add(
+    'web',
+    'search',
+    'WebSearch',
+    'Search using the selected model or a configured search service.',
+  );
   add(
     'computer',
     'evaluate',
@@ -205,12 +215,12 @@ export function installation(
     [
       'history',
       'SessionHistory',
-      'Read a conversation transcript to inspect actual delegated results and failures. Page with returned cursors; tool metadata alone is not the full tool output. Use the indicated result reader when evidence is archived.',
+      'Read a session transcript. Rooms return posted messages with immutable IDs, authors, mentions, replyTo and delivery receipts. Use message/before_message/after_message positions with messageId to navigate Room messages. Agent sessions expose delegated results and failures. Page with returned cursors; tool metadata alone is not the full tool output. Use the indicated result reader when evidence is archived.',
     ],
     [
       'create',
       'SessionCreate',
-      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace by directory path (absolute, ~ allowed, within the configured workspace locations) or reuse a conversation\'s with kind=session, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable. To apply a reusable role, pass presetId from SubagentPresetList and omit backend; creation rechecks the latest preset and captures its instruction and model. Do not copy its instruction into the task. If an explicitly requested preset is unavailable, report the specific reason without substituting another role or model. With no explicit role, choose an appropriate available preset or delegate normally. Recover uncertain creation using its original operation receipt, not another SessionCreate.',
+      'Create an Agent conversation or a shared Room. Set kind=room for a place where humans and agents can post without starting a model loop. Rooms use the selected workspace and can address Agent sessions with SessionSend mentions. For delegated work, use kind=agent (the default). Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace by directory path (absolute, ~ allowed, within the configured workspace locations) or reuse a conversation\'s with kind=session, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable. To apply a reusable role, pass presetId from SubagentPresetList and omit backend; creation rechecks the latest preset and captures its instruction and model. Do not copy its instruction into the task. If an explicitly requested preset is unavailable, report the specific reason without substituting another role or model. With no explicit role, choose an appropriate available preset or delegate normally. Recover uncertain creation using its original operation receipt, not another SessionCreate.',
     ],
     [
       'fork',
@@ -230,7 +240,7 @@ export function installation(
     [
       'send',
       'SessionSend',
-      'Send a task or follow-up to a conversation. For additional context, corrections, progress updates or guidance for ongoing work, omit delivery or use delivery=steer (the default). Use delivery=queue only when the message should wait until the current turn ends. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. For a preset conversation, omit backend to preserve its selected model; only supply backend for an explicit model override. Other new conversations may use a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt confirms admission, not completion; queued may also mean pending steering. For native model callers, set onComplete=notify_caller to request a best-effort Host notification when that message finishes, fails or is cancelled, and once per pending interaction or authority blocker that needs attention. An attention notification does not finish the task or remove its completion watch; inspect the referenced interaction or SessionWork, address it within your existing authority or ask the user, and do not redispatch the task. Check completion in the receipt: registered means the watch was saved with task admission, so do other work or finish your turn instead of polling for completion. Progress queries remain available. Use SessionWork/SessionHistory to read actual results before reporting success.',
+      'Send a message to an Agent session or a Room. Room posts return a posted receipt without starting a model. For a Room message, mentions names the Agent session IDs to receive it, and replyTo refers to an existing message in that Room. A Room source header supplies the sessionId and replyTo for returning your response with this same tool. Each mention has its own accepted/rejected receipt. For additional context, corrections, progress updates or guidance for ongoing work, omit delivery or use delivery=steer (the default). Use delivery=queue only when the message should wait until the current turn ends. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. For a preset conversation, omit backend to preserve its selected model; only supply backend for an explicit model override. Other new conversations may use a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt confirms admission, not completion; queued may also mean pending steering. For native model callers, set onComplete=notify_caller to request a best-effort Host notification when that message finishes, fails or is cancelled, and once per pending interaction or authority blocker that needs attention. An attention notification does not finish the task or remove its completion watch; inspect the referenced interaction or SessionWork, address it within your existing authority or ask the user, and do not redispatch the task. Check completion in the receipt: registered means the watch was saved with task admission, so do other work or finish your turn instead of polling for completion. Progress queries remain available. Use SessionWork/SessionHistory to read actual results before reporting success.',
     ],
     [
       'stop',

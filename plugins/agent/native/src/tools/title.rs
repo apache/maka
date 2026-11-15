@@ -25,7 +25,6 @@ use serde_json::Value;
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
     Read,
-    ReadImage,
     Write,
     Edit,
     Patch,
@@ -42,7 +41,7 @@ impl Kind {
     pub(super) fn render(self, input: &Value) -> Option<Text> {
         // ToolCatalog has validated this already parsed input against its schema.
         let target = match self {
-            Self::Read | Self::ReadImage | Self::Write | Self::Edit | Self::List => &input["path"],
+            Self::Read | Self::Write | Self::Edit | Self::List => &input["path"],
             Self::Patch => &input["operation"]["path"],
             Self::Glob => &input["pattern"],
             Self::Fetch => &input["url"],
@@ -75,7 +74,6 @@ impl Kind {
     pub(crate) fn render_target(self, target: &str, continuation: bool) -> Option<Text> {
         let (en, zh, tw) = match self {
             Self::Read => ("Read file", "读取文件", "讀取檔案"),
-            Self::ReadImage => ("Read image", "读取图片", "讀取圖片"),
             Self::Write => ("Write file", "写入文件", "寫入檔案"),
             Self::Edit => ("Edit file", "编辑文件", "編輯檔案"),
             Self::Patch => ("Patch file", "修补文件", "修補檔案"),

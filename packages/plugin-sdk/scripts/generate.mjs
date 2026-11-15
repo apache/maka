@@ -161,6 +161,7 @@ const services = Object.fromEntries(
     'terminal',
     'skillLibrary',
     'workspaceComputer',
+    'workspaceWeb',
   ].map((service) => [
     service,
     object(

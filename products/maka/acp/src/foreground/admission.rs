@@ -57,6 +57,9 @@ impl Foreground {
             SendResult::Rejected { .. } | SendResult::NotYourWorker { .. } => {
                 return Err("Host rejected Agent input".into());
             }
+            SendResult::Posted { .. } => {
+                return Err("ACP prompts require an Agent session".into());
+            }
         };
         let mut foreground = Self {
             client,

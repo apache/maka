@@ -21,6 +21,14 @@ use serde::{Deserialize, Serialize};
 mod output;
 pub use output::{Output, ToolResultDetails, TurnUsage};
 
+pub fn message_id(
+    run: crate::durable::RunId,
+    task: crate::durable::ExternalTaskId,
+    id: &str,
+) -> String {
+    format!("executor/{run}/{task}/{id}")
+}
+
 /// Executor-owned model selection, independent of Host model connections.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
