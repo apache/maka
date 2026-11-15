@@ -9403,7 +9403,9 @@ impl<M: TextEngine> Core<M> {
                 .iter()
                 .filter_map(|s| s.ready().map(|i| (i, s.cell))),
         );
-        ready.sort_unstable_by_key(|&(index, _)| index);
+        if outer.is_some() || !scroll.dependents.is_empty() {
+            ready.sort_unstable_by_key(|&(index, _)| index);
+        }
         let extras = list.extras;
         // An inverted list that loads at its start keeps its rows in
         // place when scrolled away from it (`keeps_visible_rows`).
