@@ -25707,6 +25707,14 @@ export const contracts: {
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
                   },
+                  aliases: {
+                    description:
+                      'Previously published selections, including their implied thinking level.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentBackendPreference',
+                    },
+                  },
                   sourceName: {
                     type: 'string',
                   },
@@ -25941,6 +25949,14 @@ export const contracts: {
                 properties: {
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
+                  },
+                  aliases: {
+                    description:
+                      'Previously published selections, including their implied thinking level.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentBackendPreference',
+                    },
                   },
                   sourceName: {
                     type: 'string',
@@ -41356,6 +41372,14 @@ export const contracts: {
                 properties: {
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
+                  },
+                  aliases: {
+                    description:
+                      'Previously published selections, including their implied thinking level.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentBackendPreference',
+                    },
                   },
                   sourceName: {
                     type: 'string',

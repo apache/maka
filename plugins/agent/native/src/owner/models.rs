@@ -22,7 +22,7 @@ use crate::executor::CatalogRead;
 use maka_agent_api::contract::{
     ModelChoice, ModelRead, ModelResult, ModelsCursor, ModelsPage, ModelsRead,
 };
-use maka_agent_facts::executor::{BackendPreference, Selection, Settings};
+use maka_agent_facts::executor::{BackendPreference, Effort, Selection, Settings};
 use maka_agent_ports::executor::Error as ExecutorError;
 
 impl Owner {
@@ -63,6 +63,7 @@ impl Owner {
                     Err(_) => continue,
                 };
                 choices.push(ModelChoice {
+                    aliases: Vec::new(),
                     selection: BackendPreference::Model {
                         connection_id: row.connection_id.clone(),
                         model_id: id.clone(),
@@ -131,16 +132,8 @@ impl Owner {
                         ExecutorError::Provider(format!("agent_external_catalog_invalid: {error}"))
                     })?;
                 choices.push(ModelChoice {
-                    selection: BackendPreference::Executor {
-                        selection: Selection {
-                            executor: "external".into(),
-                            settings: Settings {
-                                runtime: Some(runtime_id.into()),
-                                model: None,
-                                thinking_level: None,
-                            },
-                        },
-                    },
+                    selection: external_selection(runtime_id, None, None),
+                    aliases: Vec::new(),
                     source_name: format!("Native CLI · {}", native.name()),
                     label: format!("{} · native default", native.name()),
                     thinking_levels: vec![],
@@ -168,16 +161,33 @@ impl Owner {
                     })?
                     .unwrap_or_default();
                 choices.push(ModelChoice {
-                    selection: BackendPreference::Executor {
-                        selection: Selection {
-                            executor: "external".into(),
-                            settings: Settings {
-                                runtime: Some(runtime_id.into()),
-                                model: Some(id.into()),
-                                thinking_level: None,
-                            },
-                        },
-                    },
+                    selection: external_selection(runtime_id, Some(id), None),
+                    aliases: model
+                        .get("aliases")
+                        .map(|aliases| {
+                            #[derive(serde::Deserialize)]
+                            struct Alias {
+                                id: String,
+                                effort: Effort,
+                            }
+                            serde_json::from_value::<Vec<Alias>>(aliases.clone()).map(|aliases| {
+                                aliases
+                                    .into_iter()
+                                    .map(|alias| {
+                                        external_selection(
+                                            runtime_id,
+                                            Some(&alias.id),
+                                            Some(alias.effort),
+                                        )
+                                    })
+                                    .collect()
+                            })
+                        })
+                        .transpose()
+                        .map_err(|_| {
+                            ExecutorError::Provider("agent_external_catalog_invalid".into())
+                        })?
+                        .unwrap_or_default(),
                     source_name: format!("Native CLI · {runtime_id}"),
                     label: model
                         .get("displayName")
@@ -316,10 +326,13 @@ impl Owner {
             }
             BackendPreference::Executor { .. } => Vec::new(),
         };
-        match choices
-            .into_iter()
-            .find(|choice| same_model(&choice.selection, &input.backend))
-        {
+        match choices.into_iter().find(|choice| {
+            same_model(&choice.selection, &input.backend)
+                || choice
+                    .aliases
+                    .iter()
+                    .any(|alias| same_model(alias, &input.backend))
+        }) {
             Some(choice) => Ok(ModelResult::Ready { choice }),
             None => Ok(ModelResult::Unavailable {
                 message: "Selected execution source or model is unavailable".into(),
@@ -327,6 +340,23 @@ impl Owner {
         }
     }
 }
+fn external_selection(
+    runtime: &str,
+    model: Option<&str>,
+    level: Option<Effort>,
+) -> BackendPreference {
+    BackendPreference::Executor {
+        selection: Selection {
+            executor: "external".into(),
+            settings: Settings {
+                runtime: Some(runtime.into()),
+                model: model.map(str::to_owned),
+                thinking_level: level,
+            },
+        },
+    }
+}
+
 fn level(level: maka_agent_facts::execution::ThinkingLevel) -> String {
     serde_json::to_value(level)
         .expect("thinking level")

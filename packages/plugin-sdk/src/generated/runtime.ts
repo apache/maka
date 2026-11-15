@@ -5907,6 +5907,10 @@ export interface AgentModelsCursor {
 }
 export interface AgentModelChoice {
   selection: AgentBackendPreference;
+  /**
+   * Previously published selections, including their implied thinking level.
+   */
+  aliases?: AgentBackendPreference[];
   sourceName: string;
   label: string;
   thinkingLevels: string[];

@@ -580,6 +580,9 @@ pub use maka_agent_facts::executor::BackendPreference;
 #[schemars(rename = "AgentModelChoice")]
 pub struct ModelChoice {
     pub selection: BackendPreference,
+    /// Previously published selections, including their implied thinking level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<BackendPreference>,
     pub source_name: String,
     pub label: String,
     pub thinking_levels: Vec<String>,

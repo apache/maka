@@ -47,6 +47,7 @@ import {
   routeKey,
   sameBackend,
   sameRoute,
+  selectionForChoice,
   thinkingLevel,
   withThinkingLevel,
   type BackendIdentity,
@@ -121,7 +122,7 @@ export function ModelSelect(props: {
   });
   const model = () => {
     const details = owner.modelDetails();
-    return details.kind === 'ready' && sameRoute(owner.backend(), details.choice.selection)
+    return details.kind === 'ready' && selectionForChoice(owner.backend(), details.choice)
       ? details.choice.label
       : modelCaption(owner.backend(), details);
   };
@@ -272,7 +273,7 @@ function ModelMenu(props: {
   const active = () => alive && props.current();
   const readyChoice = () => {
     const details = owner.modelDetails();
-    return details.kind === 'ready' && sameRoute(owner.backend(), details.choice.selection)
+    return details.kind === 'ready' && selectionForChoice(owner.backend(), details.choice)
       ? details.choice
       : null;
   };
@@ -280,7 +281,8 @@ function ModelMenu(props: {
     const choice = readyChoice();
     return (
       choice !== null &&
-      (choice.thinkingLevels.length > 0 || thinkingLevel(owner.backend()) != null)
+      (choice.thinkingLevels.length > 0 ||
+        thinkingLevel(selectionForChoice(owner.backend(), choice)) != null)
     );
   };
   effect(() => {
@@ -319,7 +321,7 @@ function ModelMenu(props: {
     const choice = readyChoice();
     if (
       !choice ||
-      !sameRoute(request.backend, choice.selection) ||
+      !selectionForChoice(request.backend, choice) ||
       !choice.thinkingLevels.includes(request.level) ||
       effectiveThinkingLevel(request.backend, choice) !== request.level
     )
@@ -330,7 +332,7 @@ function ModelMenu(props: {
     const choice = readyChoice();
     if (
       !choice ||
-      !sameRoute(request.backend, choice.selection) ||
+      !selectionForChoice(request.backend, choice) ||
       choice.defaultThinkingLevel != null ||
       thinkingLevel(request.backend) !== null
     )
@@ -399,7 +401,7 @@ function ModelMenu(props: {
             }
             const focus = focused()?.selection ?? (!search ? owner.backend() : null);
             const currentIndex = focus
-              ? nextPage.choices.findIndex((choice) => sameRoute(focus, choice.selection))
+              ? nextPage.choices.findIndex((choice) => selectionForChoice(focus, choice))
               : -1;
             batch(() => {
               page.set(nextPage);
@@ -458,7 +460,7 @@ function ModelMenu(props: {
   const byId = computed(() => new Map(choices().map((choice) => [routeId(choice), choice])));
   const ids = computed(() => choices().map(routeId));
   const modelAction = (choice: ModelChoice) =>
-    action(sameRoute(owner.backend(), choice.selection) ? owner.backend()! : choice.selection);
+    action(selectionForChoice(owner.backend(), choice) ?? choice.selection);
   const move = (delta: number) => {
     const next = Math.max(0, Math.min(choices().length - 1, index() + delta));
     selected.set(next);
@@ -549,7 +551,7 @@ function ModelMenu(props: {
                 const initial = byId().get(key());
                 if (!initial) return <View />;
                 const choice = () => byId().get(key()) ?? initial;
-                const checked = () => sameRoute(owner.backend(), choice().selection);
+                const checked = () => selectionForChoice(owner.backend(), choice()) !== null;
                 return (
                   <Button
                     accessibilityLabel={tr('Use {model} · {connection}', {
@@ -687,7 +689,7 @@ function ModelMenu(props: {
                         onPress={inputAction(selectEffort, {
                           ...action(
                             withThinkingLevel(
-                              owner.backend() ?? item().selection,
+                              selectionForChoice(owner.backend(), item()) ?? item().selection,
                               item().defaultThinkingLevel === level() ? null : level(),
                             ),
                           ),
@@ -712,7 +714,8 @@ function ModelMenu(props: {
                 </Each>
                 <If
                   when={
-                    item().defaultThinkingLevel == null && thinkingLevel(owner.backend()) != null
+                    item().defaultThinkingLevel == null &&
+                    thinkingLevel(selectionForChoice(owner.backend(), item())) != null
                   }
                 >
                   <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
@@ -721,7 +724,12 @@ function ModelMenu(props: {
                     accessibilityLabel={tr('Use provider settings')}
                     onPress={inputAction(
                       resetEffort,
-                      action(withThinkingLevel(owner.backend() ?? item().selection, null)),
+                      action(
+                        withThinkingLevel(
+                          selectionForChoice(owner.backend(), item()) ?? item().selection,
+                          null,
+                        ),
+                      ),
                     )}
                     style={menuRowStyle()}
                     hoverStyle={menuRowHoverStyle()}
