@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { effect, keymap, signal, type JSX } from 'nsh';
+import { effect, keymap, signal, View, type JSX } from 'nsh';
+import { Dialog } from 'nsh/base';
 import type { RoomWorkspaceInput } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { createRoomWorkspace } from '../../../../products/maka/workbench/app/RoomWorkspace';
 import {
@@ -27,6 +28,9 @@ import {
 } from '../../../../products/maka/workbench/app/Workbench';
 import { HostProvider, type Host } from '../../../../products/maka/workbench/app/host';
 import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
+import { C, Header } from '../../../../products/maka/workbench/app/ui';
+import { PANEL_INSET } from '../../../../products/maka/workbench/app/chrome';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 import { createResources } from '../../../workspace/workspace-files/ui/resources';
 import { ResourcePane } from '../../../workspace/workspace-files/ui/ResourcePane';
 
@@ -39,18 +43,32 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
     directory: () => rooms.directory(),
     report: (reason) => rooms.report(reason),
   });
+  const navigationFits = () => canDockBrowser(resources.shown());
+  const navigationDocked = () => input.sidebarExpanded() && navigationFits();
+  const floatingNavigation = signal(false);
+  const closeNavigation = () => floatingNavigation.set(false);
+  const toggleNavigation = () => {
+    if (input.blocked() || !input.visible()) return;
+    if (navigationFits()) input.setSidebarExpanded(!navigationDocked());
+    else floatingNavigation.set(!floatingNavigation());
+  };
+  const previewDocked = () => resources.shown() && canDockPreview();
+  effect(() => {
+    if (navigationFits() || !input.visible()) closeNavigation();
+  });
   const rooms = createRoomWorkspace({
     host: props.host,
     initial: input.initialSessionId,
     agentSession: input.agentSessionId,
     visible: input.visible,
     browser: () => ({
-      navigationDocked: canDockBrowser(resources.shown()),
-      previewDocked: resources.shown() && canDockPreview(),
-      expanded: input.sidebarExpanded(),
-      hidden: !input.visible(),
-      toggle: () => input.setSidebarExpanded(!input.sidebarExpanded()),
+      navigationDocked: navigationDocked(),
+      previewDocked: previewDocked(),
+      expanded: navigationDocked(),
+      hidden: !input.visible() || floatingNavigation(),
+      toggle: toggleNavigation,
     }),
+    closeNavigation,
     openAgent: input.openSession,
     openSettings: input.openSettings,
     openLink: resources.openLink,
@@ -84,6 +102,30 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
       >
         {rooms.content()}
       </Workbench>
+      <If when={input.visible() && !navigationFits() && floatingNavigation()}>
+        <Dialog
+          animation="none"
+          onOpenChange={closeNavigation}
+          style={{ flex: 1, backgroundColor: C.scrim }}
+        >
+          <View style={{ flex: 1, width: '100%', maxWidth: 320, backgroundColor: C.chrome }}>
+            <View style={{ paddingTop: PANEL_INSET }}>
+              <Header
+                title={tr('Rooms')}
+                browser={{
+                  navigationDocked: false,
+                  previewDocked: false,
+                  expanded: true,
+                  hidden: false,
+                  toggle: closeNavigation,
+                }}
+                commands={() => {}}
+              />
+            </View>
+            {rooms.navigation(input.modeSwitch())}
+          </View>
+        </Dialog>
+      </If>
       <Each of={resources.imageViewer() ? [resources.imageViewer()!] : []} key={(viewer) => viewer}>
         {(viewer) => <ImageViewer image={viewer().image} close={viewer().close} />}
       </Each>
