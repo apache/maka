@@ -105,12 +105,13 @@ mod tests {
         }
     }
 
-    fn completion_fixture() -> nsh_testing::Headless {
+    fn fixture(entry: &str) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-            entry: std::path::Path::new("tests/fixtures/composer-completion.tsx")
+            entry: std::path::Path::new("tests/fixtures")
+                .join(entry)
                 .canonicalize()
                 .unwrap(),
             minify: false,
@@ -136,8 +137,17 @@ mod tests {
     }
 
     #[test]
+    fn original_tool_arguments_show_freeform_script_and_reject_another_tool() {
+        let mut app = fixture("tool-source.tsx");
+        app.wait_for(r"text:/const word = '雪'; text\(word\);/")
+            .unwrap();
+        app.wait_for("text:The original tool source could not be verified.")
+            .unwrap();
+    }
+
+    #[test]
     fn recycled_completion_cells_refresh_labels_and_press_actions() {
-        let mut app = completion_fixture();
+        let mut app = fixture("composer-completion.tsx");
         app.wait_for("role:button[skill-00]").unwrap();
         app.scroll("label:Skills", px(900.0)).unwrap();
         app.wait_for("text:/Description of skill-15/").unwrap();
@@ -151,7 +161,7 @@ mod tests {
 
     #[test]
     fn pending_composer_selects_slash_skills_with_enter_and_tab() {
-        let mut app = completion_fixture();
+        let mut app = fixture("composer-completion.tsx");
         app.wait_for("text:Open new chat").unwrap();
         app.press("id:pending").unwrap();
         app.type_text("label:New chat", "/skill-1").unwrap();
