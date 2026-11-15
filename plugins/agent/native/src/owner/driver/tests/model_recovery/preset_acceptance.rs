@@ -521,6 +521,20 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 };
                 let read = tool_round(&rig,&mut provider,id,false,image_tool,image_input).await?;
                 assert!(read.contains("data:image/png;base64,"),"{read}");
+                let history = call(client,"agent","history",json!({
+                    "sessionId":id,"position":{"kind":"tail"},"includeThinking":false,"view":"conversation"
+                })).await?;
+                let result = history["chunks"].as_array().unwrap().iter().rev()
+                    .find(|row| row["tool"]["call"]["name"] == "Read" && row["tool"]["result"].is_object())
+                    .ok_or("Read result missing from conversation history")?;
+                let result = &result["tool"]["result"];
+                assert_eq!((result["image"].as_bool(), result["images"].as_u64()), (Some(false), Some(1)));
+                let image = call(client,"agent","toolImage",json!({
+                    "sessionId":id,"through":history["through"],"position":result["position"],"image":0,"offset":0
+                })).await?;
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(image["data"].as_str().unwrap())?;
+                assert_eq!(bytes, std::fs::read(base.join("workspace/input.png"))?);
                 let write = tool_round(&rig,&mut provider,id,code,"Write",json!({"path":"output.txt","content":if allowed {"allowed"} else {"forbidden"}})).await?;
                 let before_web = web_calls.load(Ordering::SeqCst);
                 let web = tool_round(&rig,&mut provider,id,code,"WebFetch",json!({"url":format!("{address}/page")})).await?;

@@ -452,6 +452,8 @@ impl Rig {
                 "continueRun",
                 "models",
                 "observe",
+                "history",
+                "toolImage",
                 "tools",
                 "predictNextMessage",
                 "compact",

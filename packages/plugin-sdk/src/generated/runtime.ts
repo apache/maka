@@ -8295,11 +8295,11 @@ export interface HistoryToolResult {
    */
   isError: boolean;
   /**
-   * Canonical content is an image; this does not grant artifact reads.
+   * The result exposes an unindexed image distinct from its indexed projection images.
    */
   image: boolean;
   /**
-   * Images the model received beside non-image content, readable by index.
+   * Images in the model projection, readable by index.
    */
   images: number;
   details?: ToolResultDetails | null;
