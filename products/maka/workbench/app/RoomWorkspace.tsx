@@ -81,6 +81,7 @@ export function createRoomWorkspace(options: {
   agentSession(): string | null;
   visible(): boolean;
   browser(): BrowserHeader;
+  closeNavigation(): void;
   openAgent(id: string): void;
   openSettings(): void;
   openLink(sessionId: string, target: string, restoreFocus: () => boolean): Promise<void>;
@@ -129,6 +130,7 @@ export function createRoomWorkspace(options: {
       if (!alive || generation !== navigation) return false;
       selected.set(id);
       error.set('');
+      options.closeNavigation();
       return true;
     } catch (reason) {
       if (alive) error.set(reasonText(reason));
@@ -191,6 +193,7 @@ export function createRoomWorkspace(options: {
     }
   };
   const newRoom = () => {
+    options.closeNavigation();
     createTitle.set('');
     creating.set(true);
     error.set('');
@@ -229,6 +232,7 @@ export function createRoomWorkspace(options: {
       <RoomMenuItem
         label={tr('Rename room')}
         select={() => {
+          options.closeNavigation();
           error.set('');
           renameTitle.set(session.title);
           renaming.set(session);
@@ -238,6 +242,7 @@ export function createRoomWorkspace(options: {
         label={tr('Delete room')}
         danger
         select={() => {
+          options.closeNavigation();
           error.set('');
           removing.set(session);
         }}
@@ -267,7 +272,7 @@ export function createRoomWorkspace(options: {
           gap: 8,
         }}
       >
-        <If when={ownTitleBar && platform.idiom !== 'terminal'}>
+        <If when={ownTitleBar && options.browser().navigationDocked}>
           <View
             desktop={windowDrag}
             style={{
@@ -358,7 +363,10 @@ export function createRoomWorkspace(options: {
         </Scroll>
         <Button
           accessibilityLabel={tr('Settings')}
-          onPress={options.openSettings}
+          onPress={() => {
+            options.closeNavigation();
+            options.openSettings();
+          }}
           style={{
             flexDirection: 'row',
             alignItems: 'center',

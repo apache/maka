@@ -266,6 +266,27 @@ pub(super) async fn desktop_context_menus_follow_the_pointer_and_manage_rooms() 
     desktop.type_text("Release room").await;
     desktop.press("Save").await;
     desktop.control("Release room").await;
+    desktop.press("Collapse session browser").await;
+    desktop.control("Expand session browser").await;
+    assert!(desktop.controls("Conversations").is_empty());
+    desktop.press("Expand session browser").await;
+    desktop.control("Release room").await;
+
+    let viewport = desktop.platform.viewport_size();
+    let scale = desktop.platform.scale_factor();
+    desktop
+        .platform
+        .set_viewport(
+            size(nsh_terminal::DevicePixels(700), viewport.height),
+            scale,
+        )
+        .unwrap();
+    desktop.press("Expand session browser").await;
+    desktop.press("Release room").await;
+    desktop.control("Expand session browser").await;
+    assert!(desktop.controls("Conversations").is_empty());
+    desktop.platform.set_viewport(viewport, scale).unwrap();
+    desktop.control("Release room").await;
     desktop.press("Room actions").await;
     desktop.press("Delete room").await;
     desktop.press("Cancel").await;
