@@ -283,9 +283,43 @@ export function SettingsRow(props: SettingsRowProps) {
 }
 
 /** An immediate on/off setting: the whole row toggles it. */
+export function SettingsMonogram(props: { name: string; muted: boolean }) {
+  return (
+    <If when={!terminal}>
+      <View
+        style={[
+          {
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            backgroundColor: C.raised,
+            alignItems: 'center',
+            justifyContent: 'center',
+          },
+          { pointerEvents: 'none' },
+        ]}
+      >
+        <Text
+          style={{
+            fontSize: 13,
+            lineHeight: 16,
+            fontWeight: '600',
+            color: props.muted ? C.muted : C.secondary,
+          }}
+        >
+          {Array.from(props.name.trim())[0]?.toUpperCase() ?? '?'}
+        </Text>
+      </View>
+    </If>
+  );
+}
+
 export function SettingsSwitch(props: {
   label: string;
   description?: string;
+  detail?: JSX.Element;
+  leading?: JSX.Element;
+  tone?: 'muted';
   checked: boolean;
   disabled?: boolean;
   onPress(): void;
@@ -298,6 +332,9 @@ export function SettingsSwitch(props: {
     <SettingsRow
       label={props.label}
       description={props.description}
+      detail={props.detail}
+      leading={props.leading}
+      tone={props.tone}
       status={props.status}
       accessibilityLabel={
         props.accessibilityLabel ??

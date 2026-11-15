@@ -437,6 +437,94 @@ mod tests {
                 .unwrap()
         );
     }
+
+    #[test]
+    fn models_settings_unifies_sources_without_inline_layout_jumps() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Checking external agents…").unwrap();
+
+        app.press_key("f7").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("text:0.42.0 · 5 models available").unwrap();
+        app.wait_for("label:Enable Claude Code").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Checking external agents…")
+                .unwrap()
+        );
+        assert!(!app.screen().matches("text:Details").unwrap());
+
+        let y_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+                .origin
+                .y
+        };
+        let codex_y = y_of(&app, "label:Disable Codex");
+
+        app.press_key("f6").unwrap();
+        app.set_environment("background", |env| {
+            env.lifecycle = nsh_core::platform::Lifecycle::Background;
+        })
+        .unwrap();
+        app.set_environment("active", |env| {
+            env.lifecycle = nsh_core::platform::Lifecycle::Active;
+        })
+        .unwrap();
+        assert!(app.screen().matches("label:Disable Codex").unwrap());
+        assert!(!app.screen().enabled("label:Disable Codex").unwrap());
+        assert!(
+            !app.screen()
+                .matches("label:Checking external agents…")
+                .unwrap()
+        );
+        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+
+        app.press_key("f7").unwrap();
+        assert!(app.settle());
+        assert!(app.screen().enabled("label:Disable Codex").unwrap());
+        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+
+        app.press("label:Enable Claude Code").unwrap();
+        app.wait_for("text:Confirm permissions and enable").unwrap();
+        app.press("label:Cancel enabling external agents").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+
+        app.press("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+        let model_row_y = y_of(&app, "label:Edit model gpt-4.1");
+        app.type_text("label:API key", "sk-test").unwrap();
+        app.wait_for("text:Save or discard the connection changes before editing models.")
+            .unwrap();
+        assert_eq!(y_of(&app, "label:Edit model gpt-4.1"), model_row_y);
+        app.press("label:Discard changes and reload").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+
+        app.press("label:Edit model gpt-4.1").unwrap();
+        app.wait_for("label:Use provider reasoning efforts: On")
+            .unwrap();
+        assert!(!app.screen().enabled("label:Support effort high").unwrap());
+        let remove_model_y = y_of(&app, "text:Remove model");
+        app.press("label:Use provider reasoning efforts: On")
+            .unwrap();
+        app.wait_for("label:Use provider reasoning efforts: Off")
+            .unwrap();
+        assert!(app.screen().enabled("label:Support effort high").unwrap());
+        assert_eq!(y_of(&app, "text:Remove model"), remove_model_y);
+
+        app.press_key("f8").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press("text:Discard changes").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+    }
 }
 
 #[cfg(test)]
