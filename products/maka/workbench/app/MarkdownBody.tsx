@@ -17,15 +17,17 @@
  * under the License.
  */
 
-import { cleanup, platform, signal, Text, View } from 'nsh';
+import { cleanup, computed, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { hasTextPrefix, type Row } from './history';
 import { CodeBlockAction, codeBlockActions, codeBlockStyles } from './codeBlockLook';
-import { MermaidView, mermaidExtensions } from './MermaidView';
+import { MermaidView } from './MermaidView';
 import { MarkdownImageView } from './MarkdownImage';
+import { SpecView, markdownExtensions } from './SpecView';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
-import { C, bodyTextStyle, codeTextStyle, secondaryTextStyle } from './ui';
+import { splitSpecMarkdown } from './spec/session.ts';
+import { C, bodyTextStyle, secondaryTextStyle } from './ui';
 
 export function MarkdownBody(props: {
   row: () => Row;
@@ -44,8 +46,48 @@ export function MarkdownBody(props: {
   cleanup(() => {
     alive = false;
   });
+
+  const isStreaming = () => {
+    if (props.text !== undefined) return false;
+    const r = props.row();
+    return r.closedAt === null || Boolean(r.preview);
+  };
+
+  const makeLinkGuard = () => {
+    const row = props.row();
+    const sourceId = props.sourceId;
+    return () => {
+      const current = props.row();
+      return (
+        alive &&
+        props.sourceId === sourceId &&
+        current.messageId === row.messageId &&
+        current.field === row.field &&
+        (props.text !== undefined || (hasTextPrefix(current) && current.text.startsWith(row.text)))
+      );
+    };
+  };
+
+  const openSpecLink = (target: string, restoreFocus: () => boolean): Promise<void> => {
+    const owns = makeLinkGuard();
+    if (!owns()) return Promise.resolve();
+    return props.openLink(target, () => {
+      if (!owns()) return false;
+      return restoreFocus();
+    });
+  };
+
+  const rawMarkdown = () => (props.text ? props.text() : props.row().text);
+  const segments = computed(() => splitSpecMarkdown(rawMarkdown()));
+  const ownerIdentity = () => {
+    const r = props.row();
+    return `${props.sourceId}\0${r.messageId}\0${r.field}`;
+  };
+
   const readingStyle = props.compact ? secondaryTextStyle : bodyTextStyle;
   const color = () => (props.compact && !props.fullColor ? C.muted : C.text);
+  const blockGap = props.compact ? 6 : 16;
+
   return (
     <View selectable>
       <If
@@ -56,90 +98,122 @@ export function MarkdownBody(props: {
           </Text>
         }
       >
-        <TextView
-          markdown={props.text ? props.text() : props.row().text}
-          extensions={mermaidExtensions}
-          renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
-          sourceId={props.sourceId}
-          selectable
-          contentStyle={{ rowGap: props.compact ? 6 : 16 }}
-          options={{ streaming: true, preserveLineBreaks: true }}
-          labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
-          onScrollIntent={props.userScroll}
-          onParseError={({ reason }) => failure.set(reason)}
-          onLinkPress={(event) => {
-            const row = props.row();
-            const sourceId = props.sourceId;
-            const target = event.target;
-            const owns = () => {
-              const current = props.row();
-              return (
-                alive &&
-                props.sourceId === sourceId &&
-                current.messageId === row.messageId &&
-                current.field === row.field &&
-                (props.text !== undefined ||
-                  (hasTextPrefix(current) && current.text.startsWith(row.text)))
-              );
-            };
-            if (owns() && target?.isLive())
-              void props.openLink(event.url, () => {
-                if (!owns() || !target) return false;
-                return target.focus();
-              });
-          }}
-          renderImage={(context) => (
-            <MarkdownImageView
-              image={() => context.image}
-              sessionId={props.sessionId}
-              linked={context.linked}
-              flow={context.flow}
-              lineHeight={context.lineHeight}
-            />
-          )}
-          renderCodeBlockAction={(action) => <CodeBlockAction action={action} />}
-          codeBlockActions={codeBlockActions()}
-          styles={{
-            root: { ...readingStyle, color: color() },
-            paragraph: readingStyle,
-            heading: {
-              ...readingStyle,
-              fontSize: props.compact ? secondaryTextStyle.fontSize : 18,
-              fontWeight: props.compact ? '600' : '700',
-              color: color(),
-            },
-            heading1: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-            heading2: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-            heading3: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-            heading4: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-            heading5: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-            heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-            blockquote: { borderLeftColor: C.line, color: C.secondary },
-            link: { color: C.accent },
-            code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
-            ...codeBlockStyles(color(), props.compact ? 8 : 12),
-            // The desktop starts a table's text where a code block's starts.
-            tableCell: {
-              ...readingStyle,
-              ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
-              color: color(),
-              borderColor: C.line,
-            },
-            tableHeaderCell: {
-              ...readingStyle,
-              ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
-              color: color(),
-              fontWeight: '600',
-              borderColor: C.line,
-            },
-            tableHead: { backgroundColor: C.cardRaised },
-            tableRow: { backgroundColor: C.card },
-            rule: { backgroundColor: C.line },
-          }}
-        />
+        <View style={{ width: '100%', gap: blockGap }}>
+          <Each
+            of={segments()}
+            key={(seg) => (seg.kind === 'spec' ? `${ownerIdentity()}\0${seg.key}` : seg.key)}
+          >
+            {(seg) => (
+              <If
+                when={seg().kind === 'spec'}
+                else={
+                  <TextView
+                    markdown={(() => {
+                      const s = seg();
+                      return s.kind === 'markdown' ? s.text : '';
+                    })()}
+                    extensions={markdownExtensions}
+                    renderCustom={(node) =>
+                      node.name === 'spec' ? (
+                        <SpecView
+                          source={() => node.text ?? ''}
+                          streaming={isStreaming}
+                          sessionId={props.sessionId}
+                          openLink={openSpecLink}
+                        />
+                      ) : (
+                        <MermaidView source={() => node.text ?? ''} />
+                      )
+                    }
+                    sourceId={(() => {
+                      const s = seg();
+                      return s.kind === 'markdown' && s.atStart ? props.sourceId : undefined;
+                    })()}
+                    selectable
+                    contentStyle={{ rowGap: blockGap }}
+                    options={{ streaming: true, preserveLineBreaks: true }}
+                    labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+                    onScrollIntent={props.userScroll}
+                    onParseError={({ reason }) => failure.set(reason)}
+                    onLinkPress={(event) => {
+                      const owns = makeLinkGuard();
+                      const target = event.target;
+                      if (owns() && target?.isLive())
+                        void props.openLink(event.url, () => {
+                          if (!owns() || !target) return false;
+                          return target.focus();
+                        });
+                    }}
+                    renderImage={(context) => (
+                      <MarkdownImageView
+                        image={() => context.image}
+                        sessionId={props.sessionId}
+                        linked={context.linked}
+                        flow={context.flow}
+                        lineHeight={context.lineHeight}
+                      />
+                    )}
+                    renderCodeBlockAction={(action) => <CodeBlockAction action={action} />}
+                    codeBlockActions={codeBlockActions()}
+                    styles={{
+                      root: { ...readingStyle, color: color() },
+                      paragraph: readingStyle,
+                      heading: {
+                        ...readingStyle,
+                        fontSize: props.compact ? secondaryTextStyle.fontSize : 18,
+                        fontWeight: props.compact ? '600' : '700',
+                        color: color(),
+                      },
+                      heading1: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      heading2: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      heading3: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      heading4: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      heading5: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      blockquote: { borderLeftColor: C.line, color: C.secondary },
+                      link: { color: C.accent },
+                      code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
+                      ...codeBlockStyles(color(), props.compact ? 8 : 12),
+                      // The desktop starts a table's text where a code block's starts.
+                      tableCell: {
+                        ...readingStyle,
+                        ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
+                        color: color(),
+                        borderColor: C.line,
+                      },
+                      tableHeaderCell: {
+                        ...readingStyle,
+                        ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
+                        color: color(),
+                        fontWeight: '600',
+                        borderColor: C.line,
+                      },
+                      tableHead: { backgroundColor: C.cardRaised },
+                      tableRow: { backgroundColor: C.card },
+                      rule: { backgroundColor: C.line },
+                    }}
+                  />
+                }
+              >
+                <SpecView
+                  source={() => {
+                    const current = seg();
+                    return current.kind === 'spec' ? current.source : '';
+                  }}
+                  streaming={() => {
+                    const current = seg();
+                    return isStreaming() && current.kind === 'spec' && !current.closed;
+                  }}
+                  sessionId={props.sessionId}
+                  openLink={openSpecLink}
+                />
+              </If>
+            )}
+          </Each>
+        </View>
         <If when={failure()}>
-          <Text style={[{ ...secondaryTextStyle, color: C.danger }, { userSelect: 'none' }]}>
-            {tr('Formatting unavailable: {reason}', { reason: failure()! })}
+          <Text style={[{ ...readingStyle, color: color() }, { userSelect: 'text' }]}>
+            <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
         </If>
       </If>

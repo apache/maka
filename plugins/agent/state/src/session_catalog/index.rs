@@ -98,6 +98,14 @@ pub(crate) fn fact_message(
                     .collect::<String>(),
             ),
         )),
+        Fact::ExternalTaskObserved {
+            task,
+            output: maka_agent_facts::executor::Output::OutputDelta { message_id, text },
+            ..
+        } if !text.is_empty() => Some((
+            maka_agent_facts::executor::message_id(fact.run, *task, message_id),
+            Some(text.chars().take(160).collect()),
+        )),
         _ => None,
     }
 }

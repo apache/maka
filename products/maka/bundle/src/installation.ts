@@ -51,8 +51,13 @@ export function installation(
       confirmation: 'preapproved',
       nestable: ['files', 'processes', 'web', 'skills', 'ui'].includes(service),
     });
-  add('files', 'readText', 'Read', 'Read text from a file in the selected workspace.');
-  add('files', 'readImage', 'ReadImage', 'Read an image in the selected workspace.', 'image');
+  add(
+    'files',
+    'read',
+    'Read',
+    'Read UTF-8 text or a PNG, JPEG, GIF, or WebP image. Images are returned as image content. In Code Mode, pass an image result to image() to show it to the model.',
+    'image',
+  );
   add('files', 'write', 'Write', 'Write a file in the selected workspace.');
   add('files', 'edit', 'Edit', 'Edit a file in the selected workspace.');
   add('files', 'applyPatch', 'ApplyPatch', 'Apply a patch in the selected workspace.');
@@ -67,7 +72,12 @@ export function installation(
   add('processes', 'writeStdin', 'ProcessInput', 'Send input to a previously started command.');
   add('processes', 'stop', 'ProcessStop', 'Stop a previously started command.');
   add('web', 'fetch', 'WebFetch', 'Read a web page. Network destinations require permission.');
-  add('web', 'search', 'WebSearch', 'Search using the selected model or Tavily.');
+  add(
+    'web',
+    'search',
+    'WebSearch',
+    'Search using the selected model or a configured search service.',
+  );
   add(
     'computer',
     'evaluate',

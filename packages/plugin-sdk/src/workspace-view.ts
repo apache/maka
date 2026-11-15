@@ -37,6 +37,10 @@ export interface WorkspaceImagePreview {
 /** Session actions address the workspace owner's resources without retaining its models. */
 export interface WorkspaceActions {
   openFiles(target: { sessionId: string }): void;
+  openAgentTerminal(
+    target: { sessionId: string; ref: string },
+    restoreFocus: () => boolean,
+  ): Promise<void>;
   openImage(image: WorkspaceImagePreview): void;
   openLink(sessionId: string, target: string, restoreFocus: () => boolean): Promise<void>;
   attachOpener(sessionId: string, node: WorkspaceFocusTarget): void;
@@ -54,6 +58,7 @@ export interface WorkspaceViewInput {
   /** Mounted conversation identities; each resource request carries its own source. */
   sessions(): readonly string[];
   blocked(): boolean;
+  directory(sessionId: string): string | undefined;
   readonly surface: 'pane' | 'overlays';
   readonly docked: boolean;
   report(reason: unknown): void;

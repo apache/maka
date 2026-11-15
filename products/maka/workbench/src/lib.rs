@@ -105,17 +105,22 @@ mod tests {
         }
     }
 
-    fn completion_fixture() -> nsh_testing::Headless {
+    fn fixture(entry: &str) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-            entry: std::path::Path::new("tests/fixtures/composer-completion.tsx")
+            entry: std::path::Path::new("tests/fixtures")
+                .join(entry)
                 .canonicalize()
                 .unwrap(),
             minify: false,
             split: false,
-            ui_sets: sets.iter().map(Into::into).collect(),
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
@@ -136,8 +141,72 @@ mod tests {
     }
 
     #[test]
+    fn terminal_sidebar_restores_the_personal_shell_and_opens_the_exact_agent_resource() {
+        let mut app = fixture("terminal-sidebar.tsx");
+        app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
+        app.wait_for("role:button[View terminal]").unwrap();
+        app.press("role:button[View terminal]").unwrap();
+        app.wait_for("text:cargo fmt").unwrap();
+        app.wait_for("text:/completed.*Read only/").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Terminal keyboard input")
+                .unwrap()
+        );
+
+        app.press("label:Show conversation terminals").unwrap();
+        app.wait_for("text:/maka/").unwrap();
+        assert!(!app.screen().matches("text:cargo test").unwrap());
+        app.press("label:New terminal").unwrap();
+        app.wait_for("text:Shell 1").unwrap();
+        app.wait_for("label:Terminal keyboard input").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("text:1: Enter reached shell-1").unwrap();
+        app.press_key("ctrl+c").unwrap();
+        app.wait_for("text:Interrupt reached shell-1").unwrap();
+        app.paste(
+            "label:Terminal keyboard input",
+            &nsh_core::PasteEvent::new("printf demo"),
+        )
+        .unwrap();
+        app.wait_for("text:Pasted into shell-1: printf demo")
+            .unwrap();
+
+        app.press("label:New terminal").unwrap();
+        app.wait_for("text:Shell 2").unwrap();
+        app.press("text:Shell 1").unwrap();
+        app.press("role:button[Agent terminals]").unwrap();
+        app.wait_for("text:cargo test").unwrap();
+        assert!(!app.screen().matches("text:cargo fmt").unwrap());
+        app.press_key("ctrl+c").unwrap();
+        app.wait_for("text:Workbench interrupt").unwrap();
+        app.press("role:button[Finished commands]").unwrap();
+        app.wait_for("text:cargo fmt").unwrap();
+        app.press("label:Open terminal cargo fmt").unwrap();
+        app.wait_for("text:/completed.*Read only/").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Terminal keyboard input")
+                .unwrap()
+        );
+        app.press("label:Show conversation terminals").unwrap();
+        app.wait_for("label:Terminal keyboard input").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("text:2: Enter reached shell-1").unwrap();
+    }
+
+    #[test]
+    fn original_tool_arguments_show_freeform_script_and_reject_another_tool() {
+        let mut app = fixture("tool-source.tsx");
+        app.wait_for(r"text:/const word = '雪'; text\(word\);/")
+            .unwrap();
+        app.wait_for("text:The original tool source could not be verified.")
+            .unwrap();
+    }
+
+    #[test]
     fn recycled_completion_cells_refresh_labels_and_press_actions() {
-        let mut app = completion_fixture();
+        let mut app = fixture("composer-completion.tsx");
         app.wait_for("role:button[skill-00]").unwrap();
         app.scroll("label:Skills", px(900.0)).unwrap();
         app.wait_for("text:/Description of skill-15/").unwrap();
@@ -151,9 +220,10 @@ mod tests {
 
     #[test]
     fn pending_composer_selects_slash_skills_with_enter_and_tab() {
-        let mut app = completion_fixture();
+        let mut app = fixture("composer-completion.tsx");
         app.wait_for("text:Open new chat").unwrap();
         app.press("id:pending").unwrap();
+        app.wait_for("label:New chat").unwrap();
         app.type_text("label:New chat", "/skill-1").unwrap();
         app.wait_for("role:button[skill-11]").unwrap();
         app.press_key("down").unwrap();
@@ -182,7 +252,11 @@ mod tests {
                 .unwrap(),
             minify: false,
             split: false,
-            ui_sets: sets.iter().map(Into::into).collect(),
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
@@ -281,3 +355,6 @@ mod desktop_residency_tests;
 
 #[cfg(test)]
 mod preset_settings_tests;
+
+#[cfg(test)]
+mod spec_view_tests;

@@ -327,7 +327,7 @@ async fn tool_round(
         "{request}"
     );
     let owner = rig.captured.lock().unwrap().clone().unwrap();
-    let approve_web = name == "WebFetch"
+    let approve_web = matches!(name, "WebFetch" | "WebSearch")
         && owner
             .mutable_session(session)
             .await?
@@ -369,14 +369,13 @@ async fn tool_round(
             );
         }
     };
-    let output = request["messages"]
-        .as_array()
-        .unwrap()
+    let messages = request["messages"].as_array().unwrap();
+    let last_tool = messages
         .iter()
-        .rev()
-        .find(|message| message["role"] == "tool")
-        .ok_or("tool reply missing")?["content"]
-        .to_string();
+        .rposition(|message| message["role"] == "tool")
+        .ok_or("tool reply missing")?;
+    // Chat Completions can carry a tool image in the following user message.
+    let output = serde_json::to_string(&messages[last_tool..])?;
     reply
         .send(completion(
             json!({"role":"assistant","content":"Done."}),
@@ -418,13 +417,26 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let address = format!("http://{}", listener.local_addr()?);
     let web_calls = Arc::new(AtomicUsize::new(0));
+    let search_calls = Arc::new(AtomicUsize::new(0));
     let mcp_calls = Arc::new(AtomicUsize::new(0));
     let web = web_calls.clone();
+    let search = search_calls.clone();
     let mcp = mcp_calls.clone();
     let app = axum::Router::new()
         .route("/page",axum::routing::get(move || {let calls = web.clone(); async move {
             calls.fetch_add(1,Ordering::SeqCst); "web-acceptance-marker"
         }}))
+        .route("/search", axum::routing::get(move |uri: axum::http::Uri| {
+            let search = search.clone();
+            async move {
+                assert_eq!(uri.query(), Some("q=Rust"));
+                search.fetch_add(1, Ordering::SeqCst);
+                (
+                    [("content-type", "application/json")],
+                    json!({"results":[{"url":"https://www.rust-lang.org/"}]}).to_string(),
+                )
+            }
+        }))
         .route("/mcp",axum::routing::post(move |body: axum::body::Bytes| {
             let calls = mcp.clone(); async move {
                 use axum::response::IntoResponse;
@@ -448,19 +460,46 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
         let base = rig.directory.path().to_path_buf();
         let boot = bootstrap_with(&base,provider.url.clone(),|config| {
             config["tools"] = json!([
-                {"name":"Read","description":"Read local file","target":{"kind":"import","name":"files"},"method":"readText","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"Read","description":"Read local file","target":{"kind":"import","name":"files"},"method":"read","nestable":true,"result":"image","confirmation":"preapproved"},
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
-                {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
+                {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},"method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
             config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")},"preapproved":true}]);
         }).await?;
         std::fs::write(base.join("workspace/input.txt"),"local-acceptance-marker")?;
+        image::RgbImage::from_pixel(17, 13, image::Rgb([19, 23, 31]))
+            .save(base.join("workspace/input.png"))?;
         attach(&mut rig,&boot).await?;
         let client = rig.client.as_ref().unwrap();
         let web = call(client,"web","snapshot",json!({})).await?;
-        assert_eq!(call(client,"web","save",json!({"revision":web["revision"],"settings":{"enabled":true,"source":"model"}})).await?["kind"],"updated");
-        let model = model(client,&provider.url,code).await?;
+        assert_eq!(call(client,"web","save",json!({"revision":web["revision"],"settings":{
+            "enabled":true,"source":"model","backend":{"kind":"custom","endpoint":{
+                "url":format!("{address}/search"),"method":"get","urlParameters":{},"body":{},"auth":null,
+                "query":{"location":"query","name":"q"},"limit":null,
+                "results":{"list":"/results","url":"/url","title":null,"snippet":null}
+            }}
+        }})).await?["kind"],"updated");
+        let model = model_options(client,&provider.url,code,json!({"vision":true})).await?;
         let preset = preset(client,&model,"Keep the reviewer role.").await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        for requests in [true, false] {
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let revision = owner.mutable_session(id).await?.revision;
+            let changed = call(client, "agent", "metadata", json!({
+                "sessionId":id,"expectedRevision":revision,"title":"Sandboxed search","labels":[],
+                "permissions":{"settings":{"access":"workspace_write","requestPermissions":requests},"revokeGrants":true}
+            })).await?;
+            assert_eq!(changed["kind"], "committed", "{changed}");
+            let output = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
+            if requests {
+                assert!(output.contains("https://www.rust-lang.org/"), "{output}");
+            } else {
+                assert!(output.contains("WebSearch network access was denied"), "{output}");
+            }
+            assert_eq!(search_calls.load(Ordering::SeqCst), 1, "{output}");
+        }
         for selected in [None,Some(&preset)] {
             std::fs::write(base.join("workspace/output.txt"),"unchanged-before-write")?;
             let session = create(client,&base,&model,selected).await?;
@@ -475,6 +514,27 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 }
                 let read = tool_round(&rig,&mut provider,id,code,"Read",json!({"path":"input.txt"})).await?;
                 assert!(read.contains("local-acceptance-marker"),"{read}");
+                let (image_tool, image_input) = if code {
+                    ("exec", json!({"code":"image(await tools.Read({ path: 'input.png' }));", "yield_time_ms":30000}))
+                } else {
+                    ("Read", json!({"path":"input.png"}))
+                };
+                let read = tool_round(&rig,&mut provider,id,false,image_tool,image_input).await?;
+                assert!(read.contains("data:image/png;base64,"),"{read}");
+                let history = call(client,"agent","history",json!({
+                    "sessionId":id,"position":{"kind":"tail"},"includeThinking":false,"view":"conversation"
+                })).await?;
+                let result = history["chunks"].as_array().unwrap().iter().rev()
+                    .find(|row| row["tool"]["call"]["name"] == "Read" && row["tool"]["result"].is_object())
+                    .ok_or("Read result missing from conversation history")?;
+                let result = &result["tool"]["result"];
+                assert_eq!((result["image"].as_bool(), result["images"].as_u64()), (Some(false), Some(1)));
+                let image = call(client,"agent","toolImage",json!({
+                    "sessionId":id,"through":history["through"],"position":result["position"],"image":0,"offset":0
+                })).await?;
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(image["data"].as_str().unwrap())?;
+                assert_eq!(bytes, std::fs::read(base.join("workspace/input.png"))?);
                 let write = tool_round(&rig,&mut provider,id,code,"Write",json!({"path":"output.txt","content":if allowed {"allowed"} else {"forbidden"}})).await?;
                 let before_web = web_calls.load(Ordering::SeqCst);
                 let web = tool_round(&rig,&mut provider,id,code,"WebFetch",json!({"url":format!("{address}/page")})).await?;

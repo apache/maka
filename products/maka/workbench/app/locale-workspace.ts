@@ -283,15 +283,13 @@ export const workspaceMessages = {
   ],
   'Image unavailable': ['Image unavailable', '图片不可用', '圖片無法使用'],
   'Image viewport': ['Image viewport', '图片视口', '圖片檢視區'],
-  Input: ['Input', '输入', '輸入'],
   'Jump to turn: {label}': ['Jump to turn: {label}', '跳转到轮次：{label}', '跳至輪次：{label}'],
   Latest: ['Latest', '最新', '最新'],
-  'Live output is no longer retained. Input is released; the final display will appear after the process settles.':
-    [
-      'Live output is no longer retained. Input is released; the final display will appear after the process settles.',
-      '实时输出已不再保留。输入已释放；进程结束后将显示最终画面。',
-      '即時輸出已不再保留。輸入已釋放；程序結束後將顯示最終畫面。',
-    ],
+  'Waiting for retained output…': [
+    'Waiting for retained output…',
+    '正在等待保留的输出…',
+    '正在等待保留的輸出…',
+  ],
   'Loading folders…': msg_directoryLoading,
   'Loading image…': msg_imageLoading,
   'Loading session…': ['Loading session…', '正在加载会话…', '正在載入對話…'],
@@ -433,11 +431,6 @@ export const workspaceMessages = {
   ],
   Staged: ['Staged', '已暂存', '已暫存'],
   'Stop terminal process': ['Stop terminal process', '停止终端进程', '停止終端程序'],
-  'Stop the agent’s running terminal? This interrupts its command.': [
-    'Stop the agent’s running terminal? This interrupts its command.',
-    '停止智能体正在运行的终端？这将中断其命令。',
-    '停止智慧體正在執行的終端？這將中斷其命令。',
-  ],
   'Stop this terminal and its running process?': [
     'Stop this terminal and its running process?',
     '停止此终端及其正在运行的进程？',
@@ -445,11 +438,6 @@ export const workspaceMessages = {
   ],
   'Stopping process…': ['Stopping process…', '正在停止进程…', '正在停止程序…'],
   'Stopping…': msg_stopping,
-  'Terminal history · Shift+PageUp / Shift+PageDown': [
-    'Terminal history · Shift+PageUp / Shift+PageDown',
-    '终端历史 · Shift+PageUp / Shift+PageDown',
-    '終端歷史 · Shift+PageUp / Shift+PageDown',
-  ],
   'Terminal input control was released by the Host.': [
     'Terminal input control was released by the Host.',
     'Host 已释放终端输入控制权。',
@@ -616,7 +604,6 @@ export const workspaceMessages = {
   directory: ['directory', '目录', '目錄'],
   failed: ['failed', '失败', '失敗'],
   file: ['file', '文件', '檔案'],
-  'input held': ['input held', '输入已接管', '輸入已接管'],
   modified: ['modified', '已修改', '已修改'],
   orphaned: ['orphaned', '已失联', '已失聯'],
   other: ['other', '其他文件', '其他檔案'],
@@ -625,7 +612,6 @@ export const workspaceMessages = {
   'symbolic link': ['symbolic link', '符号链接', '符號連結'],
   timed_out: ['timed_out', '已超时', '已逾時'],
   'type changed': ['type changed', '类型已更改', '類型已變更'],
-  viewing: ['viewing', '查看中', '檢視中'],
   '{head} · {count} changes': [
     '{head} · {count} changes',
     '{head} · {count} 项更改',

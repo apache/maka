@@ -212,6 +212,7 @@ async function hostEffect() {
     !names.includes('exec') ||
     !names.includes('wait') ||
     !names.includes('cua_repl') ||
+    names.includes('ReadImage') ||
     names.includes('Shell') ||
     names.includes('SendUser') ||
     names.includes('sleep')
@@ -305,10 +306,15 @@ async function acp(id, method, params) {
     if (job) throw Error('Duplicate ACP task prompt');
     job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length));
     const checkpoint = `ACP checkpoint ${job.label}`;
-    await event('session/update', {
-      sessionId: thread,
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: checkpoint } },
-    });
+    if (job.label !== 'ACP-followup') {
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: checkpoint },
+        },
+      });
+    }
     await record('ready', { thread, checkpoint, promptId: id });
     if (job.label === 'ACP-schedule') {
       const task = await codeResult(
@@ -328,7 +334,29 @@ async function acp(id, method, params) {
       await record('scheduled', { thread, taskId: task.taskId, promptId: id });
       return;
     }
-    if (job.label === 'ACP-followup') await readArchivedResult();
+    if (job.label === 'ACP-followup') {
+      await readArchivedResult();
+      const png =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3XcAAAAASUVORK5CYII=';
+      await writeFile('read-fixture.png', Buffer.from(png, 'base64'));
+      const image = await callTool('exec', {
+        code: "image(await tools.Read({ path: 'read-fixture.png' }));",
+        yield_time_ms: 10000,
+      });
+      if (
+        !image.content.some(
+          (part) => part.type === 'image' && part.mimeType === 'image/png' && part.data === png,
+        )
+      )
+        throw Error('Read did not return the original PNG as MCP image content');
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'ACP follow-up final reply' },
+        },
+      });
+    }
     if (job.label === 'ACP-followup' || job.label === 'ACP-wake')
       return reply(id, { stopReason: 'end_turn' });
     return;

@@ -328,6 +328,7 @@ type ConversationProps = {
   files?(): void;
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
   knownSession?(sessionId: string): AgentSession | undefined;
@@ -4015,6 +4016,7 @@ export function Conversation(props: ConversationProps) {
                 sessionId={sessionId}
                 through={() => latestKnown}
                 previewImage={props.previewImage}
+                previewTerminal={props.previewTerminal}
                 openLink={props.openLink}
                 senders={senders}
                 userScroll={() => cancelNavigation()}
@@ -4094,6 +4096,7 @@ export function Conversation(props: ConversationProps) {
                     : undefined
                 }
                 messages={() => bot.forTurn(initial.turnId)}
+                sessionId={sessionId}
                 openLink={props.openLink}
                 userScroll={() => cancelNavigation()}
               />
@@ -4118,6 +4121,7 @@ export function Conversation(props: ConversationProps) {
               sessionId={sessionId}
               through={() => latestKnown}
               previewImage={props.previewImage}
+              previewTerminal={props.previewTerminal}
               openLink={props.openLink}
               senders={senders}
               userScroll={() => cancelNavigation()}
@@ -4613,6 +4617,7 @@ export function Conversation(props: ConversationProps) {
                   sessionId={sessionId}
                   through={() => latestKnown}
                   previewImage={props.previewImage}
+                  previewTerminal={props.previewTerminal}
                   openLink={props.openLink}
                   toolProgress={toolProgress}
                   maxHeight={() => Math.max(32, readingSize().height - 80)}

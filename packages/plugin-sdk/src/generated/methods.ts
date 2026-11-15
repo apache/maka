@@ -3147,6 +3147,53 @@ export interface ServiceMethods {
       output: Runtime.SkillLibraryChangeResult;
     };
   };
+  workspaceWeb: {
+    capture: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebCapture;
+    };
+    checkKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    deleteKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    fetch: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebFetch;
+      output: Runtime.WebResult;
+    };
+    probe: {
+      mode: 'mutation';
+      input: Runtime.WebProbe;
+      output: Runtime.WebResult;
+    };
+    save: {
+      mode: 'mutation';
+      input: Runtime.WebSet;
+      output: Runtime.WebUpdate;
+    };
+    saveKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    search: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebQuery;
+      output: Runtime.WebResult;
+    };
+    snapshot: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebSnapshot;
+    };
+  };
 }
 /**
  * One message the Bot deliberately sent to its user.

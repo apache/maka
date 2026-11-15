@@ -8849,6 +8849,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "embed-resource",
+ "libc",
  "maka-event-log",
  "maka-host-runtime",
  "maka-workbench",

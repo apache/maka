@@ -55,7 +55,6 @@ export const toolActivityMessages = {
   'Endpoint health unknown': ['Endpoint health unknown', '服务状态未知', '服務狀態未知'],
   'Process output': ['Process output', '进程输出', '程序輸出'],
   'Process errors': ['Process errors', '进程错误输出', '程序錯誤輸出'],
-  'Read image': ['Read image', '读取图片', '讀取圖片'],
   'Check background process': ['Check background process', '检查后台进程', '檢查背景程序'],
   'Read skill': ['Read skill', '读取技能', '讀取技能'],
   'No matching skills': ['No matching skills', '没有匹配的技能', '沒有相符的技能'],

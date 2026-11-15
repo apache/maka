@@ -452,6 +452,8 @@ impl Rig {
                 "continueRun",
                 "models",
                 "observe",
+                "history",
+                "toolImage",
                 "tools",
                 "predictNextMessage",
                 "compact",
@@ -723,6 +725,7 @@ impl Rig {
                 sandbox,
                 approval: maka_sandbox::Approval::Never,
             },
+            network_approval_ceiling: None,
             backend: match &external_backend {
                 Some(external) => BackendSpec::Executor {
                     selection: external.accepted.selection.clone(),

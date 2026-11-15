@@ -1255,6 +1255,23 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         assert_eq!(events.iter().filter(|e| e["kind"] == "hello").count(), 2, "{events:?}");
         assert!(events.iter().all(|e| e["kind"] != "failure"), "{events:?}");
         phase("resumed Run settles before Host quit", readiness(&recovery, &session, &next)).await?;
+        let observed = query(&recovery, "agent", "observe", json!({"sessionId":session})).await?;
+        assert_eq!(observed["session"]["hasUnread"], true);
+        let history = query(&recovery, "agent", "history", json!({
+            "sessionId":session,"position":{"kind":"tail"},"includeThinking":false,"view":"chat"
+        })).await?;
+        let final_reply = history["chunks"].as_array().unwrap().iter().rev()
+            .find(|chunk| chunk["role"] == "assistant" && chunk["text"] == "ACP follow-up final reply")
+            .ok_or("external final reply missing from history")?;
+        let message = final_reply["messageId"].as_str().ok_or("final reply identity missing")?;
+        assert_eq!(observed["session"]["tailMessageId"], message);
+        let read = recovery.control(Uuid::new_v4(), "markRead", json!({
+            "sessionId":session,"messageId":message
+        })).await?;
+        read.prepare().await?;
+        receipt_value(&read.confirm().await?)?;
+        let observed = query(&recovery, "agent", "observe", json!({"sessionId":session})).await?;
+        assert_eq!(observed["session"]["hasUnread"], false);
         let external = query(&recovery, "agent", "externalAgents", json!({"inspect":true})).await?;
         let target = &external["target"];
         let source = query(&recovery, "management", "read", json!({})).await?;

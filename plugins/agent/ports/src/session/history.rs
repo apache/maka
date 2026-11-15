@@ -323,9 +323,9 @@ pub struct ToolResult {
     pub position: RowPosition,
     /// A failed or unknown effect, or a returned result that reports failure.
     pub is_error: bool,
-    /// Canonical content is an image; this does not grant artifact reads.
+    /// The result exposes an unindexed image distinct from its indexed projection images.
     pub image: bool,
-    /// Images the model received beside non-image content, readable by index.
+    /// Images in the model projection, readable by index.
     pub images: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<maka_agent_facts::executor::ToolResultDetails>,

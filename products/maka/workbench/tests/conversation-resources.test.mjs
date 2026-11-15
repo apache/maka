@@ -29,7 +29,14 @@ const native = {
   locale: `export const tr = key => key;`,
   workspaceFileState: `export const createWorkspaceFiles = (_host, options) => ({ sessionId: options.sessionId });`,
   CurrentFile: `export const createCurrentFile = (_host, target) => ({target, activate() {}, suspend() {}, dispose() {this.disposed = true;}});`,
-  terminalState: `export const createTerminals = (_host, options) => ({sessionId: options.sessionId});`,
+  terminalState: `
+    export const completed = reply => reply.value;
+    export const terminalRunning = entry => entry.result.status === 'running';
+    export const createTerminals = (_host, options) => ({
+      entries: () => [],
+      sessionId: options.sessionId,
+    });
+  `,
 };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -63,6 +70,7 @@ function setup(t, openLink = async () => null) {
     {
       sessions,
       blocked: () => false,
+      directory: () => undefined,
       report: (error) => errors.push(error),
     },
   );
