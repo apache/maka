@@ -79,6 +79,7 @@ import {
   type ScopedHost,
 } from '../../../../products/maka/workbench/app/host';
 import {
+  animateDisclosure,
   C,
   Header,
   ViewSegment,
@@ -553,14 +554,7 @@ export function Conversation(props: ConversationProps) {
     !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
-  const workPages = new Map<
-    string,
-    {
-      through: number;
-      after: AgentHistoryPage['after'];
-      task?: Promise<void>;
-    }
-  >();
+  const workPages = new Map<string, { through: number }>();
   const groupStates = new Map<string, GroupViewState>();
   const rowStates = new Map<string, MessageViewState>();
   const turnState = (id: string) => {
@@ -1707,54 +1701,35 @@ export function Conversation(props: ConversationProps) {
     const first = historyRows()
       .byTurn.get(key)
       ?.find((row) => row.foldedWork && row.position);
-    if (!owner || !first?.position) return;
-    const existing = workPages.get(key);
-    if (existing && (existing.task || existing.after === null)) return;
-    const state = existing ?? { through: first.metadataThrough ?? owner.through, after: null };
-    const position: HistoryPosition = state.after
-      ? { kind: 'after', cursor: state.after }
-      : { kind: 'row', position: first.position, field: 'body' };
+    if (!owner || !first?.position || workPages.has(key)) return;
+    const state = { through: first.metadataThrough ?? owner.through };
     workPages.set(key, state);
+    // Folded groups need every step to name what they did, so the whole turn
+    // arrives before it is shown, not page by page.
     const load = async () => {
-      let cursor = position;
+      let cursor: HistoryPosition = { kind: 'row', position: first.position!, field: 'body' };
+      const chunks: AgentHistoryChunk[] = [];
+      let through = state.through;
       for (;;) {
         const page = await history(state.through, cursor, 'turn');
         if (!alive || workPages.get(key) !== state) return;
-        state.after = page.after;
-        const current = historyRows();
-        const changed = mergeHistoryPage(
-          page.chunks,
-          (key) => current.byKey.get(key),
-          false,
-          page.through,
-        );
-        if (changed.length) {
-          current.put(changed);
-          historyRows.set(current);
-        }
-        if (
-          page.after === null ||
-          page.chunks.some(
-            (chunk) =>
-              chunk.role !== 'compaction' &&
-              (chunk.role !== 'user' || activityMessage(chunk.origin)) &&
-              !chunk.finalOutput &&
-              (chunk.field !== 'thinking' || chunk.text.trim()),
-          )
-        )
-          return;
+        chunks.push(...page.chunks);
+        through = page.through;
+        if (page.after === null) break;
         cursor = { kind: 'after', cursor: page.after };
       }
+      const current = historyRows();
+      const changed = mergeHistoryPage(chunks, (key) => current.byKey.get(key), false, through);
+      if (changed.length) {
+        current.put(changed);
+        historyRows.set(current);
+      }
     };
-    state.task = load()
-      .catch((reason) => {
-        if (workPages.get(key) !== state) return;
-        if (state.after === null) workPages.delete(key);
-        report(reason);
-      })
-      .finally(() => {
-        state.task = undefined;
-      });
+    load().catch((reason) => {
+      if (workPages.get(key) !== state) return;
+      workPages.delete(key);
+      report(reason);
+    });
   };
   const hydrateAttachmentMetadata = () => {
     for (const rowKey of historyRows().missingAttachments) {
@@ -4023,11 +3998,14 @@ export function Conversation(props: ConversationProps) {
                 }}
                 toggle={(open) => {
                   if (open) {
+                    // Reopened work starts from its group rows again.
+                    for (const group of groups()) groupStates.get(group.key)?.open.set(false);
                     historyFollowPaused.set(true);
                     if (turn().foldedWork) loadTurnWork(initial.turnKey);
                     // Replace the source reading anchor before the folded rows return.
                     list?.scrollToOffset({ offset: historyOffset, animated: false });
                   }
+                  animateDisclosure();
                   turnState(initial.turnKey).expanded.set(open);
                 }}
               />
@@ -4086,14 +4064,6 @@ export function Conversation(props: ConversationProps) {
                 resumed={() => {
                   if (historyFollowPaused() && latestActivity()?.key === initial.group.key)
                     resumeHistoryAtEnd(historyOffset);
-                }}
-                nearActivityEnd={() => {
-                  const projected = projectedSection(initial.group.turnKey);
-                  const last = projected?.entries.findLast(
-                    (entry) => entry.kind === 'process' && entry.turnKey === initial.group.turnKey,
-                  );
-                  if (last?.key === initial.group.key && turn().foldedWork)
-                    loadTurnWork(initial.group.turnKey);
                 }}
                 settled={(atEnd) => {
                   if (atEnd) readerAtEnd.set(initial.group.key);
