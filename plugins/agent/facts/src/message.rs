@@ -38,6 +38,12 @@ pub enum MessageOrigin {
     Session {
         execution: crate::durable::ExecutionIdentity,
     },
+    Room {
+        session_id: String,
+        message_id: String,
+        author: crate::room::RoomAuthor,
+        reply_to: Option<String>,
+    },
     Automation {
         automation_id: String,
         title: String,
@@ -53,11 +59,32 @@ pub enum MessageOrigin {
 }
 impl MessageOrigin {
     pub fn prompt_header(&self, language: crate::language::Language) -> String {
-        format!(
+        let mut header = format!(
             "{}{}]\n",
             Self::prompt_header_prefix(language),
             serde_json::to_string(self).expect("message origin is serializable")
-        )
+        );
+        if let Self::Room {
+            session_id,
+            message_id,
+            ..
+        } = self
+        {
+            let address = serde_json::json!({"sessionId": session_id, "replyTo": message_id});
+            let instruction = match language {
+                crate::language::Language::ZhCn => format!(
+                    "请用 SessionSend 回到来源房间回复这条消息，地址参数为 {address}，message 填写答复内容。\n"
+                ),
+                crate::language::Language::ZhTw => format!(
+                    "請用 SessionSend 回到來源房間回覆這則訊息，地址參數為 {address}，message 填寫答覆內容。\n"
+                ),
+                _ => format!(
+                    "Reply in the source Room using SessionSend with {address} and your response in message.\n"
+                ),
+            };
+            header.push_str(&instruction);
+        }
+        header
     }
 
     pub fn prompt_header_prefix(language: crate::language::Language) -> &'static str {
@@ -81,6 +108,23 @@ impl MessageOrigin {
             Self::Session { execution } => {
                 crate::interaction::entity_id(&execution.session_id)?;
                 crate::interaction::entity_id(&execution.turn_id)?;
+                Ok(())
+            }
+            Self::Room {
+                session_id,
+                message_id,
+                author,
+                reply_to,
+            } => {
+                crate::interaction::entity_id(session_id)?;
+                crate::interaction::entity_id(message_id)?;
+                if let crate::room::RoomAuthor::Session { execution } = author {
+                    crate::interaction::entity_id(&execution.session_id)?;
+                    crate::interaction::entity_id(&execution.turn_id)?;
+                }
+                if let Some(message) = reply_to {
+                    crate::interaction::entity_id(message)?;
+                }
                 Ok(())
             }
             Self::Goal { goal_id, objective } => {

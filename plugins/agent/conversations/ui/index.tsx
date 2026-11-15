@@ -28,6 +28,8 @@ import {
   conversationNavigationView,
   conversationSessionView,
   conversationPreviewView,
+  roomWorkspaceView,
+  type RoomWorkspaceInput,
   type ConversationNavigationInput,
   type ConversationSessionInput,
   type ConversationPreviewInput,
@@ -35,6 +37,7 @@ import {
 import { createConversationUi, type ConversationWindow } from './SessionSurface';
 import { invokeFocusedConversation } from '../../../../products/maka/workbench/app/conversationCommands';
 import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/workspace-view.js';
+import { RoomView } from './RoomView';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
@@ -52,7 +55,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const views = createConversationUi(context, host, window);
   const owner = (sessionId: string | null) =>
     [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
-  const Navigation = (props: { input: ConversationNavigationInput }) =>
+  const Navigation = (props: { input: ConversationNavigationInput<JSX.Element> }) =>
     views.navigation(props.input);
   const Session = (props: { input: ConversationSessionInput }) => {
     if (!props.input.shell.closePane) return views.session(props.input);
@@ -93,10 +96,19 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   return {
     exports: {
       ...commands,
+      rooms: {
+        kind: 'view',
+        contract: roomWorkspaceView.id,
+        render({ input }: UiEmbeddedViewProps<RoomWorkspaceInput<JSX.Element>, JSX.Element>) {
+          return <RoomView host={host} input={input} />;
+        },
+      },
       navigation: {
         kind: 'view',
         contract: conversationNavigationView.id,
-        render({ input }: UiEmbeddedViewProps<ConversationNavigationInput, JSX.Element>) {
+        render({
+          input,
+        }: UiEmbeddedViewProps<ConversationNavigationInput<JSX.Element>, JSX.Element>) {
           return (
             <HostProvider value={host}>
               <Navigation input={input} />

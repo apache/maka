@@ -35,8 +35,8 @@ import {
   List,
   platform,
 } from 'nsh';
-import type { ListRef, Signal, ViewRef } from 'nsh';
-import { Button } from 'nsh/base';
+import type { JSX, ListRef, Signal, ViewRef } from 'nsh';
+import { Button, ContextMenu, Menu } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
 import {
@@ -47,10 +47,12 @@ import {
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
+  floatingStyle,
 } from './ui';
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
+import { SessionMenuItems, type SessionMenuAction } from './SessionMenu';
 import { Automations } from './Automations';
 import {
   groupWorkspace,
@@ -72,6 +74,7 @@ import { sessionStatusCaption } from './sessionStatus';
 import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export type WorkspaceBrowserProps = {
+  navigationMore?(): JSX.Element;
   docked(): boolean;
   connectionLost(): boolean;
   browsing: Browsing;
@@ -192,8 +195,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const moreBotWorkers = () => Math.max(0, activeBotWorkers().length - botWorkerCap);
   const choosingWorkspace = signal(false);
   const automationsOpen = signal(false);
-  const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
-  const actionsAnchor = signal<ViewRef | null>(null);
+  const actions = signal<{
+    session: SessionActionTarget;
+    origin: string | null;
+    action: SessionMenuAction;
+  } | null>(null);
   const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
   const viewportHeight = signal(160);
   let navigationTarget: ViewRef | undefined;
@@ -341,10 +347,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         ),
       });
   };
-  const openActions = (
-    target: { session: SessionActionTarget; origin: string | null },
-    anchor: ViewRef,
-  ) => {
+  const openActions = (target: {
+    session: SessionActionTarget;
+    origin: string | null;
+    action: SessionMenuAction;
+  }) => {
     if (
       alive &&
       !props.switching() &&
@@ -353,7 +360,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     ) {
       batch(() => {
         navigationNotice.set(null);
-        actionsAnchor.set(anchor);
         actions.set(target);
       });
     }
@@ -361,7 +367,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const closeActions = () => {
     batch(() => {
       actions.set(null);
-      actionsAnchor.set(null);
     });
   };
   effect(() => {
@@ -759,6 +764,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Button>
         </If>
       </View>
+      {props.navigationMore?.()}
       <If when={platform.idiom === 'terminal'}>
         <View
           style={{
@@ -1107,21 +1113,36 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 );
               }
               const session = () => sessionsById().get(key());
-              let actionTrigger: ViewRef | undefined;
-              cleanup(() => {
-                if (alive && actionsAnchor() === actionTrigger) actionsAnchor.set(null);
-              });
               const showActions = (target: {
                 session: SessionActionTarget;
                 origin: string | null;
+                action: SessionMenuAction;
               }) => {
-                if (actionTrigger && target.session.id === key())
-                  openActions(target, actionTrigger);
+                if (target.session.id === key()) openActions(target);
               };
               // On the desktop the More button sits inside the row and shows on
               // the selected row, while the pointer is on the row, or while its
               // menu is open.
               const hovered = signal(false);
+              const menuOpen = signal(false);
+              const menuItems = () => {
+                const target = {
+                  session: sessionActionTarget(session()!),
+                  origin: props.selected(),
+                };
+                return (
+                  <SessionMenuItems
+                    session={target.session}
+                    childrenAvailable
+                    besideAvailable={Boolean(
+                      props.canOpenBeside?.() &&
+                        target.session.id !== props.selected() &&
+                        !props.beside?.().includes(target.session.id),
+                    )}
+                    select={(action) => showActions({ ...target, action })}
+                  />
+                );
+              };
               // The conversation that created this one, when the list shows it
               // elsewhere rather than just above (the row has no room to say).
               const creator = () => {
@@ -1155,8 +1176,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               const actionsShown = () =>
                 platform.idiom === 'terminal' ||
                 hovered() ||
+                menuOpen() ||
                 props.selected() === key() ||
-                actionsAnchor() === actionTrigger;
+                actions()?.session.id === key();
               const current = () => props.selected() === key();
               // What the row's end shows while its More button is away: the
               // desktop's one lane for a running conversation or an unread one.
@@ -1186,215 +1208,224 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       {session()?.pinned ? tr('Pinned') : tr('Conversations')}
                     </Text>
                   </If>
-                  <View
-                    // A secondary click opens the row's actions, as its More button does.
-                    onContextMenu={
-                      session()
-                        ? inputAction(showActions, {
-                            session: sessionActionTarget(session()!),
-                            origin: props.selected(),
-                          })
-                        : undefined
-                    }
-                    style={{
-                      flexDirection: 'row',
-                      height: rowHeight(),
-                      paddingVertical: compact() ? 0 : 2,
-                      // Under the conversation that created it.
-                      paddingLeft:
-                        platform.idiom !== 'terminal' && nestedRows().has(key()) ? nestInset : 0,
-                    }}
-                  >
-                    <If when={platform.idiom !== 'terminal' && nestedRows().has(key())}>
-                      <GuideLine last={() => lastNestedRows().has(key())} height={rowHeight} />
-                    </If>
-                    <View
-                      onMouseEnter={() => hovered.set(true)}
-                      onMouseLeave={() => hovered.set(false)}
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        flexDirection: 'row',
-                        borderRadius: 8,
-                        ...(platform.idiom === 'terminal'
-                          ? {}
-                          : {
-                              backgroundColor:
-                                current() || props.beside?.().includes(key()) || hovered()
-                                  ? C.raised
-                                  : 'transparent',
-                            }),
-                      }}
-                    >
-                      <Button
-                        accessibilityLabel={tr('Open conversation {title}', {
-                          title: session()?.title || tr('Untitled conversation'),
-                        })}
-                        disabled={props.switching() || !session()}
-                        selected={props.selected() === key()}
-                        tooltip={
-                          platform.idiom === 'terminal'
-                            ? undefined
-                            : textTooltip(() =>
-                                creator()
-                                  ? tr('From {title}', {
-                                      title: creator()!.title || tr('Untitled conversation'),
-                                    })
-                                  : botWorker()
-                                    ? tr('From {title}', { title: tr('Maka Bot') })
-                                    : undefined,
-                              )
-                        }
-                        onPress={inputAction(select, { id: key(), origin: props.selected() })}
+                  <ContextMenu
+                    disabled={!session() || props.switching()}
+                    offset={4}
+                    margin={8}
+                    popupStyle={floatingStyle()}
+                    onOpenChange={({ open }) => menuOpen.set(open)}
+                    trigger={
+                      <View
                         style={{
-                          flex: 1,
-                          minWidth: 0,
-                          paddingHorizontal: 8,
-                          justifyContent: 'center',
-                          borderRadius: 8,
-                          backgroundColor:
-                            platform.idiom === 'terminal'
-                              ? props.selected() === key()
-                                ? C.line
-                                : C.surface
-                              : 'transparent',
+                          flexDirection: 'row',
+                          height: rowHeight(),
+                          paddingVertical: compact() ? 0 : 2,
+                          // Under the conversation that created it.
+                          paddingLeft:
+                            platform.idiom !== 'terminal' && nestedRows().has(key())
+                              ? nestInset
+                              : 0,
                         }}
-                        hoverStyle={
-                          platform.idiom === 'terminal' ? { backgroundColor: C.line } : {}
-                        }
-                        focusStyle={{ backgroundColor: C.raised }}
                       >
+                        <If when={platform.idiom !== 'terminal' && nestedRows().has(key())}>
+                          <GuideLine last={() => lastNestedRows().has(key())} height={rowHeight} />
+                        </If>
                         <View
-                          style={[
-                            { flexDirection: 'row', alignItems: 'center', gap: 8 },
-                            { pointerEvents: 'none' },
-                          ]}
+                          onMouseEnter={() => hovered.set(true)}
+                          onMouseLeave={() => hovered.set(false)}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            flexDirection: 'row',
+                            borderRadius: 8,
+                            ...(platform.idiom === 'terminal'
+                              ? {}
+                              : {
+                                  backgroundColor:
+                                    current() || props.beside?.().includes(key()) || hovered()
+                                      ? C.raised
+                                      : 'transparent',
+                                }),
+                          }}
                         >
-                          <Text
-                            style={[
+                          <Button
+                            accessibilityLabel={tr('Open conversation {title}', {
+                              title: session()?.title || tr('Untitled conversation'),
+                            })}
+                            disabled={props.switching() || !session()}
+                            selected={props.selected() === key()}
+                            tooltip={
                               platform.idiom === 'terminal'
-                                ? {
-                                    color: current() || session()?.hasUnread ? C.accent : C.text,
-                                    flex: 1,
-                                  }
-                                : {
-                                    color: C.text,
-                                    fontWeight: current() ? '500' : undefined,
-                                    flex: 1,
-                                  },
-                              { numberOfLines: 1 },
-                            ]}
+                                ? undefined
+                                : textTooltip(() =>
+                                    creator()
+                                      ? tr('From {title}', {
+                                          title: creator()!.title || tr('Untitled conversation'),
+                                        })
+                                      : botWorker()
+                                        ? tr('From {title}', { title: tr('Maka Bot') })
+                                        : undefined,
+                                  )
+                            }
+                            onPress={inputAction(select, { id: key(), origin: props.selected() })}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              paddingHorizontal: 8,
+                              justifyContent: 'center',
+                              borderRadius: 8,
+                              backgroundColor:
+                                platform.idiom === 'terminal'
+                                  ? props.selected() === key()
+                                    ? C.line
+                                    : C.surface
+                                  : 'transparent',
+                            }}
+                            hoverStyle={
+                              platform.idiom === 'terminal' ? { backgroundColor: C.line } : {}
+                            }
+                            focusStyle={{ backgroundColor: C.raised }}
                           >
-                            {session()?.title || tr('Untitled conversation')}
-                          </Text>
-                          <If when={platform.idiom !== 'terminal' && desktopCaption()}>
-                            <Text
+                            <View
                               style={[
-                                { ...captionTextStyle, color: C.muted, flexShrink: 1 },
-                                { numberOfLines: 1 },
+                                { flexDirection: 'row', alignItems: 'center', gap: 8 },
+                                { pointerEvents: 'none' },
                               ]}
                             >
-                              {desktopCaption()}
-                            </Text>
-                          </If>
-                          <If when={platform.idiom !== 'terminal' && botWorker()}>
-                            <Icon name="bot" color={C.muted} />
-                          </If>
-                          <If when={platform.idiom === 'terminal' && session()?.hasUnread}>
-                            <Icon name="unread" color={C.accent} />
-                          </If>
-                        </View>
-                        <If when={platform.idiom === 'terminal'}>
-                          <Text
-                            style={[
-                              { color: C.muted, fontSize: 12, lineHeight: 16 },
-                              { numberOfLines: 1 },
-                            ]}
-                          >
-                            {props.connectionLost() || browser.error()
-                              ? ''
-                              : session()?.activity === 'working'
-                                ? `${sessionStatusCaption.working} · `
-                                : session()?.activity === 'waiting'
-                                  ? `${sessionStatusCaption.waiting} · `
+                              <Text
+                                style={[
+                                  platform.idiom === 'terminal'
+                                    ? {
+                                        color:
+                                          current() || session()?.hasUnread ? C.accent : C.text,
+                                        flex: 1,
+                                      }
+                                    : {
+                                        color: C.text,
+                                        fontWeight: current() ? '500' : undefined,
+                                        flex: 1,
+                                      },
+                                  { numberOfLines: 1 },
+                                ]}
+                              >
+                                {session()?.title || tr('Untitled conversation')}
+                              </Text>
+                              <If when={platform.idiom !== 'terminal' && desktopCaption()}>
+                                <Text
+                                  style={[
+                                    { ...captionTextStyle, color: C.muted, flexShrink: 1 },
+                                    { numberOfLines: 1 },
+                                  ]}
+                                >
+                                  {desktopCaption()}
+                                </Text>
+                              </If>
+                              <If when={platform.idiom !== 'terminal' && botWorker()}>
+                                <Icon name="bot" color={C.muted} />
+                              </If>
+                              <If when={platform.idiom === 'terminal' && session()?.hasUnread}>
+                                <Icon name="unread" color={C.accent} />
+                              </If>
+                            </View>
+                            <If when={platform.idiom === 'terminal'}>
+                              <Text
+                                style={[
+                                  { color: C.muted, fontSize: 12, lineHeight: 16 },
+                                  { numberOfLines: 1 },
+                                ]}
+                              >
+                                {props.connectionLost() || browser.error()
+                                  ? ''
+                                  : session()?.activity === 'working'
+                                    ? `${sessionStatusCaption.working} · `
+                                    : session()?.activity === 'waiting'
+                                      ? `${sessionStatusCaption.waiting} · `
+                                      : ''}
+                                {/* Forks renamed or titled before the prefix still read as forks. */}
+                                {session()?.branch && !hasForkPrefix(session()!.title)
+                                  ? `${tr('Fork')} · `
                                   : ''}
-                            {/* Forks renamed or titled before the prefix still read as forks. */}
-                            {session()?.branch && !hasForkPrefix(session()!.title)
-                              ? `${tr('Fork')} · `
-                              : ''}
-                            {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
-                              session()?.workspace.path}
-                          </Text>
-                        </If>
-                      </Button>
-                      <If
-                        when={platform.idiom !== 'terminal' && lane() !== null && !actionsShown()}
-                      >
-                        <View
-                          style={[
-                            {
-                              position: 'absolute',
-                              right: 8,
-                              top: 0,
-                              bottom: 0,
-                              width: 16,
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                            },
-                            { pointerEvents: 'none' },
-                          ]}
-                        >
+                                {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
+                                  session()?.workspace.path}
+                              </Text>
+                            </If>
+                          </Button>
                           <If
-                            when={lane() === 'working'}
-                            else={
-                              <View
-                                style={{
-                                  width: 6,
-                                  height: 6,
-                                  borderRadius: 3,
-                                  backgroundColor: C.accent,
-                                }}
-                              />
+                            when={
+                              platform.idiom !== 'terminal' && lane() !== null && !actionsShown()
                             }
                           >
-                            <LoadingIndicator size={12} label={sessionStatusCaption.working} />
+                            <View
+                              style={[
+                                {
+                                  position: 'absolute',
+                                  right: 8,
+                                  top: 0,
+                                  bottom: 0,
+                                  width: 16,
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                },
+                                { pointerEvents: 'none' },
+                              ]}
+                            >
+                              <If
+                                when={lane() === 'working'}
+                                else={
+                                  <View
+                                    style={{
+                                      width: 6,
+                                      height: 6,
+                                      borderRadius: 3,
+                                      backgroundColor: C.accent,
+                                    }}
+                                  />
+                                }
+                              >
+                                <LoadingIndicator size={12} label={sessionStatusCaption.working} />
+                              </If>
+                            </View>
                           </If>
+                          <Menu
+                            offset={4}
+                            margin={8}
+                            align="end"
+                            popupStyle={floatingStyle()}
+                            onOpenChange={({ open }) => menuOpen.set(open)}
+                            trigger={
+                              <Button
+                                accessibilityLabel={tr('Actions for {title}', {
+                                  title: session()?.title || tr('Untitled conversation'),
+                                })}
+                                disabled={props.switching() || !session()}
+                                style={{
+                                  width: 32,
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  borderRadius: 8,
+                                  opacity: actionsShown() ? 1 : 0,
+                                }}
+                                hoverStyle={controlHoverStyle()}
+                                // Closing the menu returns focus here, and a click elsewhere
+                                // keeps it, so the desktop shows focus as the icon alone.
+                                focusStyle={
+                                  platform.idiom === 'terminal'
+                                    ? controlFocusStyle()
+                                    : { opacity: 1 }
+                                }
+                              >
+                                <Icon name="more" color={C.muted} />
+                              </Button>
+                            }
+                          >
+                            {menuItems()}
+                          </Menu>
                         </View>
-                      </If>
-                      <Button
-                        ref={(node) => {
-                          actionTrigger = node;
-                        }}
-                        accessibilityLabel={tr('Actions for {title}', {
-                          title: session()?.title || tr('Untitled conversation'),
-                        })}
-                        disabled={props.switching() || !session()}
-                        onPress={
-                          session()
-                            ? inputAction(showActions, {
-                                session: sessionActionTarget(session()!),
-                                origin: props.selected(),
-                              })
-                            : undefined
-                        }
-                        style={{
-                          width: 32,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          borderRadius: 8,
-                          opacity: actionsShown() ? 1 : 0,
-                        }}
-                        hoverStyle={controlHoverStyle()}
-                        // Closing the menu returns focus here, and a click elsewhere
-                        // keeps it, so the desktop shows focus as the icon alone.
-                        focusStyle={
-                          platform.idiom === 'terminal' ? controlFocusStyle() : { opacity: 1 }
-                        }
-                      >
-                        <Icon name="more" color={C.muted} />
-                      </Button>
-                    </View>
-                  </View>
+                      </View>
+                    }
+                  >
+                    {menuItems()}
+                  </ContextMenu>
                 </View>
               );
             }}
@@ -1508,7 +1539,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           return (
             <SessionActions
               session={target.session}
-              anchor={actionsAnchor}
+              action={target.action}
               current={() => alive && actions() === target && props.selected() === target.origin}
               close={closeActions}
               notice={(message) => navigationNotice.set({ kind: 'action', message })}

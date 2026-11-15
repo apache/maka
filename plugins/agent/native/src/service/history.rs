@@ -101,6 +101,29 @@ pub(super) async fn read(
     }
     .validate()
     .map_err(|e| e.to_string())?;
+    authorize(owner, scope, &input.session_id).await?;
+    let rooms = scoped_state(owner, scope)?.rooms(owner.run_owner());
+    if rooms
+        .exists(&input.session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        use maka_agent_facts::room::RoomPosition;
+        let position = match input.position {
+            wire::Position::Start => RoomPosition::Start,
+            wire::Position::Tail => RoomPosition::Tail,
+            wire::Position::Message { message_id } => RoomPosition::Message { message_id },
+            wire::Position::BeforeMessage { message_id } => RoomPosition::Before { message_id },
+            wire::Position::AfterMessage { message_id } => RoomPosition::After { message_id },
+            _ => return Err("agent_cursor_invalid".into()),
+        };
+        let page = rooms
+            .page(input.session_id.clone(), input.through, position, 48)
+            .await
+            .map_err(|error| error.to_string())?;
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::HistoryPage::Room { page: page.into() });
+    }
     let history = open(owner, scope, &input.session_id).await?;
     if input.view == wire::HistoryView::Chat && owner.has_bot_history(&input.session_id).await? {
         input.view = wire::HistoryView::Conversation;
@@ -290,6 +313,12 @@ async fn tree_window(
 ) -> Result<wire::Page, String> {
     use maka_agent_state::session_history::source_tree::RunRows;
     use wire::{Position, SourcePosition};
+    if matches!(
+        position,
+        Position::Message { .. } | Position::BeforeMessage { .. } | Position::AfterMessage { .. }
+    ) {
+        return Err("agent_cursor_invalid".into());
+    }
     const PAGE_CHUNKS: usize = 8;
     let mut reverse = matches!(&position, Position::Tail | Position::Before { .. });
     let anchor = match &position {
@@ -578,6 +607,31 @@ pub(super) async fn observation(
     scope: &Scope,
     input: ui::SessionRead,
 ) -> Result<ui::Observation, String> {
+    authorize(owner, scope, &input.session_id).await?;
+    let rooms = scoped_state(owner, scope)?.rooms(owner.run_owner());
+    if rooms
+        .exists(&input.session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let through = rooms
+            .capture(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let session = owner.session_summary(&input.session_id).await?;
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::Observation {
+            session,
+            through,
+            run: None,
+            parts: Vec::new(),
+            tool_seeds: Vec::new(),
+            last_completed_turn_id: None,
+            compacting: None,
+            remembered_backend: None,
+            metrics: None,
+        });
+    }
     let history = open(owner, scope, &input.session_id).await?;
     let observed = history
         .live_observation()

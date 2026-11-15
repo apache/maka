@@ -281,6 +281,15 @@ pub(super) async fn watch(
     input: Watch,
     context: &Context,
 ) -> Result<serde_json::Value, String> {
+    history::authorize(owner, context.scope(), &input.session_id).await?;
+    let rooms = history::scoped_state(owner, context.scope())?.rooms(owner.run_owner());
+    if rooms
+        .exists(&input.session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return watch_room(owner, &rooms, input, context).await;
+    }
     let history = history::open(owner, context.scope(), &input.session_id).await?;
     // Subscribe before the initial query: a racing commit remains a pending level.
     let mut changes = owner.durable.subscribe().map_err(|e| e.to_string())?;
@@ -384,6 +393,42 @@ pub(super) async fn watch(
                     None => std::future::pending::<()>().await,
                 }
             } => {},
+        }
+    }
+}
+
+async fn watch_room(
+    owner: &Owner,
+    rooms: &maka_agent_state::room::RoomStore,
+    input: Watch,
+    context: &Context,
+) -> Result<serde_json::Value, String> {
+    let mut changes = owner
+        .durable
+        .subscribe()
+        .map_err(|error| error.to_string())?;
+    let mut delivered = None;
+    loop {
+        changes.borrow_and_update();
+        history::authorize(owner, context.scope(), &input.session_id).await?;
+        let through = rooms
+            .capture(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if input.after > through {
+            return Err("agent_cursor_invalid".into());
+        }
+        if delivered != Some(through) {
+            history::authorize(owner, context.scope(), &input.session_id).await?;
+            context
+                .emit(encode(DeliveryPage::Room { through })?)
+                .await?;
+            delivered = Some(through);
+        }
+        tokio::select! {
+            biased;
+            _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
+            changed = changes.changed() => { changed.map_err(|_| "agent_observation_closed")?; },
         }
     }
 }

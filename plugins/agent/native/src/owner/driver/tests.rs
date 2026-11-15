@@ -453,6 +453,7 @@ impl Rig {
                 "models",
                 "observe",
                 "history",
+                "markRead",
                 "toolImage",
                 "tools",
                 "predictNextMessage",

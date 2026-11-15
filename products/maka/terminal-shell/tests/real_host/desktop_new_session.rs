@@ -40,6 +40,9 @@ use std::{
 };
 use tokio::sync::{Notify, watch};
 
+#[path = "desktop_new_session/rooms.rs"]
+mod rooms;
+
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
         let mut value = <$ty>::default();
@@ -3739,6 +3742,8 @@ async fn desktop_composer_sandbox_choice_becomes_the_default() {
 
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
+    "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
+    "desktop_context_menus_follow_the_pointer_and_manage_rooms",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_new_conversation_preserves_an_owned_worktree",
     "desktop_recovers_an_unavailable_remembered_folder",
@@ -3779,6 +3784,12 @@ pub(crate) fn run(name: &str) {
         .build()
         .unwrap();
     match name {
+        "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
+            runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
+        }
+        "desktop_context_menus_follow_the_pointer_and_manage_rooms" => {
+            runtime.block_on(rooms::desktop_context_menus_follow_the_pointer_and_manage_rooms())
+        }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
         }

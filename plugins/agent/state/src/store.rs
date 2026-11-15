@@ -452,6 +452,9 @@ impl Store {
     pub fn artifacts(&self) -> crate::artifacts::ArtifactStore {
         crate::artifacts::ArtifactStore::new(self.data.clone())
     }
+    pub fn rooms(&self, owner: RunOwner) -> crate::room::RoomStore {
+        crate::room::RoomStore::new(self.data.clone(), owner)
+    }
     pub fn cells(&self) -> crate::cells::CellsStore {
         crate::cells::CellsStore::new(self.data.clone())
     }

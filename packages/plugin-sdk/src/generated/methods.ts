@@ -481,6 +481,18 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'message';
+      messageId: string;
+    }
+  | {
+      kind: 'before_message';
+      messageId: string;
+    }
+  | {
+      kind: 'after_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
       position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress;
       field: AgentLoadedHistoryCheckpointHistoryInput_HistoryField;

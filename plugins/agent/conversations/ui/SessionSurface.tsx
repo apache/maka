@@ -148,7 +148,6 @@ import {
   applicationMenu,
   ownTitleBar,
   PANEL_INSET,
-  windowTitle,
 } from '../../../../products/maka/workbench/app/chrome';
 import {
   performSessionAction,
@@ -1187,6 +1186,8 @@ export function createConversationUi(
                   position: { kind: 'start' },
                   view: 'conversation',
                 });
+                if (history.kind !== 'ready')
+                  throw new Error('Expected Agent conversation history.');
                 sendFirst = !history.chunks.some((row) => row.role === 'user');
               }
             }
@@ -1757,7 +1758,6 @@ export function createConversationUi(
   let paneRoot: ViewRef | undefined;
   if (!side) {
     bindKeys();
-    windowTitle(() => handle()?.title() ?? null);
     watchNotifications({
       sessions: browsing.sessions,
       foreground,
@@ -2155,6 +2155,10 @@ export function createConversationUi(
     ),
   );
   const sessionHandle: ConversationSessionHandle = {
+    title: () => handle()?.title() ?? null,
+    async kind(sessionId) {
+      return (await host.query('agent', 'observe', { sessionId })).session.kind;
+    },
     async openBot() {
       const result = await control('openBot', {});
       if (result.kind !== 'opened')
@@ -2197,9 +2201,9 @@ export function createConversationUi(
     focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
     command: invokeOwn,
     browsing,
-    navigation(input: ConversationNavigationInput) {
+    navigation(input: ConversationNavigationInput<JSX.Element>) {
       bind(input.shell);
-      return <WorkspaceBrowser {...browserProps} />;
+      return <WorkspaceBrowser {...browserProps} navigationMore={input.navigationMore} />;
     },
     preview(input: ConversationPreviewInput) {
       bind(input.shell);

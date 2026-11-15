@@ -21,6 +21,7 @@ import { signal } from 'nsh';
 import { computerPermissionMessages } from './locale-computer-permissions';
 import { goalMessages } from './locale-goal';
 import { composerMessages } from './locale-composer';
+import { roomMessages } from './locale-rooms';
 import type { DisplayText, LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
 import { createCopy, languageIndex, resolveLocale } from '../../../../plugins/shared/locale.js';
 import { host as nativeHost } from 'maka/host';
@@ -50,6 +51,7 @@ const copy = createCopy({
   ...goalMessages,
   ...conversationMessages,
   ...composerMessages,
+  ...roomMessages,
   ...settingsMessages,
   ...workspaceMessages,
   ...recallMessages,

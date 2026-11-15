@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use super::send::{PreparedAgentSend, PreparedSend};
 use super::*;
 use maka_agent_facts::durable::{ExecutionIdentity, UnixMillis};
 use maka_agent_state::{Head, queue as durable_queue};
@@ -28,14 +29,15 @@ impl Owner {
     )]
     pub(super) async fn steer_message(
         self: &Arc<Self>,
-        text: String,
-        attachments: Vec<String>,
+        unprepared: MessageInput,
+        origin: Option<MessageOrigin>,
+        key: &str,
         execution: &ExecutionIdentity,
         basis: &CapturedRun,
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
         completion_request: Option<completions::CompletionRequest>,
-    ) -> Result<NativeMutation<SendResult>, String> {
+    ) -> Result<PreparedSend, String> {
         let session = execution.session_id.as_str();
         let target = self
             .durable
@@ -57,8 +59,6 @@ impl Owner {
         }
         let mut basis = basis.clone();
         basis.fingerprint = operation.fingerprint.clone();
-        let mut unprepared: MessageInput = text.into();
-        unprepared.attachments = self.attachment_refs(session, attachments, parent).await?;
         let (message, required_tools) = match self
             .prepare_skills(
                 unprepared.clone(),
@@ -78,7 +78,7 @@ impl Owner {
                 required_tools,
             } => (message, required_tools),
             skills::Input::Rejected { reason, skills } => {
-                return Ok(NativeMutation::Returned(SendResult::Rejected {
+                return Ok(PreparedSend::Returned(SendResult::Rejected {
                     session_id: session.into(),
                     reason,
                     skills,
@@ -87,15 +87,8 @@ impl Owner {
         };
         let source = RootSourceMessage {
             message: DeliveredMessage {
-                origin: match &parent.identity {
-                    maka_capabilities::call::Identity::Agent { execution, .. } => {
-                        Some(MessageOrigin::Session {
-                            execution: execution.clone(),
-                        })
-                    }
-                    _ => None,
-                },
-                message_id: format!("m_{}", self.operation_id(operation)),
+                origin,
+                message_id: format!("m_{key}"),
                 submitted_content_digest: unprepared
                     .content_digest()
                     .map_err(|_| "agent_message_invalid")?,
@@ -107,15 +100,23 @@ impl Owner {
             submitted_intent: None,
         };
         let (request, contents) = self
-            .freeze_request(session, source, &basis, required_tools, operation, parent)
+            .freeze_request(
+                session,
+                source,
+                &basis,
+                required_tools,
+                key,
+                operation,
+                parent,
+            )
             .await?;
-        let command_id = self.control_id(operation, "steer_message");
+        let command_id = self.control_id(operation, &format!("{key}:steer_message"));
         let at = UnixMillis(now().try_into().expect("Unix milliseconds"));
         let Some(view) = self.session_run(session, execution.run_id).await? else {
             return Err("agent_execution_unavailable".into());
         };
         if view.stopped || view.terminal.is_some() {
-            return Ok(NativeMutation::Returned(SendResult::Rejected {
+            return Ok(PreparedSend::Returned(SendResult::Rejected {
                 session_id: session.into(),
                 reason: SendRejection::TurnStopped,
                 skills: None,
@@ -139,23 +140,23 @@ impl Owner {
                 },
             },
         };
+        let source_message_id = request.message_id.clone();
         let completion = completion_request
             .as_ref()
             .map(|_| CompletionRegistration::Registered);
-        let writer = self.durable.queue();
-        let change = if let Some(completion_request) = completion_request {
-            writer.prepare_with(
-                session.into(),
+        let statement = PreparedAgentSend {
+            queue: durable_queue::PreparedEnqueue {
+                session: session.into(),
                 command,
                 contents,
-                None,
-                None,
-                self.completion_statement(session, &request.message_id, completion_request)?,
-            )
-        } else {
-            writer.prepare(session.into(), command, contents)
+                followup: None,
+                work_fence: None,
+            },
+            completion: completion_request
+                .map(|request| self.completion_statement(session, &source_message_id, request))
+                .transpose()?,
         };
-        Ok(NativeMutation::Commit {
+        Ok(PreparedSend::Ready {
             value: SendResult::Queued {
                 completion,
                 session_id: session.into(),
@@ -165,7 +166,7 @@ impl Owner {
                     .checked_add(1)
                     .ok_or("agent_queue_revision_exhausted")?,
             },
-            change,
+            statement: Box::new(statement),
         })
     }
 }

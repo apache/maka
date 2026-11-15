@@ -83,6 +83,9 @@ impl Owner {
         else {
             return Ok(metadata_rejected(Rejection::SessionUnavailable));
         };
+        if record.is_room {
+            return Err("agent_room_has_no_backend".into());
+        }
         if record.metadata.archived {
             return Ok(metadata_rejected(Rejection::SessionUnavailable));
         }

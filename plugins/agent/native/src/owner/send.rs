@@ -19,7 +19,14 @@
 
 use super::*;
 use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, UnixMillis};
-use maka_agent_state::queue::{Followup, Placement as QueuePlacement, QueueCommand, QueueEdit};
+use maka_agent_state::queue::{
+    Followup, Placement as QueuePlacement, PreparedEnqueue, QueueCommand, QueueEdit,
+};
+use maka_event_log::{
+    StoreError,
+    root_store::completions::RegisterCompletion,
+    writeback::{Prepared, Statement},
+};
 
 /// An inert Root statement and its exact reply. Host commits both together.
 pub(crate) enum NativeMutation<T> {
@@ -49,6 +56,49 @@ impl<T: serde::Serialize> NativeMutation<T> {
         }
     }
 }
+pub(super) enum PreparedSend {
+    Returned(SendResult),
+    Ready {
+        value: SendResult,
+        statement: Box<PreparedAgentSend>,
+    },
+}
+
+pub(super) struct PreparedAgentSend {
+    pub queue: PreparedEnqueue,
+    pub completion: Option<RegisterCompletion>,
+}
+
+impl Statement for PreparedAgentSend {
+    type Value = maka_agent_state::queue::QueueCommit;
+    type Output = maka_agent_state::queue::QueueCommit;
+
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        self.queue.retain()
+    }
+
+    fn execute(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
+        let mut queued = self.queue.execute(connection)?;
+        if let Some(completion) = self.completion {
+            let registered = completion.execute(connection)?;
+            queued.changed |= registered.changed;
+            queued.notification = queued.notification.combine(registered.notification);
+        }
+        Ok(queued)
+    }
+
+    fn committed(value: Self::Value) -> Self::Output {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        PreparedEnqueue::isolated_rejection(error)
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum CaptureError {
     ModelUnavailable,
@@ -83,6 +133,14 @@ impl Owner {
     ) -> Result<CapturedRun, CaptureError> {
         if parent.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err("agent_closed".into());
+        }
+        if self
+            .rooms()?
+            .exists(id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Err("agent_room_has_no_backend".into());
         }
         if self.settings.bot {
             self.bot.load().await.map_err(|error| error.to_string())?;
@@ -235,19 +293,80 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<SendResult>, String> {
+        if self
+            .rooms()?
+            .exists(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return self.send_room(input, operation, parent).await;
+        }
+        if !input.mentions.is_empty() || input.reply_to.is_some() {
+            return Err("agent_room_message_required".into());
+        }
+        let key = self.send_key(operation, &input.session_id);
+        let mut message: MessageInput = input.message.clone().into();
+        message.attachments = self
+            .attachment_refs(&input.session_id, input.attachments.clone(), parent)
+            .await?;
+        let origin = parent
+            .identity
+            .agent()
+            .map(|execution| MessageOrigin::Session {
+                execution: execution.clone(),
+            });
+        match self
+            .prepare_agent_send(input, message, origin, &key, operation, parent)
+            .await?
+        {
+            PreparedSend::Returned(value) => Ok(NativeMutation::Returned(value)),
+            PreparedSend::Ready { value, statement } => Ok(NativeMutation::Commit {
+                value,
+                change: self.message_writer(parent)?.prepare(*statement),
+            }),
+        }
+    }
+
+    pub(super) fn send_key(
+        &self,
+        operation: &maka_plugin_core::operation::RecoveryRef,
+        target: &str,
+    ) -> String {
+        let target = hex::encode(Sha256::digest(target.as_bytes()));
+        format!("{}_{}", self.operation_id(operation), &target[..16])
+    }
+
+    pub(super) async fn prepare_agent_send(
+        self: &Arc<Self>,
+        input: Send,
+        unprepared: MessageInput,
+        origin: Option<MessageOrigin>,
+        key: &str,
+        operation: &maka_plugin_core::operation::RecoveryRef,
+        parent: &maka_capabilities::call::Scope,
+    ) -> Result<PreparedSend, String> {
+        if !self.may_control(parent, &input.session_id).await? {
+            return Ok(PreparedSend::Returned(SendResult::NotYourWorker {
+                session_id: input.session_id,
+            }));
+        }
         let completion_request = self
             .completion_request(parent, &input.session_id, input.on_complete)
             .await?;
         let Send {
             session_id: id,
-            message: text,
+            message: _,
             backend,
-            attachments,
+            attachments: _,
             delivery,
             expected_run_id,
             on_complete: _,
+            mentions: _,
+            reply_to: _,
         } = input;
-        if text.trim().is_empty() && attachments.is_empty() {
+        if unprepared.text.trim().is_empty()
+            && unprepared.attachments.as_ref().is_none_or(Vec::is_empty)
+        {
             return Err("agent_message_invalid".into());
         }
         let admission = self.runs.session(&id).await;
@@ -260,7 +379,7 @@ impl Owner {
                 .await?
                 .ok_or("agent_execution_unavailable")?;
             if view.stopped || view.terminal.is_some() {
-                return Ok(NativeMutation::Returned(SendResult::Rejected {
+                return Ok(PreparedSend::Returned(SendResult::Rejected {
                     session_id: id,
                     reason: SendRejection::TurnStopped,
                     skills: None,
@@ -277,7 +396,7 @@ impl Owner {
             None => None,
         };
         if latest.as_ref().is_some_and(|view| view.blocks_followup()) {
-            return Ok(NativeMutation::Returned(SendResult::Rejected {
+            return Ok(PreparedSend::Returned(SendResult::Rejected {
                 session_id: id,
                 reason: SendRejection::OriginalOperationUnsettled,
                 skills: None,
@@ -325,7 +444,7 @@ impl Owner {
             if interrupt.is_some() {
                 Followup::Interrupt {
                     run: view.run,
-                    stop: self.control_id(operation, "steering_interrupt"),
+                    stop: self.control_id(operation, &format!("{key}:steering_interrupt")),
                 }
             } else {
                 Followup::Queued(view.run)
@@ -342,7 +461,7 @@ impl Owner {
         {
             Ok(basis) => basis,
             Err(CaptureError::ModelUnavailable) => {
-                return Ok(NativeMutation::Returned(SendResult::Rejected {
+                return Ok(PreparedSend::Returned(SendResult::Rejected {
                     session_id: id,
                     reason: SendRejection::ModelUnavailable,
                     skills: None,
@@ -360,8 +479,9 @@ impl Owner {
             };
             return self
                 .steer_message(
-                    text,
-                    attachments,
+                    unprepared,
+                    origin,
+                    key,
                     &execution,
                     &basis,
                     operation,
@@ -370,8 +490,6 @@ impl Owner {
                 )
                 .await;
         }
-        let mut unprepared: MessageInput = text.into();
-        unprepared.attachments = self.attachment_refs(&id, attachments, parent).await?;
         let (message, required_tools) = match self
             .prepare_skills(
                 unprepared.clone(),
@@ -391,7 +509,7 @@ impl Owner {
                 required_tools,
             } => (message, required_tools),
             skills::Input::Rejected { reason, skills } => {
-                return Ok(NativeMutation::Returned(SendResult::Rejected {
+                return Ok(PreparedSend::Returned(SendResult::Rejected {
                     session_id: id,
                     reason,
                     skills,
@@ -400,15 +518,8 @@ impl Owner {
         };
         let source = RootSourceMessage {
             message: DeliveredMessage {
-                origin: match &parent.identity {
-                    maka_capabilities::call::Identity::Agent { execution, .. } => {
-                        Some(MessageOrigin::Session {
-                            execution: execution.clone(),
-                        })
-                    }
-                    _ => None,
-                },
-                message_id: format!("m_{}", self.operation_id(operation)),
+                origin,
+                message_id: format!("m_{key}"),
                 submitted_content_digest: unprepared.content_digest().map_err(|e| e.to_string())?,
                 content: message,
             },
@@ -427,7 +538,7 @@ impl Owner {
         };
         let message_id = source.message.message_id.clone();
         let (request, contents) = self
-            .freeze_request(&id, source, &basis, required_tools, operation, parent)
+            .freeze_request(&id, source, &basis, required_tools, key, operation, parent)
             .await?;
         let queue = self
             .durable
@@ -436,7 +547,7 @@ impl Owner {
             .await
             .map_err(|e| e.to_string())?;
         let command = QueueCommand {
-            id: self.control_id(operation, "send"),
+            id: self.control_id(operation, &format!("{key}:send")),
             at: UnixMillis(now().try_into().map_err(|_| "invalid clock")?),
             expected_revision: queue.revision,
             edit: QueueEdit::Enqueue {
@@ -444,27 +555,23 @@ impl Owner {
                 placement: QueuePlacement::Followup,
             },
         };
-        let writer = self.durable.queue();
         let completion = completion_request
             .as_ref()
             .map(|_| CompletionRegistration::Registered);
-        let change = if let Some(request) = completion_request {
-            writer.prepare_with(
-                id.clone(),
+        let completion_statement = completion_request
+            .map(|request| self.completion_statement(&id, &message_id, request))
+            .transpose()?;
+        let statement = PreparedAgentSend {
+            queue: PreparedEnqueue {
+                session: id.clone(),
                 command,
                 contents,
                 followup,
-                after_stop,
-                self.completion_statement(&id, &message_id, request)?,
-            )
-        } else if let Some(fence) = after_stop {
-            writer.prepare_after_stop(id.clone(), command, contents, fence)
-        } else if let Some(original) = followup {
-            writer.prepare_followup(id.clone(), command, contents, original)
-        } else {
-            writer.prepare(id.clone(), command, contents)
+                work_fence: after_stop.map(Arc::new),
+            },
+            completion: completion_statement,
         };
-        Ok(NativeMutation::Commit {
+        Ok(PreparedSend::Ready {
             value: SendResult::Queued {
                 completion,
                 session_id: id,
@@ -474,7 +581,7 @@ impl Owner {
                     .checked_add(1)
                     .ok_or("agent_queue_revision_exhausted")?,
             },
-            change,
+            statement: Box::new(statement),
         })
     }
 }

@@ -18,6 +18,7 @@
  */
 
 use super::*;
+mod rooms;
 enum ModelReply {
     Stream(String),
     RateLimited,

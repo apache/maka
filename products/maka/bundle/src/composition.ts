@@ -140,6 +140,7 @@ const defaultUi = {
       navigation: { instance: 'conversations-ui', id: 'navigation' },
       session: { instance: 'conversations-ui', id: 'session' },
       preview: { instance: 'conversations-ui', id: 'preview' },
+      rooms: { instance: 'conversations-ui', id: 'rooms' },
       settings: { instance: 'settings-ui', id: 'Settings' },
     },
   },
