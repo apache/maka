@@ -24,9 +24,18 @@ mod host;
 
 use futures_util::FutureExt;
 use host::{Host, Result, Sandbox};
+use maka_agent_facts::durable::{
+    AuthorityStage, BlockerId, BlockerKind, Fact, FactId, RunId, Trigger, UnixMillis,
+};
+use maka_agent_state::{
+    Change, DriverDomain, Store,
+    queue::{QueueCommand, QueueEdit, SteeringTarget},
+};
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::Attachments;
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::application::host::Client as HostClient;
+use maka_plugin_core::composition::ConfigurationField;
 use maka_plugin_core::deployment::DeploymentRef;
 use maka_plugin_core::operation::{
     OperationCleanup, OperationOutcome, OperationReply, OperationResult, Receipt, RecoveryRef,
@@ -1308,6 +1317,272 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         phase("quit reopened Host", rig.hosts[1].quit(&mut reopened)).await?;
         Ok::<_, String>(())
     }).catch_unwind().await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_executor_change_releases_only_undelivered_steering() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let work = async {
+        let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
+        let deployment = phase(
+            "enable Antigravity",
+            rig.configure(&mut anchor, &bootstrap, "antigravity"),
+        )
+        .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let settings = query(&sdk, "agent", "externalAgents", json!({"inspect":true})).await?;
+        let target = &settings["target"];
+        let (session, run) = phase(
+            "start the original prompt",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-original",
+                "Executor change",
+                true,
+                "antigravity",
+            ),
+        )
+        .await?;
+        let original = phase(
+            "original prompt delivered",
+            rig.controller.event("ACP-original", "ready"),
+        )
+        .await?;
+        let before = phase(
+            "original output saved",
+            checkpoint(&sdk, &session, &run, &original["checkpoint"]),
+        )
+        .await?;
+        let message = format!(
+            "MAKA_EXTERNAL_CASE {}",
+            json!({"label":"ACP-wake","session":session})
+        );
+        let sent = mutate(
+            &sdk,
+            "agent",
+            "send",
+            json!({"sessionId":session,"message":message,"delivery":"queue"}),
+        )
+        .await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        sdk.close().await?;
+        rig.clients.pop();
+        phase("kill original Host", rig.hosts[0].sigkill()).await?;
+
+        // Change the executor's basis without changing the AGY command that
+        // owns the conversation. Leave the old Run with pending steering.
+        let directory = rig.sandbox.directory.path();
+        let owner = RootOwner::open(
+            &rig.sandbox.root,
+            &RootNamespaces {
+                ownership: directory.join("upgrade-owners"),
+                control: directory.join("upgrade-control"),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let store =
+            maka_transport::open_store(Arc::new(owner), &maka_product_native::root_migrations())
+                .await
+                .map_err(|e| e.to_string())?;
+        let data = store.data_writer().map_err(|e| e.to_string())?;
+        let domain = DriverDomain::new(data.clone()).map_err(|e| e.to_string())?;
+        let state = Store::new(data, domain).map_err(|e| e.to_string())?;
+        let queue = state
+            .queue()
+            .read(session.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        let [pending] = queue.entries.as_slice() else {
+            return Err("expected one pending message".into());
+        };
+        assert_eq!(pending.request.message_id, sent["messageId"]);
+        let run_id: RunId = serde_json::from_value(run.clone()).map_err(|e| e.to_string())?;
+        let original_view = state.frontier(run_id).await.map_err(|e| e.to_string())?;
+        let Trigger::Message {
+            message_id: original_message,
+        } = &original_view.spec.trigger
+        else {
+            return Err("expected an interactive Run".into());
+        };
+        let at = UnixMillis(jiff::Timestamp::now().as_millisecond());
+        state
+            .queue()
+            .execute(
+                session.clone(),
+                QueueCommand {
+                    id: FactId::new(),
+                    at,
+                    expected_revision: queue.revision,
+                    edit: QueueEdit::Promote {
+                        request: pending.request.id.clone(),
+                        target: SteeringTarget {
+                            run: run_id,
+                            expected_head: (&original_view).into(),
+                        },
+                    },
+                },
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let claim = state.claim(run_id).await.map_err(|e| e.to_string())?;
+        state
+            .append(
+                &claim,
+                (&original_view).into(),
+                vec![Change::new(
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: BlockerKind::CurrentAuthorityUnavailable {
+                            stage: AuthorityStage::BackendScope,
+                            diagnostic: "invalid execution input: agent_executor_changed".into(),
+                        },
+                    },
+                    at,
+                )],
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        drop(claim);
+        let loaded = store
+            .load_application_at(&deployment)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("deployment missing")?;
+        let (mut source, packages, plan, _) = loaded.into_parts();
+        let namespace = serde_json::from_value(target["source"]["namespace"].clone())
+            .map_err(|e| e.to_string())?;
+        let instance = plan
+            .instances()
+            .get(&namespace)
+            .ok_or("agent instance missing")?;
+        let mut path: Vec<String> =
+            serde_json::from_value(target["path"].clone()).map_err(|e| e.to_string())?;
+        path.extend(["runtimes", "codex"].map(str::to_owned));
+        source
+            .input
+            .configure(
+                &instance.path,
+                vec![ConfigurationField {
+                    path,
+                    value: Some(json!(true)),
+                }],
+            )
+            .map_err(|e| e.to_string())?;
+        store
+            .commit_application(
+                deployment.deployment,
+                deployment.revision,
+                source.input,
+                source.remote_exports,
+                packages,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        drop(state);
+        store.shutdown().await.map_err(|e| e.to_string())?;
+        drop(store);
+
+        let (mut reopened, recovery) = phase("start upgraded Host", rig.start()).await?;
+        let pid = original["pid"].as_u64().unwrap();
+        rig.controller.send(
+            pid,
+            json!({"action":"root_reaped","pid":rig.root_pid.unwrap()}),
+        )?;
+        let transcript = phase("old ACP process exited", rig.transcript(pid)).await?;
+        assert!(
+            !transcript
+                .output
+                .iter()
+                .any(|row| row["id"] == original["promptId"] && row.get("method").is_none())
+        );
+        phase(
+            "retire old execution",
+            terminal_state(&recovery, &session, &run, "cancelled"),
+        )
+        .await?;
+        let resumed = phase(
+            "undelivered steering reaches Antigravity",
+            rig.controller.event("ACP-wake", "ready"),
+        )
+        .await?;
+        assert_eq!(resumed["thread"], original["thread"]);
+        let delivery = query(
+            &recovery,
+            "agent",
+            "work",
+            json!({
+                "sessionId":session,"target":{"kind":"message","messageId":sent["messageId"]},
+            }),
+        )
+        .await?;
+        assert_eq!(delivery["kind"], "delivered", "{delivery}");
+        let next = &delivery["execution"]["runId"];
+        assert_ne!(*next, run);
+        phase(
+            "follow-up completes",
+            terminal_state(&recovery, &session, next, "completed"),
+        )
+        .await?;
+        let after = checkpoint(&recovery, &session, &run, &original["checkpoint"]).await?;
+        assert_eq!(after["prefix"], before["prefix"]);
+        let original_delivery = query(
+            &recovery,
+            "agent",
+            "work",
+            json!({
+                "sessionId":session,"target":{"kind":"message","messageId":original_message},
+            }),
+        )
+        .await?;
+        assert_eq!(
+            original_delivery["kind"], "delivered",
+            "{original_delivery}"
+        );
+        assert_eq!(original_delivery["execution"]["runId"], run);
+        let resumed_transcript = phase(
+            "seal resumed ACP process",
+            rig.transcript(resumed["pid"].as_u64().unwrap()),
+        )
+        .await?;
+        let prompts: Vec<_> = resumed_transcript
+            .input
+            .iter()
+            .filter(|row| row["method"] == "session/prompt")
+            .map(|row| &row["params"]["prompt"][0]["text"])
+            .collect();
+        assert!(
+            matches!(prompts.as_slice(), [prompt] if prompt.as_str().is_some_and(|text| text.contains("ACP-wake") && !text.contains("ACP-original"))),
+            "{prompts:?}"
+        );
+        phase(
+            "follow-up settles before Host quit",
+            readiness(&recovery, &session, next),
+        )
+        .await?;
+        let events = rig.controller.events();
+        assert_eq!(
+            events.iter().filter(|e| e["kind"] == "hello").count(),
+            2,
+            "{events:?}"
+        );
+        assert!(events.iter().all(|e| e["kind"] != "failure"), "{events:?}");
+        recovery.close().await?;
+        rig.clients.pop();
+        phase("quit upgraded Host", rig.hosts[1].quit(&mut reopened)).await?;
+        Ok::<_, String>(())
+    };
+    let outcome = AssertUnwindSafe(work).catch_unwind().await;
     let cleanup = rig.cleanup().await;
     match outcome {
         Err(panic) => std::panic::resume_unwind(panic),

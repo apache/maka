@@ -62,6 +62,88 @@ fn portless_reconciliation(view: &RunView, at: UnixMillis, complete_at_budget: b
 }
 
 impl Engine {
+    /// Settle an old native executor Run using only its canonical state. A
+    /// different executor must never observe or submit work as the old one.
+    pub async fn retire_replaced_native_executor(
+        &self,
+        claim: &DriverClaim,
+        at: UnixMillis,
+    ) -> Result<Option<DriverExit>, RunError> {
+        loop {
+            let view = self.store.frontier(claim.run()).await?;
+            if view.terminal.is_some() {
+                return Ok(Some(exit(&view)));
+            }
+            if !matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external")
+            {
+                return Err(RunError::InvalidInput(
+                    "Expected a native external executor Run".into(),
+                ));
+            }
+            if view.has_unsettled_recovery() || view.cells.values().any(|cell| cell.pending()) {
+                return Ok(None);
+            }
+            let diagnostic = "The external executor changed while the run was interrupted";
+            let mut facts = Vec::new();
+            let (terminal, diagnostic) = match &view.external {
+                _ if view.cancelled_by_risk => (Terminal::Cancelled, Some(diagnostic.into())),
+                Some(task) if !task.admitted => (Terminal::Cancelled, Some(diagnostic.into())),
+                Some(task) => match &task.closed {
+                    Some(closed) => {
+                        if task
+                            .publication
+                            .as_ref()
+                            .is_some_and(|publication| !publication.applied())
+                            || (closed.outcome == Terminal::Completed
+                                && !task.live_workspace
+                                && task.publication.is_none())
+                        {
+                            return Ok(None);
+                        }
+                        if view.stopped {
+                            (Terminal::Cancelled, Some(diagnostic.into()))
+                        } else {
+                            (closed.outcome.clone(), closed.diagnostic.clone())
+                        }
+                    }
+                    None => {
+                        if !view.stopped {
+                            facts.push(Fact::StopRequested {
+                                diagnostic: diagnostic.into(),
+                            });
+                        }
+                        (Terminal::Cancelled, Some(diagnostic.into()))
+                    }
+                },
+                None if view.stopped => (Terminal::Cancelled, Some(diagnostic.into())),
+                None => (Terminal::Failed, Some(diagnostic.into())),
+            };
+            facts.extend(
+                view.waits
+                    .iter()
+                    .filter(|(_, wait)| wait.satisfied.is_none() && wait.cancelled.is_none())
+                    .map(|(wait, _)| Fact::WaitCancelled {
+                        wait: *wait,
+                        diagnostic: "The original executor is no longer available".into(),
+                    }),
+            );
+            facts.push(Fact::RunTerminated {
+                terminal,
+                diagnostic,
+            });
+            let published = match self.publish(Some(claim), &view, facts, vec![], at).await {
+                Err(RunError::PublicationUncertain { publication, .. }) => {
+                    publication.reconcile(&self.store).await?;
+                    false
+                }
+                result => result?,
+            };
+            if published {
+                return Ok(Some(exit(&self.store.frontier(claim.run()).await?)));
+            }
+        }
+    }
+
     /// Record unavailable current authority without inventing a logical failure
     /// or a replacement capability from the persisted Run specification.
     pub async fn current_authority_unavailable(

@@ -90,6 +90,14 @@ struct ServiceBackend {
     binding: Binding,
     setup: Option<maka_agent_api::executor::setup::Binding>,
 }
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RestoreError {
+    #[error("{0}")]
+    Unavailable(String),
+    #[error("agent_executor_changed")]
+    Changed,
+}
 #[derive(Default)]
 pub(crate) struct Executors(BTreeMap<String, Backend>);
 pub(super) enum ActiveDelivery {
@@ -268,10 +276,12 @@ impl Executors {
         backend.accepted.selection = selection;
         Ok(backend)
     }
-    pub fn restore(&self, accepted: &Accepted) -> Result<Backend, String> {
-        let backend = self.select(accepted.selection.clone())?;
+    pub fn restore(&self, accepted: &Accepted) -> Result<Backend, RestoreError> {
+        let backend = self
+            .select(accepted.selection.clone())
+            .map_err(RestoreError::Unavailable)?;
         if &backend.accepted != accepted {
-            return Err("agent_executor_changed".into());
+            return Err(RestoreError::Changed);
         }
         Ok(backend)
     }
