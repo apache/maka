@@ -35,8 +35,6 @@ pub use websocket::{Socket, connect_websocket};
 pub enum Error {
     #[error("invalid network proxy configuration")]
     InvalidProxy,
-    #[error("system proxy auto-configuration (PAC/WPAD) is not supported on this platform")]
-    UnsupportedSystemProxy,
     #[error("network proxy authentication is not configured")]
     MissingCredentials,
     #[error("outbound HTTP headers cannot be represented")]

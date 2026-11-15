@@ -105,8 +105,10 @@ pub(super) fn parse(raw: &str) -> Result<Option<Url>, Error> {
         format!("http://{raw}")
     })
     .map_err(|_| Error::InvalidProxy)?;
-    if !matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h")
-        || url.host_str().is_none()
+    if !matches!(
+        url.scheme(),
+        "http" | "https" | "socks4" | "socks5" | "socks5h"
+    ) || url.host_str().is_none()
         || !matches!(url.path(), "" | "/")
         || url.query().is_some()
         || url.fragment().is_some()
@@ -114,7 +116,7 @@ pub(super) fn parse(raw: &str) -> Result<Option<Url>, Error> {
     {
         return Err(Error::InvalidProxy);
     }
-    if matches!(url.scheme(), "socks5" | "socks5h") && url.port().is_none() {
+    if matches!(url.scheme(), "socks4" | "socks5" | "socks5h") && url.port().is_none() {
         url.set_port(Some(1080)).map_err(|_| Error::InvalidProxy)?;
     }
     // Matcher intentionally ignores malformed input. Reject it here instead of
@@ -194,7 +196,7 @@ mod tests {
     #[test]
     fn invalid_proxy_is_not_silently_direct_and_errors_never_echo_credentials() {
         for raw in [
-            "socks4://user:secret@proxy",
+            "socks4a://user:secret@proxy",
             "http://proxy:0",
             "http://proxy/path",
             "http://proxy/?secret",
@@ -211,6 +213,7 @@ mod tests {
         for raw in [
             "proxy:8080",
             "https://user:secret@proxy",
+            "socks4://proxy",
             "socks5://proxy",
             "socks5h://[::1]:1080",
         ] {
@@ -251,6 +254,37 @@ mod tests {
                     .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
                     .await
                     .unwrap();
+                stream.write_all(b"ready").await.unwrap();
+            });
+            let destination = maka_sandbox::Destination::new("localhost", 8443).unwrap();
+            let mut stream = crate::tunnel::connect(&policy, &destination).await.unwrap();
+            let mut bytes = [0; 5];
+            stream.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"ready");
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn socks4_connect_sends_a_locally_resolved_ipv4_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("socks4://{}", listener.local_addr().unwrap());
+            let policy = super::super::Policy(Some(std::sync::Arc::new(
+                super::super::Route::Environment(capture(&[("ALL_PROXY", &url)])),
+            )));
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut head = [0; 8];
+                stream.read_exact(&mut head).await.unwrap();
+                assert_eq!(&head[..2], &[4, 1]);
+                assert_eq!(u16::from_be_bytes([head[2], head[3]]), 8443);
+                assert_eq!(&head[4..], &[127, 0, 0, 1]);
+                assert_eq!(stream.read_u8().await.unwrap(), 0);
+                stream.write_all(&[0, 90, 0, 0, 0, 0, 0, 0]).await.unwrap();
                 stream.write_all(b"ready").await.unwrap();
             });
             let destination = maka_sandbox::Destination::new("localhost", 8443).unwrap();

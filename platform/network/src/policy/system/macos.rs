@@ -19,15 +19,16 @@
 
 use objc2_cf_network::{
     CFNetworkCopyProxiesForAutoConfigurationScript, CFNetworkCopyProxiesForURL,
-    CFNetworkCopySystemProxySettings, CFNetworkExecuteProxyAutoConfigurationURL,
+    CFNetworkCopySystemProxySettings, kCFNetworkProxiesProxyAutoConfigEnable,
+    kCFNetworkProxiesProxyAutoConfigURLString, kCFNetworkProxiesProxyAutoDiscoveryEnable,
     kCFProxyAutoConfigurationJavaScriptKey, kCFProxyAutoConfigurationURLKey, kCFProxyHostNameKey,
     kCFProxyPortNumberKey, kCFProxyTypeAutoConfigurationJavaScript,
     kCFProxyTypeAutoConfigurationURL, kCFProxyTypeHTTP, kCFProxyTypeHTTPS, kCFProxyTypeKey,
     kCFProxyTypeNone, kCFProxyTypeSOCKS,
 };
 use objc2_core_foundation::{
-    CFArray, CFDictionary, CFError, CFNumber, CFRetained, CFRunLoop, CFStreamClientContext,
-    CFString, CFType, CFURL,
+    CFArray, CFDictionary, CFError, CFMutableDictionary, CFNumber, CFRetained, CFRunLoop,
+    CFRunLoopSource, CFStreamClientContext, CFString, CFType, CFURL,
 };
 use reqwest::Url;
 use std::{
@@ -47,12 +48,46 @@ unsafe impl Send for Config {}
 unsafe impl Sync for Config {}
 
 pub(super) fn capture() -> Result<Option<Config>, crate::Error> {
-    Ok(unsafe { CFNetworkCopySystemProxySettings() }.map(Config))
+    Ok(unsafe { CFNetworkCopySystemProxySettings() }
+        .map(|settings| Config(with_discovery(settings))))
 }
 
-/// CFNetwork applies the exception list, simple-hostname exclusion, PAC and
-/// WPAD exactly as Safari does. Its failure semantics are kept too: a PAC
-/// script that cannot be fetched or evaluated means a direct connection.
+/// CFNetworkCopyProxiesForURL ignores "Auto Proxy Discovery". Like Chromium,
+/// discover through the DNS WPAD URL, expressed as a PAC URL so CFNetwork
+/// still applies the exception list and the order of the other proxies.
+fn with_discovery(settings: CFRetained<CFDictionary>) -> CFRetained<CFDictionary> {
+    let typed = unsafe { settings.cast_unchecked::<CFString, CFType>() };
+    let enabled = |key: &CFString| {
+        typed
+            .get(key)
+            .and_then(|value| value.downcast::<CFNumber>().ok())
+            .and_then(|value| value.as_i32())
+            == Some(1)
+    };
+    if !enabled(unsafe { kCFNetworkProxiesProxyAutoDiscoveryEnable })
+        || enabled(unsafe { kCFNetworkProxiesProxyAutoConfigEnable })
+    {
+        return settings;
+    }
+    let Some(discovered) = (unsafe { CFMutableDictionary::new_copy(None, 0, Some(&settings)) })
+    else {
+        return settings;
+    };
+    let typed = unsafe { discovered.cast_unchecked::<CFString, CFType>() };
+    typed.set(
+        unsafe { kCFNetworkProxiesProxyAutoConfigEnable },
+        &CFNumber::new_i32(1),
+    );
+    typed.set(
+        unsafe { kCFNetworkProxiesProxyAutoConfigURLString },
+        &CFString::from_static_str("http://wpad/wpad.dat"),
+    );
+    CFDictionary::new_copy(None, Some(&discovered)).unwrap_or(settings)
+}
+
+/// CFNetwork applies the exception list, simple-hostname exclusion and PAC
+/// exactly as Safari does, including its failure semantics: a PAC script that
+/// cannot be fetched or evaluated falls through to the next configured proxy.
 pub(super) fn resolve(config: &Config, target: &Url) -> Option<Url> {
     let target = CFURL::from_string(None, &CFString::from_str(target.as_str()), None)?;
     let proxies = unsafe { CFNetworkCopyProxiesForURL(&target, &config.0) };
@@ -82,8 +117,10 @@ fn first(proxies: &CFArray, target: &CFURL) -> Option<Url> {
                 .get(unsafe { kCFProxyAutoConfigurationURLKey })?
                 .downcast::<CFURL>()
                 .ok()?;
-            let proxies = execute(&script, target)?;
-            return first(&proxies, target);
+            match execute(&script, target) {
+                Some(proxies) => return first(&proxies, target),
+                None => continue,
+            }
         } else if kind == unsafe { kCFProxyTypeAutoConfigurationJavaScript } {
             let script = proxy
                 .get(unsafe { kCFProxyAutoConfigurationJavaScriptKey })?
@@ -127,20 +164,27 @@ fn first(proxies: &CFArray, target: &CFURL) -> Option<Url> {
 /// Runs CFNetwork's PAC engine on this thread's run loop. CFNetwork fetches the
 /// script, performs WPAD discovery when the URL came from it, and evaluates it.
 fn execute(script: &CFURL, target: &CFURL) -> Option<CFRetained<CFArray>> {
+    // objc2-cf-network declares the callback's proxy list non-null, but
+    // CFNetwork passes NULL with an error, so declare the honest signature.
+    #[link(name = "CFNetwork", kind = "framework")]
+    unsafe extern "C-unwind" {
+        fn CFNetworkExecuteProxyAutoConfigurationURL(
+            proxy_auto_config_url: &CFURL,
+            target_url: &CFURL,
+            cb: unsafe extern "C-unwind" fn(*mut c_void, *const CFArray, *mut CFError),
+            client_context: *mut CFStreamClientContext,
+        ) -> Option<NonNull<CFRunLoopSource>>;
+    }
     unsafe extern "C-unwind" fn done(
-        client: NonNull<c_void>,
-        proxies: NonNull<CFArray>,
+        client: *mut c_void,
+        proxies: *const CFArray,
         error: *mut CFError,
     ) {
-        let outcome = unsafe {
-            client
-                .cast::<Option<Option<CFRetained<CFArray>>>>()
-                .as_mut()
-        };
+        let outcome = unsafe { &mut *client.cast::<Option<Option<CFRetained<CFArray>>>>() };
         *outcome = Some(
-            error
-                .is_null()
-                .then(|| unsafe { CFRetained::retain(proxies) }),
+            NonNull::new(proxies.cast_mut())
+                .filter(|_| error.is_null())
+                .map(|proxies| unsafe { CFRetained::retain(proxies) }),
         );
         if let Some(run_loop) = CFRunLoop::current() {
             run_loop.stop();
@@ -155,12 +199,12 @@ fn execute(script: &CFURL, target: &CFURL) -> Option<CFRetained<CFArray>> {
         copyDescription: None,
     };
     let source = unsafe {
-        CFNetworkExecuteProxyAutoConfigurationURL(
+        CFRetained::from_raw(CFNetworkExecuteProxyAutoConfigurationURL(
             script,
             target,
-            Some(done),
-            NonNull::from(&mut context),
-        )
+            done,
+            &mut context,
+        )?)
     };
     let run_loop = CFRunLoop::current()?;
     let mode = CFString::from_static_str("org.maka.network.pac");
@@ -255,17 +299,55 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_pac_url_connects_directly_like_safari() {
-        let config = settings(&[
+    fn unreachable_pac_url_falls_through_to_the_next_configured_proxy() {
+        let pac = [
+            (unsafe { kCFNetworkProxiesProxyAutoConfigEnable }, number(1)),
             (
-                unsafe { objc2_cf_network::kCFNetworkProxiesProxyAutoConfigEnable },
-                number(1),
-            ),
-            (
-                unsafe { objc2_cf_network::kCFNetworkProxiesProxyAutoConfigURLString },
+                unsafe { kCFNetworkProxiesProxyAutoConfigURLString },
                 string("http://127.0.0.1:9/proxy.pac"),
             ),
+        ];
+        assert_eq!(resolved(&settings(&pac), "https://example.com:443/"), None);
+        let mut with_manual = pac.to_vec();
+        with_manual.extend([
+            (unsafe { kCFNetworkProxiesHTTPSEnable }, number(1)),
+            (unsafe { kCFNetworkProxiesHTTPSProxy }, string("10.0.0.2")),
+            (unsafe { kCFNetworkProxiesHTTPSPort }, number(8443)),
         ]);
-        assert_eq!(resolved(&config, "https://example.com:443/"), None);
+        assert_eq!(
+            resolved(&settings(&with_manual), "https://example.com:443/").as_deref(),
+            Some("http://10.0.0.2:8443/")
+        );
+    }
+
+    #[test]
+    fn auto_discovery_becomes_the_dns_wpad_script_unless_a_pac_url_is_set() {
+        let script = |config: &Config| {
+            unsafe { config.0.cast_unchecked::<CFString, CFType>() }
+                .get(unsafe { kCFNetworkProxiesProxyAutoConfigURLString })
+                .and_then(|url| url.downcast::<CFString>().ok())
+                .map(|url| url.to_string())
+        };
+        let discovery = (
+            unsafe { kCFNetworkProxiesProxyAutoDiscoveryEnable },
+            number(1),
+        );
+        let discovered = Config(with_discovery(settings(std::slice::from_ref(&discovery)).0));
+        assert_eq!(script(&discovered).as_deref(), Some("http://wpad/wpad.dat"));
+        let explicit = Config(with_discovery(
+            settings(&[
+                discovery,
+                (unsafe { kCFNetworkProxiesProxyAutoConfigEnable }, number(1)),
+                (
+                    unsafe { kCFNetworkProxiesProxyAutoConfigURLString },
+                    string("http://pac.example/proxy.pac"),
+                ),
+            ])
+            .0,
+        ));
+        assert_eq!(
+            script(&explicit).as_deref(),
+            Some("http://pac.example/proxy.pac")
+        );
     }
 }

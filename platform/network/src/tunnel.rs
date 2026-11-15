@@ -56,6 +56,20 @@ async fn connect_inner(policy: &Policy, destination: &Destination) -> io::Result
         .ok_or_else(|| io::Error::other("proxy port missing"))?;
     let user = decode(proxy.username())?;
     let password = decode(proxy.password().unwrap_or_default())?;
+    if proxy.scheme() == "socks4" {
+        // SOCKS4 carries only IPv4 addresses, resolved on this side.
+        let address = tokio::net::lookup_host(target)
+            .await?
+            .find(std::net::SocketAddr::is_ipv4)
+            .ok_or_else(|| io::Error::other("SOCKS4 destination has no IPv4 address"))?;
+        let stream = if user.is_empty() {
+            tokio_socks::tcp::Socks4Stream::connect((host, port), address).await
+        } else {
+            tokio_socks::tcp::Socks4Stream::connect_with_userid((host, port), address, &user).await
+        }
+        .map_err(|_| io::Error::other("upstream SOCKS connection failed"))?;
+        return Ok(Box::new(stream));
+    }
     if matches!(proxy.scheme(), "socks5" | "socks5h") {
         let target = if proxy.scheme() == "socks5" {
             tokio_socks::TargetAddr::Ip(

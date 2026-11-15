@@ -18,7 +18,9 @@
  */
 
 //! Linux has no OS proxy resolver. Like Chromium, read KDE's kioslaverc on
-//! KDE and GNOME's `org.gnome.system.proxy` settings elsewhere.
+//! KDE and GNOME's `org.gnome.system.proxy` settings elsewhere. Their PAC and
+//! WPAD modes need a JavaScript engine, so those connect directly, as Maka
+//! always has on Linux.
 
 use crate::Error;
 use hyper_util::client::proxy::matcher::Matcher;
@@ -46,7 +48,7 @@ pub(super) fn capture() -> Result<Option<Config>, Error> {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
         return match home.and_then(|home| std::fs::read_to_string(home.join("kioslaverc")).ok()) {
-            Some(text) => kde(&text),
+            Some(text) => Ok(kde(&text, |name| std::env::var(name).ok())),
             None => Ok(None),
         };
     }
@@ -97,11 +99,8 @@ fn gnome(listing: &str) -> Result<Option<Config>, Error> {
             .next()
             .unwrap_or_default()
     };
-    match text("org.gnome.system.proxy", "mode").as_str() {
-        "manual" => {}
-        // PAC and WPAD need a JavaScript engine Linux does not provide.
-        "auto" => return Err(Error::UnsupportedSystemProxy),
-        _ => return Ok(None),
+    if text("org.gnome.system.proxy", "mode") != "manual" {
+        return Ok(None);
     }
     let proxy = |protocol: &str, scheme: &str| {
         let schema = format!("org.gnome.system.proxy.{protocol}");
@@ -131,8 +130,9 @@ fn gnome(listing: &str) -> Result<Option<Config>, Error> {
         }
     }
     Ok(Some(Config {
+        // An unset HTTPS proxy reuses the HTTP proxy, as glib-networking does.
+        https: proxy("https", "http").or_else(|| http.clone()),
         http,
-        https: proxy("https", "http"),
         socks: proxy("socks", "socks5h"),
         exceptions: exceptions(strings(get("org.gnome.system.proxy", "ignore-hosts"))),
         reversed: false,
@@ -140,7 +140,7 @@ fn gnome(listing: &str) -> Result<Option<Config>, Error> {
 }
 
 /// Parses the `[Proxy Settings]` group of KDE's kioslaverc.
-fn kde(text: &str) -> Result<Option<Config>, Error> {
+fn kde(text: &str, environment: impl Fn(&str) -> Option<String>) -> Option<Config> {
     let mut values = HashMap::new();
     let mut inside = false;
     for line in text.lines().map(str::trim) {
@@ -151,17 +151,21 @@ fn kde(text: &str) -> Result<Option<Config>, Error> {
             values.insert(key, value.trim());
         }
     }
-    let get = |key: &str| values.get(key).copied().unwrap_or_default();
-    match get("ProxyType") {
-        "1" => {}
-        // 2 is a PAC URL and 3 is WPAD; 4 names environment variables, which
-        // have already been consulted.
-        "2" | "3" => return Err(Error::UnsupportedSystemProxy),
-        _ => return Ok(None),
-    }
+    // Type 1 stores addresses; type 4 stores the names of environment
+    // variables holding them.
+    let get = |key: &str| {
+        let value = values.get(key).copied().unwrap_or_default();
+        match values.get("ProxyType").copied() {
+            Some("1") => Some(value.to_owned()),
+            Some("4") => Some(environment(value).unwrap_or_default()),
+            _ => None,
+        }
+    };
+    get("ProxyType")?;
     // KDE writes "http://host port"; newer releases also accept "host:port".
     let proxy = |key: &str, scheme: &str| {
-        let value = get(key);
+        let value = get(key)?;
+        let value = value.as_str();
         let address = value.split_once("://").map_or(value, |(_, rest)| rest);
         let address = match address.rsplit_once(' ') {
             Some((host, port)) => format!("{}:{}", host.trim(), port.trim()),
@@ -169,13 +173,13 @@ fn kde(text: &str) -> Result<Option<Config>, Error> {
         };
         super::endpoint(scheme, &address)
     };
-    Ok(Some(Config {
+    Some(Config {
         http: proxy("httpProxy", "http"),
         https: proxy("httpsProxy", "http"),
         socks: proxy("socksProxy", "socks5h"),
-        exceptions: exceptions(get("NoProxyFor").split(',').map(str::to_owned).collect()),
-        reversed: get("ReversedException") == "true",
-    }))
+        exceptions: exceptions(get("NoProxyFor")?.split(',').map(str::to_owned).collect()),
+        reversed: values.get("ReversedException") == Some(&"true"),
+    })
 }
 
 /// GVariant text values: every quoted string, in order.
@@ -283,21 +287,40 @@ org.gnome.system.proxy.socks port 0
                 .is_none()
         );
         assert!(gnome("").unwrap().is_none());
-        assert!(matches!(
-            gnome("org.gnome.system.proxy mode 'auto'\n"),
-            Err(Error::UnsupportedSystemProxy)
-        ));
+        assert!(
+            gnome("org.gnome.system.proxy mode 'auto'\n")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gnome_https_reuses_the_http_proxy_before_socks() {
+        let config = gnome(
+            "org.gnome.system.proxy mode 'manual'\n\
+             org.gnome.system.proxy.http host 'proxy.example'\n\
+             org.gnome.system.proxy.http port 8080\n\
+             org.gnome.system.proxy.socks host 'socks.example'\n\
+             org.gnome.system.proxy.socks port 1080\n",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            resolved(&config, "https://example.com:443/").as_deref(),
+            Some("http://proxy.example:8080/")
+        );
     }
 
     #[test]
     fn kde_manual_settings_support_both_address_spellings_and_reversal() {
-        let config = kde("[General]\nProxyType=0\n\n[Proxy Settings]\n\
+        let config = kde_text(
+            "[General]\nProxyType=0\n\n[Proxy Settings]\n\
              NoProxyFor=localhost,*.corp.example\n\
              ProxyType=1\n\
              httpProxy=http://127.0.0.1 7890\n\
              httpsProxy[$e]=127.0.0.1:7891\n\
-             socksProxy=socks://127.0.0.1 7892\n")
-        .unwrap()
+             socksProxy=socks://127.0.0.1 7892\n",
+        )
         .unwrap();
         assert_eq!(
             resolved(&config, "http://example.com:80/").as_deref(),
@@ -309,9 +332,10 @@ org.gnome.system.proxy.socks port 0
         );
         assert_eq!(resolved(&config, "https://a.corp.example:443/"), None);
 
-        let reversed = kde("[Proxy Settings]\nProxyType=1\nReversedException=true\n\
-             NoProxyFor=.corp.example\nsocksProxy=socks://127.0.0.1 7892\n")
-        .unwrap()
+        let reversed = kde_text(
+            "[Proxy Settings]\nProxyType=1\nReversedException=true\n\
+             NoProxyFor=.corp.example\nsocksProxy=socks://127.0.0.1 7892\n",
+        )
         .unwrap();
         assert_eq!(resolved(&reversed, "https://example.com:443/"), None);
         assert_eq!(
@@ -320,15 +344,33 @@ org.gnome.system.proxy.socks port 0
         );
     }
 
+    fn kde_text(text: &str) -> Option<Config> {
+        kde(text, |_| None)
+    }
+
+    #[test]
+    fn kde_environment_type_reads_the_named_variables() {
+        let config = kde(
+            "[Proxy Settings]\nProxyType=4\nhttpsProxy=CORP_PROXY\nNoProxyFor=CORP_NO_PROXY\n",
+            |name| match name {
+                "CORP_PROXY" => Some("http://proxy.corp:8080".into()),
+                "CORP_NO_PROXY" => Some(".internal.corp".into()),
+                _ => None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resolved(&config, "https://example.com:443/").as_deref(),
+            Some("http://proxy.corp:8080/")
+        );
+        assert_eq!(resolved(&config, "https://a.internal.corp:443/"), None);
+        assert_eq!(resolved(&config, "http://example.com:80/"), None);
+    }
+
     #[test]
     fn kde_types_without_a_manual_proxy() {
-        assert!(kde("[Proxy Settings]\nProxyType=0\n").unwrap().is_none());
-        assert!(kde("[Proxy Settings]\nProxyType=4\n").unwrap().is_none());
-        for kind in ["2", "3"] {
-            assert!(matches!(
-                kde(&format!("[Proxy Settings]\nProxyType={kind}\n")),
-                Err(Error::UnsupportedSystemProxy)
-            ));
+        for kind in ["0", "2", "3"] {
+            assert!(kde_text(&format!("[Proxy Settings]\nProxyType={kind}\n")).is_none());
         }
     }
 }

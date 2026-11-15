@@ -23,8 +23,9 @@
 use reqwest::Url;
 
 /// `host:port` applies to every scheme; `http=a;https=b;socks=c` selects by
-/// destination scheme, with `socks=` as the fallback. The `https=` proxy is
-/// still reached over plain HTTP. A scheme with no entry connects directly.
+/// destination scheme, with `socks=` (SOCKS4 in WinINet) as the fallback. The
+/// `https=` proxy is still reached over plain HTTP. A scheme with no entry
+/// connects directly.
 pub(super) fn select(list: &str, scheme: &str) -> Option<Url> {
     let entries: Vec<_> = list
         .split([';', ' ', '\t', '\r', '\n'])
@@ -49,13 +50,19 @@ pub(super) fn select(list: &str, scheme: &str) -> Option<Url> {
             .then(|| super::endpoint("http", address))
             .flatten();
     }
-    named("socks").and_then(|address| super::endpoint("socks5h", address))
+    named("socks").and_then(|address| super::endpoint("socks4", address))
 }
 
-/// `<local>` matches names without a dot; other entries are `*` wildcards
-/// matched case-insensitively against the host.
-pub(super) fn bypassed(list: &str, host: &str) -> bool {
-    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+/// `<local>` matches names without a dot. Other entries are
+/// `[scheme://]host[:port]`, where the host may use `*` wildcards and is
+/// compared case-insensitively; scheme and port restrict the match.
+pub(super) fn bypassed(list: &str, target: &Url) -> bool {
+    let host = target
+        .host_str()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    let port = target.port_or_known_default();
     list.split([';', ' ', '\t', '\r', '\n'])
         .map(str::trim)
         .filter(|pattern| !pattern.is_empty())
@@ -63,22 +70,49 @@ pub(super) fn bypassed(list: &str, host: &str) -> bool {
             if pattern.eq_ignore_ascii_case("<local>") {
                 return !host.contains(['.', ':']);
             }
-            let pattern = pattern
-                .split_once("://")
-                .map_or(pattern, |(_, rest)| rest)
-                .to_ascii_lowercase();
-            wildcard(pattern.as_bytes(), host.as_bytes())
+            let pattern = pattern.to_ascii_lowercase();
+            let (scheme, rest) = match pattern.split_once("://") {
+                Some((scheme, rest)) => (Some(scheme), rest),
+                None => (None, pattern.as_str()),
+            };
+            let (pattern_host, pattern_port) = match rest.strip_prefix('[') {
+                Some(bracketed) => match bracketed.split_once(']') {
+                    Some((host, after)) => (host, after.strip_prefix(':')),
+                    None => (rest, None),
+                },
+                // A bare IPv6 literal has several colons and no port.
+                None => match rest.rsplit_once(':') {
+                    Some((host, port)) if !host.contains(':') => (host, Some(port)),
+                    _ => (rest, None),
+                },
+            };
+            scheme.is_none_or(|scheme| scheme == target.scheme())
+                && pattern_port
+                    .is_none_or(|wanted| wanted == "*" || wanted.parse::<u16>().ok() == port)
+                && wildcard(pattern_host.as_bytes(), host.as_bytes())
         })
 }
 
+/// Linear-time `*` matching, so a hostile pattern cannot stall routing.
 fn wildcard(pattern: &[u8], text: &[u8]) -> bool {
-    match pattern.split_first() {
-        None => text.is_empty(),
-        Some((b'*', rest)) => (0..=text.len()).any(|skip| wildcard(rest, &text[skip..])),
-        Some((first, rest)) => text
-            .split_first()
-            .is_some_and(|(head, tail)| head == first && wildcard(rest, tail)),
+    let (mut p, mut t) = (0, 0);
+    let mut resume = None;
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            resume = Some((p, t));
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if let Some((star, matched)) = resume {
+            p = star + 1;
+            t = matched + 1;
+            resume = Some((star, matched + 1));
+        } else {
+            return false;
+        }
     }
+    pattern[p..].iter().all(|byte| *byte == b'*')
 }
 
 #[cfg(test)]
@@ -106,7 +140,7 @@ mod tests {
         );
         assert_eq!(
             selected("http=10.0.0.1:8080;socks=10.0.0.3:1080", "https").as_deref(),
-            Some("socks5h://10.0.0.3:1080")
+            Some("socks4://10.0.0.3:1080")
         );
         assert_eq!(selected("http=10.0.0.1:8080", "https"), None);
         assert_eq!(
@@ -124,6 +158,7 @@ mod tests {
 
     #[test]
     fn bypass_lists_follow_wininet_patterns() {
+        let bypassed = |list: &str, url: &str| bypassed(list, &Url::parse(url).unwrap());
         let list = "<local>;*.corp.example; 10.*;192.168.1.*;*internal*";
         for host in [
             "intranet",
@@ -133,7 +168,7 @@ mod tests {
             "my-internal-host.example",
             "A.CORP.EXAMPLE",
         ] {
-            assert!(bypassed(list, host), "{host}");
+            assert!(bypassed(list, &format!("https://{host}/")), "{host}");
         }
         for host in [
             "corp.example",
@@ -142,7 +177,36 @@ mod tests {
             "example.com",
             "[fd00::1]",
         ] {
-            assert!(!bypassed(list, host), "{host}");
+            assert!(!bypassed(list, &format!("https://{host}/")), "{host}");
         }
+    }
+
+    #[test]
+    fn bypass_entries_keep_their_scheme_port_and_ipv6_scope() {
+        let bypassed = |list: &str, url: &str| bypassed(list, &Url::parse(url).unwrap());
+        assert!(bypassed(
+            "https://api.corp.example",
+            "https://api.corp.example/"
+        ));
+        assert!(!bypassed(
+            "https://api.corp.example",
+            "http://api.corp.example/"
+        ));
+        assert!(bypassed(
+            "api.corp.example:8443",
+            "https://api.corp.example:8443/"
+        ));
+        assert!(!bypassed(
+            "api.corp.example:8443",
+            "https://api.corp.example/"
+        ));
+        assert!(bypassed("[fd00::1]", "https://[fd00::1]/"));
+        assert!(bypassed("fd00::1", "https://[fd00::1]/"));
+        assert!(bypassed("[fd00::1]:443", "https://[fd00::1]/"));
+        assert!(!bypassed("[fd00::1]:8443", "https://[fd00::1]/"));
+        assert!(!bypassed(
+            "*a*a*a*a*a*a*a*a*b",
+            &format!("https://{}/", "a".repeat(60))
+        ));
     }
 }

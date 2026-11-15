@@ -22,11 +22,12 @@ use reqwest::Url;
 use std::{ffi::c_void, ptr, sync::OnceLock};
 use windows_sys::{
     Win32::{
-        Foundation::GlobalFree,
+        Foundation::{GetLastError, GlobalFree},
         Networking::WinHttp::{
-            WINHTTP_ACCESS_TYPE_NAMED_PROXY, WINHTTP_ACCESS_TYPE_NO_PROXY,
-            WINHTTP_AUTO_DETECT_TYPE_DHCP, WINHTTP_AUTO_DETECT_TYPE_DNS_A,
-            WINHTTP_AUTOPROXY_AUTO_DETECT, WINHTTP_AUTOPROXY_CONFIG_URL, WINHTTP_AUTOPROXY_OPTIONS,
+            ERROR_WINHTTP_LOGIN_FAILURE, WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+            WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_AUTO_DETECT_TYPE_DHCP,
+            WINHTTP_AUTO_DETECT_TYPE_DNS_A, WINHTTP_AUTOPROXY_AUTO_DETECT,
+            WINHTTP_AUTOPROXY_CONFIG_URL, WINHTTP_AUTOPROXY_OPTIONS,
             WINHTTP_CURRENT_USER_IE_PROXY_CONFIG, WINHTTP_PROXY_INFO,
             WinHttpGetIEProxyConfigForCurrentUser, WinHttpGetProxyForUrl, WinHttpOpen,
             WinHttpSetTimeouts,
@@ -69,7 +70,7 @@ pub(super) fn resolve(config: &Config, target: &Url) -> Option<Url> {
     if config
         .bypass
         .as_deref()
-        .is_some_and(|list| bypassed(list, target.host_str().unwrap_or_default()))
+        .is_some_and(|list| bypassed(list, target))
     {
         return None;
     }
@@ -122,12 +123,23 @@ fn automatic(config: &Config, target: &Url) -> Option<Option<String>> {
         lpszAutoConfigUrl: script
             .as_ref()
             .map_or(ptr::null(), |script| script.as_ptr()),
-        fAutoLogonIfChallenged: 1,
         ..Default::default()
     };
     let target = wide(target.as_str());
     let mut info = WINHTTP_PROXY_INFO::default();
-    if unsafe { WinHttpGetProxyForUrl(session.0, target.as_ptr(), &mut options, &mut info) } == 0 {
+    let mut resolved =
+        unsafe { WinHttpGetProxyForUrl(session.0, target.as_ptr(), &mut options, &mut info) } != 0;
+    // Domain credentials go only to a PAC URL the user configured, never to a
+    // server the network advertised through WPAD (Microsoft's retry pattern).
+    if !resolved && script.is_some() && unsafe { GetLastError() } == ERROR_WINHTTP_LOGIN_FAILURE {
+        options.dwFlags = WINHTTP_AUTOPROXY_CONFIG_URL;
+        options.dwAutoDetectFlags = 0;
+        options.fAutoLogonIfChallenged = 1;
+        resolved =
+            unsafe { WinHttpGetProxyForUrl(session.0, target.as_ptr(), &mut options, &mut info) }
+                != 0;
+    }
+    if !resolved {
         return None;
     }
     let list = take(info.lpszProxy);
