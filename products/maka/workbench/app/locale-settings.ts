@@ -398,11 +398,6 @@ export const settingsMessages = {
   'Code Mode': ['Code Mode', 'Code Mode', 'Code Mode'],
   'Apply Patch': ['Apply Patch', 'Apply Patch', 'Apply Patch'],
   'Model default': ['Model default', '模型默认策略', '模型預設策略'],
-  'Edit current model settings': [
-    'Edit current model settings',
-    '编辑当前模型设置',
-    '編輯目前模型設定',
-  ],
   'Code Mode language': ['Code Mode language', 'Code Mode 语言', 'Code Mode 語言'],
   'A provider credential is stored. Sign in again to replace it.': [
     'A provider credential is stored. Sign in again to replace it.',
@@ -486,7 +481,6 @@ export const settingsMessages = {
   ],
   'Back from general settings': ['Back from general settings', '从常规设置返回', '從一般設定返回'],
   'Back from plugins settings': ['Back from plugins settings', '从插件设置返回', '從外掛設定返回'],
-  'Back to model settings': ['Back to model settings', '返回模型设置', '返回模型設定'],
   'Base URL': ['Base URL', '基础 URL', '基底 URL'],
   'Cancel provider sign-in': ['Cancel provider sign-in', '取消提供商登录', '取消供應商登入'],
   'Cancel sign-in': ['Cancel sign-in', '取消登录', '取消登入'],
@@ -515,7 +509,6 @@ export const settingsMessages = {
     '為此連線選擇 API 供應商。',
   ],
   'Clear default model': ['Clear default model', '清除默认模型', '清除預設模型'],
-  'Close model selection': ['Close model selection', '关闭模型选择', '關閉模型選擇'],
   'Close settings': ['Close settings', '关闭设置', '關閉設定'],
   'Compaction prompt': ['Compaction prompt', '压缩提示词', '壓縮提示詞'],
   'Complete sign-in with your provider. Credentials stay in the Host vault.': [
@@ -678,23 +671,14 @@ export const settingsMessages = {
     '介面和助理使用的語言。',
   ],
   List: ['List', '列表', '清單'],
-  'Loading model policy…': ['Loading model policy…', '正在读取模型策略…', '正在讀取模型原則…'],
   'Loading network settings…': [
     'Loading network settings…',
     '正在加载网络设置…',
     '正在載入網路設定…',
   ],
   'Loading settings…': ['Loading settings…', '正在加载设置…', '正在載入設定…'],
-  'Manage connections & models': [
-    'Manage connections & models',
-    '管理连接与模型',
-    '管理連線與模型',
-  ],
-  'Manage connections and models': [
-    'Manage connections and models',
-    '管理连接和模型',
-    '管理連線和模型',
-  ],
+  'Manage models': ['Manage models', '管理模型', '管理模型'],
+  'Manage models…': ['Manage models…', '管理模型…', '管理模型…'],
   'Manage models · {count}': [
     'Manage models · {count}',
     '管理模型 · {count}',

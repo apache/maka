@@ -19,10 +19,10 @@
 
 import { formatDuration } from './duration';
 import { executorUsageLabel } from './TurnUsage';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, ShimmerText } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
-import { Canvas, cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
+import { Canvas, cleanup, computed, effect, inputAction, List, signal, Text, View } from 'nsh';
 import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
@@ -31,10 +31,20 @@ import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
 import { turnOutcome } from './processGroups';
-import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
+import {
+  C,
+  captionTextStyle,
+  controlStyle,
+  animateDisclosure,
+  Disclosure,
+  DisclosureChevron,
+  disclosureTitleStyle,
+} from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
 import { LiveToolRow } from './ToolCard';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
+import { activityIcon, activityPresentation, activityTitle } from './toolActivityPresentation';
+import { cardFamily, type ToolFamily } from './toolCards';
 
 const panelStyle = {
   marginVertical: 8,
@@ -299,7 +309,6 @@ function ActivityLog(props: {
   resumed(): void;
   /** Whether the activity list is scrolled to its end, following or not. */
   settled?(atEnd: boolean): void;
-  nearActivityEnd?(): void;
   reveal(): void;
 }) {
   const state = props.state;
@@ -435,7 +444,6 @@ function ActivityLog(props: {
             nearEnd = distance <= activityFollowThreshold;
             atEnd = distance <= 1;
             props.settled?.(atEnd);
-            if (distance < event.size.height) props.nearActivityEnd?.();
             // Reflow and restoring a saved offset also report scroll geometry.
             if (movement === 0 || scrollInput === 'idle') return;
             if (scrollInput === 'pending') scrollInput = 'idle';
@@ -595,35 +603,70 @@ type TurnPanelProps = {
   reading(away: boolean): void;
   resumed(): void;
   settled?(atEnd: boolean): void;
-  nearActivityEnd?(): void;
 };
 
 export function TurnPanel(props: TurnPanelProps) {
-  // On the desktop the turn's summary row is the only disclosure: groups have no
-  // header of their own and show their members whenever the turn is open.
-  if (platform.idiom !== 'terminal')
-    effect(() => {
-      if (props.state.open() || !props.group().rowIds.length) return;
-      const live = !props.group().closed;
-      props.state.opening = live ? 'bottom' : 'top';
-      props.state.following.set(live);
-      props.state.open.set(true);
-    });
+  const desktop = platform.idiom !== 'terminal';
   return (
-    <View style={platform.idiom === 'terminal' ? panelStyle : { ...panelStyle, gap: 0 }}>
-      <If when={platform.idiom === 'terminal'}>
-        <GroupHeader {...props} />
-      </If>
-      <If when={props.state.open() && props.group().rowIds.length > 0}>
-        <ActivityLog {...props} />
-      </If>
-      <If when={platform.idiom !== 'terminal'}>
-        <Each of={props.liveTools()} key={(tool: ToolActivity) => tool.toolUseId}>
-          {(tool) => <LiveToolRow activity={tool} />}
-        </Each>
+    <View style={desktop ? { ...panelStyle, gap: 0 } : panelStyle}>
+      <GroupHeader {...props} />
+      <If when={props.state.open()}>
+        <View
+          style={
+            desktop
+              ? { marginLeft: 7, paddingLeft: 16, borderLeftWidth: 1, borderColor: C.line }
+              : {}
+          }
+        >
+          <If when={props.group().rowIds.length > 0}>
+            <ActivityLog {...props} />
+          </If>
+          <If when={desktop}>
+            <Each of={props.liveTools()} key={(tool: ToolActivity) => tool.toolUseId}>
+              {(tool) => <LiveToolRow activity={tool} />}
+            </Each>
+          </If>
+        </View>
       </If>
     </View>
   );
+}
+
+const familyVerbs = {
+  read: 'Read files',
+  write: 'Edited files',
+  edit: 'Edited files',
+  patch: 'Edited files',
+  glob: 'Searched files',
+  grep: 'Searched files',
+  execute: 'Ran commands',
+  processRead: 'Ran commands',
+  stdin: 'Ran commands',
+  stop: 'Ran commands',
+  fetch: 'Read web pages',
+  webSearch: 'Searched the web',
+} as const satisfies Partial<Record<NonNullable<ToolFamily>, string>>;
+
+/** What a finished group did, one phrase per kind of step in the order they first came. */
+function activityVerbs(group: ProcessGroup, row: (id: string) => Row | undefined): string {
+  const verbs: string[] = [];
+  const add = (verb: string) => {
+    if (!verbs.includes(verb)) verbs.push(verb);
+  };
+  for (const id of group.rowIds) {
+    const value = row(id);
+    if (!value) continue;
+    const call = value.tool?.call;
+    if (value.tool) {
+      const family = cardFamily(call?.presentation);
+      const verb = family ? familyVerbs[family as keyof typeof familyVerbs] : undefined;
+      add(
+        verb ? tr(verb) : (activityPresentation(call?.presentation)?.title() ?? tr('Used tools')),
+      );
+    } else if (value.field === 'thinking') add(tr('Thought'));
+    else if (value.role === 'user' && activityMessage(value.origin)) add(tr('Agent messages'));
+  }
+  return verbs.join(tr(', '));
 }
 
 function GroupHeader(props: TurnPanelProps) {
@@ -638,7 +681,11 @@ function GroupHeader(props: TurnPanelProps) {
     const timer = setInterval(() => clock.set(Date.now()), 1000);
     cleanup(() => clearInterval(timer));
   });
-  const counts = () => activityCounts([props.group()], props.row) || tr('Process');
+  const desktop = platform.idiom !== 'terminal';
+  const counts = () =>
+    (desktop ? activityVerbs(props.group(), props.row) : '') ||
+    activityCounts([props.group()], props.row) ||
+    tr('Process');
   const desiredTitle = computed(() => {
     if (!active()) return counts();
     const activity = props.activity();
@@ -656,29 +703,69 @@ function GroupHeader(props: TurnPanelProps) {
       props.group().rowIds.includes(activity.rowId)
     )
       return `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
-    return tr('Working…');
+    const latest = props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
+    return latest ? activityTitle(latest) : tr('Working…');
   });
   const stableTitle = stableActivityTitle(desiredTitle, active);
+  const foldable = () =>
+    props.group().rowIds.length > 0 || (desktop && props.liveTools().length > 0);
   const choose = (action: { sessionId: string; key: string; open: boolean }) => {
-    if (
-      action.sessionId !== props.sessionId ||
-      action.key !== props.group().key ||
-      !props.group().rowIds.length
-    )
+    if (action.sessionId !== props.sessionId || action.key !== props.group().key || !foldable())
       return;
     if (action.open) {
       props.state.opening = props.group().closed ? 'top' : 'bottom';
       props.state.following.set(!props.group().closed);
     }
     props.reading(action.open && props.group().closed);
+    animateDisclosure();
     props.state.open.set(action.open);
     if (action.open) props.reveal();
   };
+  const icon = () => {
+    const last = props.row(props.group().rowIds.at(-1) ?? '');
+    if (last?.tool) return activityIcon(last.tool.call?.presentation);
+    return last?.field === 'thinking' ? 'thinking' : 'activity';
+  };
+  if (desktop)
+    return (
+      <Disclosure
+        label={tr('Process group')}
+        open={props.state.open()}
+        foldable={foldable()}
+        icon={icon()}
+        onPress={inputAction(choose, {
+          sessionId: props.sessionId,
+          key: props.group().key,
+          open: !props.state.open(),
+        })}
+      >
+        <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <If
+            when={active()}
+            else={
+              <Text
+                style={[
+                  { ...captionTextStyle, color: C.muted, flexShrink: 1, minWidth: 0 },
+                  { numberOfLines: 1, textOverflow: 'ellipsis' },
+                ]}
+              >
+                {desiredTitle()}
+              </Text>
+            }
+          >
+            <ShimmerText text={stableTitle()} style={captionTextStyle} />
+          </If>
+          <If when={foldable()}>
+            <DisclosureChevron open={props.state.open()} size={12} color={C.muted} />
+          </If>
+        </View>
+      </Disclosure>
+    );
   return (
     <Disclosure
       label={tr('Process group')}
       open={props.state.open()}
-      foldable={props.group().rowIds.length > 0}
+      foldable={foldable()}
       onPress={inputAction(choose, {
         sessionId: props.sessionId,
         key: props.group().key,

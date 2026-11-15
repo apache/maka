@@ -168,7 +168,7 @@ impl Owner {
                 model,
                 thinking_level,
             } => {
-                let (model, _) = crate::model::Source::select(
+                let model = crate::model::Source::select(
                     self.configuration.clone(),
                     self.catalog.clone(),
                     self.credentials.clone(),

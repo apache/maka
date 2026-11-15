@@ -810,24 +810,14 @@ export function createConversationUi(
       if (current?.kind === 'models' && current.sessionId === sessionId) closeOverlay(instance);
     } else if (current?.kind !== 'models') open({ kind: 'models', sessionId });
   };
-  const manageModels = ({
-    sessionId,
-    instance,
-    model,
-    page,
-  }: {
-    sessionId: string;
-    instance: number;
-    model?: ModelSelection;
-    page?: string;
-  }) => {
+  const manageModels = ({ sessionId, instance }: { sessionId: string; instance: number }) => {
     if (
       alive &&
       selected() === sessionId &&
       handle()?.sessionId === sessionId &&
       closeOverlay(instance)
     )
-      open({ kind: 'settings', sessionId, model, page });
+      open({ kind: 'settings', sessionId });
   };
   const chooseModel = async (
     owner: ConversationHandle,
@@ -2673,10 +2663,10 @@ export function createConversationUi(
                           pendingModelInstance.set(null);
                           return true;
                         }}
-                        manage={({ instance, model, page }) => {
+                        manage={({ instance }) => {
                           if (pendingModelInstance() !== instance) return;
                           pendingModelInstance.set(null);
-                          shell()?.openSettings(model, page);
+                          shell()?.openSettings();
                         }}
                         select={async (_instance, backend) => {
                           if (pendingSending()) return;

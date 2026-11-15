@@ -627,7 +627,7 @@ impl Rig {
         else {
             return Err("local model configuration was not committed".into());
         };
-        let (source, _) = crate::model::Source::select(
+        let source = crate::model::Source::select(
             owner.configuration.clone(),
             owner.catalog.clone(),
             owner.credentials.clone(),

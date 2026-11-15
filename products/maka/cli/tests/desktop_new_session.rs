@@ -67,11 +67,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const STEP: Duration = Duration::from_secs(30);
-const MODEL_MENU: [&str; 3] = [
-    "Back to model settings",
-    "Manage connections and models",
-    "Manage external agents",
-];
+const MODEL_MENU: [&str; 1] = ["Manage models"];
 
 struct InputDiagnostics {
     armed: AtomicBool,
@@ -633,12 +629,10 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
                 [
                     "New conversation",
                     "Choose model and effort",
-                    "Close model selection",
-                    "Choose model",
+                    "Choose reasoning effort",
                     "Retry model catalog",
                     "Retry model policy",
                     "Focus message composer",
-                    "Edit current model settings",
                     "Dismiss action feedback",
                     "Chat",
                     "Trajectory",
@@ -928,24 +922,21 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
         }
         paint("actual native frame with loopback model row")?;
         click(&choose)?;
+        models_pane("model choice keeps the pending picker open")?;
+        click("Focus message composer")?;
         wait_native(
             native,
             &errors,
-            "model choice closes the pending picker",
+            "outside composer click closes the pending picker and focuses editor",
             || {
                 for label in MODEL_MENU {
                     if !bounds(label)?.is_empty() {
                         return Ok(false);
                     }
                 }
-                Ok(bounds("Focus message composer")?.len() == 1)
+                Ok(native.text_input_target().is_some())
             },
         )?;
-        paint("actual native frame after choosing pending model")?;
-        click("Focus message composer")?;
-        wait_native(native, &errors, "real native composer input target", || {
-            Ok(native.text_input_target().is_some())
-        })?;
         // This is the current native native editor, not a JS callback or a stored draft edit.
         assert!(native.paste(nsh_core::PasteEvent::new(&nonce)));
         wait_native(
@@ -1109,35 +1100,13 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
         paint("actual native frame of selected completed Session")?;
         // The empty seed and pending draft cannot expose these nonempty conversation tabs.
         click("Choose model and effort")?;
+        models_pane("persisted new Session's real models pane")?;
         wait_native(
             native,
             &errors,
-            "selected new Session's model settings root",
-            || {
-                for label in [
-                    "Choose model",
-                    "Edit current model settings",
-                    "Manage external agents",
-                    "Manage connections and models",
-                ] {
-                    if bounds(label)?.len() != 1 {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            },
+            "persisted new Session's active model row",
+            || Ok(bounds(&choose)?.len() == 1),
         )?;
-        assert!(
-            bounds("Close model selection")?.is_empty(),
-            "Desktop root has no terminal close header"
-        );
-        assert!(
-            bounds("Back to model settings")?.is_empty(),
-            "Desktop root has no models-pane back header"
-        );
-        paint("actual native frame of selected Session's model settings")?;
-        click("Choose model")?;
-        models_pane("persisted new Session's real models pane")?;
         let after = runtime.block_on(phase(
             "final independent Session list",
             sessions(observer.as_ref().unwrap()),

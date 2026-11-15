@@ -320,8 +320,8 @@ function Preview() {
     declaration: {
       kind: 'settings',
       title: {
-        fallback: 'Connections & models',
-        translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
+        fallback: 'Models',
+        translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
       },
     },
   };
@@ -335,7 +335,7 @@ function Preview() {
               ? tr('Add connection')
               : owner.page() === 'model'
                 ? tr('Model settings')
-                : tr('Connections & models'),
+                : tr('Models'),
         action: () =>
           owner.page() === 'connections' && !owner.confirmation()
             ? { label: tr('Add connection'), run: owner.newConnection, disabled: owner.loading() }

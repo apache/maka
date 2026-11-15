@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, signal } from 'nsh';
+import { batch, cleanup, signal } from 'nsh';
 import type {
   AgentExternalAgents,
   AgentExternalRuntime,
@@ -51,7 +51,6 @@ export function createExternalAgentSettings(
     name: string;
     acknowledged: boolean;
   } | null>(null);
-  const details = signal<string | null>(null);
   const failure = signal<string | null>(null);
   const loading = signal(false);
   let alive = true;
@@ -72,13 +71,17 @@ export function createExternalAgentSettings(
       inspect: true,
     })) as AgentExternalAgents;
     const after = await source();
-    if (!sameValue(before, after))
+    if (!sameValue(before, after)) {
+      invalidate();
       throw new UiError('These settings changed elsewhere. Reload before saving again.');
+    }
     if (
       status.target.source.stateDomain !== after.stateDomain ||
       status.target.source.deployment !== after.deployment
-    )
+    ) {
+      invalidate();
       throw new UiError('This agent belongs to another deployment and cannot be configured here.');
+    }
     return {
       source: after,
       target: {
@@ -93,18 +96,17 @@ export function createExternalAgentSettings(
     basis.set(null);
     confirmation.set(null);
     catalog.set(null);
-    details.set(null);
   };
   const load = async () => {
     if (!alive || !active() || loading()) return;
     const generation = ++read;
     loading.set(true);
     failure.set(null);
-    invalidate();
+    view.set(view() + 1);
+    confirmation.set(null);
     try {
       const next = await observeBasis();
       if (!alive || !active() || generation !== read) return;
-      basis.set(next);
       const status = next.target.runtimes.some((runtime) => runtime.enabled)
         ? await host.query('agent', 'externalAgents', {})
         : null;
@@ -115,8 +117,10 @@ export function createExternalAgentSettings(
         invalidate();
         throw new UiError('These settings changed elsewhere. Reload before saving again.');
       }
-      if (!alive || !active() || generation !== read) return;
-      catalog.set(status);
+      batch(() => {
+        basis.set(next);
+        catalog.set(status);
+      });
     } catch (error) {
       if (alive && active() && generation === read) {
         failure.set(errorMessage(error));
@@ -230,12 +234,7 @@ export function createExternalAgentSettings(
   return {
     basis,
     catalog,
-    details,
     failure,
-    toggleDetails: (request: ExternalAgentAction & { runtime: string }) => {
-      if (!current(request)) return;
-      details.set(details() === request.runtime ? null : request.runtime);
-    },
     status: (runtime: string) => statuses().find((item) => item.id === runtime),
     confirmation,
     loading,

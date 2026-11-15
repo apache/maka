@@ -160,7 +160,7 @@ impl Owner {
                 model_id,
                 thinking_level,
             } => {
-                let (source, _) = crate::model::Source::select(
+                let source = crate::model::Source::select(
                     self.configuration.clone(),
                     self.catalog.clone(),
                     self.credentials.clone(),
