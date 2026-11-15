@@ -158,6 +158,15 @@ mod tests {
         app.wait_for("label:Terminal keyboard input").unwrap();
         app.press_key("enter").unwrap();
         app.wait_for("text:1: Enter reached shell-1").unwrap();
+        app.press_key("ctrl+c").unwrap();
+        app.wait_for("text:Interrupt reached shell-1").unwrap();
+        app.paste(
+            "label:Terminal keyboard input",
+            &nsh_core::PasteEvent::new("printf demo"),
+        )
+        .unwrap();
+        app.wait_for("text:Pasted into shell-1: printf demo")
+            .unwrap();
 
         app.press("label:New terminal").unwrap();
         app.wait_for("text:Shell 2").unwrap();
@@ -165,6 +174,8 @@ mod tests {
         app.press("role:button[Agent terminals]").unwrap();
         app.wait_for("text:cargo test").unwrap();
         assert!(!app.screen().matches("text:cargo fmt").unwrap());
+        app.press_key("ctrl+c").unwrap();
+        app.wait_for("text:Workbench interrupt").unwrap();
         app.press("role:button[Finished commands]").unwrap();
         app.wait_for("text:cargo fmt").unwrap();
         app.press("label:Open terminal cargo fmt").unwrap();

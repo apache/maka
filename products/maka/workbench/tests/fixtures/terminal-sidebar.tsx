@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { mount, signal, Text, View, type JSX } from 'nsh';
+import { keymap, mount, signal, Text, View, type JSX } from 'nsh';
 import { createResources } from '../../../../../plugins/workspace/workspace-files/ui/resources';
 import { ResourcePane } from '../../../../../plugins/workspace/workspace-files/ui/ResourcePane';
 import { HostProvider, type Host } from '../../app/host';
@@ -201,9 +201,13 @@ const host = {
           }
           case 'control': {
             const ref = input.controller.target.ref;
-            for (const action of input.actions)
+            for (const action of input.actions) {
               if (action.type === 'key' && action.key === 'enter')
                 received.set(`${++keyboardEvents}: Enter reached ${ref}`);
+              if (action.type === 'key' && action.key === 'c' && action.modifiers?.includes('ctrl'))
+                received.set(`Interrupt reached ${ref}`);
+              if (action.type === 'paste') received.set(`Pasted into ${ref}: ${action.text}`);
+            }
             value = { sequence: input.sequence };
             break;
           }
@@ -227,6 +231,7 @@ const host = {
 } as unknown as Host;
 
 function Fixture() {
+  keymap.bind('ctrl+c', () => received.set('Workbench interrupt'), { when: 'always' });
   const resources = createResources(host, {
     sessions: () => [sessionId],
     blocked: () => false,
