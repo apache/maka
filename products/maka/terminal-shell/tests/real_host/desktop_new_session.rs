@@ -2900,6 +2900,45 @@ async fn desktop_subagent_settings_preserves_conflict_and_session_snapshot() {
 
 async fn desktop_model_catalog_preserves_search_and_selection_during_refresh() {
     let fixture = Fixture::open().await;
+    let client = fixture.client_at(&fixture.address).await;
+    let observation = client
+        .subscribe("agent", "watchModels", json!({}))
+        .await
+        .unwrap();
+    let initial = observation.next().await.unwrap().unwrap();
+    assert!(
+        matches!(initial, maka_app_client::SubscriptionEvent::Item(ref page) if !page["choices"].as_array().unwrap().is_empty())
+    );
+    let configuration =
+        maka_config::ConfigurationStore::for_root(fixture.store.owned_root().unwrap())
+            .await
+            .unwrap();
+    let catalog = configuration.catalog().await.unwrap();
+    let connection = catalog
+        .connections
+        .iter()
+        .find(|row| row.connection_id == fixture.selection["connectionId"].as_str().unwrap())
+        .unwrap();
+    let updated = configuration.update_connection(serde_json::from_value(json!({
+        "expected":{"connectionId":connection.connection_id,"revision":connection.revision},"changes":{"enabled":false}
+    })).unwrap()).await.unwrap();
+    assert!(matches!(
+        updated,
+        maka_agent_facts::configuration::CatalogMutationResult::Committed { .. }
+    ));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let event = observation.next().await.unwrap().unwrap();
+            if let maka_app_client::SubscriptionEvent::Item(page) = event
+                && page["choices"].as_array().unwrap().is_empty()
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("an open model catalog did not observe the connection being disabled");
+    observation.close().await.unwrap();
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../workbench/tests/fixtures/model-select.tsx");
     let output = fixture.directory.path().join("model-preview");
