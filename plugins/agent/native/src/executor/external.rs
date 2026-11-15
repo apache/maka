@@ -27,7 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) mod agy;
+mod agy;
 mod agy_acp;
 mod attachments;
 mod claude;

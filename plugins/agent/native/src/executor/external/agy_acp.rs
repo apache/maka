@@ -44,16 +44,17 @@ pub(super) async fn execute(
     owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     let mut command = runtime::command(config, cwd).await?;
-    if journal.native_session().is_none() {
-        agy::require_host_agent().await?;
-    }
-    command.args([
-        "acp",
-        "--process-per-session",
-        "--dangerously-skip-permissions",
-        "--agent",
-        agy::HOST_AGENT,
-    ]);
+    let agent_directory = agy::host_agent_directory().await?;
+    command
+        .args([
+            "acp",
+            "--process-per-session",
+            "--dangerously-skip-permissions",
+            "--agent",
+            agy::HOST_AGENT,
+            "--add-dir",
+        ])
+        .arg(agent_directory);
     runtime::task_pipe(
         owner,
         journal.observation(),
