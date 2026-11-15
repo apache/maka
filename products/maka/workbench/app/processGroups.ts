@@ -174,7 +174,6 @@ export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] 
       );
     return (
       (left.order?.itemIndex ?? 0) - (right.order?.itemIndex ?? 0) ||
-      Number(!left.work) - Number(!right.work) ||
       Number(left.field === 'body') - Number(right.field === 'body')
     );
   });
@@ -412,7 +411,7 @@ export function projectProcessGroups(input: {
             : compareOptionalOrder(
                 { path: [activity.startSequence], itemIndex: 0 },
                 position.order,
-              ) <= 0;
+              ) < Number(!row.work);
       if (!before) break;
       nextActivity += 1;
       append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });

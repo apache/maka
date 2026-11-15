@@ -352,6 +352,7 @@ export function historyChunkKey(chunk: AgentHistoryChunk): string {
 export function compareRows(a: Row, b: Row): number {
   return (
     compareHistoryOrder(a.order!, b.order!) ||
+    Number(!a.work) - Number(!b.work) ||
     Number(a.field === 'body') - Number(b.field === 'body')
   );
 }

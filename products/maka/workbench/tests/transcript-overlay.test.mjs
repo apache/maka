@@ -26,7 +26,7 @@ import {
   turnOutcome,
   turnWorkFold,
 } from '../app/processGroups.ts';
-import { historyTurnKey, stableRowId } from '../app/history.ts';
+import { HistoryRows, historyTurnKey, mergeHistoryPage, stableRowId } from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
 const row = (messageId, text, sequence, changes = {}) => ({
@@ -199,6 +199,31 @@ test('a recorded work group keeps one key and holds the steps read for it', () =
   assert.deepEqual(groups([answer, child, script, work, message]), [
     [stableRowId(work), [stableRowId(child)]],
   ]);
+  const running = projectProcessGroups({
+    rows: orderProcessRows([message, work, answer]),
+    toolActivity: [{ toolUseId: 'running', turnId: 'run', startSequence: 2 }],
+    activeTurnId: 'run',
+  }).entries.filter((entry) => entry.kind === 'process');
+  assert.deepEqual(
+    running.map((entry) => [entry.key, entry.toolIds]),
+    [[stableRowId(work), ['running']]],
+  );
+
+  const rows = new HistoryRows();
+  const chunk = ({ key, messageId, ...rest }) => ({
+    ...rest,
+    offset: 0,
+    totalBytes: 0,
+  });
+  const put = (value) =>
+    rows.put(mergeHistoryPage([chunk(value)], (key) => rows.byKey.get(key), false, 5));
+  put(work);
+  put(script);
+  put({ ...work, work: { ...work.work, tools: 2 } });
+  assert.deepEqual(
+    rows.ordered.map((value) => value.work?.tools ?? value.tool.toolUseId),
+    [2, 'script'],
+  );
 });
 
 test('thinking appears in turn work when there is a readable summary', () => {

@@ -606,6 +606,24 @@ async fn group(
     } else if reverse {
         members.reverse();
     }
+    for member in &mut members {
+        if member.row.chunk.field == wire::HistoryField::Thinking
+            && matches!(member.row.body, projection::Body::Field(_))
+            && display(
+                member,
+                wire::HistoryView::Chat,
+                SourcePosition::Start,
+                4096,
+                stop,
+            )
+            .await?
+            .3
+            .trim()
+            .is_empty()
+        {
+            member.row.body = projection::Body::Empty;
+        }
+    }
     Ok(summarize(members))
 }
 fn summarize(members: Vec<Selected>) -> Option<Selected> {
@@ -662,10 +680,12 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
     let shown: Vec<&Seat> = seats
         .iter()
         .filter(|seat| match seat {
+            // A return whose call is outside the group belongs to the call's group.
             Seat::Tool(index) => {
                 let tool = &tools[*index].0;
-                !callers.contains(tool.tool_use_id.as_str())
-                    || tool.result.as_ref().is_some_and(|result| result.is_error)
+                tool.call.is_some()
+                    && (!callers.contains(tool.tool_use_id.as_str())
+                        || tool.result.as_ref().is_some_and(|result| result.is_error))
             }
             _ => true,
         })

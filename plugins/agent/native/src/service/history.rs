@@ -418,9 +418,10 @@ async fn tree_window(
             return Err("agent_observation_cancelled".into());
         }
         if selected.row.chunk.work.is_some() {
-            if page_bytes(through, &chunks, &selected.row.chunk, reverse)? > 60 * 1024
-                && !chunks.is_empty()
-            {
+            if page_bytes(through, &chunks, &selected.row.chunk, reverse)? > 60 * 1024 {
+                if chunks.is_empty() {
+                    return Err("agent_history_metadata_exceeds_page".into());
+                }
                 break;
             }
             chunks.push(selected.row.chunk);
