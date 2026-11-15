@@ -17,13 +17,14 @@
  * under the License.
  */
 
-import { Image, inputAction, platform, signal, View } from 'nsh';
-import { Button, Slider } from 'nsh/base';
+import { Image, inputAction, platform, signal, Text, View } from 'nsh';
+import { Button, Menu, MenuItem, Slider } from 'nsh/base';
 import type {
   LanguagePreference,
+  ProfileAvatar as Avatar,
   SettingsAssistantPreferences,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { tr } from './locale';
+import { tr, type MessageKey } from './locale';
 import {
   assistantLanguages,
   type GeneralAction,
@@ -43,6 +44,8 @@ import {
 import { trayIconArtwork } from './trayIcon';
 import { accentSwatches, paletteTokens, presetRecipes, type PaletteId } from './colorPalette';
 import { LoadingIndicator } from './Loading';
+import { ProfileAvatar } from './ProfileAvatar';
+import { Icon } from './Icon';
 import {
   SettingsBody,
   SettingsButton,
@@ -56,7 +59,25 @@ import {
   SettingsSwitch,
   SettingsTextArea,
 } from './SettingsPage';
-import { C, defaultColors, isDark } from './ui';
+import {
+  C,
+  bodyTextStyle,
+  controlFocusStyle,
+  controlHoverStyle,
+  defaultColors,
+  floatingStyle,
+  isDark,
+  menuRowHoverStyle,
+  menuRowStyle,
+} from './ui';
+
+const avatarChoices = [
+  { avatar: null, label: 'Default avatar' },
+  { avatar: 'blue', label: 'Blue avatar' },
+  { avatar: 'green', label: 'Green avatar' },
+  { avatar: 'rose', label: 'Rose avatar' },
+  { avatar: 'amber', label: 'Amber avatar' },
+] satisfies { avatar: Avatar | null; label: MessageKey }[];
 
 export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
   const owner = props.owner;
@@ -90,6 +111,16 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
     inputAction(owner.open, { request, kind });
   return (
     <SettingsBody>
+      <SettingsSection>
+        <SettingsRow
+          label={tr('Personalization')}
+          description={facts()?.displayName.trim() || undefined}
+          accessibilityLabel={tr('Edit personalization')}
+          opens
+          disabled={owner.disabled()}
+          onPress={open('personalization')}
+        />
+      </SettingsSection>
       <SettingsSection title={tr('Appearance & language')}>
         <If when={appearance.supported}>
           <AppearanceRows />
@@ -199,14 +230,6 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
             disabled={owner.disabled()}
             onPress={open('compaction')}
           />
-          <SettingsRow
-            label={tr('Personalization')}
-            description={facts()?.displayName || tr('Display name')}
-            accessibilityLabel={tr('Edit personalization')}
-            opens
-            disabled={owner.disabled()}
-            onPress={open('personalization')}
-          />
         </If>
       </SettingsSection>
     </SettingsBody>
@@ -223,6 +246,10 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
   const name = () => {
     const editor = owner.editor();
     return editor?.kind === 'personalization' ? editor.displayName : '';
+  };
+  const avatar = () => {
+    const editor = owner.editor();
+    return editor?.kind === 'personalization' ? editor.avatar : null;
   };
   const prompt = () => {
     const editor = owner.editor();
@@ -273,13 +300,66 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
       </If>
       <If when={request.kind === 'personalization'}>
         <SettingsSection>
-          <SettingsInput
-            label={tr('Display name')}
-            value={name()}
-            change={(text) => owner.editName(request, text)}
-            disabled={owner.disabled()}
-            autoFocus
-          />
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 12, gap: 4 }}>
+            <Menu
+              align="start"
+              offset={6}
+              margin={8}
+              popupStyle={floatingStyle()}
+              trigger={
+                <Button
+                  accessibilityLabel={tr('Change avatar')}
+                  disabled={owner.disabled()}
+                  style={{ padding: 4, borderRadius: 24 }}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <ProfileAvatar name={name()} avatar={avatar()} size={40} />
+                  <View
+                    style={{
+                      position: 'absolute',
+                      right: 0,
+                      bottom: 0,
+                      padding: 3,
+                      borderRadius: 9,
+                      backgroundColor: C.raised,
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <Icon name="edit" size={11} color={C.secondary} />
+                  </View>
+                </Button>
+              }
+            >
+              <Each of={avatarChoices} key={(item) => item.label}>
+                {(item) => (
+                  <MenuItem
+                    accessibilityLabel={tr(item().label)}
+                    onSelect={() => owner.editAvatar(request, item().avatar)}
+                    style={{ ...menuRowStyle(), minWidth: 160, gap: 8 }}
+                    hoverStyle={menuRowHoverStyle()}
+                  >
+                    <ProfileAvatar name={name()} avatar={item().avatar} size={24} />
+                    <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>
+                      {tr(item().label)}
+                    </Text>
+                    <If when={item().avatar === avatar()}>
+                      <Icon name="check" size={14} color={C.accent} />
+                    </If>
+                  </MenuItem>
+                )}
+              </Each>
+            </Menu>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <SettingsInput
+                label={tr('Display name')}
+                value={name()}
+                change={(text) => owner.editName(request, text)}
+                disabled={owner.disabled()}
+                autoFocus
+              />
+            </View>
+          </View>
         </SettingsSection>
       </If>
       <If when={request.kind === 'compaction'}>

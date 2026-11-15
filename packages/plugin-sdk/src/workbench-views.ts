@@ -151,6 +151,8 @@ export interface ConversationCompact {
 
 export interface ConversationSessionInput {
   readonly shell: ConversationShell;
+  /** A split pane can stay allocated while its workspace is hidden. */
+  active?(): boolean;
   /** Sent once the pane can send, in a conversation with no draft. */
   readonly firstMessage?: string | undefined;
   readonly compact?: ConversationCompact | undefined;
@@ -186,6 +188,7 @@ export interface RoomWorkspaceHandle {
 export interface RoomWorkspaceInput<Element = unknown> {
   initialSessionId: string | null;
   agentSessionId(): string | null;
+  active(): boolean;
   visible(): boolean;
   blocked(): boolean;
   sidebarExpanded(): boolean;

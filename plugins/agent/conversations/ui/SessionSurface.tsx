@@ -2201,6 +2201,7 @@ export function createConversationUi(
     focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
     command: invokeOwn,
     browsing,
+    sessionHandle,
     navigation(input: ConversationNavigationInput<JSX.Element>) {
       bind(input.shell);
       return <WorkspaceBrowser {...browserProps} navigationMore={input.navigationMore} />;

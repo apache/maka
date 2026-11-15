@@ -98,9 +98,7 @@ impl Default for RuntimePolicy {
             },
             compaction_prompt: None,
             language: None,
-            personalization: Personalization {
-                display_name: String::new(),
-            },
+            personalization: Personalization::default(),
             memory: MemoryPolicy {
                 enabled: true,
                 agent_read_enabled: false,

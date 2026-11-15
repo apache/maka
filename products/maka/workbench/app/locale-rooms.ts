@@ -20,7 +20,6 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const roomMessages = {
-  You: ['You', '你', '你'],
   Rooms: ['Rooms', '房间', '房間'],
   'More navigation': ['Show more', '更多', '更多'],
   'Less navigation': ['Show less', '收起', '收合'],

@@ -1014,6 +1014,7 @@ export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'zh-CN'
   | 'zh-TW';
 export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
+export type SettingsAssistantPreferencesOutput_ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
  */
@@ -2446,6 +2447,7 @@ export interface ServiceMethods {
         defaultCompactionPrompt: string;
         revision: number;
         displayName: string;
+        avatar: SettingsAssistantPreferencesOutput_ProfileAvatar | null;
         workspaceInstructions: boolean;
         defaultSandboxMode: SettingsAssistantPreferencesOutput_Mode;
         shell: SettingsAssistantPreferencesOutput_ShellPolicy;
