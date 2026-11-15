@@ -29,8 +29,9 @@ mod journal;
 pub(in crate::root_store) mod load;
 mod objects;
 pub mod portable;
+pub(in crate::root_store) mod repository;
 pub(crate) mod restore;
-mod workspace;
+pub(crate) mod workspace;
 use objects::Objects;
 
 #[derive(Clone)]
@@ -190,9 +191,8 @@ impl HistoryCheckpoints {
                     return Err(error);
                 }
                 boundary("prepared");
-                // capture already validated these immutable objects; recovery
-                // independently verifies retained bytes before resuming.
-                let value = journal::commit(&log, request.clone(), manifest).await?;
+                // The repository verifies the retained object closure before publication.
+                let value = repository::commit(&log, &objects, &request, manifest).await?;
                 boundary("published");
                 Ok(finish_cleanup(&log, &objects, &request, value).await)
             },
@@ -205,11 +205,27 @@ impl HistoryCheckpoints {
         publication: PublicationRequest,
     ) -> Result<Option<Publication>, StoreError> {
         let request = self.request(publication)?;
-        journal::read(&self.session.scoped().await?, request).await
+        let log = self.session.scoped().await?;
+        let Some(mut value) = journal::read(&log, request.clone()).await? else {
+            return Ok(None);
+        };
+        if let PublicationState::Prepared { manifest } = &value.state
+            && let Some(receipt) = repository::receipt(&log, &request, manifest.clone()).await?
+        {
+            value.state = match receipt {
+                crate::checkpoints::repository::CommitReceipt::Published { head } => {
+                    PublicationState::Published { head }
+                }
+                crate::checkpoints::repository::CommitReceipt::Conflict { actual } => {
+                    PublicationState::Conflict { actual }
+                }
+            };
+        }
+        Ok(Some(value))
     }
 
     pub async fn read_head(&self) -> Result<Option<Head>, StoreError> {
-        journal::read_head(
+        repository::head(
             &self.session.scoped().await?,
             self.scope.clone(),
             self.session.id().into(),
@@ -242,7 +258,7 @@ async fn checkout(
     let (head, manifest) = selected_checkpoint(log, objects, &scope, &session, revision).await?;
     let snapshot = objects.read(&manifest.history.object)?;
     // Confirm the retained revision again after expensive verification.
-    if journal::read_head(log, scope, session).await?.as_ref() != Some(&head) {
+    if repository::head(log, scope, session).await?.as_ref() != Some(&head) {
         return Err(invalid("history checkpoint revision unavailable"));
     }
     Ok(Checkout {
@@ -259,7 +275,7 @@ async fn selected_checkpoint(
     session: &str,
     revision: Revision,
 ) -> Result<(Head, Manifest), StoreError> {
-    let head = journal::read_head(log, scope.clone(), session.to_owned())
+    let head = repository::head(log, scope.clone(), session.to_owned())
         .await?
         .filter(|head| head.revision == revision)
         .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
@@ -329,32 +345,13 @@ fn capture(
     objects.publish_manifest(request, &manifest)
 }
 
-fn verify(objects: &Objects, request: &Request, reference: &ObjectRef) -> Result<(), StoreError> {
-    let manifest = objects.manifest(reference)?;
-    if manifest.root_id != objects.root_id()
-        || manifest.scope != request.scope
-        || manifest.session_id != request.session_id
-        || manifest.history != request.publication.history
-    {
-        return Err(invalid("checkpoint manifest origin or history differs"));
-    }
-    objects.read(&manifest.history.object)?;
-    if let Some(workspace) = manifest.workspace() {
-        workspace::verify(objects, workspace)?;
-    }
-    Ok(())
-}
-
 async fn resume(
     log: &EventLog,
     objects: &Objects,
     request: &Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
-    match verify(objects, request, &manifest) {
-        Ok(()) => journal::commit(log, request.clone(), manifest).await,
-        Err(error) => journal::unavailable(log, request.clone(), manifest, error.to_string()).await,
-    }
+    repository::commit(log, objects, request, manifest).await
 }
 
 async fn finish_cleanup(
@@ -447,6 +444,7 @@ where
     Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
 {
     let root = log.owned_root()?;
+    let storage = log.checkpoint_storage.clone();
     gates.start_work()?;
     let custody = Arc::new(log);
     let log = custody.scoped(custody.clone());
@@ -465,7 +463,10 @@ where
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                let objects = open(root)?;
+                let mut objects = open(root)?;
+                if let Some(storage) = storage {
+                    objects.storage = storage.objects;
+                }
                 runtime.block_on(action(log, objects))
             })();
             work.complete = true;

@@ -39,5 +39,31 @@ Agent 事实、历史、索引和内容所有权由
   [`migration`](src/migration.rs) 校验组合后的迁移账本。
   产品在打开存储时组合 Root 与领域 migrations。
 
+## Checkpoint 仓库装配
+
+[`checkpoints::repository`](src/checkpoints/repository.rs) 将不可变对象与逻辑 Session
+身份、Head CAS、原提交回执分开。Session/agent 绑定持久保存，Root/scope/native Session
+保留为来源信息。缺省 expected revision 表示仅当 Head 不存在时创建；冲突不自动改用
+新 Head 重试。精确读取验证对象字节与 Workspace 依赖闭包，并拒绝验证期间已移动的
+Head；历史格式与语义校验仍由原生历史所属领域负责。
+
+现有发布与读取路径实际使用这些接口。`RootStore::open` 默认使用本地适配和原 Head 表。
+可信装配层可以在打开 Host 前，通过 `RootStore::open_with_checkpoint_storage` 注入
+`Storage`。`FileRepository::open` 提供独立于 worker Root 的持久参考实现：SQLite
+仲裁独立进程，对象文件保存不可变内容。初始化需放在物理 I/O 线程；首版支持 Unix
+本地文件系统，不提供网络文件系统或分布式数据库租约保证。
+
+共享模式的 Root 只保留捕获与恢复记录，不写本地 Head。仓库同时提交 Head 与原回执；
+响应丢失时查询原操作，不重新捕获。对象读取的临时故障保留已准备发布的可恢复状态；
+缺失或非法材料不能推进 Head。读取 Head 不会认领新的来源 scope。
+启动必须装配同一仓库、对象库和 agent 绑定。
+已有本地发布需要显式迁移才能切换 authority。参考仓库目录必须私有且位于捕获的
+Workspace 之外。对象尚无 GC；流式发布先生成独立临时副本，再确认持久化。
+
+`Storage::checkout_exact` 可在源 Root 消失后读取逻辑 Session，但不授予执行权。
+共享加载/恢复、Activation 租约、跨 Root 接管和具体云端传输仍是后续工作。
+本地恢复及归档导出保持原行为，当前 operator CLI 不提供外部仓库配置入口。
+checkpoint 未增加凭据、运行镜像或完整辅助 Agent 状态。
+
 使用 `cargo nextest run -p maka-event-log` 运行已注册的测试。
-`root_lease` 和 `checkpoint_restore` 独立集成测试二进制将跨进程检查与其他测试的 Root 租约隔离。
+`root_lease`、`checkpoint_restore` 和 `checkpoint_repository` 独立集成测试二进制将跨进程检查与其他测试的 Root 租约隔离。

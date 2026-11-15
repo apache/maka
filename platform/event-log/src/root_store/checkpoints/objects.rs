@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::checkpoints::repository::{ImmutableObjectStore, files::FileObjects};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -29,6 +30,7 @@ use std::{
 pub(super) struct Objects {
     pub(super) owner: Arc<root::RootOwner>,
     directory: PathBuf,
+    pub(super) storage: Arc<dyn ImmutableObjectStore>,
 }
 impl Objects {
     pub(super) fn open(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
@@ -45,7 +47,15 @@ impl Objects {
         }
         File::open(&directory)?.sync_all()?;
         File::open(owner.canonical_path())?.sync_all()?;
-        Ok(Self { owner, directory })
+        let storage = Arc::new(FileObjects::existing(
+            directory.join("objects"),
+            owner.root_id().into(),
+        )?);
+        Ok(Self {
+            owner,
+            directory,
+            storage,
+        })
     }
     pub(super) fn existing(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
         if !cfg!(unix) {
@@ -54,7 +64,15 @@ impl Objects {
             ));
         }
         let directory = owner.canonical_path().join("history-checkpoints");
-        let objects = Self { owner, directory };
+        let storage = Arc::new(FileObjects::existing(
+            directory.join("objects"),
+            owner.root_id().into(),
+        )?);
+        let objects = Self {
+            owner,
+            directory,
+            storage,
+        };
         objects.validate()?;
         Ok(objects)
     }
@@ -88,68 +106,34 @@ impl Objects {
         }
         Ok(options.open(self.staging(request, kind)?)?)
     }
-    fn path(&self, reference: &ObjectRef) -> Result<PathBuf, StoreError> {
-        if !crate::checkpoints::valid_digest(&reference.digest) {
-            return Err(invalid("invalid checkpoint object digest"));
-        }
-        self.validate()?;
-        Ok(self.directory.join("objects").join(&reference.digest))
-    }
     pub(super) fn has(&self, reference: &ObjectRef) -> Result<bool, StoreError> {
-        let path = self.path(reference)?;
-        match open_regular(&path) {
-            Ok(mut file) => {
-                if measure(&mut file)? != *reference {
-                    return Err(invalid("checkpoint object digest or size differs"));
-                }
-                Ok(true)
-            }
+        self.validate()?;
+        match self.storage.read(reference) {
+            Ok(_) => Ok(true),
             Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
     }
     pub(super) fn link_staged(&self, path: &Path, reference: &ObjectRef) -> Result<(), StoreError> {
-        let destination = self.path(reference)?;
-        match fs::hard_link(path, destination) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                self.read(reference)?;
-            }
-            Err(error) => return Err(error.into()),
+        if self.publish(path)? != *reference {
+            return Err(invalid("staged checkpoint object differs"));
         }
-        self.owner.validate_current()?;
         Ok(())
     }
     pub(super) fn sync_objects(&self) -> Result<(), StoreError> {
-        self.validate()?;
-        File::open(self.directory.join("objects"))?.sync_all()?;
-        self.owner.validate_current()?;
-        Ok(())
+        // The object port acknowledges each object only after durable publication.
+        self.validate()
     }
     pub(super) fn read(&self, reference: &ObjectRef) -> Result<File, StoreError> {
-        let path = self.path(reference)?;
-        let mut file = open_regular(&path)?;
-        if measure(&mut file)? != *reference {
-            return Err(invalid("checkpoint object digest or size differs"));
-        }
-        use std::io::{Seek, SeekFrom};
-        file.seek(SeekFrom::Start(0))?;
+        self.validate()?;
+        let file = self.storage.read(reference)?;
+        self.owner.validate_current()?;
         Ok(file)
     }
     pub(super) fn publish(&self, path: &Path) -> Result<ObjectRef, StoreError> {
         self.validate()?;
         let mut source = open_regular(path)?;
-        source.sync_all()?;
-        let reference = measure(&mut source)?;
-        let destination = self.path(&reference)?;
-        match fs::hard_link(path, destination) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                self.read(&reference)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        File::open(self.directory.join("objects"))?.sync_all()?;
+        let reference = self.storage.put(&mut source)?;
         self.owner.validate_current()?;
         Ok(reference)
     }

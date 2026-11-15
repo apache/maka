@@ -50,18 +50,6 @@ fn receipt(db: &Connection, request: &Request) -> Result<Option<Publication>, St
     .transpose()
 }
 
-fn head(db: &Connection, session: &str) -> Result<Option<Head>, StoreError> {
-    let json: Option<String> = db
-        .query_row(
-            "SELECT head_json FROM history_checkpoint_heads WHERE session_id=?",
-            rusqlite::params![session],
-            |row| row.get(0),
-        )
-        .optional()?;
-    json.map(|json| serde_json::from_str(&json).map_err(Into::into))
-        .transpose()
-}
-
 fn write(db: &Connection, request: &Request, value: &Publication) -> Result<(), StoreError> {
     let changed = db.execute(
         "UPDATE history_checkpoint_publications SET publication_json=? WHERE request_key=?",
@@ -125,33 +113,6 @@ pub(super) async fn original(
         .await
 }
 
-pub(super) async fn read_head(
-    log: &EventLog,
-    scope: Scope,
-    session: String,
-) -> Result<Option<Head>, StoreError> {
-    log.connection
-        .read(move |db| {
-            let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
-            let bound: Option<String> = tx
-                .query_row(
-                    "SELECT scope_json FROM history_checkpoint_bindings WHERE session_id=?",
-                    rusqlite::params![&session],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(bound) = bound
-                && serde_json::from_str::<Scope>(&bound)? != scope
-            {
-                return Err(invalid("history checkpoint binding differs"));
-            }
-            let value = head(&tx, &session)?;
-            tx.rollback()?;
-            Ok(value)
-        })
-        .await
-}
-
 /// The claim linearizes retries. Only the caller that inserted it may capture.
 pub(super) async fn claim(
     log: &EventLog,
@@ -193,36 +154,39 @@ pub(super) async fn prepare(
         .await
 }
 
-/// Head and domain receipt share this transaction. Host operation settlement is separate.
-pub(super) async fn commit(
+/// Cache the authoritative receipt in the local capture journal; never update a second Head.
+pub(super) async fn record_commit(
     log: &EventLog,
     request: Request,
     manifest: ObjectRef,
+    authoritative: crate::checkpoints::repository::CommitReceipt,
 ) -> Result<Publication, StoreError> {
-    log.connection.run(move |db| {
-        let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
-        let mut value = receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
-        match &value.state {
-            PublicationState::Published { .. } | PublicationState::Conflict { .. } => {
-                tx.rollback()?;
-                return Ok(value);
+    log.connection
+        .run(move |db| {
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+            let mut value =
+                receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
+            match &value.state {
+                PublicationState::Published { .. } | PublicationState::Conflict { .. } => {
+                    tx.rollback()?;
+                    return Ok(value);
+                }
+                PublicationState::Prepared { manifest: original } if original == &manifest => {}
+                _ => return Err(invalid("checkpoint prepared material differs")),
             }
-            PublicationState::Prepared { manifest: original } if original == &manifest => {}
-            _ => return Err(invalid("checkpoint prepared material differs")),
-        }
-        let actual = head(&tx, &request.session_id)?.map(|head| head.revision);
-        if actual != request.publication.expected_revision {
-            value.state = PublicationState::Conflict { actual };
-        } else {
-            let head = Head { revision: Revision(uuid::Uuid::new_v4()), manifest };
-            tx.execute("INSERT INTO history_checkpoint_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json", rusqlite::params![&request.session_id, serde_json::to_string(&head)?])?;
-            value.state = PublicationState::Published { head };
-            boundary("head_written");
-        }
-        write(&tx, &request, &value)?;
-        tx.commit().map_err(StoreError::CommitUnknown)?;
-        Ok(value)
-    }).await
+            value.state = match authoritative {
+                crate::checkpoints::repository::CommitReceipt::Published { head } => {
+                    PublicationState::Published { head }
+                }
+                crate::checkpoints::repository::CommitReceipt::Conflict { actual } => {
+                    PublicationState::Conflict { actual }
+                }
+            };
+            write(&tx, &request, &value)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            Ok(value)
+        })
+        .await
 }
 
 pub(super) async fn interrupt(log: &EventLog, request: Request) -> Result<(), StoreError> {

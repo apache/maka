@@ -38,6 +38,11 @@ pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
         description: "deferred content release",
         sql: include_str!("../migrations/0036_pending_content_release.sql"),
     },
+    crate::migration::Migration {
+        version: 40,
+        description: "checkpoint repository",
+        sql: include_str!("../migrations/0040_checkpoint_repository.sql"),
+    },
 ];
 
 pub(crate) fn initialize_connection(

@@ -206,6 +206,11 @@ pub(super) fn capture(
     if source_path.starts_with(root_path) || root_path.starts_with(&source_path) {
         return Err(invalid("checkpoint workspace overlaps state root"));
     }
+    if let Some(objects) = objects.storage.local_directory()
+        && (source_path.starts_with(objects) || objects.starts_with(&source_path))
+    {
+        return Err(invalid("checkpoint workspace overlaps its object store"));
+    }
     validate_alias(dir, &source_path)?;
     let before_root = stamp(&dir.dir_metadata()?)?;
     let before = scan(dir, &source_path)?;
@@ -357,7 +362,7 @@ pub(super) fn inventory(
     read_inventory(objects.read(&snapshot.inventory)?)
 }
 
-pub(super) fn read_inventory(source: impl Read) -> Result<Vec<WorkspaceEntry>, StoreError> {
+pub(crate) fn read_inventory(source: impl Read) -> Result<Vec<WorkspaceEntry>, StoreError> {
     let inventory: Inventory = serde_json::from_reader(source)?;
     let mut paths = BTreeSet::new();
     let mut directories = BTreeSet::new();

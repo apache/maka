@@ -43,6 +43,42 @@ content ownership live in [`maka-agent-state`](../../plugins/agent/state).
   [`migration`](src/migration.rs) validates the composed migration ledger.
   Products compose Root and domain migrations when opening the store.
 
+## Checkpoint repository assembly
+
+[`checkpoints::repository`](src/checkpoints/repository.rs) separates immutable
+object storage from logical Session identity, Head CAS and original commit
+receipts. A logical Session/agent binding is durable; Root/scope/native Session
+remain source provenance. A missing expected revision means create-if-absent;
+conflicts never retry against a newer Head. Exact checkout verifies all
+object bytes and Workspace closure, and rejects a Head that moves during
+verification. The canonical history owner remains responsible for its format
+and semantic validation.
+
+The existing publisher and reads use these ports. `RootStore::open` keeps the
+local adapter and existing Head table. Trusted bootstrap can instead pass a
+`Storage` pair to `RootStore::open_with_checkpoint_storage` before opening a
+Host. `FileRepository::open` supplies a durable reference implementation outside
+worker Roots: SQLite arbitrates independent processes and files hold immutable
+objects. Initialize this blocking adapter on a physical I/O lane. It supports
+Unix local filesystems, not network-filesystem or distributed-database leases.
+
+A shared Root keeps capture/recovery records but no local Head. The repository
+commits Head and its receipt together; a lost response is resolved by querying
+the original operation, without recapture. Transient object-read failures leave
+prepared publications recoverable; missing or invalid material cannot advance
+Head. Head lookup does not claim a new source scope. Startup requires the same repository,
+object-store and agent binding. Existing local publications require an explicit
+migration before switching authorities. The reference adapter's directory must
+be private and outside the captured Workspace. Objects are retained without GC;
+streaming publication uses an independent temporary copy before durable storage.
+
+`Storage::checkout_exact` can read a logical Session after its source Root is
+gone. It grants no execution authority. Shared loading/restore, activation leases,
+cross-Root handoff and concrete cloud transports are separate follow-ups. Local
+restore and portable export retain their existing behavior; the operator CLI
+is not an external-repository configuration surface. Credentials, runtime images
+and full auxiliary Agent state are not added to checkpoint payloads.
+
 Run `cargo nextest run -p maka-event-log` for the registered tests. The
-`root_lease` and `checkpoint_restore` integration binaries isolate their
-process-spawning checks from other tests' Root leases.
+`root_lease`, `checkpoint_restore` and `checkpoint_repository` integration
+binaries isolate their process-spawning checks from other tests' Root leases.

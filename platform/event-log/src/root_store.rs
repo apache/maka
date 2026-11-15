@@ -155,16 +155,39 @@ impl RootStore {
         owner: Arc<root::RootOwner>,
         catalog: &[crate::migration::Migration],
     ) -> Result<Self, StoreError> {
+        Self::open_with_checkpoint_storage(owner, catalog, None).await
+    }
+
+    /// Trusted composition supplies external checkpoint authority before recovery.
+    /// This does not enable cross-Root Session execution or grant an Activation.
+    pub async fn open_with_checkpoint_storage(
+        owner: Arc<root::RootOwner>,
+        catalog: &[crate::migration::Migration],
+        storage: Option<crate::checkpoints::repository::Storage>,
+    ) -> Result<Self, StoreError> {
         owner.validate_current()?;
-        let log = Arc::new(
-            EventLog::open_owned(
-                &owner.canonical_path().join(root::ROOT_DATABASE),
-                Some(owner.clone()),
-                OpenPurpose::Execution,
-                catalog,
-            )
-            .await?,
-        );
+        let mut log = EventLog::open_owned(
+            &owner.canonical_path().join(root::ROOT_DATABASE),
+            Some(owner.clone()),
+            OpenPurpose::Execution,
+            catalog,
+        )
+        .await?;
+        log.checkpoint_agent =
+            match checkpoints::repository::configure(&log, storage.as_ref()).await {
+                Ok(agent) => agent,
+                Err(cause) => {
+                    return match log.shutdown().await {
+                        Ok(()) => Err(cause),
+                        Err(cleanup) => Err(StoreError::StartupCleanupFailed {
+                            cause: Box::new(cause),
+                            cleanup: Box::new(cleanup),
+                        }),
+                    };
+                }
+            };
+        log.checkpoint_storage = storage;
+        let log = Arc::new(log);
         let mut store = Self {
             log,
             closed: Arc::new(AtomicBool::new(false)),

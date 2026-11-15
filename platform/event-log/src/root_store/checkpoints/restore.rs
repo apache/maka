@@ -154,6 +154,7 @@ impl HistoryCheckpoints {
             return Err(invalid("foreign Root data writer"));
         }
         fence.validate_owner(&owner.owned_root()?)?;
+        self.require_local_restore()?;
         let request = self.restore_identity(operation);
         request.key()?;
         let log = self
@@ -274,6 +275,7 @@ impl HistoryCheckpoints {
         let owner = self.session.owner()?.owned_root()?;
         parent.validate(&owner)?;
         let parent = parent.clone();
+        self.require_local_restore()?;
         let request = self.restore_identity(operation);
         request.key()?;
         let physical_fence = Arc::new(std::sync::OnceLock::<WorkspaceFence>::new());
@@ -357,6 +359,7 @@ impl HistoryCheckpoints {
         F: FnMut(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
         fence.validate_owner(&self.session.owner()?.owned_root()?)?;
+        self.require_local_restore()?;
         let request = self.restore_identity(operation);
         let log = self
             .session

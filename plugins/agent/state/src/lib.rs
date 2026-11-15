@@ -232,3 +232,36 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         sql: include_str!("../migrations/0041_history_tool_metadata.sql"),
     },
 ];
+
+#[cfg(test)]
+mod migration_tests {
+    #[test]
+    fn composed_product_migrations_initialize_upgrade_and_reopen() {
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(super::MIGRATIONS)
+            .copied()
+            .collect();
+        for upgrade in [false, true] {
+            let db = rusqlite::Connection::open_in_memory().unwrap();
+            if upgrade {
+                let previous: Vec<_> = catalog
+                    .iter()
+                    .filter(|m| m.description != "checkpoint repository")
+                    .copied()
+                    .collect();
+                maka_event_log::migration::run(&db, &previous).unwrap();
+            }
+            maka_event_log::migration::run(&db, &catalog).unwrap();
+            maka_event_log::migration::run(&db, &catalog).unwrap();
+            let identities: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM checkpoint_repository_sessions",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(identities, 0);
+        }
+    }
+}
