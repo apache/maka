@@ -495,9 +495,20 @@ async fn warm_and_revalidation_keep_requests_non_blocking_until_expiry() {
         "3000"
     );
     f.provider.release.add_permits(1);
-    while f.proof().await.compatibility.unwrap().comp_hash != "4000" {
-        tokio::task::yield_now().await;
-    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f
+            .proof()
+            .await
+            .compatibility
+            .as_ref()
+            .map(|value| value.comp_hash.as_str())
+            != Some("4000")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background revalidation must publish updated proof");
     assert_eq!(
         f.credentials
             .inventory
@@ -646,6 +657,87 @@ async fn logical_step_captures_provenance_and_failure_keeps_same_model_usable() 
             .unwrap()
             .comp_hash,
         "3000"
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn observe_waits_when_sqlite_commit_leads_in_memory_ready_publication() {
+    use maka_agent_engine::ModelSource;
+    let f = Arc::new(Fixture::new().await);
+    f.set_clock(1_000);
+    f.provider.release.add_permits(1);
+    f.refresh().await;
+
+    f.set_clock(1_000 + REFRESH_AT);
+    let ModelFetchPreparation::Ready(ticket) = f
+        .store
+        .prepare_model_fetch(&f.binding.connection_id)
+        .await
+        .unwrap()
+    else {
+        panic!("prepare fetch")
+    };
+    let mut updated = ModelInfo::new("model-a");
+    updated.codex_compaction_hash = Some("4000".into());
+    updated.context_window = Some(200_000);
+    updated.max_output_tokens = Some(128_000);
+    let ConnectionModelFetchResult::Committed { connection, .. } = ticket
+        .complete(vec![updated], 1_000 + REFRESH_AT)
+        .await
+        .unwrap()
+    else {
+        panic!("commit fetch")
+    };
+
+    let material = f
+        .store
+        .observe_model(f.binding.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let scope = identity(&material).unwrap();
+    let (sender, receiver) = watch::channel(false);
+    {
+        let mut state = f.credentials.inventory.state.lock().unwrap();
+        let entry = state.entries.get_mut(&f.binding.connection_id).unwrap();
+        entry.flight = Some(Flight {
+            id: 99,
+            identity: scope.clone(),
+            result: receiver,
+        });
+    }
+
+    let source = source_fixture(&f).await;
+    let capturing = tokio::spawn(async move { source.capture().await.unwrap() });
+    tokio::task::yield_now().await;
+    assert!(!capturing.is_finished());
+
+    {
+        let mut state = f.credentials.inventory.state.lock().unwrap();
+        let entry = state.entries.get_mut(&f.binding.connection_id).unwrap();
+        entry.flight = None;
+        entry.previous_ready = entry.ready.take();
+        entry.ready = Some(Ready {
+            identity: scope,
+            connection_revision: connection.revision,
+            fetched_at: 1_000 + REFRESH_AT,
+            hashes: BTreeMap::from([("model-a".into(), "4000".into())]),
+        });
+    }
+    sender.send_replace(true);
+
+    let prepared = capturing.await.unwrap();
+    assert_eq!(
+        prepared
+            .context
+            .unwrap()
+            .codex
+            .unwrap()
+            .compatibility
+            .unwrap()
+            .comp_hash,
+        "4000"
     );
     f.close().await;
 }

@@ -286,6 +286,35 @@ impl Authority {
         (!usable).then_some((receiver, false))
     }
 
+    pub async fn settle(&self, material: &ConnectionObservation, model: &str) {
+        let receiver = {
+            let Ok(scope) = identity(material) else {
+                return;
+            };
+            let wall = self.now();
+            let state = self.state.lock().unwrap();
+            let Some(entry) = state.entries.get(&material.connection.connection_id) else {
+                return;
+            };
+            if matching_compatibility(entry, &scope, material, model, wall).is_some() {
+                None
+            } else {
+                entry
+                    .flight
+                    .as_ref()
+                    .filter(|flight| flight.identity == scope && !*flight.result.borrow())
+                    .map(|flight| flight.result.clone())
+            }
+        };
+        if let Some(mut receiver) = receiver {
+            while !*receiver.borrow() {
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
     pub fn provenance(
         &self,
         material: &ConnectionObservation,
@@ -296,35 +325,11 @@ impl Authority {
                 .ok()
                 .flatten()
         });
-        let compatibility = identity(material).ok().and_then(|identity| {
-            let time = self.now()?;
+        let compatibility = identity(material).ok().and_then(|scope| {
+            let wall = self.now();
             let state = self.state.lock().unwrap();
             let entry = state.entries.get(&material.connection.connection_id)?;
-            let ready = [entry.ready.as_ref(), entry.previous_ready.as_ref()]
-                .into_iter()
-                .flatten()
-                .find(|ready| {
-                    ready.identity == identity
-                        && material.connection.revision >= ready.connection_revision
-                        && within_ttl(ready.fetched_at, Some(time), MAX_AGE)
-                        && material.connection.models_fetched_at == Some(ready.fetched_at)
-                })?;
-            let hash = ready.hashes.get(model)?;
-            if material
-                .connection
-                .models
-                .iter()
-                .find(|row| row.id == model)?
-                .codex_compaction_hash
-                .as_ref()
-                != Some(hash)
-            {
-                return None;
-            }
-            Some(CodexCompatibility {
-                comp_hash: hash.clone(),
-                fetched_at: ready.fetched_at,
-            })
+            matching_compatibility(entry, &scope, material, model, wall)
         });
         CodexRequestProvenance {
             connection_id: material.connection.connection_id.clone(),
@@ -344,6 +349,36 @@ impl Authority {
 
 fn within_ttl(fetched_at: u64, wall: Option<u64>, limit: u64) -> bool {
     wall.is_some_and(|now| fetched_at <= now && now - fetched_at < limit)
+}
+
+fn matching_compatibility(
+    entry: &Entry,
+    identity: &str,
+    material: &ConnectionObservation,
+    model: &str,
+    wall: Option<u64>,
+) -> Option<CodexCompatibility> {
+    let expected_hash = material
+        .connection
+        .models
+        .iter()
+        .find(|row| row.id == model)?
+        .codex_compaction_hash
+        .as_ref()?;
+    let ready = [entry.ready.as_ref(), entry.previous_ready.as_ref()]
+        .into_iter()
+        .flatten()
+        .find(|ready| {
+            ready.identity == identity
+                && material.connection.revision >= ready.connection_revision
+                && within_ttl(ready.fetched_at, wall, MAX_AGE)
+                && material.connection.models_fetched_at == Some(ready.fetched_at)
+                && ready.hashes.get(model) == Some(expected_hash)
+        })?;
+    Some(CodexCompatibility {
+        comp_hash: expected_hash.clone(),
+        fetched_at: ready.fetched_at,
+    })
 }
 
 fn valid_ready(

@@ -525,11 +525,17 @@ impl Source {
                     &material,
                 )
                 .await;
-            self.configuration
+            let observed = self
+                .configuration
                 .observe_model(self.accepted.binding.clone())
                 .await
                 .map_err(|_| unavailable())?
-                .ok_or_else(unavailable)?
+                .ok_or_else(unavailable)?;
+            self.credentials
+                .inventory
+                .settle(&observed, &self.accepted.binding.model)
+                .await;
+            observed
         } else {
             material
         };
