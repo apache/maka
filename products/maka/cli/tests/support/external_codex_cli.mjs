@@ -212,6 +212,7 @@ async function hostEffect() {
     !names.includes('exec') ||
     !names.includes('wait') ||
     !names.includes('cua_repl') ||
+    names.includes('ReadImage') ||
     names.includes('Shell') ||
     names.includes('SendUser') ||
     names.includes('sleep')
@@ -335,6 +336,19 @@ async function acp(id, method, params) {
     }
     if (job.label === 'ACP-followup') {
       await readArchivedResult();
+      const png =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3XcAAAAASUVORK5CYII=';
+      await writeFile('read-fixture.png', Buffer.from(png, 'base64'));
+      const image = await callTool('exec', {
+        code: "image(await tools.Read({ path: 'read-fixture.png' }));",
+        yield_time_ms: 10000,
+      });
+      if (
+        !image.content.some(
+          (part) => part.type === 'image' && part.mimeType === 'image/png' && part.data === png,
+        )
+      )
+        throw Error('Read did not return the original PNG as MCP image content');
       await event('session/update', {
         sessionId: thread,
         update: {

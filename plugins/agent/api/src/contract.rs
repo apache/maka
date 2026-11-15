@@ -192,6 +192,7 @@ pub enum ToolInput {
 #[schemars(rename = "AgentToolResult")]
 pub enum ToolResult {
     Json,
+    /// A subscription that streams image data and can return JSON at completion.
     Image,
     /// Session-owned Computer REPL output, retained with its original receipt.
     Computer,

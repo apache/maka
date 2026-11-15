@@ -19,14 +19,14 @@
 
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const IMPLEMENTATION: &str = "maka.workspace.files";
 pub const EXPORT: &str = "files";
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "WorkspaceFileResult")]
 pub enum FileResult {
@@ -38,10 +38,19 @@ pub enum FileResult {
         message: String,
     },
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "WorkspaceReadFrame")]
+pub enum ReadFrame {
+    Image(maka_agent_api::contract::ImageFrame),
+    File(FileResult),
+}
+
 pub fn method(name: &str) -> Option<(&'static str, bool)> {
     use maka_fs_tools::*;
     Some(match name {
-        "readText" | "readImage" => (READ_NAME, false),
+        "read" => (READ_NAME, false),
         "write" => (WRITE_NAME, true),
         "edit" => (EDIT_NAME, true),
         "applyPatch" => (PATCH_NAME, true),
@@ -50,8 +59,7 @@ pub fn method(name: &str) -> Option<(&'static str, bool)> {
 }
 pub fn contract() -> Contract {
     let mut methods: BTreeMap<String, Method> = [
-        ("readText", maka_fs_tools::read_schema()),
-        ("readImage", maka_fs_tools::read_schema()),
+        ("read", maka_fs_tools::read_schema()),
         ("write", maka_fs_tools::write_schema()),
         ("edit", maka_fs_tools::edit_schema()),
         ("applyPatch", maka_fs_tools::patch_schema()),
@@ -62,19 +70,18 @@ pub fn contract() -> Contract {
             name.into(),
             Method {
                 progress: None,
-                mode: if name == "readImage" {
+                mode: if name == "read" {
                     MethodMode::Subscription
-                } else if method(name).expect("known method").1 {
-                    MethodMode::Mutation
                 } else {
-                    MethodMode::Query
+                    MethodMode::Mutation
                 },
                 input: input.into(),
-                output: if name == "readImage" {
-                    schemars::schema_for!(maka_agent_api::contract::ImageFrame).into()
+                output: if name == "read" {
+                    schemars::schema_for!(ReadFrame)
                 } else {
-                    schemars::schema_for!(FileResult).into()
-                },
+                    schemars::schema_for!(FileResult)
+                }
+                .into(),
                 resources: BTreeMap::new(),
             },
         )

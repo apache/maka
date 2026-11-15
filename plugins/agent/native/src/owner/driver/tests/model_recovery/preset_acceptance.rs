@@ -369,14 +369,13 @@ async fn tool_round(
             );
         }
     };
-    let output = request["messages"]
-        .as_array()
-        .unwrap()
+    let messages = request["messages"].as_array().unwrap();
+    let last_tool = messages
         .iter()
-        .rev()
-        .find(|message| message["role"] == "tool")
-        .ok_or("tool reply missing")?["content"]
-        .to_string();
+        .rposition(|message| message["role"] == "tool")
+        .ok_or("tool reply missing")?;
+    // Chat Completions can carry a tool image in the following user message.
+    let output = serde_json::to_string(&messages[last_tool..])?;
     reply
         .send(completion(
             json!({"role":"assistant","content":"Done."}),
@@ -461,7 +460,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
         let base = rig.directory.path().to_path_buf();
         let boot = bootstrap_with(&base,provider.url.clone(),|config| {
             config["tools"] = json!([
-                {"name":"Read","description":"Read local file","target":{"kind":"import","name":"files"},"method":"readText","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"Read","description":"Read local file","target":{"kind":"import","name":"files"},"method":"read","nestable":true,"result":"image","confirmation":"preapproved"},
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},"method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
@@ -469,6 +468,8 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
             config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")},"preapproved":true}]);
         }).await?;
         std::fs::write(base.join("workspace/input.txt"),"local-acceptance-marker")?;
+        image::RgbImage::from_pixel(17, 13, image::Rgb([19, 23, 31]))
+            .save(base.join("workspace/input.png"))?;
         attach(&mut rig,&boot).await?;
         let client = rig.client.as_ref().unwrap();
         let web = call(client,"web","snapshot",json!({})).await?;
@@ -479,7 +480,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 "results":{"list":"/results","url":"/url","title":null,"snippet":null}
             }}
         }})).await?["kind"],"updated");
-        let model = model(client,&provider.url,code).await?;
+        let model = model_options(client,&provider.url,code,json!({"vision":true})).await?;
         let preset = preset(client,&model,"Keep the reviewer role.").await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
@@ -513,6 +514,13 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 }
                 let read = tool_round(&rig,&mut provider,id,code,"Read",json!({"path":"input.txt"})).await?;
                 assert!(read.contains("local-acceptance-marker"),"{read}");
+                let (image_tool, image_input) = if code {
+                    ("exec", json!({"code":"image(await tools.Read({ path: 'input.png' }));", "yield_time_ms":30000}))
+                } else {
+                    ("Read", json!({"path":"input.png"}))
+                };
+                let read = tool_round(&rig,&mut provider,id,false,image_tool,image_input).await?;
+                assert!(read.contains("data:image/png;base64,"),"{read}");
                 let write = tool_round(&rig,&mut provider,id,code,"Write",json!({"path":"output.txt","content":if allowed {"allowed"} else {"forbidden"}})).await?;
                 let before_web = web_calls.load(Ordering::SeqCst);
                 let web = tool_round(&rig,&mut provider,id,code,"WebFetch",json!({"url":format!("{address}/page")})).await?;

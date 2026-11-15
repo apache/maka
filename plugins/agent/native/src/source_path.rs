@@ -65,7 +65,7 @@ pub(crate) fn file_path(source: &HistorySource, workspace: &str) -> Option<Strin
     let call = tool.call.as_ref()?;
     let key = call.presentation.as_deref()?;
     let patch = match key {
-        "maka.workspace.Files@1/readText"
+        "maka.workspace.Files@1/read"
         | "maka.workspace.Files@1/write"
         | "maka.workspace.Files@1/edit" => false,
         "maka.workspace.Files@1/applyPatch" => true,
