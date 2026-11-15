@@ -34,7 +34,6 @@ import { WebSearchSettings } from '../../../products/maka/workbench/app/WebSearc
 import { createWebSearchSettings } from '../../../products/maka/workbench/app/webSearchSettingsState';
 import { PluginSettings } from '../../../products/maka/workbench/app/PluginSettings';
 import { SkillSettings } from '../../../products/maka/workbench/app/SkillSettings';
-import { ExternalAgentSettings } from '../../../products/maka/workbench/app/ExternalAgentSettings';
 import { createExternalAgentSettings } from '../../../products/maka/workbench/app/externalAgentSettingsState';
 import { McpSettings } from '../../../products/maka/workbench/app/McpSettings';
 import { createSkillSettings } from '../../../products/maka/workbench/app/skillSettingsState';
@@ -100,7 +99,29 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
   const operations = createSettingsOperations(host);
   const defaultRoute: SettingsRoute = { instance: context.instance, id: 'connections' };
-  const route = signal<SettingsRoute | null>(restored?.route ?? defaultRoute);
+  const isOwnExternalAgents = (candidate: SettingsRoute | null | undefined) =>
+    candidate?.id === 'external-agents' && sameValue(candidate.instance, context.instance);
+  const route = signal<SettingsRoute | null>(
+    restored?.route
+      ? isOwnExternalAgents(restored.route)
+        ? defaultRoute
+        : restored.route
+      : defaultRoute,
+  );
+  const restoredConnections: ModelSettingsSnapshot | undefined =
+    isOwnExternalAgents(restored?.route) && restored?.connections
+      ? {
+          ...restored.connections,
+          page: 'connections',
+          connectionQuery: '',
+          editor: null,
+          model: null,
+          credential: null,
+          discovery: 'idle',
+          confirmation: null,
+          initialModel: null,
+        }
+      : restored?.connections;
   const mounted = new Map<string, number>();
   const active = (id: string) => () => (mounted.get(id) ?? 0) > 0;
   const connections = createModelSettings(
@@ -108,7 +129,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     operations,
     active('connections'),
     undefined,
-    restored?.connections,
+    restoredConnections,
   );
   const general = createGeneralSettings(
     host,
@@ -127,7 +148,26 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     context,
     restored?.plugins,
   );
-  const externalAgents = createExternalAgentSettings(host, operations, active('external-agents'));
+  const externalAgents = createExternalAgentSettings(host, operations, active('connections'));
+  const modelsOwner: PageOwner = {
+    activate() {
+      connections.activate();
+      externalAgents.activate();
+    },
+    deactivate() {
+      connections.deactivate();
+      externalAgents.deactivate();
+    },
+    navigation: () => JSON.stringify([connections.navigation(), externalAgents.navigation()]),
+    back() {
+      if (externalAgents.confirmation()) return externalAgents.back();
+      return connections.back();
+    },
+    refresh() {
+      connections.refresh();
+      if (connections.page() === 'connections') externalAgents.refresh();
+    },
+  };
   const presets = createPresetSettings(host, operations, restored?.presets);
   const configurationWorkspace = createConfigurationWorkspace(operations);
   const skills = createSkillSettings(host, operations, configurationWorkspace);
@@ -237,7 +277,16 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
             if (!input.opened()) return;
             untracked(() => {
               if (input.page) {
-                route.set({ instance: context.instance, id: input.page });
+                if (input.page === 'external-agents') {
+                  route.set(defaultRoute);
+                  if (externalAgents.confirmation()) externalAgents.cancel(externalAgents.action());
+                  connections.leave(() => {
+                    connections.connectionQuery.set('');
+                    connections.reset();
+                  });
+                } else {
+                  route.set({ instance: context.instance, id: input.page });
+                }
                 restoreOpen = false;
               } else if (restoreOpen) restoreOpen = false;
               else {
@@ -285,15 +334,16 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         render: (props) =>
           mountPage(
             'connections',
-            connections,
+            modelsOwner,
             props,
             {
               title: () => {
+                if (externalAgents.confirmation()) return externalAgents.title();
                 const editor = connections.editor();
                 const model = connections.model();
                 switch (connections.page()) {
                   case 'connections':
-                    return tr('Connections & models');
+                    return tr('Models');
                   case 'providers':
                     return tr('Add connection');
                   case 'connection':
@@ -310,21 +360,29 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                 }
               },
               action: () =>
-                connections.page() === 'connections' && !connections.confirmation()
+                connections.page() === 'connections' &&
+                !connections.confirmation() &&
+                !externalAgents.confirmation()
                   ? {
                       label: tr('Add connection'),
                       run: connections.newConnection,
                       disabled: connections.loading(),
                     }
                   : null,
-              nested: () => connections.page() !== 'connections' || !!connections.confirmation(),
-              navigation: connections.navigation,
-              back: connections.back,
-              leave: connections.leave,
+              nested: () =>
+                connections.page() !== 'connections' ||
+                !!connections.confirmation() ||
+                !!externalAgents.confirmation(),
+              navigation: modelsOwner.navigation,
+              back: modelsOwner.back,
+              leave: (next) => {
+                if (externalAgents.confirmation()) externalAgents.cancel(externalAgents.action());
+                connections.leave(next);
+              },
               backLabel: () => tr('Back from connection settings'),
               busy: operations.busy,
             },
-            () => <ConnectionSettings owner={connections} />,
+            () => <ConnectionSettings owner={connections} externalAgents={externalAgents} />,
           ),
       },
       subagents: {
@@ -408,23 +466,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               busy: operations.busy,
             },
             () => <McpSettings owner={mcp} />,
-          ),
-      },
-      'external-agents': {
-        kind: 'settings',
-        render: (props) =>
-          mountPage(
-            'external-agents',
-            externalAgents,
-            props,
-            {
-              title: externalAgents.title,
-              nested: () => !!externalAgents.confirmation(),
-              navigation: externalAgents.navigation,
-              back: externalAgents.back,
-              busy: operations.busy,
-            },
-            () => <ExternalAgentSettings owner={externalAgents} />,
           ),
       },
       'web-search': {

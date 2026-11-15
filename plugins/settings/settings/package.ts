@@ -52,8 +52,8 @@ export default {
         connections: {
           kind: 'settings',
           title: {
-            fallback: 'Connections & models',
-            translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
+            fallback: 'Models',
+            translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
           },
         },
         subagents: {
@@ -72,13 +72,6 @@ export default {
           title: {
             fallback: 'MCP servers',
             translations: { 'zh-CN': 'MCP 服务器', 'zh-TW': 'MCP 伺服器' },
-          },
-        },
-        'external-agents': {
-          kind: 'settings',
-          title: {
-            fallback: 'External agents',
-            translations: { 'zh-CN': '外部 Agent', 'zh-TW': '外部 Agent' },
           },
         },
         'web-search': {
