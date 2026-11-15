@@ -60,7 +60,8 @@ export function completed<T>(
   if (outcome.kind === 'failed') throw new Error(outcome.message);
   return outcome.value;
 }
-const running = (entry: ResourceUpdate) => ['starting', 'running'].includes(entry.result.status);
+export const terminalRunning = (entry: ResourceUpdate) =>
+  entry.result.status === 'starting' || entry.result.status === 'running';
 const stop = (watch: Watch<unknown> | null) => {
   if (!watch) return;
   watch.closed = true;
@@ -143,7 +144,7 @@ export function createTerminals(
           let row = previous.get(entry.result.ref);
           if (row) row.value.set(entry);
           else row = { value: signal(entry) };
-          models.get(entry.result.ref)?.update(entry);
+          if (entry.result.mode === 'pty') models.get(entry.result.ref)?.update(entry);
           return row;
         }),
     );
@@ -222,12 +223,8 @@ export function createTerminals(
       }
     })();
   };
-  const open = (target: TerminalTarget) => {
-    if (!scope || !owns(target.sessionId)) return;
-    const entry = entries()
-      .find((row) => row.value().result.ref === target.ref)
-      ?.value();
-    if (!entry) return;
+  const open = (entry: ResourceUpdate) => {
+    if (!scope || !owns(entry.sessionId)) return;
     let model = models.get(entry.result.ref);
     if (!model) {
       model = createTerminal(host, entry, scope, {
@@ -299,7 +296,7 @@ export function createTerminals(
           .filter((item) => item.result.ref !== entry.result.ref),
         entry,
       ]);
-      open({ sessionId: entry.sessionId, ref: entry.result.ref });
+      open(entry);
     } catch (reason) {
       if (owns(selected) && scope === owner) error.set(reason);
     } finally {
@@ -384,6 +381,7 @@ function createTerminal(
 ) {
   const entry = signal(initial);
   const version = signal(0);
+  const focusRequested = signal(false);
   const state = signal<'idle' | 'loading' | 'live' | 'closed' | 'unavailable' | 'failed'>('idle');
   const error = signal<unknown>('');
   const control = signal<'none' | 'acquiring' | 'held' | 'refused'>('none');
@@ -402,14 +400,15 @@ function createTerminal(
   let queue: RawAction[] = [];
   let sending = false;
   const local = () => entry().ownership.kind === 'local';
-  const agentOwned = () => entry().visibility === 'model';
+  const agentOwned = () => initial.initiator === 'agent';
   const controllable = () =>
     alive &&
     active &&
     !stopping() &&
+    !agentOwned() &&
     hooks.admitted() &&
     local() &&
-    running(entry()) &&
+    terminalRunning(entry()) &&
     entry().result.mode === 'pty' &&
     state() === 'live';
   const release = () => {
@@ -438,7 +437,7 @@ function createTerminal(
     release();
   };
   const snapshot = () => {
-    if (!alive || !active || running(entry()) || retained) return;
+    if (!alive || !active || terminalRunning(entry()) || retained) return;
     const run: Watch<unknown> = { closed: false, stream: null };
     retained = run;
     grid.discardDisplay();
@@ -493,7 +492,7 @@ function createTerminal(
           if (!alive || !active || run.closed || observing !== run) return;
           if (!value) throw new UiError('The Host closed the terminal resource observation.');
           entry.set(completed(value));
-          if (state() === 'unavailable' && !running(entry())) snapshot();
+          if (state() === 'unavailable' && !terminalRunning(entry())) snapshot();
         }
       } catch (reason) {
         if (!run.closed && alive && active) {
@@ -563,7 +562,7 @@ function createTerminal(
     })();
   };
   const wantedSize = () =>
-    agentOwned() || (sentSize?.cols === size.cols && sentSize?.rows === size.rows) ? null : size;
+    sentSize?.cols === size.cols && sentSize?.rows === size.rows ? null : size;
   const pump = async () => {
     const owner = lease;
     if (sending || !owner || !owner.held || !owner.id) return;
@@ -675,6 +674,8 @@ function createTerminal(
   };
   const suspend = () => {
     active = false;
+    focusRequested.set(false);
+    if (state() === 'live' || state() === 'loading') state.set('idle');
     stop(reading);
     reading = null;
     stop(observing);
@@ -693,16 +694,17 @@ function createTerminal(
     error: () => renderText(errorText(error(), 'Could not control the terminal.')),
     control,
     stopping,
-    running: () => running(entry()),
+    running: () => terminalRunning(entry()),
     local,
     agentOwned,
+    focusRequested,
     controllable,
     position: { x: 0, y: 0 },
     atBottom: true,
     update(value: ResourceUpdate) {
       if (alive && value.sessionId === target.sessionId && value.result.ref === target.ref) {
         entry.set(value);
-        if (state() === 'unavailable' && !running(value)) snapshot();
+        if (state() === 'unavailable' && !terminalRunning(value)) snapshot();
       }
     },
     activate() {
@@ -738,7 +740,15 @@ function createTerminal(
       }
     },
     async stop() {
-      if (!alive || !active || !hooks.admitted() || !local() || !running(entry()) || stopping())
+      if (
+        !alive ||
+        !active ||
+        !hooks.admitted() ||
+        agentOwned() ||
+        !local() ||
+        !terminalRunning(entry()) ||
+        stopping()
+      )
         return;
       stopping.set(true);
       try {

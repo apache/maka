@@ -18,7 +18,7 @@
  */
 
 import { tr } from '../../../../products/maka/workbench/app/locale';
-import { cleanup, effect, signal, untracked } from 'nsh';
+import { cleanup, computed, effect, signal, untracked } from 'nsh';
 import type { ViewRef } from 'nsh';
 import {
   createWorkspaceFiles,
@@ -31,7 +31,9 @@ import {
 import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
 import type { ViewerImage } from '../../../../products/maka/workbench/app/ImageViewer';
 import {
+  completed,
   createTerminals,
+  terminalRunning,
   type TerminalModel,
 } from '../../../../products/maka/workbench/app/terminalState';
 import type { ResourceUpdate } from '../../../../packages/plugin-sdk/src/index.js';
@@ -59,27 +61,29 @@ export function createResources(
   options: {
     sessions(): readonly string[];
     blocked(): boolean;
+    directory(sessionId: string): string | undefined;
     report(reason: unknown): void;
   },
 ) {
   const shown = signal(false);
   const tabs = signal<ResourceTab[]>([]);
-  const active = signal<number | 'files' | 'terminals'>('files');
+  const active = signal<number | 'files' | 'terminals' | 'agent-terminals'>('files');
   const focusRequest = signal(false);
   const instance = signal(0);
   const imageViewer = signal<ImageViewerState | null>(null);
   let nextInstance = 0;
   const session = signal<string | null>(null);
-  let pendingLink: { sessionId: string } | null = null;
+  let pendingPreview: { sessionId: string } | null = null;
   let alive = true;
   let root: ViewRef | undefined;
+  const lastTerminal = new Map<string, string>();
   const headers = new Map<string, WorkspaceFocusTarget>();
   let opener: (() => boolean) | undefined;
   const dispose = (tab: ResourceTab) => {
     if (tab.kind !== 'image') tab.model.dispose();
   };
   const adopt = (selected: string | null) => {
-    pendingLink = null;
+    pendingPreview = null;
     if (selected !== session()) {
       imageViewer.set(null);
       tabs().forEach(dispose);
@@ -96,8 +100,9 @@ export function createResources(
     const sessions = options.sessions();
     untracked(() => {
       if (session() !== null && !sessions.includes(session()!)) adopt(null);
-      if (pendingLink && !sessions.includes(pendingLink.sessionId)) pendingLink = null;
+      if (pendingPreview && !sessions.includes(pendingPreview.sessionId)) pendingPreview = null;
       for (const id of headers.keys()) if (!sessions.includes(id)) headers.delete(id);
+      for (const id of lastTerminal.keys()) if (!sessions.includes(id)) lastTerminal.delete(id);
     });
   });
   const admits = (sessionId: string) =>
@@ -115,6 +120,7 @@ export function createResources(
       !tabs().some((tab) => tab.instance === target.instance && tab.sessionId === target.sessionId)
     )
       return;
+    pendingPreview = null;
     imageViewer.set(null);
     active.set(target.instance);
     reveal();
@@ -181,10 +187,10 @@ export function createResources(
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!admits(sessionId)) return;
     const request = { sessionId };
-    pendingLink = request;
+    pendingPreview = request;
     try {
       const link = await host.openLink(target);
-      if (link && pendingLink === request && admits(sessionId)) {
+      if (link && pendingPreview === request && admits(sessionId)) {
         openFile({ sessionId, ...link, title: host.pathLabel(link.path) }, restoreFocus);
       }
     } catch (reason) {
@@ -195,10 +201,13 @@ export function createResources(
           }),
         );
     } finally {
-      if (pendingLink === request) pendingLink = null;
+      if (pendingPreview === request) pendingPreview = null;
     }
   };
-  const inventory = (target: { sessionId: string; kind: 'files' | 'terminals' }) => {
+  const inventory = (target: {
+    sessionId: string;
+    kind: 'files' | 'terminals' | 'agent-terminals';
+  }) => {
     if (!admits(target.sessionId)) return;
     adopt(target.sessionId);
     imageViewer.set(null);
@@ -212,11 +221,19 @@ export function createResources(
     if (imageViewer()?.tab === tab) imageViewer.set(null);
     dispose(tab);
     tabs.set(tabs().filter((candidate) => candidate !== tab));
-    if (active() === tab.instance) active.set('files');
-    focusRequest.set(true);
+    if (active() === tab.instance) {
+      active.set(
+        tab.kind === 'terminal'
+          ? tab.model.agentOwned()
+            ? 'agent-terminals'
+            : 'terminals'
+          : 'files',
+      );
+      focusRequest.set(true);
+    }
   };
   const hide = () => {
-    pendingLink = null;
+    pendingPreview = null;
     imageViewer.set(null);
     shown.set(false);
     focusRequest.set(false);
@@ -254,25 +271,103 @@ export function createResources(
     };
     imageViewer.set(state);
   };
+  const activeTab = () => tabs().find((tab) => tab.instance === active());
+  const activeTerminal = () => {
+    const tab = activeTab();
+    return tab?.kind === 'terminal' ? tab.model : null;
+  };
+  const terminalSection = () => {
+    const model = activeTerminal();
+    if (model) return model.agentOwned() ? 'agent-terminals' : 'terminals';
+    const value = active();
+    return value === 'terminals' || value === 'agent-terminals' ? value : null;
+  };
   const terminals = createTerminals(host, {
     sessionId: session,
-    active: () =>
-      shown() &&
-      (active() === 'terminals' ||
-        tabs().some((tab) => tab.instance === active() && tab.kind === 'terminal')),
+    active: () => shown() && terminalSection() !== null,
     open(entry: ResourceUpdate, model: TerminalModel) {
-      open(entry.sessionId, `terminal:${entry.result.ref}`, (instance) => ({
+      const agent = entry.initiator === 'agent';
+      const identity = `terminal:${entry.result.ref}`;
+      if (agent) {
+        const previous = tabs().find(
+          (tab) => tab.kind === 'terminal' && tab.model.agentOwned() && tab.identity !== identity,
+        );
+        if (previous) closeTab(previous);
+      } else {
+        lastTerminal.set(entry.sessionId, entry.result.ref);
+      }
+      open(entry.sessionId, identity, (instance) => ({
         kind: 'terminal',
         instance,
-        identity: `terminal:${entry.result.ref}`,
+        identity,
         sessionId: entry.sessionId,
-        get title() {
-          return entry.result.cmd || tr('Terminal');
-        },
+        title: entry.result.cmd || tr('Terminal'),
         model,
       }));
+      if (!agent) {
+        focusRequest.set(false);
+        model.focusRequested.set(true);
+      }
     },
   });
+  const personalTerminals = computed(() =>
+    terminals.entries().filter((row) => {
+      const entry = row.value();
+      return entry.initiator === 'user' && entry.result.mode === 'pty' && terminalRunning(entry);
+    }),
+  );
+  const agentTerminals = computed(() =>
+    terminals
+      .entries()
+      .filter((row) => row.value().initiator === 'agent')
+      .toReversed(),
+  );
+  const showTerminal = (entry: ResourceUpdate) => {
+    if (admits(entry.sessionId)) terminals.open(entry);
+  };
+  effect(() => {
+    const closedShells = tabs().filter(
+      (tab) =>
+        tab.kind === 'terminal' && !tab.model.agentOwned() && !terminalRunning(tab.model.entry()),
+    );
+    const section = shown() && terminalSection();
+    const shells = section === 'terminals' ? personalTerminals() : [];
+    untracked(() => {
+      for (const shell of closedShells) closeTab(shell);
+      if (section !== 'terminals' || activeTerminal()) return;
+      const id = session();
+      if (!id) return;
+      const previous = lastTerminal.get(id);
+      const next = shells.find((row) => row.value().result.ref === previous) ?? shells.at(-1);
+      if (next && next.value().sessionId === id) showTerminal(next.value());
+    });
+  });
+  const openAgentTerminal = async (
+    target: { sessionId: string; ref: string },
+    restoreFocus: () => boolean,
+  ) => {
+    if (!admits(target.sessionId)) return;
+    const request = { sessionId: target.sessionId };
+    pendingPreview = request;
+    try {
+      const entry = completed(await host.query('terminal', 'read', target));
+      if (pendingPreview !== request || !admits(target.sessionId)) return;
+      if (
+        entry.initiator !== 'agent' ||
+        entry.sessionId !== target.sessionId ||
+        entry.result.ref !== target.ref
+      )
+        throw new UiError('Agent terminal is unavailable.');
+      adopt(target.sessionId);
+      showTerminal(entry);
+      const fallback = headerOpener(target.sessionId);
+      opener = () => restoreFocus() || fallback();
+    } catch (reason) {
+      if (pendingPreview === request && admits(target.sessionId)) options.report(reason);
+    } finally {
+      if (pendingPreview === request) pendingPreview = null;
+    }
+  };
   const files = createWorkspaceFiles(host, {
     sessionId: session,
     active: () => shown() && active() === 'files',
@@ -302,6 +397,21 @@ export function createResources(
     active,
     files,
     terminals,
+    terminalSection,
+    activeTerminal,
+    personalTerminals,
+    runningAgentTerminals: computed(() =>
+      agentTerminals().filter((row) => terminalRunning(row.value())),
+    ),
+    finishedAgentTerminals: computed(() =>
+      agentTerminals().filter((row) => !terminalRunning(row.value())),
+    ),
+    showTerminal,
+    openAgentTerminal,
+    directory: () => {
+      const id = session();
+      return id ? options.directory(id) : undefined;
+    },
     inventory,
     openFiles,
     openFile,
@@ -315,7 +425,7 @@ export function createResources(
     close,
     instance,
     sessionId: session,
-    activeTab: () => tabs().find((tab) => tab.instance === active()),
+    activeTab,
     attach(node: ViewRef) {
       root = node;
     },

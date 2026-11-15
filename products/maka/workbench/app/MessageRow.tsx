@@ -156,6 +156,7 @@ export function MessageRow({
   through,
   viewState,
   previewImage,
+  previewTerminal,
   openLink,
   senders,
   userScroll,
@@ -178,6 +179,7 @@ export function MessageRow({
   through: () => number;
   viewState?: MessageViewState;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
   userScroll(): void;
@@ -628,6 +630,7 @@ export function MessageRow({
                         if (expanded()) onToolReading?.(rowKey(row()));
                       }}
                       previewImage={previewImage}
+                      previewTerminal={previewTerminal}
                       senders={senders}
                       userScroll={userScroll}
                       expand={setExpanded}

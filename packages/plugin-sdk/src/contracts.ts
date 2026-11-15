@@ -48127,11 +48127,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -48182,6 +48192,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -48762,11 +48776,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -48817,6 +48841,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -49097,11 +49125,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -49152,6 +49190,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -50166,11 +50208,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -50221,6 +50273,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -50514,11 +50570,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -50569,6 +50635,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -50849,11 +50919,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -50904,6 +50984,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -51214,11 +51298,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -51269,6 +51363,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',

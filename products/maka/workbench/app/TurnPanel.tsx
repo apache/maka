@@ -290,6 +290,7 @@ function ActivityLog(props: {
   through: () => number;
   viewport: () => { width: number; height: number };
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
   inspectTool?(key: string): void;
@@ -531,6 +532,7 @@ function ActivityLog(props: {
                       sessionId={props.sessionId}
                       through={props.through}
                       previewImage={props.previewImage}
+                      previewTerminal={props.previewTerminal}
                       openLink={props.openLink}
                       senders={props.senders}
                       userScroll={props.userScroll}
@@ -585,6 +587,7 @@ type TurnPanelProps = {
   activity: () => LiveActivity;
   reveal(): void;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
   inspectTool?(key: string): void;

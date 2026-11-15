@@ -1472,6 +1472,15 @@ export function createConversationUi(
     if (closeCommand(context) && context.sessionId)
       resources.openFiles({ sessionId: context.sessionId });
   };
+  const previewTerminal = async (sessionId: string, ref: string, restoreFocus: () => boolean) => {
+    if (!alive || selected() !== sessionId || overlay()) return;
+    browserFocus.set(false);
+    try {
+      await requireWorkspace().openAgentTerminal({ sessionId, ref }, restoreFocus);
+    } catch (reason) {
+      report(reason);
+    }
+  };
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!alive || selected() !== sessionId || overlay()) return;
     try {
@@ -2210,6 +2219,8 @@ export function createConversationUi(
         workspaceViewContract,
         {
           sessions: window.sessions,
+          directory: (id) =>
+            browsing.sessions().find((session) => session.id === id)?.workspace.path,
           blocked: () => reloading() || !(shell()?.visible() ?? false),
           get docked() {
             return input.docked;
@@ -2582,6 +2593,7 @@ export function createConversationUi(
                   }
                   filesOpener={(node) => resources.attachOpener(id(), node)}
                   previewImage={previewImage}
+                  previewTerminal={(ref, restoreFocus) => previewTerminal(id(), ref, restoreFocus)}
                   openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
                   knownSession={(sessionId) =>
                     browsing.sessions().find((session) => session.id === sessionId)

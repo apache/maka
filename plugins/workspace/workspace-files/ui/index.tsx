@@ -114,6 +114,7 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
   const resources = createResources(host, {
     sessions: () => input()?.sessions() ?? [],
     blocked: () => input()?.blocked() ?? true,
+    directory: (id) => input()?.directory(id),
     report: (reason) => input()?.report(reason),
   });
   const handle: WorkspaceViewHandle = {
@@ -130,6 +131,7 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
     modalSuppressed: () => resources.imageViewer() !== null,
     openFiles: resources.openFiles,
     openImage: resources.openImage,
+    openAgentTerminal: resources.openAgentTerminal,
     openLink: resources.openLink,
     attachOpener: resources.attachOpener,
   };
