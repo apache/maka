@@ -173,6 +173,7 @@ pub(super) fn network(stage: &'static str, error: &maka_network::Error, connecti
     let cause = match error {
         maka_network::Error::InvalidProxy => "proxy_invalid",
         maka_network::Error::MissingCredentials => "proxy_credentials_missing",
+        maka_network::Error::UnsupportedSystemProxy => "proxy_system_unsupported",
         maka_network::Error::InvalidUpgrade => "network_invalid_upgrade",
         maka_network::Error::InvalidHeaders => "network_invalid_headers",
         maka_network::Error::RedirectLimit => "network_redirect_limit",

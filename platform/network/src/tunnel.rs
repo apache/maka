@@ -42,9 +42,9 @@ pub(crate) async fn connect(policy: &Policy, destination: &Destination) -> io::R
 
 async fn connect_inner(policy: &Policy, destination: &Destination) -> io::Result<Tunnel> {
     let target = (destination.host(), destination.port());
-    // CONNECT carries no URL scheme. Like HTTPS transport, it uses HTTPS_PROXY
-    // (then ALL_PROXY), including tunnels to nonstandard destination ports.
-    let Some(proxy) = policy.proxy_for("https", destination.host()) else {
+    // CONNECT carries no URL scheme. It routes like an https destination,
+    // including tunnels to nonstandard destination ports.
+    let Some(proxy) = policy.proxy_for("https", destination.host(), destination.port()) else {
         return Ok(Box::new(TcpStream::connect(target).await?));
     };
     let host = proxy

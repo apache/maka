@@ -63,6 +63,10 @@ impl Environment {
         })
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.http.is_none() && self.https.is_none()
+    }
+
     pub(super) fn proxy_for(&self, scheme: &str, host: &str) -> Option<&Url> {
         let proxy = match scheme {
             "http" => self.http.as_ref()?,
@@ -87,7 +91,7 @@ impl Environment {
     }
 }
 
-fn parse(raw: &str) -> Result<Option<Url>, Error> {
+pub(super) fn parse(raw: &str) -> Result<Option<Url>, Error> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Ok(None);
