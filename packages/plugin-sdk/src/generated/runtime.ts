@@ -3934,6 +3934,7 @@ export type Ownership =
       sourceSessionId: string;
     };
 export type ShellVisibility = 'model' | 'user';
+export type ShellInitiator = 'user' | 'agent';
 export type SnapshotKind = 'shell_run';
 export type ShellMode = 'pipes' | 'pty';
 export type ShellStatus =
@@ -7894,6 +7895,7 @@ export interface ResourceUpdate {
   ownership: Ownership;
   correlation: unknown;
   visibility: ShellVisibility;
+  initiator: ShellInitiator;
   result: ShellSnapshot;
 }
 export interface ShellSnapshot {

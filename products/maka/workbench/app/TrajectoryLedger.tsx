@@ -722,6 +722,7 @@ export function TrajectoryInspector(props: {
   sessionId: string;
   through(): number;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   toolProgress(id: string): ToolActivity['phase'] | null;
   maxHeight(): number;
@@ -741,6 +742,7 @@ export function TrajectoryInspector(props: {
         through={props.through}
         viewState={viewState}
         previewImage={props.previewImage}
+        previewTerminal={props.previewTerminal}
         openLink={props.openLink}
         toolProgress={props.toolProgress}
         toolMaxHeight={props.maxHeight}

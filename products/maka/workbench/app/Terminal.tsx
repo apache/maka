@@ -162,14 +162,16 @@ export function Terminal(props: { model: TerminalModel }) {
   const copy = async () => {
     try {
       await Clipboard.writeText(
-        frame()
-          .rows.map((row) =>
-            row
-              .map((run) => cells(run).text)
-              .join('')
-              .trimEnd(),
-          )
-          .join('\n'),
+        model.entry().result.mode === 'pipes'
+          ? pipes()
+          : frame()
+              .rows.map((row) =>
+                row
+                  .map((run) => cells(run).text)
+                  .join('')
+                  .trimEnd(),
+              )
+              .join('\n'),
       );
       if (mounted) {
         copied.set(true);
@@ -182,6 +184,12 @@ export function Terminal(props: { model: TerminalModel }) {
       }
     }
   };
+  const focusShell = () => {
+    if (!model.focusRequested() || !input) return;
+    model.focusRequested.set(false);
+    input.focus();
+  };
+  effect(focusShell);
   const attach = (node: InputRef) => {
     input = node;
     unbind();
@@ -262,6 +270,7 @@ export function Terminal(props: { model: TerminalModel }) {
     };
     bindings['shift+pagedown'] = () => scroll?.scrollTo({ y: model.position.y + rows() * LINE });
     unbind = keymap.bind(bindings, { when: 'always', repeat: true, within: node });
+    focusShell();
   };
   const text = (value: string) => {
     const previous = inputValue();
@@ -323,6 +332,7 @@ export function Terminal(props: { model: TerminalModel }) {
     model.input([{ type: 'mouse', event: kind, x: column, y: row, button: 'left' }]);
   };
   effect(() => {
+    if (model.agentOwned()) return;
     const size = dimensions();
     model.resize({
       cols: Math.max(2, Math.min(1024, Math.floor(size.width / CELL))),
@@ -350,31 +360,32 @@ export function Terminal(props: { model: TerminalModel }) {
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-        <Button
-          ref={(node) => {
-            fallback = node;
-          }}
-          disabled={!model.local() || !model.running() || model.state() !== 'live'}
-          onPress={() => {
-            model.takeControl();
-            input?.focus();
-          }}
-          accessibilityLabel={tr('Focus terminal input')}
-          tooltip={textTooltip(() =>
-            model.control() === 'held'
-              ? tr('Terminal input is active')
-              : tr('Focus terminal input'),
-          )}
-          selected={model.control() === 'held'}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Icon name="terminal" color={C.secondary} />
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Input')}</Text>
-        </Button>
+        <If when={!model.agentOwned()}>
+          <Button
+            ref={(node) => {
+              fallback = node;
+            }}
+            disabled={!model.local() || !model.running() || model.state() !== 'live'}
+            onPress={() => {
+              model.takeControl();
+              input?.focus();
+            }}
+            accessibilityLabel={tr('Focus terminal input')}
+            tooltip={textTooltip(() =>
+              model.control() === 'held'
+                ? tr('Terminal input is active')
+                : tr('Focus terminal input'),
+            )}
+            selected={model.control() === 'held'}
+            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            selectedStyle={{ backgroundColor: C.raised }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="terminal" color={C.secondary} />
+          </Button>
+        </If>
         <If when={model.control() === 'held'}>
           <Button
             onPress={inputAction(model.release, null)}
@@ -385,6 +396,16 @@ export function Terminal(props: { model: TerminalModel }) {
           >
             <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Release input')}</Text>
           </Button>
+        </If>
+        <If when={model.agentOwned() || !model.local() || !model.running()}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {terminalStatus(model.entry().result.status)}
+            {model.agentOwned()
+              ? ` · ${tr('Read only')}`
+              : !model.local()
+                ? ` · ${tr('shared · view only')}`
+                : ''}
+          </Text>
         </If>
         <View style={{ flex: 1 }} />
         <Button
@@ -397,7 +418,7 @@ export function Terminal(props: { model: TerminalModel }) {
         >
           <Icon name="copy" color={C.secondary} />
         </Button>
-        <If when={model.local() && model.running()}>
+        <If when={!model.agentOwned() && model.local() && model.running()}>
           <Button
             disabled={model.stopping()}
             onPress={() => confirmation.set(true)}
@@ -414,17 +435,6 @@ export function Terminal(props: { model: TerminalModel }) {
           </Button>
         </If>
       </View>
-      <Text
-        tooltip={textTooltip(() => tr('Terminal history · Shift+PageUp / Shift+PageDown'))}
-        style={{ ...captionTextStyle, color: C.muted }}
-      >
-        {terminalStatus(model.entry().result.status)} ·{' '}
-        {model.control() === 'held'
-          ? tr('input held')
-          : model.local()
-            ? tr('viewing')
-            : tr('shared · view only')}
-      </Text>
       <View
         ref={(node) => {
           body = node;
@@ -432,7 +442,7 @@ export function Terminal(props: { model: TerminalModel }) {
         onLayout={({ bounds: event }) => dimensions.set(event.size)}
         onPress={() => {
           input?.focus();
-          if (!model.agentOwned()) model.takeControl();
+          model.takeControl();
         }}
         onStartShouldSetResponder={() => pointerInput()}
         onResponderGrant={(event) => {
@@ -564,14 +574,21 @@ export function Terminal(props: { model: TerminalModel }) {
             </Text>
           </Scroll>
         </If>
-        <If when={model.entry().result.mode === 'pty' && model.local() && model.state() === 'live'}>
+        <If
+          when={
+            !model.agentOwned() &&
+            model.entry().result.mode === 'pty' &&
+            model.local() &&
+            model.state() === 'live'
+          }
+        >
           <Input
             ref={attach}
             value={inputValue()}
             onChange={({ value }) => text(value)}
             onKeyPress={typedKey}
             onFocus={() => {
-              if (!model.agentOwned()) model.takeControl();
+              model.takeControl();
             }}
             onBlur={() => model.release()}
             autoCapitalize="none"
@@ -622,20 +639,12 @@ export function Terminal(props: { model: TerminalModel }) {
       </If>
       <If when={model.state() === 'unavailable'}>
         <Text style={{ ...bodyTextStyle, color: C.warning }}>
-          {tr(
-            'Live output is no longer retained. Input is released; the final display will appear after the process settles.',
-          )}
+          {tr('Waiting for retained output…')}
         </Text>
       </If>
       <If when={confirmation()}>
         <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>
-          <DialogHeader
-            title={
-              model.agentOwned()
-                ? tr('Stop the agent’s running terminal? This interrupts its command.')
-                : tr('Stop this terminal and its running process?')
-            }
-          />
+          <DialogHeader title={tr('Stop this terminal and its running process?')} />
           <DialogFooter>
             <SettingsButton
               label={tr('Cancel')}

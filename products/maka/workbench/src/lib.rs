@@ -137,6 +137,50 @@ mod tests {
     }
 
     #[test]
+    fn terminal_sidebar_restores_the_personal_shell_and_opens_the_exact_agent_resource() {
+        let mut app = fixture("terminal-sidebar.tsx");
+        app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
+        app.wait_for("role:button[View terminal]").unwrap();
+        app.press("role:button[View terminal]").unwrap();
+        app.wait_for("text:cargo fmt").unwrap();
+        app.wait_for("text:/completed.*Read only/").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Terminal keyboard input")
+                .unwrap()
+        );
+
+        app.press("label:Show conversation terminals").unwrap();
+        app.wait_for("text:/maka/").unwrap();
+        assert!(!app.screen().matches("text:cargo test").unwrap());
+        app.press("label:New terminal").unwrap();
+        app.wait_for("text:Shell 1").unwrap();
+        app.wait_for("label:Terminal keyboard input").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("text:1: Enter reached shell-1").unwrap();
+
+        app.press("label:New terminal").unwrap();
+        app.wait_for("text:Shell 2").unwrap();
+        app.press("text:Shell 1").unwrap();
+        app.press("role:button[Agent terminals]").unwrap();
+        app.wait_for("text:cargo test").unwrap();
+        assert!(!app.screen().matches("text:cargo fmt").unwrap());
+        app.press("role:button[Finished commands]").unwrap();
+        app.wait_for("text:cargo fmt").unwrap();
+        app.press("label:Open terminal cargo fmt").unwrap();
+        app.wait_for("text:/completed.*Read only/").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Terminal keyboard input")
+                .unwrap()
+        );
+        app.press("label:Show conversation terminals").unwrap();
+        app.wait_for("label:Terminal keyboard input").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("text:2: Enter reached shell-1").unwrap();
+    }
+
+    #[test]
     fn original_tool_arguments_show_freeform_script_and_reject_another_tool() {
         let mut app = fixture("tool-source.tsx");
         app.wait_for(r"text:/const word = '雪'; text\(word\);/")
