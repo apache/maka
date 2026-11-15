@@ -31,7 +31,6 @@ export const externalAgentMessages = {
     '外部 Agent 运行环境',
     '外部 Agent 執行環境',
   ],
-  'Manage external agents': ['Manage external agents', '管理外部 Agent', '管理外部 Agent'],
   'Installed ({version})': ['Installed ({version})', '已安装（{version}）', '已安裝（{version}）'],
   Installed: ['Installed', '已安装', '已安裝'],
   'Not installed': ['Not installed', '未安装', '未安裝'],

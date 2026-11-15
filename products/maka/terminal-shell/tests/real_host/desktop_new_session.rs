@@ -2426,12 +2426,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-active"));
     desktop.press("Model for queued and future messages").await;
-    desktop.control("Choose model").await;
+    desktop.control("Manage models").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-model-scope"));
     desktop
         .retry(
             "the model menu did not close",
-            || desktop.controls("Choose model").is_empty(),
+            || desktop.controls("Manage models").is_empty(),
             || desktop.key("escape", false),
         )
         .await;

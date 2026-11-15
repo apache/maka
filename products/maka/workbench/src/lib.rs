@@ -348,6 +348,95 @@ mod tests {
         app.press_key("mod+n").unwrap();
         app.wait_for("text:Shortcut received").unwrap();
     }
+
+    #[test]
+    fn model_select_switches_in_place_and_cascades_reasoning_effort() {
+        let mut app = fixture("model-select.tsx");
+        app.set_viewport(Size::new(px(640.0), px(480.0))).unwrap();
+        app.wait_for("label:Choose model and effort").unwrap();
+        app.press("label:Choose model and effort").unwrap();
+        app.wait_for("label:Search models and sources").unwrap();
+        app.wait_for("label:Manage models").unwrap();
+        app.wait_for("text:Unsupported").unwrap();
+
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+        let search_before = bounds_of(&app, "label:Search models and sources");
+        let manage_before = bounds_of(&app, "label:Manage models");
+
+        app.press_key("f6").unwrap();
+        app.press("label:Use Reasoning model · OpenAI").unwrap();
+        assert!(
+            !app.screen()
+                .enabled("label:Use Plain model · DeepSeek")
+                .unwrap()
+        );
+        assert!(
+            !app.screen()
+                .enabled("label:Choose reasoning effort")
+                .unwrap()
+        );
+        assert!(!app.screen().enabled("label:Manage models").unwrap());
+        assert!(!app.screen().matches("text:Saving selection…").unwrap());
+
+        app.press_key("f7").unwrap();
+        assert!(
+            app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+        app.wait_for("text: · medium").unwrap();
+        assert!(
+            app.screen()
+                .enabled("label:Choose reasoning effort")
+                .unwrap()
+        );
+        assert_eq!(
+            bounds_of(&app, "label:Search models and sources"),
+            search_before
+        );
+        assert_eq!(bounds_of(&app, "label:Manage models"), manage_before);
+
+        app.press("label:Choose reasoning effort").unwrap();
+        app.wait_for("label:Use effort high").unwrap();
+        app.press("label:Use effort high").unwrap();
+        app.wait_for("text: · high").unwrap();
+        assert!(!app.screen().matches("label:Use effort high").unwrap());
+        assert!(
+            app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+
+        app.press("label:Use Plain model · DeepSeek").unwrap();
+        app.wait_for("text:Unsupported").unwrap();
+        assert!(
+            !app.screen()
+                .enabled("label:Choose reasoning effort")
+                .unwrap()
+        );
+        assert!(
+            app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+        assert_eq!(bounds_of(&app, "label:Manage models"), manage_before);
+
+        app.press("label:Manage models").unwrap();
+        app.wait_for("text:Managed:1").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+    }
 }
 
 #[cfg(test)]
