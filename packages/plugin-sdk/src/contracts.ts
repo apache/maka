@@ -52856,6 +52856,16 @@ export const contracts: {
               displayName: {
                 type: 'string',
               },
+              avatar: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ProfileAvatar',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               workspaceInstructions: {
                 type: 'boolean',
               },
@@ -52876,6 +52886,7 @@ export const contracts: {
               'defaultCompactionPrompt',
               'revision',
               'displayName',
+              'avatar',
               'workspaceInstructions',
               'defaultSandboxMode',
               'shell',
@@ -52923,6 +52934,10 @@ export const contracts: {
               Language: {
                 type: 'string',
                 enum: ['en', 'zh-CN', 'zh-TW'],
+              },
+              ProfileAvatar: {
+                type: 'string',
+                enum: ['blue', 'green', 'rose', 'amber'],
               },
               Mode: {
                 description:
@@ -57848,6 +57863,16 @@ export const contracts: {
                       displayName: {
                         type: 'string',
                       },
+                      avatar: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ProfileAvatar',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'displayName'],
@@ -57933,6 +57958,10 @@ export const contracts: {
               LanguagePreference: {
                 type: 'string',
                 enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+              },
+              ProfileAvatar: {
+                type: 'string',
+                enum: ['blue', 'green', 'rose', 'amber'],
               },
               Mode: {
                 description:

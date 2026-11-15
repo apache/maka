@@ -123,6 +123,7 @@ function App(
       render: () =>
         runtime.renderView(configuration.session, conversationSessionView, {
           shell: paneShell(pane),
+          active: () => workspaceMode() === 'conversations',
           firstMessage,
           compact,
           attach(handle) {
@@ -219,9 +220,7 @@ function App(
     if (id !== null) {
       if ((await session()?.kind(id)) === 'room') {
         if (!(await roomWorkspace()?.open(id))) return false;
-        workspaceMode.set('rooms');
-        settingsOpened.set(false);
-        return true;
+        return switchWorkspace('rooms');
       }
     }
     await roomWorkspace()?.flush();
@@ -307,13 +306,18 @@ function App(
     ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
   };
   const switchWorkspace = async (mode: 'conversations' | 'rooms') => {
-    if (blocked() || mode === workspaceMode()) return;
+    if (blocked()) return false;
+    if (mode === workspaceMode()) return true;
     if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
-    else if (session() && !(await session()!.leave())) return;
+    else {
+      const panes = [session(), ...sides().map((pane) => pane.handle())];
+      if ((await Promise.all(panes.map((pane) => pane?.leave()))).includes(false)) return false;
+    }
     batch(() => {
       settingsOpened.set(false);
       workspaceMode.set(mode);
     });
+    return true;
   };
   const modeSwitch = () => (
     <View
@@ -389,7 +393,7 @@ function App(
   function sideShell(pane: SidePane): ConversationShell {
     return {
       sessionId: pane.id,
-      visible: shell.visible,
+      visible: () => shell.visible() && sides().indexOf(pane) < sideRoom(),
       blocked,
       connectionLost: () => runtime.updateError() !== null,
       openSession: (id) => openSide(pane, id),
@@ -528,6 +532,7 @@ function App(
         {runtime.renderView(configuration.rooms, roomWorkspaceView, {
           initialSessionId: saved?.roomSessionId ?? null,
           agentSessionId: selected,
+          active: () => workspaceMode() === 'rooms',
           visible: () => workspaceMode() === 'rooms' && !settingsOpened(),
           blocked,
           sidebarExpanded,

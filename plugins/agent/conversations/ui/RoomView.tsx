@@ -60,6 +60,7 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
     host: props.host,
     initial: input.initialSessionId,
     agentSession: input.agentSessionId,
+    active: input.active,
     visible: input.visible,
     browser: () => ({
       navigationDocked: navigationDocked(),

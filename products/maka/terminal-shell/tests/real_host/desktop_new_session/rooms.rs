@@ -131,6 +131,24 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     let first = room_messages(&desktop, room, 1).await.remove(0);
     assert_eq!(first["content"]["text"], "The patch is ready.");
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    desktop.artifact("room-default-profile");
+    desktop.press("Settings").await;
+    desktop.press("Settings section General").await;
+    desktop.press("Edit personalization").await;
+    desktop.type_text("Ada").await;
+    desktop.press("Change avatar").await;
+    desktop.press("Green").await;
+    desktop.artifact("room-avatar-choice");
+    desktop.press("Save this preference").await;
+    desktop.control("Edit personalization").await;
+    let preferences = desktop
+        .client
+        .query("settings", "assistantPreferences", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(preferences["displayName"], "Ada");
+    assert_eq!(preferences["avatar"], "green");
+    desktop.press("Close settings").await;
 
     let reply = desktop.control("Reply to message").await;
     reply_at(
@@ -178,6 +196,26 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
         !input.contains("PRIVATE_AGENT_DRAFT"),
         "unsubmitted draft leaked: {input}"
     );
+    let read =
+        json!({"sessionId":room,"position":{"kind":"before_message","messageId":posts[1]["id"]}});
+    let message = request.body["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(
+        message.contains("The user mentioned you in a Room."),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("SessionHistory({read})")),
+        "{message}"
+    );
+    request.tool_call("SessionHistory", read).await;
+    let request = desktop.request(&mut fixture).await;
+    let result = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(result["role"], "tool");
+    let result: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    assert_eq!(result["kind"], "room", "{result}");
+    assert_eq!(result["page"]["items"][0]["id"], first["id"], "{result}");
     request
         .tool_call(
             "SessionSend",
@@ -186,8 +224,7 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
             }),
         )
         .await;
-    desktop.request(&mut fixture).await.finish().await;
-    fixture.idle(&desktop.client, &fixture.session).await;
+    let final_reply = desktop.request(&mut fixture).await;
     let posts = room_messages(&desktop, room, 3).await;
     assert_eq!(posts.len(), 3);
     assert_eq!(
@@ -214,8 +251,38 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     assert_eq!(copied, "Reviewed in the room.");
     desktop.press("Conversations").await;
     desktop.press("Open conversation Room reviewer").await;
+    let summary = "From Release review · Please review";
+    desktop.open_group(summary).await;
+    desktop.press_until(summary, "From Release review").await;
+    desktop
+        .press("Open source conversation beside this one")
+        .await;
+    let split = desktop.control("Close side pane").await;
+    let mention = desktop.control("Mention a session").await;
+    assert!(mention.center().x > px(560.) && mention.right() < split.right());
+    desktop
+        .until("Room history did not appear in the right pane", || {
+            let replies = desktop.controls("Reply to message");
+            (replies.len() == 3 && replies.iter().all(|reply| reply.center().x > px(560.)))
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("room-source-split");
+    desktop.press("Close side pane").await;
+    final_reply.finish().await;
+    fixture.idle(&desktop.client, &fixture.session).await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("PRIVATE_AGENT_DRAFT").await;
+    desktop
+        .right_click("Open conversation NSH real Agent")
+        .await;
+    desktop.press("Open to the side").await;
+    desktop
+        .until("agent split did not show the conversation composer", || {
+            (desktop.controls("Focus message composer").len() == 2).then_some(())
+        })
+        .await;
+    desktop.press("Close side pane").await;
     desktop.close().await;
     fixture.finish().await;
 }

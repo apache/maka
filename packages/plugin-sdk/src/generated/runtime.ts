@@ -1559,6 +1559,7 @@ export type PricingMutation =
       modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+export type ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
  */
@@ -1623,6 +1624,7 @@ export type SettingsPreferencesMutation =
   | {
       kind: 'personalization';
       displayName: string;
+      avatar?: ProfileAvatar | null;
     }
   | {
       kind: 'workspace_instructions';
@@ -6447,6 +6449,7 @@ export interface SettingsAssistantPreferences {
   defaultCompactionPrompt: string;
   revision: number;
   displayName: string;
+  avatar?: ProfileAvatar | null;
   workspaceInstructions: boolean;
   defaultSandboxMode: Mode;
   shell: ShellPolicy;

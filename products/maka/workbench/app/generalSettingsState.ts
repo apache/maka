@@ -25,6 +25,7 @@ import type {
   AgentGlobalInstructionsView,
   LanguagePreference,
   MessagePredictionSettings,
+  ProfileAvatar,
   SettingsAssistantPreferences,
   SettingsPreferencesMutation,
   SettingsPreferencesUpdated,
@@ -40,6 +41,7 @@ type PreferencesEditor =
       id: number;
       basis: SettingsAssistantPreferences;
       displayName: string;
+      avatar: ProfileAvatar | null;
     }
   | {
       kind: 'shell';
@@ -390,7 +392,13 @@ export function createGeneralSettings(
             executable: basis.shell.executable,
           }
         : kind === 'personalization'
-          ? { kind, id: view(), basis, displayName: basis.displayName }
+          ? {
+              kind,
+              id: view(),
+              basis,
+              displayName: basis.displayName,
+              avatar: basis.avatar ?? null,
+            }
           : kind === 'compaction'
             ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
             : { kind, id: view(), basis, ...predictionDraft(basis) },
@@ -399,7 +407,7 @@ export function createGeneralSettings(
   const dirty = () => {
     const form = editor();
     return form?.kind === 'personalization'
-      ? form.displayName !== form.basis.displayName
+      ? form.displayName !== form.basis.displayName || form.avatar !== (form.basis.avatar ?? null)
       : form?.kind === 'compaction'
         ? form.useDefault || form.prompt !== form.basis.compactionPrompt
         : form?.kind === 'shell'
@@ -608,6 +616,11 @@ export function createGeneralSettings(
       if (!current(request) || disabled() || form?.kind !== 'personalization') return;
       editor.set({ ...form, displayName });
     },
+    editAvatar(request: GeneralAction, avatar: ProfileAvatar | null) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'personalization') return;
+      editor.set({ ...form, avatar });
+    },
     editPrompt(request: GeneralAction, prompt: string) {
       const form = editor();
       if (!current(request) || disabled() || form?.kind !== 'compaction') return;
@@ -686,6 +699,7 @@ export function createGeneralSettings(
           {
             kind: 'personalization',
             displayName: form.displayName,
+            avatar: form.avatar,
           },
           form,
         );
