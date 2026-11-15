@@ -95,7 +95,7 @@ impl Projection {
                 ToolStatus::Completed
             };
             tool.meta("settlement", json!(result.settlement));
-            tool.meta("image", json!(result.image));
+            tool.meta("image", json!(result.image || result.images > 0));
         }
         if chunk.role == Role::ToolResult
             || (chunk.role != Role::ToolCall && source.result.is_some())

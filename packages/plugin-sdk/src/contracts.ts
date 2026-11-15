@@ -13448,12 +13448,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
@@ -21589,12 +21588,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
@@ -22530,12 +22528,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
@@ -37572,12 +37569,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
