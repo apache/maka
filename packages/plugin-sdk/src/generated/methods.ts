@@ -548,7 +548,8 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryField = 'thinking' |
 export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView =
   | ('text' | 'conversation')
   | 'chat'
-  | 'turn';
+  | 'turn'
+  | 'steps';
 /**
  * An original row within the actual read capability supplied by the caller.
  * Marker paths are relative to that capability; none of these fields grants access.

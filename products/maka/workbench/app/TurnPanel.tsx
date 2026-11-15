@@ -101,14 +101,36 @@ export function activityCounts(
   groups: readonly ProcessGroup[],
   row: (id: string) => Row | undefined,
 ): string {
-  const ids = groups.flatMap((group) => group.rowIds);
-  const thoughts = ids.filter((id) => row(id)?.field === 'thinking').length;
-  const tools = groups.reduce((count, group) => count + group.toolIds.length, 0);
-  const messages = ids.filter((id) => {
-    const value = row(id);
-    return value?.role === 'user' && activityMessage(value.origin);
-  }).length;
-  return activityCountLabel({ thoughts, tools, messages });
+  const counts = { thoughts: 0, tools: 0, messages: 0 };
+  for (const group of groups) {
+    const work = groupWork(group, row);
+    if (work) {
+      counts.thoughts += work.thoughts;
+      counts.tools += work.tools;
+      counts.messages += work.messages;
+      continue;
+    }
+    for (const id of group.rowIds) {
+      const kind = stepKind(row(id));
+      if (kind?.kind === 'thought') counts.thoughts += 1;
+      if (kind?.kind === 'message') counts.messages += 1;
+    }
+    counts.tools += group.toolIds.length;
+  }
+  return activityCountLabel(counts);
+}
+
+type StepKind = NonNullable<Row['work']>['last'];
+
+export function groupWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
+  return group.workRowId ? row(group.workRowId)?.work : undefined;
+}
+
+function stepKind(value: Row | undefined): StepKind | undefined {
+  if (value?.tool) return { kind: 'tool', presentation: value.tool.call?.presentation ?? null };
+  if (value?.field === 'thinking') return { kind: 'thought' };
+  if (value?.role === 'user' && activityMessage(value.origin)) return { kind: 'message' };
+  return undefined;
 }
 
 function activityCountLabel({
@@ -647,26 +669,23 @@ const familyVerbs = {
   webSearch: 'Searched the web',
 } as const satisfies Partial<Record<NonNullable<ToolFamily>, string>>;
 
+function stepVerb(kind: StepKind): string {
+  if (kind.kind === 'thought') return tr('Thought');
+  if (kind.kind === 'message') return tr('Agent messages');
+  const family = cardFamily(kind.presentation);
+  const verb = family ? familyVerbs[family as keyof typeof familyVerbs] : undefined;
+  return verb ? tr(verb) : (activityPresentation(kind.presentation)?.title() ?? tr('Used tools'));
+}
+
 /** What a finished group did, one phrase per kind of step in the order they first came. */
 function activityVerbs(group: ProcessGroup, row: (id: string) => Row | undefined): string {
-  const verbs: string[] = [];
-  const add = (verb: string) => {
-    if (!verbs.includes(verb)) verbs.push(verb);
-  };
-  for (const id of group.rowIds) {
-    const value = row(id);
-    if (!value) continue;
-    const call = value.tool?.call;
-    if (value.tool) {
-      const family = cardFamily(call?.presentation);
-      const verb = family ? familyVerbs[family as keyof typeof familyVerbs] : undefined;
-      add(
-        verb ? tr(verb) : (activityPresentation(call?.presentation)?.title() ?? tr('Used tools')),
-      );
-    } else if (value.field === 'thinking') add(tr('Thought'));
-    else if (value.role === 'user' && activityMessage(value.origin)) add(tr('Agent messages'));
-  }
-  return verbs.join(tr(', '));
+  const kinds =
+    groupWork(group, row)?.kinds ??
+    group.rowIds.flatMap((id) => {
+      const kind = stepKind(row(id));
+      return kind ? [kind] : [];
+    });
+  return [...new Set(kinds.map(stepVerb))].join(tr(', '));
 }
 
 function GroupHeader(props: TurnPanelProps) {
@@ -703,12 +722,15 @@ function GroupHeader(props: TurnPanelProps) {
       props.group().rowIds.includes(activity.rowId)
     )
       return `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
-    const latest = props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
+    const work = groupWork(props.group(), props.row);
+    const latest = work ? work.lastCall : props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
     return latest ? activityTitle(latest) : tr('Working…');
   });
   const stableTitle = stableActivityTitle(desiredTitle, active);
   const foldable = () =>
-    props.group().rowIds.length > 0 || (desktop && props.liveTools().length > 0);
+    props.group().rowIds.length > 0 ||
+    props.group().workRowId !== undefined ||
+    (desktop && props.liveTools().length > 0);
   const choose = (action: { sessionId: string; key: string; open: boolean }) => {
     if (action.sessionId !== props.sessionId || action.key !== props.group().key || !foldable())
       return;
@@ -722,9 +744,11 @@ function GroupHeader(props: TurnPanelProps) {
     if (action.open) props.reveal();
   };
   const icon = () => {
-    const last = props.row(props.group().rowIds.at(-1) ?? '');
-    if (last?.tool) return activityIcon(last.tool.call?.presentation);
-    return last?.field === 'thinking' ? 'thinking' : 'activity';
+    const last =
+      groupWork(props.group(), props.row)?.last ??
+      stepKind(props.row(props.group().rowIds.at(-1) ?? ''));
+    if (last?.kind === 'tool') return activityIcon(last.presentation);
+    return last?.kind === 'thought' ? 'thinking' : 'activity';
   };
   if (desktop)
     return (

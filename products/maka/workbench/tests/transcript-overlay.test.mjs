@@ -164,6 +164,43 @@ test('a turn has work to fold only beside its final answer', () => {
   );
 });
 
+test('a recorded work group keeps one key and holds the steps read for it', () => {
+  const part = (ordinal) => ({ stepId: 'step', attemptId: 'attempt', ordinal });
+  const tool = (toolUseId, sequence, call) => ({
+    toolUseId,
+    call: { position: row('', '', sequence).position, ancestorToolUseIds: [], ...call },
+    result: null,
+  });
+  const message = row('message', 'Looking first.', 1, { modelPart: part(0) });
+  const work = row(undefined, '', 2, {
+    key: 'work',
+    role: 'tool_call',
+    modelPart: part(1),
+    work: { kinds: [{ kind: 'tool', presentation: null }], tools: 1 },
+  });
+  const script = row(undefined, '', 2, {
+    key: 'script',
+    role: 'tool_call',
+    modelPart: part(1),
+    tool: tool('script', 2, { origin: 'provider', name: 'exec' }),
+  });
+  const child = row(undefined, '', 3, {
+    key: 'child',
+    role: 'tool_result',
+    tool: tool('child', 3, { origin: 'code_mode', name: 'read', ancestorToolUseIds: ['script'] }),
+  });
+  const answer = row('answer', 'Done.', 4);
+  const groups = (rows) =>
+    projectProcessGroups({ rows: orderProcessRows(rows), toolActivity: [], activeTurnId: null })
+      .entries.filter((entry) => entry.kind === 'process')
+      .map((entry) => [entry.key, entry.rowIds]);
+
+  assert.deepEqual(groups([message, work, answer]), [[stableRowId(work), []]]);
+  assert.deepEqual(groups([answer, child, script, work, message]), [
+    [stableRowId(work), [stableRowId(child)]],
+  ]);
+});
+
 test('thinking appears in turn work when there is a readable summary', () => {
   const opaque = row('opaque', '', 1, { role: 'thinking', field: 'thinking' });
   const preview = row('preview', '\n ', 2, { role: 'thinking', field: 'thinking' });

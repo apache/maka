@@ -319,7 +319,11 @@ async fn tree_window(
     ) {
         return Err("agent_cursor_invalid".into());
     }
-    const PAGE_CHUNKS: usize = 8;
+    let page_chunks = if view == wire::HistoryView::Steps {
+        64
+    } else {
+        8
+    };
     let mut reverse = matches!(&position, Position::Tail | Position::Before { .. });
     let anchor = match &position {
         Position::Row { position, field } => Some(wire::Cursor {
@@ -352,9 +356,21 @@ async fn tree_window(
     let mut cache = source::Cache::default();
     cache.chat = view == wire::HistoryView::Chat;
     let mut turn = None;
-    if view == wire::HistoryView::Turn && anchor.is_none() {
+    if matches!(view, wire::HistoryView::Turn | wire::HistoryView::Steps) && anchor.is_none() {
         return Err("agent_history_turn_requires_anchor".into());
     }
+    let shape = match view {
+        wire::HistoryView::Chat | wire::HistoryView::Turn => source::Shape::Groups {
+            cursor: matches!(position, Position::Before { .. } | Position::After { .. }),
+        },
+        wire::HistoryView::Steps => source::Shape::Steps,
+        wire::HistoryView::Text | wire::HistoryView::Conversation => source::Shape::Rows,
+    };
+    let probe = if shape == source::Shape::Steps {
+        shape
+    } else {
+        source::Shape::Rows
+    };
     if let Some(anchor) = &anchor {
         let selected = source::unpaired(tree, &anchor.position, None, &mut cache, stop).await?;
         if view == wire::HistoryView::Turn {
@@ -385,12 +401,13 @@ async fn tree_window(
         reverse,
         include_thinking,
         // One additional source row covers the inclusive boundary cursor.
-        PAGE_CHUNKS + 1,
+        page_chunks + 1,
         &mut cache,
         turn.map(|(run, admission)| RunRows::Only {
             run,
             start: matches!(position, Position::Row { .. }).then_some(admission),
         }),
+        shape,
         stop,
     )
     .await?;
@@ -399,6 +416,18 @@ async fn tree_window(
     'rows: for mut selected in rows {
         if stop.is_cancelled() {
             return Err("agent_observation_cancelled".into());
+        }
+        if selected.row.chunk.work.is_some() {
+            if page_bytes(through, &chunks, &selected.row.chunk, reverse)? > 60 * 1024
+                && !chunks.is_empty()
+            {
+                break;
+            }
+            chunks.push(selected.row.chunk);
+            if chunks.len() == page_chunks {
+                break;
+            }
+            continue;
         }
         let anchored = anchor
             .as_ref()
@@ -472,7 +501,7 @@ async fn tree_window(
             chunk.offset + (chunk.text.len() as u64) < chunk.total_bytes
         };
         chunks.push(chunk);
-        if remaining == 0 || chunks.len() == PAGE_CHUNKS || partial {
+        if remaining == 0 || chunks.len() == page_chunks || partial {
             break;
         }
     }
@@ -484,10 +513,13 @@ async fn tree_window(
         field: chunk.field,
         offset: chunk.offset,
     });
-    let mut after = chunks.last().map(|chunk| wire::Cursor {
-        position: chunk.position.clone(),
-        field: chunk.field,
-        offset: chunk.offset + chunk.text.len() as u64,
+    let mut after = chunks.last().map(|chunk| match &chunk.work {
+        Some(work) => work.end.clone(),
+        None => wire::Cursor {
+            position: chunk.position.clone(),
+            field: chunk.field,
+            offset: chunk.offset + chunk.text.len() as u64,
+        },
     });
     if let Some(first) = chunks.first()
         && first.offset == 0
@@ -499,6 +531,7 @@ async fn tree_window(
             2,
             &mut cache,
             scoped,
+            probe,
             stop,
         )
         .await?
@@ -507,8 +540,10 @@ async fn tree_window(
     {
         before = None;
     }
-    if let Some(last) = chunks.last()
-        && last.offset + last.text.len() as u64 == last.total_bytes
+    if let Some(last) = &after
+        && chunks.last().is_some_and(|chunk| {
+            chunk.work.is_some() || chunk.offset + chunk.text.len() as u64 == chunk.total_bytes
+        })
         && source::window(
             tree,
             Some(last.position.clone()),
@@ -517,6 +552,7 @@ async fn tree_window(
             2,
             &mut cache,
             scoped,
+            probe,
             stop,
         )
         .await?

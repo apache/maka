@@ -106,6 +106,7 @@ fn base(
             compaction: None,
             timing: None,
             folded_work: None,
+            work: None,
             field: HistoryField::Body,
             imported_turn: None,
             message_id: Some(item.recorded.id.to_string()),

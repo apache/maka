@@ -94,6 +94,7 @@ import {
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
+  historyChunkKey,
   historyRowKey,
   readHistoryTail,
   rootEventSequence,
@@ -101,6 +102,7 @@ import {
   compareRows,
   HistoryRows,
   mergeHistoryPage,
+  messageBytes,
   type ConversationHistoryPage,
   openingUserMessage,
   replayStartCursor,
@@ -190,7 +192,11 @@ import {
   createMessagePrediction,
   predictionTrigger,
 } from '../../../../products/maka/workbench/app/messagePrediction';
-import { TurnPanel, TurnSummary } from '../../../../products/maka/workbench/app/TurnPanel';
+import {
+  groupWork,
+  TurnPanel,
+  TurnSummary,
+} from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
 import type {
   GroupViewState,
@@ -230,6 +236,7 @@ import type {
   AgentMarkReadResult,
   AgentSession,
   AgentRunBackend,
+  Cursor as HistoryCursor,
   HistoryPosition,
   HistoryRowAddress,
   HistoryOrder,
@@ -554,7 +561,10 @@ export function Conversation(props: ConversationProps) {
     !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
-  const workPages = new Map<string, { through: number }>();
+  const workPages = new Map<
+    string,
+    { through: number; after: HistoryCursor | null; task?: Promise<void>; wanted?: number }
+  >();
   const groupStates = new Map<string, GroupViewState>();
   const rowStates = new Map<string, MessageViewState>();
   const turnState = (id: string) => {
@@ -1560,7 +1570,7 @@ export function Conversation(props: ConversationProps) {
     const current = historyRows();
     const changed = new Map<string, Row>();
     for (const chunk of chunks) {
-      const key = historyRowKey(chunk.position, chunk.field);
+      const key = historyChunkKey(chunk);
       const row = changed.get(key) ?? current.byKey.get(key);
       if (!row) continue;
       const next = replaceHistoryMetadata(row, chunk, through);
@@ -1579,7 +1589,7 @@ export function Conversation(props: ConversationProps) {
   const history = async (
     through: number,
     position: HistoryPosition,
-    view: HistoryListView | 'turn' = 'conversation',
+    view: HistoryListView | 'turn' | 'steps' = 'conversation',
   ) => {
     const page = await host.query('agent', 'history', {
       sessionId,
@@ -1697,25 +1707,34 @@ export function Conversation(props: ConversationProps) {
     windowTask = task;
     return task;
   };
-  const loadTurnWork = (key: string) => {
-    const owner = historyWindow();
-    const first = historyRows()
-      .byTurn.get(key)
-      ?.find((row) => row.foldedWork && row.position);
-    if (!owner || !first?.position || workPages.has(key)) return;
-    const state = { through: first.metadataThrough ?? owner.through };
+  const loadPages = (
+    key: string,
+    through: number,
+    start: HistoryPosition,
+    view: 'turn' | 'steps',
+  ): void => {
+    const previous = workPages.get(key);
+    if (previous?.task) {
+      previous.wanted = Math.max(previous.wanted ?? 0, through);
+      return;
+    }
+    if (previous && previous.through >= through) return;
+    const state: NonNullable<typeof previous> = { through, after: previous?.after ?? null };
     workPages.set(key, state);
-    // Folded groups need every step to name what they did, so the whole turn
-    // arrives before it is shown, not page by page.
-    const load = async () => {
-      let cursor: HistoryPosition = { kind: 'row', position: first.position!, field: 'body' };
+    state.task = (async () => {
+      let cursor: HistoryPosition = state.after ? { kind: 'after', cursor: state.after } : start;
       const chunks: AgentHistoryChunk[] = [];
-      let through = state.through;
       for (;;) {
-        const page = await history(state.through, cursor, 'turn');
+        const page = await history(through, cursor, view);
         if (!alive || workPages.get(key) !== state) return;
         chunks.push(...page.chunks);
-        through = page.through;
+        const last = page.chunks.at(-1);
+        if (last)
+          state.after = last.work?.end ?? {
+            position: last.position,
+            field: last.field,
+            offset: last.offset + messageBytes(last.text),
+          };
         if (page.after === null) break;
         cursor = { kind: 'after', cursor: page.after };
       }
@@ -1725,12 +1744,41 @@ export function Conversation(props: ConversationProps) {
         current.put(changed);
         historyRows.set(current);
       }
-    };
-    load().catch((reason) => {
-      if (workPages.get(key) !== state) return;
-      workPages.delete(key);
-      report(reason);
-    });
+    })()
+      .catch((reason) => {
+        if (workPages.get(key) !== state) return;
+        workPages.delete(key);
+        report(reason);
+      })
+      .finally(() => {
+        state.task = undefined;
+        if (state.wanted !== undefined && workPages.get(key) === state)
+          loadPages(key, state.wanted, start, view);
+      });
+  };
+  const loadTurnWork = (key: string) => {
+    const owner = historyWindow();
+    const first = historyRows()
+      .byTurn.get(key)
+      ?.find((row) => row.foldedWork && row.position);
+    if (!owner || !first?.position) return;
+    loadPages(
+      key,
+      first.metadataThrough ?? owner.through,
+      { kind: 'row', position: first.position, field: 'body' },
+      'turn',
+    );
+  };
+  const loadGroupSteps = (rowId: string) => {
+    const owner = historyWindow();
+    const row = historyRows().byId.get(rowId);
+    if (!owner || !row?.work || !row.position) return;
+    loadPages(
+      rowId,
+      row.metadataThrough ?? owner.through,
+      { kind: 'row', position: row.position, field: row.field as 'body' | 'thinking' },
+      'steps',
+    );
   };
   const hydrateAttachmentMetadata = () => {
     for (const rowKey of historyRows().missingAttachments) {
@@ -1889,7 +1937,7 @@ export function Conversation(props: ConversationProps) {
             let position = historyFollowPosition(row, []);
             const chunks: AgentHistoryChunk[] = [];
             for (;;) {
-              const page = await history(fence, position);
+              const page = await history(fence, position, owner.view);
               if (!ownsWindow(owner.identity)) return;
               const matching = page.chunks.filter(
                 (chunk) =>
@@ -1910,7 +1958,7 @@ export function Conversation(props: ConversationProps) {
           let position = initial;
           const chunks: AgentHistoryChunk[] = [];
           for (;;) {
-            const page = await history(fence, position);
+            const page = await history(fence, position, owner.view);
             if (!ownsWindow(owner.identity)) return;
             chunks.push(...page.chunks);
             if (page.after === null) break;
@@ -1929,7 +1977,7 @@ export function Conversation(props: ConversationProps) {
           };
           try {
             for (;;) {
-              const page = await history(fence, cursor);
+              const page = await history(fence, cursor, owner.view);
               if (!ownsWindow(owner.identity)) return;
               publishMetadata(page.chunks, page.through);
               // Metadata beyond the loaded viewport grants no reason to fetch
@@ -3963,10 +4011,24 @@ export function Conversation(props: ConversationProps) {
             const first = projectedTurn(initial.turnKey);
             if (!first) return <View />;
             const turn = () => projectedTurn(initial.turnKey) ?? first;
+            const groups = computed(() =>
+              (projectedSection(initial.turnKey)?.entries ?? []).filter(
+                (item): item is ProcessGroup =>
+                  item.kind === 'process' && item.turnKey === initial.turnKey,
+              ),
+            );
+            const work = computed(() =>
+              groups().flatMap((group) => {
+                const work = groupWork(group, currentRow);
+                return work ? [work] : [];
+              }),
+            );
             const images = computed(() => {
-              const folded = turn().foldedWork;
-              return folded
-                ? folded.images.map(({ position, image }) => ({
+              const recorded =
+                turn().foldedWork?.images ??
+                (work().length ? work().flatMap((work) => work.images) : undefined);
+              return recorded
+                ? recorded.slice(-4).map(({ position, image }) => ({
                     key: `${historyRowKey(position)}/${image ?? 'content'}`,
                     position,
                     image: image ?? undefined,
@@ -3976,12 +4038,6 @@ export function Conversation(props: ConversationProps) {
                     initial.turnKey,
                   );
             });
-            const groups = computed(() =>
-              (projectedSection(initial.turnKey)?.entries ?? []).filter(
-                (item): item is ProcessGroup =>
-                  item.kind === 'process' && item.turnKey === initial.turnKey,
-              ),
-            );
             return (
               <TurnSummary
                 turn={turn}
@@ -3994,7 +4050,11 @@ export function Conversation(props: ConversationProps) {
                   sessionId,
                   through: () => latestKnown,
                   refs: images,
-                  total: () => turn().foldedWork?.imageCount,
+                  total: () =>
+                    turn().foldedWork?.imageCount ??
+                    (work().length
+                      ? work().reduce((total, work) => total + work.imageCount, 0)
+                      : undefined),
                   preview: props.previewImage,
                 }}
                 toggle={(open) => {
@@ -4026,6 +4086,10 @@ export function Conversation(props: ConversationProps) {
                 runId(),
                 group().turnKey === runTurn() ? runTurn() : null,
               );
+            effect(() => {
+              const id = group().workRowId;
+              if (id && groupState(initial.group.key).open() && currentRow(id)) loadGroupSteps(id);
+            });
             const liveTools = computed(() =>
               toolActivity().filter((item) =>
                 group().members.some(

@@ -12654,6 +12654,11 @@ export const contracts: {
                     type: 'string',
                     const: 'turn',
                   },
+                  {
+                    description: 'The steps of the work group at the anchor.',
+                    type: 'string',
+                    const: 'steps',
+                  },
                 ],
               },
             },
@@ -13008,6 +13013,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryFoldedWork',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  work: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkGroup',
                       },
                       {
                         type: 'null',
@@ -13543,58 +13558,23 @@ export const contracts: {
                 type: 'string',
                 format: 'uuid',
               },
-              HistoryField: {
-                description: 'A readable field in a conversation window, in presentation order.',
-                type: 'string',
-                enum: ['thinking', 'body'],
-              },
-              Role: {
-                description:
-                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
-                type: 'string',
-                enum: [
-                  'system',
-                  'context',
-                  'tool',
-                  'compaction',
-                  'failure',
-                  'user',
-                  'assistant',
-                  'tool_call',
-                  'tool_result',
-                ],
-              },
-              HistoryOrder: {
-                description:
-                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+              HistoryWorkGroup: {
                 type: 'object',
                 properties: {
-                  path: {
+                  end: {
+                    $ref: '#/$defs/Cursor',
+                  },
+                  kinds: {
+                    description: 'In order of first appearance.',
                     type: 'array',
                     items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
+                      $ref: '#/$defs/HistoryWorkKind',
                     },
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
+                  last: {
+                    $ref: '#/$defs/HistoryWorkKind',
                   },
-                },
-                additionalProperties: false,
-                required: ['path', 'itemIndex'],
-              },
-              HistoryTool: {
-                description:
-                  'Canonical references at the requested fence, never execution authority.\nBoth references are present only for a unique same-Turn call/result pair\nwith matching origin and parentage. An unpaired row retains its own reference.',
-                type: 'object',
-                properties: {
-                  toolUseId: {
-                    type: 'string',
-                  },
-                  call: {
+                  lastCall: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryToolCall',
@@ -13604,19 +13584,111 @@ export const contracts: {
                       },
                     ],
                   },
-                  result: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/HistoryToolResult',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
+                  thoughts: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  tools: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messages: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  imageCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  images: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryWorkImage',
+                    },
                   },
                 },
                 additionalProperties: false,
-                required: ['toolUseId', 'call', 'result'],
+                required: [
+                  'end',
+                  'kinds',
+                  'last',
+                  'thoughts',
+                  'tools',
+                  'messages',
+                  'imageCount',
+                  'images',
+                ],
+              },
+              Cursor: {
+                description:
+                  "Byte offset in one message field's UTF-8 text, not a bearer capability.",
+                type: 'object',
+                properties: {
+                  field: {
+                    $ref: '#/$defs/HistoryField',
+                    default: 'body',
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset'],
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              HistoryWorkKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      presentation: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'presentation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'thought',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
               },
               HistoryToolCall: {
                 type: 'object',
@@ -13760,6 +13832,76 @@ export const contracts: {
                   },
                 ],
               },
+              Role: {
+                description:
+                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
+                type: 'string',
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
+              },
+              HistoryTool: {
+                description:
+                  'Canonical references at the requested fence, never execution authority.\nBoth references are present only for a unique same-Turn call/result pair\nwith matching origin and parentage. An unpaired row retains its own reference.',
+                type: 'object',
+                properties: {
+                  toolUseId: {
+                    type: 'string',
+                  },
+                  call: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolCall',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  result: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolResult',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['toolUseId', 'call', 'result'],
+              },
               HistoryToolResult: {
                 type: 'object',
                 properties: {
@@ -13826,28 +13968,6 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-              },
-              Cursor: {
-                description:
-                  "Byte offset in one message field's UTF-8 text, not a bearer capability.",
-                type: 'object',
-                properties: {
-                  field: {
-                    $ref: '#/$defs/HistoryField',
-                    default: 'body',
-                  },
-                  position: {
-                    $ref: '#/$defs/HistoryRowAddress',
-                  },
-                  offset: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
-                  },
-                },
-                additionalProperties: false,
-                required: ['position', 'offset'],
               },
             },
           },
@@ -21115,6 +21235,11 @@ export const contracts: {
                     type: 'string',
                     const: 'turn',
                   },
+                  {
+                    description: 'The steps of the work group at the anchor.',
+                    type: 'string',
+                    const: 'steps',
+                  },
                 ],
               },
             },
@@ -21469,6 +21594,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryFoldedWork',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  work: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkGroup',
                       },
                       {
                         type: 'null',
@@ -22004,58 +22139,23 @@ export const contracts: {
                 type: 'string',
                 format: 'uuid',
               },
-              HistoryField: {
-                description: 'A readable field in a conversation window, in presentation order.',
-                type: 'string',
-                enum: ['thinking', 'body'],
-              },
-              Role: {
-                description:
-                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
-                type: 'string',
-                enum: [
-                  'system',
-                  'context',
-                  'tool',
-                  'compaction',
-                  'failure',
-                  'user',
-                  'assistant',
-                  'tool_call',
-                  'tool_result',
-                ],
-              },
-              HistoryOrder: {
-                description:
-                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+              HistoryWorkGroup: {
                 type: 'object',
                 properties: {
-                  path: {
+                  end: {
+                    $ref: '#/$defs/Cursor',
+                  },
+                  kinds: {
+                    description: 'In order of first appearance.',
                     type: 'array',
                     items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
+                      $ref: '#/$defs/HistoryWorkKind',
                     },
                   },
-                  itemIndex: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
+                  last: {
+                    $ref: '#/$defs/HistoryWorkKind',
                   },
-                },
-                additionalProperties: false,
-                required: ['path', 'itemIndex'],
-              },
-              HistoryTool: {
-                description:
-                  'Canonical references at the requested fence, never execution authority.\nBoth references are present only for a unique same-Turn call/result pair\nwith matching origin and parentage. An unpaired row retains its own reference.',
-                type: 'object',
-                properties: {
-                  toolUseId: {
-                    type: 'string',
-                  },
-                  call: {
+                  lastCall: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryToolCall',
@@ -22065,19 +22165,111 @@ export const contracts: {
                       },
                     ],
                   },
-                  result: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/HistoryToolResult',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
+                  thoughts: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  tools: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messages: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  imageCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  images: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryWorkImage',
+                    },
                   },
                 },
                 additionalProperties: false,
-                required: ['toolUseId', 'call', 'result'],
+                required: [
+                  'end',
+                  'kinds',
+                  'last',
+                  'thoughts',
+                  'tools',
+                  'messages',
+                  'imageCount',
+                  'images',
+                ],
+              },
+              Cursor: {
+                description:
+                  "Byte offset in one message field's UTF-8 text, not a bearer capability.",
+                type: 'object',
+                properties: {
+                  field: {
+                    $ref: '#/$defs/HistoryField',
+                    default: 'body',
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset'],
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              HistoryWorkKind: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool',
+                      },
+                      presentation: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'presentation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'thought',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
               },
               HistoryToolCall: {
                 type: 'object',
@@ -22221,6 +22413,76 @@ export const contracts: {
                   },
                 ],
               },
+              Role: {
+                description:
+                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
+                type: 'string',
+                enum: [
+                  'system',
+                  'context',
+                  'tool',
+                  'compaction',
+                  'failure',
+                  'user',
+                  'assistant',
+                  'tool_call',
+                  'tool_result',
+                ],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
+              },
+              HistoryTool: {
+                description:
+                  'Canonical references at the requested fence, never execution authority.\nBoth references are present only for a unique same-Turn call/result pair\nwith matching origin and parentage. An unpaired row retains its own reference.',
+                type: 'object',
+                properties: {
+                  toolUseId: {
+                    type: 'string',
+                  },
+                  call: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolCall',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  result: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolResult',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['toolUseId', 'call', 'result'],
+              },
               HistoryToolResult: {
                 type: 'object',
                 properties: {
@@ -22287,28 +22549,6 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-              },
-              Cursor: {
-                description:
-                  "Byte offset in one message field's UTF-8 text, not a bearer capability.",
-                type: 'object',
-                properties: {
-                  field: {
-                    $ref: '#/$defs/HistoryField',
-                    default: 'body',
-                  },
-                  position: {
-                    $ref: '#/$defs/HistoryRowAddress',
-                  },
-                  offset: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                    maximum: 9007199254740991,
-                  },
-                },
-                additionalProperties: false,
-                required: ['position', 'offset'],
               },
             },
           },
