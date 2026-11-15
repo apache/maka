@@ -160,7 +160,10 @@ fn validate_ranges(
                     || attempt.cleanup != OperationCleanup::Confirmed
             })
             || view.tools.values().any(crate::fold::tool_pending)
-            || view.cells.values().any(|cell| cell.pending())
+            || view.cells.values().any(|cell| match view.terminal {
+                Some(Terminal::Completed) => cell.settlement_pending(),
+                _ => cell.pending(),
+            })
             || view.external.as_ref().is_some_and(|task| {
                 (task.closed.is_none()
                     && view.terminal != Some(maka_agent_facts::durable::Terminal::Cancelled))
