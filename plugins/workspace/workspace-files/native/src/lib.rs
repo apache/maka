@@ -225,25 +225,15 @@ fn capture(
     state_root: &Path,
     floor: &Sandbox,
 ) -> Result<Captured, ToolError> {
-    let path = PathBuf::from(&workspace.path);
-    let directory =
-        maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
-    if maka_fs_tools::workspace::read_directory_identity(
-        path.clone(),
-        directory.try_clone().map_err(failed)?,
-    )
-    .map_err(failed)?
-        != workspace.identity
-    {
-        return Err(failed("Workspace marker identity changed"));
-    }
+    let (path, directory, identity) =
+        maka_workspace_support::capture_selected(workspace).map_err(failed)?;
     let (sandbox, ceiling) =
         maka_workspace_support::sandbox(workspace, access, state_root).map_err(failed)?;
     let sandbox = sandbox.intersect(floor).map_err(failed)?;
     let ceiling = ceiling.intersect(floor).map_err(failed)?;
     // Policy resolution may inspect workspace metadata; never accept replacement
     // of the original directory during those reads.
-    maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
+    maka_fs_tools::directory::open(&path, &identity).map_err(failed)?;
     Ok(Captured {
         path,
         directory,

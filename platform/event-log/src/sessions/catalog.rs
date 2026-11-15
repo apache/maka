@@ -74,8 +74,7 @@ const PREDICATE: &str = "
     AND (?3 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.path')=?3))
     AND (?4 IS NULL OR substr(id, 1, length(?4)) = ?4)
     AND (?5 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.projectId')=?5))
-    AND (?6 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.identity')=?6))
-    AND instr(COALESCE(json_extract(configuration, '$.title'), ''), ?7) > 0";
+    AND instr(COALESCE(json_extract(configuration, '$.title'), ''), ?6) > 0";
 
 #[derive(Clone)]
 pub(crate) struct Selection {
@@ -84,7 +83,6 @@ pub(crate) struct Selection {
     cwd: Option<String>,
     prefix: Option<String>,
     project: Option<String>,
-    workspace_identity: Option<String>,
     title_query: String,
     parent: Option<String>,
     filter: CatalogFilter,
@@ -97,7 +95,6 @@ impl Selection {
             cwd: None,
             prefix: None,
             project: None,
-            workspace_identity: None,
             title_query: String::new(),
             parent: None,
             filter,
@@ -129,12 +126,9 @@ impl Selection {
                     CatalogSelection::Project(project) => {
                         selection.project = Some(project.to_string());
                     }
-                    CatalogSelection::Workspace {
-                        session_id,
-                        identity,
-                    } => {
+                    CatalogSelection::Workspace { session_id, path } => {
                         validate_id(session_id)?;
-                        selection.workspace_identity = Some(identity.clone().into());
+                        selection.cwd = Some(path.clone());
                     }
                 }
             }
@@ -159,12 +153,12 @@ impl Selection {
             }
         };
         let visibility = if self.published_only {
-            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?10 AND r.ready=1 AND r.visible=1)"
+            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?9 AND r.ready=1 AND r.visible=1)"
         } else {
             ""
         };
         let parent = if self.parent.is_some() {
-            "AND json_extract(configuration, '$.parentSessionId') = ?13"
+            "AND json_extract(configuration, '$.parentSessionId') = ?12"
         } else {
             ""
         };
@@ -175,8 +169,8 @@ impl Selection {
         };
         let sql = format!(
             "SELECT {PIN_ORDER}, catalog_recency, id FROM session_control WHERE {PREDICATE} {visibility} {parent} {roots}
-            AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?11, ?12, ?8)
-            ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?9"
+            AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?10, ?11, ?7)
+            ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?8"
         );
         let mut values = vec![
             rusqlite::types::Value::Integer(if self.filter.archived_only {
@@ -194,9 +188,6 @@ impl Selection {
                 .clone()
                 .map_or(rusqlite::types::Value::Null, Into::into),
             self.project
-                .clone()
-                .map_or(rusqlite::types::Value::Null, Into::into),
-            self.workspace_identity
                 .clone()
                 .map_or(rusqlite::types::Value::Null, Into::into),
             self.title_query.clone().into(),

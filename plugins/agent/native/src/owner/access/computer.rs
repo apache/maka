@@ -315,7 +315,16 @@ impl NativeCallAccess for BoundCall {
             if self.access.target_for_context(&self.call).await? != self.target {
                 return Err(ToolError::Failed("Native source changed".into()));
             }
-            self.access.live_configuration().await
+            let current = self.access.live_configuration().await?;
+            let owner = self.access.owner().map_err(ToolError::Failed)?;
+            crate::workspace::validate(
+                &owner.workspace_roots,
+                &current.workspace,
+                &owner.managed_worktrees,
+            )
+            .await
+            .map_err(ToolError::Failed)?;
+            Ok(current)
         })
     }
     fn bind_original<'a>(
@@ -602,7 +611,6 @@ impl ComputerAccess for BoundCall {
                     },
                     cwd: current.workspace.path,
                 },
-                workspace_identity: current.workspace.identity,
             })
         })
     }

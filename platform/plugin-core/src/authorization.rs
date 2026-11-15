@@ -32,15 +32,12 @@ pub enum Boundary {
     Profile,
     Directory {
         path: String,
-        identity: maka_sandbox::workspace::DirectoryIdentity,
     },
     Session {
         boundary: SessionBoundary,
-        workspace_identity: maka_sandbox::workspace::WorkspaceIdentity,
     },
     Workspace {
         workspace: maka_sandbox::workspace::WorkspaceProjection,
-        workspace_identity: maka_sandbox::workspace::WorkspaceIdentity,
         origin: maka_sandbox::workspace::WorkspaceOrigin,
         sandbox_mode: maka_sandbox::Mode,
     },

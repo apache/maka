@@ -612,9 +612,7 @@ fn verify_destination(
                 .file_name()
                 .into_string()
                 .map_err(|_| invalid("restored path invalid"))?;
-            if prefix.is_empty() && name == ".maka-workspace.json" {
-                continue;
-            }
+
             let path = if prefix.is_empty() {
                 name.clone()
             } else {

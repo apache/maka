@@ -484,6 +484,7 @@ impl Rig {
                 "goal",
                 "changeGoal",
                 "metadata",
+                "listFiles",
             ]
         };
         let mut endpoints = BTreeMap::from([(
@@ -6360,6 +6361,144 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     let cleanup = rig.finish().await;
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(matches!(served, Ok(Ok(()))), "{served:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_markers() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
+    let mut rig = Rig::new().expect("workspace reclone fixture");
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let root_workspace = rig.directory.path().join("workspace");
+        let repo_a = root_workspace.join("repo-a");
+        let repo_b = root_workspace.join("repo-b");
+        std::fs::create_dir_all(&repo_a)?;
+        std::fs::create_dir_all(&repo_b)?;
+        std::fs::write(repo_a.join("before.txt"), "v1")?;
+
+        let _initial = rig.start().await?;
+        let client = rig.client.as_ref().ok_or("client missing")?;
+
+        let first = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "First conversation",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_a},
+            }),
+        )
+        .await?;
+        let first_id = first["session"]["id"]
+            .as_str()
+            .ok_or("first session id missing")?
+            .to_owned();
+
+        let other = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "Other workspace conversation",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_b},
+            }),
+        )
+        .await?;
+        let other_id = other["session"]["id"]
+            .as_str()
+            .ok_or("other session id missing")?
+            .to_owned();
+
+        let names = |dir: &std::path::Path| -> std::io::Result<Vec<std::ffi::OsString>> {
+            let mut entries = std::fs::read_dir(dir)?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort();
+            Ok(entries)
+        };
+        assert_eq!(
+            names(&repo_a)?,
+            vec![std::ffi::OsString::from("before.txt")]
+        );
+        assert!(names(&repo_b)?.is_empty());
+
+        std::fs::remove_dir_all(&repo_a)?;
+        std::fs::create_dir_all(&repo_a)?;
+        std::fs::write(repo_a.join("after-reclone.txt"), "v2")?;
+
+        let files = model_recovery::call(
+            client,
+            "agent",
+            "listFiles",
+            json!({
+                "sessionId": &first_id,
+                "path": null,
+                "after": null,
+            }),
+        )
+        .await?;
+        let page: maka_fs_tools::files::FilePage = serde_json::from_value(files)?;
+        assert_eq!(
+            page.entries,
+            vec![maka_fs_tools::files::FileEntry {
+                path: maka_fs_tools::path::WorkspacePath::from_bytes(b"after-reclone.txt")?,
+                kind: maka_fs_tools::files::FileKind::File,
+            }]
+        );
+
+        let second = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "Second conversation after reclone",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_a},
+            }),
+        )
+        .await?;
+        let second_id = second["session"]["id"]
+            .as_str()
+            .ok_or("second session id missing")?
+            .to_owned();
+
+        let scoped = model_recovery::call(
+            client,
+            "agent",
+            "list",
+            json!({
+                "filter": "all",
+                "scope": {"kind": "workspace", "sessionId": &first_id},
+                "position": {"kind": "start"},
+            }),
+        )
+        .await?;
+        let scoped_ids: Vec<_> = scoped["sessions"]
+            .as_array()
+            .ok_or("scoped sessions missing")?
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect();
+        assert!(scoped_ids.contains(&first_id.as_str()), "{scoped_ids:?}");
+        assert!(scoped_ids.contains(&second_id.as_str()), "{scoped_ids:?}");
+        assert!(!scoped_ids.contains(&other_id.as_str()), "{scoped_ids:?}");
+        assert_eq!(
+            names(&repo_a)?,
+            vec![std::ffi::OsString::from("after-reclone.txt")]
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 

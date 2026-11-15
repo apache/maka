@@ -17,14 +17,12 @@
  * under the License.
  */
 
-use maka_sandbox::workspace::DirectoryIdentity;
 mod mcp_management;
 use HistoryRowAddress as RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 pub use maka_agent_ports::session::history::{HistoryOrder, HistoryRowAddress, HistoryView};
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
-use maka_sandbox::workspace::WorkspaceIdentity;
 pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -451,10 +449,6 @@ pub struct Workspace {
     pub project_id: Option<uuid::Uuid>,
     #[schemars(length(min = 1))]
     pub path: String,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    pub directory_identity: DirectoryIdentity,
-    #[schemars(with = "String", regex(pattern = "^workspace:v1:[A-Fa-f0-9-]{36}$"))]
-    pub identity: WorkspaceIdentity,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

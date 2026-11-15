@@ -18,7 +18,8 @@
  */
 
 //! A published directory is a stable filesystem observation, not a string prefix.
-use super::{Workspace, invalid};
+use super::invalid;
+use crate::directory::Observation;
 use cap_std::{ambient_authority, fs::Dir};
 use maka_sandbox::workspace::DirectoryIdentity;
 use std::{
@@ -28,7 +29,7 @@ use std::{
 
 pub struct PublishedDirectory {
     path: PathBuf,
-    identity: DirectoryIdentity,
+    identity: Observation,
 }
 
 impl PublishedDirectory {
@@ -40,8 +41,12 @@ impl PublishedDirectory {
         Ok(Self { path, identity })
     }
 
-    pub fn identity(&self) -> io::Result<DirectoryIdentity> {
+    pub fn identity(&self) -> io::Result<Observation> {
         Ok(self.identity.clone())
+    }
+
+    pub fn execution_basis(&self) -> io::Result<serde_json::Value> {
+        DirectoryIdentity::execution_basis(&self.validate_root()?)
     }
 
     pub fn path(&self) -> &Path {
@@ -50,7 +55,7 @@ impl PublishedDirectory {
 
     fn validate_root(&self) -> io::Result<Dir> {
         let visible = Dir::open_ambient_dir(&self.path, ambient_authority())?;
-        if crate::directory::identity(&visible)? != self.identity {
+        if !self.identity.matches(&visible)? {
             return Err(invalid("workspace directory changed"));
         }
         Ok(visible)
@@ -93,9 +98,9 @@ impl PublishedDirectory {
     /// Names use UTF-16 order because they also act as client continuation cursors.
     pub fn directory_names(&self, segments: &[String]) -> io::Result<Vec<String>> {
         let _root = self.validate_root()?;
-        let directory = Workspace::capture(&self.resolve(segments)?)?;
+        let (path, dir, identity) = crate::directory::capture_directory(&self.resolve(segments)?)?;
         let mut names = Vec::new();
-        for entry in directory.dir.entries()? {
+        for entry in dir.entries()? {
             let entry = entry?;
             let kind = entry.file_type()?;
             if !kind.is_dir() && !kind.is_symlink() {
@@ -108,11 +113,13 @@ impl PublishedDirectory {
             if name.contains(['/', '\\', '\0']) {
                 continue;
             }
-            if self.contained(&directory.path.join(&name)).is_ok() {
+            if self.contained(&path.join(&name)).is_ok() {
                 names.push(name);
             }
         }
-        directory.validate_directory()?;
+        if path.canonicalize()? != path || crate::directory::open(&path, &identity).is_err() {
+            return Err(invalid("workspace directory changed"));
+        }
         self.validate_root()?;
         names.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
         Ok(names)

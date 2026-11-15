@@ -96,7 +96,17 @@ impl Owner {
             workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         };
         let (global_instruction, instructions) = if preferences.workspace_instructions {
-            let workspace = workspace.cloned();
+            let project = match workspace {
+                Some(workspace) => Some(
+                    workspace::open_workspace(
+                        &self.workspace_roots,
+                        workspace,
+                        &self.managed_worktrees,
+                    )
+                    .await?,
+                ),
+                None => None,
+            };
             let home = self.instruction_home.clone();
             tokio::task::spawn_blocking(move || {
                 let mut global_instruction = String::new();
@@ -112,14 +122,9 @@ impl Owner {
                     .map(|instruction| instruction.text)
                     .unwrap_or_default();
                 }
-                let Some(workspace) = workspace else {
+                let Some(project) = project else {
                     return Ok((global_instruction, String::new()));
                 };
-                let project = maka_fs_tools::workspace::open_directory(
-                    Path::new(&workspace.path),
-                    &workspace.identity,
-                )
-                .map_err(|_| "agent_workspace_unavailable")?;
                 let global = home
                     .and_then(|home| home.open_dir(".maka").ok())
                     .map(|directory| read(&directory, false))

@@ -95,7 +95,7 @@ pub enum CatalogSelection {
     Workspace {
         /// The original owned anchor also participates in continuation identity.
         session_id: String,
-        identity: maka_sandbox::workspace::WorkspaceIdentity,
+        path: String,
     },
 }
 

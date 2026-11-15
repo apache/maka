@@ -3503,7 +3503,6 @@ export interface AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointInspecti
   operationId: string;
 }
 export interface AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentHistoryCheckpointLoadReceiptOutput_AgentHistoryCheckpointObject;
@@ -3559,7 +3558,6 @@ export interface AgentLoadHistoryCheckpointOutput_AgentCheckpointInspection {
   operationId: string;
 }
 export interface AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentLoadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
@@ -3731,7 +3729,6 @@ export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSnapshot
   cut: number[];
 }
 export interface AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
@@ -3779,7 +3776,6 @@ export interface AgentRestoreSessionCheckpointOutput_AgentHistoryCheckpointObjec
   bytes: number;
 }
 export interface AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentRestoreSessionCheckpointOutput_AgentHistoryCheckpointObject;
@@ -3893,7 +3889,6 @@ export interface AgentSessionCheckpointRestoreReceiptOutput_AgentHistoryCheckpoi
   bytes: number;
 }
 export interface AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentSessionCheckpointRestoreReceiptOutput_AgentHistoryCheckpointObject;
@@ -4423,5 +4418,4 @@ export interface TerminalReadDisplayOutput_Style {
  */
 export interface SkillLibraryCandidatesInput_SkillLibraryCandidateDirectory {
   path: string;
-  directoryIdentity: string;
 }

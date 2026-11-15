@@ -67,18 +67,43 @@ fn durable_lease_blocks_other_process_even_after_cache_removal() {
 }
 
 #[test]
-fn copied_root_marker_does_not_authorize_another_directory() {
-    use maka_event_log::root::{ROOT_MARKER, RUST_ROOT_MARKER, resolve};
+fn relocated_root_keeps_logical_identity_and_blocks_competing_copy() {
+    use maka_event_log::root::{ROOT_MARKER, resolve};
+
+    if let Some(base) = std::env::var_os("MAKA_ROOT_RELOCATION_TEST_BASE") {
+        let base = Path::new(&base);
+        let error = RootOwner::open(&base.join("original"), &namespaces(base))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        return;
+    }
 
     let temp = tempfile::tempdir().unwrap();
     let ns = namespaces(temp.path());
     let original = temp.path().join("original");
-    let replacement = temp.path().join("replacement");
+    let relocated = temp.path().join("relocated");
     let owner = RootOwner::create(&original, &ns).unwrap();
-    assert_eq!(resolve(&original).unwrap().root_id(), owner.root_id());
-    fs::create_dir(&replacement).unwrap();
-    for name in [ROOT_MARKER, RUST_ROOT_MARKER] {
-        fs::copy(original.join(name), replacement.join(name)).unwrap();
-    }
-    assert!(resolve(&replacement).is_err());
+    let root_id = owner.root_id().to_owned();
+    drop(owner);
+
+    fs::create_dir(&relocated).unwrap();
+    fs::copy(original.join(ROOT_MARKER), relocated.join(ROOT_MARKER)).unwrap();
+    assert_eq!(resolve(&relocated).unwrap().root_id(), root_id);
+
+    let relocated_owner = RootOwner::open(&relocated, &ns).unwrap();
+    assert_eq!(relocated_owner.root_id(), root_id);
+
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "relocated_root_keeps_logical_identity_and_blocks_competing_copy",
+            "--nocapture",
+        ])
+        .env("MAKA_ROOT_RELOCATION_TEST_BASE", temp.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    drop(relocated_owner);
+    assert_eq!(RootOwner::open(&original, &ns).unwrap().root_id(), root_id);
 }
