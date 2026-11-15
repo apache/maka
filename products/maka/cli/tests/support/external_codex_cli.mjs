@@ -19,14 +19,23 @@
 
 import net from 'node:net';
 import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-const invocation = process.argv.slice(2).join(' ');
+const args = process.argv.slice(2);
+const managedAgent = join(process.env.HOME, '.maka', 'external-agents', 'antigravity', 'agent');
 const antigravity =
-  invocation === 'acp --process-per-session --dangerously-skip-permissions --agent maka';
-if (!antigravity && invocation !== 'app-server --listen stdio://')
+  args.length === 7 &&
+  args.slice(0, 6).join(' ') ===
+    'acp --process-per-session --dangerously-skip-permissions --agent maka --add-dir' &&
+  args[6] === managedAgent;
+if (!antigravity && args.join(' ') !== 'app-server --listen stdio://')
   throw Error('Unexpected external agent invocation');
+if (antigravity) {
+  const profile = await readFile(join(managedAgent, '.agents', 'agents', 'maka.md'), 'utf8');
+  if (!profile.startsWith('---\nname: maka\n')) throw Error('Missing Maka agent definition');
+}
 const address = new URL(process.env.FAKE_CONTROL);
 if (address.hostname !== '127.0.0.1') throw Error('Controller must be owned loopback');
 const rootPid = Number(process.env.FAKE_ROOT_PID);
