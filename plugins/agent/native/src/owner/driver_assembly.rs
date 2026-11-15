@@ -342,7 +342,20 @@ impl Owner {
                         driver::NativeBackend::Model { model, cells: cells.clone() }
                     }
                     (None, Some(accepted)) => {
-                        let mut backend = self.executors.restore(accepted).map_err(RunError::InvalidInput)?;
+                        let mut backend = match self.executors.restore(accepted) {
+                            Ok(backend) => backend,
+                            Err(error @ crate::executor::RestoreError::Changed)
+                                if accepted.selection.executor == "external"
+                                    && accepted.selection.settings.runtime.as_deref() == Some("antigravity") => {
+                                preflight_stage = None;
+                                if let Some(exit) = Engine::new(state.clone()).retire_replaced_native_executor(&claim, UnixMillis(now() as i64)).await? {
+                                    return Ok(exit);
+                                }
+                                preflight_stage = Some(AuthorityStage::BackendScope);
+                                return Err(RunError::InvalidInput(error.to_string()));
+                            }
+                            Err(error) => return Err(RunError::InvalidInput(error.to_string())),
+                        };
                         let effects = driver_external_effects::NativeExternalEffects::new(self.clone(), access.clone(), claim.clone(), cleanup.clone(), workers.clone(), cells.clone())?;
                         original_external_effects = Some(effects.clone());
                         if accepted.selection.executor == "external" {

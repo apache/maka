@@ -624,15 +624,14 @@ impl Owner {
     fn physical_availability_changed(&self) {
         self.physical_availability_changed_after(true);
     }
-    fn physical_availability_changed_after(&self, retry_ready: bool) {
+    fn physical_availability_changed_after(&self, probe_authority: bool) {
         self.physical_changes.send_modify(|_| {});
         self.goals.execution_changed();
         self.scheduler.execution_changed();
-        if retry_ready {
-            self.wake_notify.notify_one();
-            if let Ok(root) = self.store.owned_root() {
-                root.capability_source_changed();
-            }
+        // A retired business probe can unblock cleanup without changing authority.
+        self.wake_notify.notify_one();
+        if probe_authority && let Ok(root) = self.store.owned_root() {
+            root.capability_source_changed();
         }
     }
     pub fn operation_id(&self, operation: &maka_plugin_core::operation::RecoveryRef) -> String {
