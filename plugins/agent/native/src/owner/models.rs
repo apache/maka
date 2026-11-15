@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::executor::CatalogRead;
 use maka_agent_api::contract::{
     ModelChoice, ModelRead, ModelResult, ModelsCursor, ModelsPage, ModelsRead,
 };
@@ -79,34 +80,21 @@ impl Owner {
     async fn external_choices(
         &self,
         requested_runtime: Option<&str>,
+        read: CatalogRead,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<ModelChoice>, ExecutorError> {
+    ) -> Result<(Vec<ModelChoice>, bool), ExecutorError> {
         if !self.executors.contains("external") {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         let Some(cwd) = self.external_cwd().await.map_err(ExecutorError::Provider)? else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         };
-        let mut request = serde_json::json!({"kind":"catalog", "cwd":cwd});
-        if let Some(runtime) = requested_runtime {
-            request["runtime"] = runtime.into();
-        }
-        let Some(catalog) = self
+        let (runtimes, refreshing) = self
             .executors
-            .external_query(cwd, request, cancellation.clone())
-            .await?
-        else {
-            return Ok(Vec::new());
-        };
-        let runtimes = if requested_runtime.is_some() {
-            std::slice::from_ref(&catalog)
-        } else {
-            catalog
-                .as_array()
-                .ok_or_else(|| ExecutorError::Provider("agent_external_catalog_invalid".into()))?
-        };
+            .external_catalog(cwd, requested_runtime, read, cancellation.clone())
+            .await?;
         let mut choices = Vec::new();
-        for runtime in runtimes {
+        for runtime in &runtimes {
             let runtime_id = runtime
                 .get("runtime")
                 .and_then(Value::as_str)
@@ -204,7 +192,7 @@ impl Owner {
                 });
             }
         }
-        Ok(choices)
+        Ok((choices, refreshing))
     }
     pub(super) async fn external_cwd(&self) -> Result<Option<String>, String> {
         let DirectoryPage::Roots { roots } = workspace::query(
@@ -226,6 +214,7 @@ impl Owner {
         if cancellation.is_cancelled() {
             return Err(ExecutorError::Cancelled.to_string());
         }
+        let refresh = matches!(input, ModelsRead::Start { .. });
         let (query, offset, expected) = match input {
             ModelsRead::Start { query } => (query, 0, None),
             ModelsRead::Continue { revision, cursor } => {
@@ -236,8 +225,23 @@ impl Owner {
             return Err("agent_model_query_invalid".into());
         }
         let mut choices = self.native_choices().await?;
-        match self.external_choices(None, cancellation).await {
-            Ok(external) => choices.extend(external),
+        let mut refreshing = false;
+        match self
+            .external_choices(
+                None,
+                if refresh {
+                    CatalogRead::Refresh
+                } else {
+                    CatalogRead::Snapshot
+                },
+                cancellation,
+            )
+            .await
+        {
+            Ok((external, pending)) => {
+                choices.extend(external);
+                refreshing = pending;
+            }
             Err(error @ (ExecutorError::Cancelled | ExecutorError::Retired)) => {
                 return Err(error.to_string());
             }
@@ -274,6 +278,7 @@ impl Owner {
         Ok(ModelsPage::Ready {
             revision,
             choices,
+            refreshing,
             complete,
             next: (!complete).then_some(ModelsCursor {
                 query,
@@ -293,9 +298,11 @@ impl Owner {
             BackendPreference::Model { .. } => self.native_choices().await?,
             BackendPreference::Executor { selection } if selection.executor == "external" => {
                 match selection.settings.runtime.as_deref() {
-                    Some(runtime) => match self.external_choices(Some(runtime), cancellation).await
+                    Some(runtime) => match self
+                        .external_choices(Some(runtime), CatalogRead::Resolve, cancellation)
+                        .await
                     {
-                        Ok(choices) => choices,
+                        Ok((choices, _)) => choices,
                         Err(error @ (ExecutorError::Cancelled | ExecutorError::Retired)) => {
                             return Err(error.to_string());
                         }

@@ -40,6 +40,7 @@ use uuid::Uuid;
 pub(crate) mod attachments;
 pub(crate) mod cleanup;
 pub(crate) mod external;
+pub(crate) use external::catalog::Read as CatalogRead;
 pub mod setup;
 
 use maka_agent_api::executor::{Execute, Selection, ServiceExecutor, contract};
@@ -249,6 +250,33 @@ impl Executors {
         };
         owner.query(cwd, request, cancellation).await.map(Some)
     }
+    pub fn external_catalog_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        match &self.0.get("external")?.implementation {
+            Implementation::External(owner) => Some(owner.catalog_changes()),
+            _ => None,
+        }
+    }
+
+    pub async fn external_catalog(
+        &self,
+        cwd: String,
+        runtime: Option<&str>,
+        read: CatalogRead,
+        cancellation: CancellationToken,
+    ) -> Result<(Vec<Value>, bool), Error> {
+        let Some(Backend {
+            implementation: Implementation::External(owner),
+            ..
+        }) = self.0.get("external")
+        else {
+            return Ok((Vec::new(), false));
+        };
+        let selected = runtime
+            .map(|runtime| owner.require_runtime(Some(runtime)))
+            .transpose()?;
+        owner.catalog(cwd, selected, read, cancellation).await
+    }
+
     pub fn select(&self, selection: Selection) -> Result<Backend, String> {
         selection
             .settings

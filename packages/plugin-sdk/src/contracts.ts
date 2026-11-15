@@ -25903,6 +25903,9 @@ export const contracts: {
                       $ref: '#/$defs/AgentModelChoice',
                     },
                   },
+                  refreshing: {
+                    type: 'boolean',
+                  },
                   complete: {
                     type: 'boolean',
                   },
@@ -25918,7 +25921,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'revision', 'choices', 'complete'],
+                required: ['kind', 'revision', 'choices', 'refreshing', 'complete'],
               },
               {
                 type: 'object',
@@ -41276,6 +41279,213 @@ export const contracts: {
               GoalReportKind: {
                 type: 'string',
                 enum: ['progress', 'achieved', 'blocked', 'paused'],
+              },
+            },
+          },
+          resources: {},
+        },
+        watchModels: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentModelsWatch',
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                default: '',
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentModelsPage',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                  choices: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentModelChoice',
+                    },
+                  },
+                  refreshing: {
+                    type: 'boolean',
+                  },
+                  complete: {
+                    type: 'boolean',
+                  },
+                  next: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentModelsCursor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'revision', 'choices', 'refreshing', 'complete'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              AgentModelChoice: {
+                type: 'object',
+                properties: {
+                  selection: {
+                    $ref: '#/$defs/AgentBackendPreference',
+                  },
+                  sourceName: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  thinkingLevels: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  defaultThinkingLevel: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
+              },
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+              AgentModelsCursor: {
+                type: 'object',
+                properties: {
+                  query: {
+                    type: 'string',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['query', 'offset'],
               },
             },
           },

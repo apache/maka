@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use futures_util::future::Shared;
+use catalog::Catalog;
 use maka_agent_api::executor::{ExternalConfiguration, NativeCommand, NativeRuntime};
 use maka_agent_ports::executor::RootSettlementOwner;
 use maka_agent_ports::executor::{Outcome, Request};
@@ -30,6 +30,7 @@ use std::{
 mod agy;
 mod agy_acp;
 mod attachments;
+pub(super) mod catalog;
 mod claude;
 mod codex;
 mod discovery;
@@ -165,75 +166,11 @@ async fn await_closed_task(
         .ok_or(Error::Unknown)
 }
 
-struct CatalogSnapshot {
-    cwd: String,
-    selected: Option<NativeRuntime>,
-    started: Instant,
-    result: Shared<BoxFuture<'static, Result<Value, Error>>>,
-}
-
-impl CatalogSnapshot {
-    fn reusable(&self) -> bool {
-        let Some(result) = self.result.peek() else {
-            return true;
-        };
-        let Ok(catalog) = result else {
-            return false;
-        };
-        let rows = match self.selected {
-            Some(_) => std::slice::from_ref(catalog),
-            None => catalog
-                .as_array()
-                .expect("unscoped native catalog is an array"),
-        };
-        self.started.elapsed() < Duration::from_secs(30)
-            && !rows.iter().any(|row| {
-                ["installation", "models"].iter().any(|field| {
-                    row.get(field)
-                        .and_then(|value| value.get("kind"))
-                        .and_then(Value::as_str)
-                        == Some("error")
-                })
-            })
-    }
-}
-enum Catalog {
-    Empty,
-    Cached(CatalogSnapshot),
-    Failed(Error),
-}
-impl Catalog {
-    fn failure(&self) -> Result<(), Error> {
-        match self {
-            Self::Failed(error) => Err(error.clone()),
-            _ => Ok(()),
-        }
-    }
-    fn invalidate(&mut self) {
-        if !matches!(self, Self::Failed(_)) {
-            *self = Self::Empty;
-        }
-    }
-    fn admit(
-        &self,
-        resources: &Arc<maka_plugin_core::work::resources::Resources>,
-    ) -> Result<maka_plugin_core::work::resources::Ticket, Error> {
-        self.failure()?;
-        resources.reserve().map_err(|_| Error::Retired)
-    }
-    fn observe(&mut self, result: &Result<Value, Error>) {
-        if let Err(error @ (Error::Unknown | Error::CleanupUnconfirmed)) = result
-            && !matches!(self, Self::Failed(Error::CleanupUnconfirmed))
-        {
-            *self = Self::Failed(error.clone());
-        }
-    }
-}
-
 pub(crate) struct External {
     commands: BTreeMap<NativeRuntime, NativeCommand>,
     queries: Arc<maka_plugin_core::work::resources::Resources>,
     catalog: tokio::sync::Mutex<Catalog>,
+    catalog_changes: tokio::sync::watch::Sender<()>,
     stop: CancellationToken,
     endpoints: tokio::sync::Mutex<BTreeMap<(String, NativeRuntime), Arc<mcp::Endpoint>>>,
     root: Arc<RootStore>,
@@ -305,7 +242,8 @@ impl External {
             commands,
             sessions,
             queries: Arc::default(),
-            catalog: tokio::sync::Mutex::new(Catalog::Empty),
+            catalog: tokio::sync::Mutex::new(Catalog::default()),
+            catalog_changes: tokio::sync::watch::channel(()).0,
             stop: CancellationToken::new(),
             endpoints: tokio::sync::Mutex::new(BTreeMap::new()),
             root: persistence.store().clone(),
@@ -497,7 +435,7 @@ impl External {
             .get("kind")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Invalid("Missing external query kind".into()))?;
-        if !matches!(kind, "status" | "catalog" | "models" | "usage_limits") {
+        if !matches!(kind, "status" | "models" | "usage_limits") {
             return Err(Error::Invalid("Unsupported external query kind".into()));
         }
         let selected = request
@@ -512,66 +450,79 @@ impl External {
                 "Usage limits require a supported runtime".into(),
             ));
         }
-        if kind == "catalog" {
-            let (discovery, catalog_runtime) = {
-                let mut cached = self.catalog.lock().await;
-                cached.failure()?;
-                if let Catalog::Cached(entry) = &*cached
-                    && entry.cwd == cwd
-                    && (entry.selected == selected
-                        || (entry.selected.is_none() && entry.result.peek().is_some()))
-                    && entry.reusable()
-                {
-                    (entry.result.clone(), entry.selected)
-                } else {
-                    let owner = self.clone();
-                    let work_cwd = cwd.clone();
-                    let discovery = async move {
-                        owner
-                            .discover(
-                                work_cwd,
-                                "catalog".into(),
-                                selected,
-                                owner.stop.child_token(),
-                            )
-                            .await
-                    }
-                    .boxed()
-                    .shared();
-                    let retained = discovery.clone();
-                    tokio::spawn(async move {
-                        let _ = retained.await;
-                    });
-                    *cached = Catalog::Cached(CatalogSnapshot {
-                        cwd,
-                        selected,
-                        started: Instant::now(),
-                        result: discovery.clone(),
-                    });
-                    (discovery, selected)
-                }
-            };
-            return tokio::select! { biased;
-                () = cancellation.cancelled() => Err(Error::Cancelled),
-                () = self.stop.cancelled() => Err(Error::Retired),
-                result = discovery => {
-                    let value = result?;
-                    if catalog_runtime.is_none() && let Some(runtime) = selected {
-                        value.as_array().expect("unscoped native catalog is an array")
-                            .iter().find(|row| row["runtime"].as_str() == Some(runtime.as_str()))
-                            .cloned().ok_or_else(|| Error::Invalid("Native runtime missing from catalog".into()))
-                    } else {
-                        Ok(value)
-                    }
-                },
-            };
-        }
         if kind == "status" {
             self.catalog.lock().await.invalidate();
         }
         self.discover(cwd, kind.to_owned(), selected, cancellation)
             .await
     }
+    pub(super) fn catalog_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.catalog_changes.subscribe()
+    }
+
+    pub(super) async fn catalog(
+        self: &Arc<Self>,
+        cwd: String,
+        selected: Option<NativeRuntime>,
+        read: catalog::Read,
+        cancellation: CancellationToken,
+    ) -> Result<(Vec<Value>, bool), Error> {
+        let mut changes = self.catalog_changes();
+        let mut cache = self.catalog.lock().await;
+        cache.failure()?;
+        if cancellation.is_cancelled() || self.stop.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let (generation, work) = cache.prepare(
+            &cwd,
+            self.commands
+                .keys()
+                .copied()
+                .filter(|runtime| selected.is_none_or(|selected| selected == *runtime)),
+            read != catalog::Read::Snapshot,
+        );
+        for runtime in work {
+            let owner = self.clone();
+            let cwd = cwd.clone();
+            tokio::spawn(async move {
+                let result = owner
+                    .discover(
+                        cwd,
+                        "catalog".into(),
+                        Some(runtime),
+                        owner.stop.child_token(),
+                    )
+                    .await;
+                owner
+                    .catalog
+                    .lock()
+                    .await
+                    .publish(generation, runtime, result);
+                owner.catalog_changes.send_modify(|_| {});
+            });
+        }
+        loop {
+            changes.borrow_and_update();
+            cache.failure()?;
+            if !cache.is_current(generation) {
+                return Err(Error::Invalid(
+                    "Native catalog workspace changed; retry the read".into(),
+                ));
+            }
+            let snapshot = cache.snapshot(selected);
+            if read != catalog::Read::Resolve || !snapshot.0.is_empty() || !snapshot.1 {
+                return Ok(snapshot);
+            }
+            drop(cache);
+            tokio::select! { biased;
+                () = cancellation.cancelled() => return Err(Error::Cancelled),
+                () = self.stop.cancelled() => return Err(Error::Retired),
+                result = changes.changed() => result.map_err(|_| Error::Retired)?,
+            }
+            cache = self.catalog.lock().await;
+        }
+    }
+
     async fn discover(
         self: &Arc<Self>,
         cwd: String,

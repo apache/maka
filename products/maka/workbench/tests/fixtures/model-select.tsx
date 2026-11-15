@@ -104,6 +104,31 @@ mount(() => {
   };
 
   const host = {
+    subscribe: async () => {
+      let first = true;
+      let closed: (() => void) | null = null;
+      return {
+        next: async () => {
+          if (first) {
+            first = false;
+            return {
+              kind: 'ready',
+              revision: 'r1',
+              choices: CHOICES,
+              next: null,
+              refreshing: false,
+            };
+          }
+          await new Promise<void>((resolve) => {
+            closed = resolve;
+          });
+          return null;
+        },
+        close: async () => {
+          closed?.();
+        },
+      };
+    },
     query: async (_endpoint: string, method: string, input: any) => {
       if (method === 'models') {
         const q = String(input?.query ?? '')
@@ -113,7 +138,7 @@ mount(() => {
           (item) =>
             !q || item.label.toLowerCase().includes(q) || item.sourceName.toLowerCase().includes(q),
         );
-        return { kind: 'ready', revision: 'r1', next: null, choices: filtered };
+        return { kind: 'ready', revision: 'r1', next: null, choices: filtered, refreshing: false };
       }
       throw new Error(method);
     },

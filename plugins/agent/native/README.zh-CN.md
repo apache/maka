@@ -42,6 +42,8 @@
 
 内置 `external` 执行器通过 PTY 驱动交互式 Claude Code，通过 ACP 驱动 agy，通过 app-server 驱动 Codex。在 `external.runtimes` 中启用对应 CLI，也可用 `external.commands` 配置程序、参数和环境。请先在原生 CLI 登录。CLI 使用当前账户配置和原工作区，原生工具使用完整权限，回调 Maka 的 MCP 工具仍受会话授权约束。
 
+模型菜单读取 Host 已发布的目录，不等待外部模型发现。各 Native CLI 来源独立刷新，并发读取复用已接纳的发现任务；刷新或暂时失败时保留上次成功结果。打开的菜单订阅目录发布，翻页校验目录版本且不启动发现。目录状态限定在同一工作区与激活实例内。
+
 原生 assistant 输出保留 agy ACP 的轮次和工具身份、Codex item ID 和 Claude API 的 `message.id`。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。agy、Codex 和 Claude 的思考内容与最终答复分别保存。
 
 每次任务拥有自己的原生进程、协议流和 Host bridge。Codex 执行使用前台 app-server，发现使用 daemon/proxy。agy 每次 new/resume 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 使用Maka 指定的会话 UUID 和 `--dangerously-skip-permissions`，先启动真正的空白读屏 PTY。Maka 自动处理原生主题、安全说明和绕过权限确认；仅当信任对话框明确指向本轮已获授权工作区的精确 canonical 路径时才确认信任，由 Claude 自己保存决定，不直接改写全局信任记录。登录仍由用户完成。交互提示和本轮 Host MCP 工具目录均就绪后，逐张粘贴 PNG/JPEG/GIF/WebP 上传的不可变临时文件路径，等待原生图片编号确认，再粘贴文字并只发送一次 Enter。JSONL 接纳必须匹配正文、原生图片标签及完整 image block 数量。终端控制字符转为可见形式，CRLF 归一化；Maka 说明通过独立普通 user 消息传入，不覆盖原生系统提示词；原生接入初始化只做一次，已交付说明摘要持久化，内容不变时不重复提交，变更或清空时明确替代旧说明。原生提问／计划回调仍须使用已捕获的 Host 对应工具；未识别的对话框显式失败，不猜测用户答案。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。

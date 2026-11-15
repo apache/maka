@@ -249,6 +249,7 @@ function ModelMenu(props: {
   const choices = () => page()?.choices ?? [];
   const selected = signal(0);
   const loading = signal(false);
+  const refreshing = signal(false);
   const pending = signal(false);
   const saving = delayed(pending);
   const effortOpen = signal(false);
@@ -256,12 +257,16 @@ function ModelMenu(props: {
   let alive = true;
   let generation = 0;
   let modelsQueued = false;
+  let restartQueued = false;
+  let pageSearch = '';
+  let subscription: { close(): Promise<void> } | null = null;
   let removeSearchKeys = () => {};
   let list: ListRef | undefined;
   cleanup(() => {
     alive = false;
     generation += 1;
     removeSearchKeys();
+    void subscription?.close();
   });
 
   const active = () => alive && props.current();
@@ -337,27 +342,26 @@ function ModelMenu(props: {
     if (!active() || (!restart && !page()?.next)) return;
     if (restart) {
       generation += 1;
-      batch(() => {
-        page.set(null);
-        selected.set(0);
-        error.set('');
-      });
+      restartQueued = true;
     }
     modelsQueued = true;
-    // Discarding a Promise cannot cancel admitted Host work. Keep one query
-    // in flight, then read the latest search or the next published page.
     if (loading()) return;
     loading.set(true);
     error.set('');
     try {
       do {
         modelsQueued = false;
+        const reset = restartQueued;
+        restartQueued = false;
         const reading = generation;
         const search = query();
+        const sameSearch = search === pageSearch;
+        const focused = () => (sameSearch ? choices()[index()] : undefined);
+        const count = reset ? (sameSearch ? Math.max(16, choices().length) : 16) : 0;
+        let previousPage = reset ? null : page();
         let changed = false;
         try {
           do {
-            const previousPage = page();
             if (previousPage && !previousPage.next) break;
             const result = await host.query(
               'agent',
@@ -373,22 +377,38 @@ function ModelMenu(props: {
                   'The model catalog keeps changing. Retry to read the current choices.',
                 );
               changed = true;
-              page.set(null);
-              selected.set(0);
+              previousPage = null;
               continue;
             }
-            const nextChoices = [...(previousPage?.choices ?? []), ...result.choices];
-            const currentIndex =
-              !previousPage && !search
-                ? nextChoices.findIndex((choice) => sameRoute(owner.backend(), choice.selection))
-                : -1;
+            const nextPage = {
+              revision: result.revision,
+              next: result.next,
+              choices: [...(previousPage?.choices ?? []), ...result.choices],
+            };
+            refreshing.set(result.refreshing);
+            if (
+              nextPage.next &&
+              (nextPage.choices.length < count ||
+                (focused() &&
+                  !nextPage.choices.some((choice) =>
+                    sameRoute(focused()!.selection, choice.selection),
+                  )))
+            ) {
+              previousPage = nextPage;
+              continue;
+            }
+            const focus = focused()?.selection ?? (!search ? owner.backend() : null);
+            const currentIndex = focus
+              ? nextPage.choices.findIndex((choice) => sameRoute(focus, choice.selection))
+              : -1;
             batch(() => {
-              page.set({
-                revision: result.revision,
-                next: result.next,
-                choices: nextChoices,
-              });
-              if (currentIndex >= 0) selected.set(currentIndex);
+              page.set(nextPage);
+              pageSearch = search;
+              selected.set(
+                currentIndex >= 0
+                  ? currentIndex
+                  : Math.min(selected(), Math.max(0, nextPage.choices.length - 1)),
+              );
             });
             break;
           } while (active() && reading === generation);
@@ -403,6 +423,29 @@ function ModelMenu(props: {
       if (alive) loading.set(false);
     }
   };
+
+  void (async () => {
+    try {
+      const opened = await host.subscribe('agent', 'watchModels', {});
+      if (!active()) {
+        await opened.close();
+        return;
+      }
+      subscription = opened;
+      for (;;) {
+        const result = await opened.next();
+        if (!active() || result === null) break;
+        if (result.kind !== 'ready') continue;
+        refreshing.set(result.refreshing);
+        if (page()?.revision !== result.revision) {
+          void loadModels(true);
+          void owner.refreshModel();
+        }
+      }
+    } catch (reason) {
+      if (active()) error.set(errorText(reason, 'Could not load models.'));
+    }
+  })();
 
   const retryCatalog = () => {
     if (active() && !pending()) void loadModels(true);
@@ -445,8 +488,6 @@ function ModelMenu(props: {
   };
   props.attach(handle);
   cleanup(() => props.detach(handle));
-  void owner.refreshModel();
-  void loadModels(true);
 
   return (
     <View style={{ minHeight: 0, flexShrink: 1 }}>
@@ -572,10 +613,14 @@ function ModelMenu(props: {
           )}
         </List>
       </If>
-      <If when={loading() && choices().length === 0}>
+      <If
+        when={(loading() || refreshing() || page() === null) && !error() && choices().length === 0}
+      >
         <Text style={noteStyle()}>{tr('Loading…')}</Text>
       </If>
-      <If when={!loading() && !error() && choices().length === 0}>
+      <If
+        when={page() !== null && !loading() && !refreshing() && !error() && choices().length === 0}
+      >
         <Text style={noteStyle()}>{tr('No models match this search.')}</Text>
       </If>
       <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />

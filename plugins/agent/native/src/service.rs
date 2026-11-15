@@ -627,6 +627,36 @@ impl Handler for Agent {
                         executors: owner.executors.names(),
                     })
                 }
+                "watchModels" => {
+                    let input: maka_agent_api::contract::ModelsWatch = decode(input)?;
+                    let mut changes = owner.executors.external_catalog_changes();
+                    loop {
+                        if let Some(changes) = changes.as_mut() {
+                            changes.borrow_and_update();
+                        }
+                        context
+                            .emit(encode(
+                                owner
+                                    .models(
+                                        maka_agent_api::contract::ModelsRead::Start {
+                                            query: input.query.clone(),
+                                        },
+                                        &context.scope().cancellation,
+                                    )
+                                    .await?,
+                            )?)
+                            .await?;
+                        tokio::select! { biased;
+                            () = context.scope().cancellation.cancelled() => return Err("agent_model_observation_cancelled".into()),
+                            result = async {
+                                match changes.as_mut() {
+                                    Some(changes) => changes.changed().await.map_err(|_| "agent_model_observation_closed"),
+                                    None => std::future::pending().await,
+                                }
+                            } => result?,
+                        }
+                    }
+                }
                 "models" => encode(
                     owner
                         .models(decode(input)?, &context.scope().cancellation)

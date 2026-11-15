@@ -869,6 +869,7 @@ export type AgentModelsPage =
       kind: 'ready';
       revision: string;
       choices: AgentModelChoice[];
+      refreshing: boolean;
       complete: boolean;
       next?: AgentModelsCursor | null;
     }
