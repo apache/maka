@@ -83,6 +83,7 @@ export const commonMessages = {
     '請在設定中選擇搜尋檔案夾。',
   ],
   'Folder unavailable': ['Folder unavailable', '文件夹不可用', '檔案夾無法使用'],
+  Input: ['Input', '输入', '輸入'],
   'Folder missing or volume disconnected': [
     'Folder missing or volume disconnected',
     '目录不存在或磁盘已断开',
