@@ -1208,8 +1208,12 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
     let outcome = AssertUnwindSafe(async {
         let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
         phase("enable Antigravity ACP", rig.configure(&mut anchor, &bootstrap, "antigravity")).await?;
-        let profile = rig.sandbox.home.join(".gemini/config/agents/maka.md");
-        assert!(tokio::fs::try_exists(&profile).await.map_err(|error| error.to_string())?);
+        let profile = rig.sandbox.home.join(".gemini/config/agents/maka");
+        let managed_profile = rig.sandbox.home.join(".maka/external-agents/antigravity/agent");
+        assert_eq!(
+            tokio::fs::read_link(&profile).await.map_err(|error| error.to_string())?,
+            managed_profile
+        );
         bootstrap.close().await?;
         rig.clients.pop();
         let sdk = connect_sdk(&mut rig, &anchor).await?;
@@ -1301,7 +1305,9 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
             }
             Ok(())
         }).await?;
-        assert!(!tokio::fs::try_exists(&profile).await.map_err(|error| error.to_string())?);
+        assert!(matches!(tokio::fs::symlink_metadata(&profile).await,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound));
+        assert!(!tokio::fs::try_exists(managed_profile.join("agent.md")).await.map_err(|error| error.to_string())?);
         recovery.close().await?;
         rig.clients.pop();
         phase("quit reopened Host", rig.hosts[1].quit(&mut reopened)).await?;

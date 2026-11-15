@@ -90,6 +90,9 @@ tokio-tungstenite.workspace = true
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+junction = "1.2.0"
+
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
