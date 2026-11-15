@@ -22,7 +22,7 @@ use maka_plugin_core::operation::OperationCleanup;
 use serde_json::json;
 
 #[tokio::test]
-async fn room_draft_relations_survive_restart_and_transfer_to_the_original_send() {
+async fn room_recovered_send_preserves_its_mentions_and_the_newer_draft() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("client.sqlite");
     let journal = Journal::open(&path).await.unwrap();
@@ -35,7 +35,7 @@ async fn room_draft_relations_survive_restart_and_transfer_to_the_original_send(
         &host,
         &InstanceId(vec![Uuid::new_v4()]),
         "agent",
-        "room",
+        "review-room",
         "composer",
     )
     .unwrap();
@@ -44,75 +44,79 @@ async fn room_draft_relations_survive_restart_and_transfer_to_the_original_send(
             &key,
             None,
             DraftEdit {
-                text: "Check the layout".into(),
-                mentions: vec!["designer".into(), "reviewer".into()],
+                text: "Review this patch".into(),
+                mentions: vec!["reviewer".into()],
                 reply_to: Some("original-message".into()),
                 ..DraftEdit::default()
             },
         )
         .await
         .unwrap();
-    let reopened = Journal::open(&path).await.unwrap();
-    let restored = reopened.load_draft(&key).await.unwrap().unwrap();
-    assert_eq!(restored.text, "Check the layout");
-    assert_eq!(restored.mentions, ["designer", "reviewer"]);
-    assert_eq!(restored.reply_to.as_deref(), Some("original-message"));
     let operation = Operation {
         id: Uuid::new_v4(),
         host: host.clone(),
         endpoint: "agent".into(),
         method: "send".into(),
-        session_id: Some("room".into()),
-        correlation: serde_json::to_value(SendSnapshot {
-            draft: restored,
-            selection: json!({"delivery":"steer"}),
-        })
-        .unwrap(),
+        session_id: Some("review-room".into()),
         draft: Some(DraftReference {
             key: key.clone(),
             revision: draft.revision,
         }),
+        correlation: serde_json::to_value(SendSnapshot {
+            draft,
+            selection: json!({}),
+        })
+        .unwrap(),
         upload: None,
         abandoned: false,
         reference: None,
         receipt: None,
     };
-    reopened.reserve_send(&operation).await.unwrap();
-    let empty = reopened.load_draft(&key).await.unwrap().unwrap();
-    assert!(empty.text.is_empty());
-    assert!(empty.mentions.is_empty());
-    assert_eq!(empty.reply_to, None);
-    let pending = reopened.pending(&host, &key).await.unwrap();
-    assert_eq!(pending.len(), 1);
-    let frozen: SendSnapshot = serde_json::from_value(pending[0].correlation.clone()).unwrap();
-    assert_eq!(frozen.draft.mentions, ["designer", "reviewer"]);
-    assert_eq!(frozen.draft.reply_to.as_deref(), Some("original-message"));
-    reopened
+    journal.reserve_send(&operation).await.unwrap();
+    let next = journal.load_draft(&key).await.unwrap().unwrap();
+    assert_eq!(
+        (
+            &*next.text,
+            next.mentions.as_slice(),
+            next.reply_to.as_deref()
+        ),
+        ("", &[][..], None)
+    );
+    journal
         .save_draft(
             &key,
-            Some(empty.revision),
+            Some(next.revision),
             DraftEdit {
-                text: "Next thought".into(),
-                mentions: vec!["writer".into()],
+                text: "Check the layout next".into(),
+                mentions: vec!["designer".into()],
+                reply_to: Some("layout-message".into()),
                 ..DraftEdit::default()
             },
         )
         .await
         .unwrap();
-    reopened.observe(&operation, &Receipt::Recorded {
+    journal.pool.close().await;
+    drop(journal);
+
+    let journal = Journal::open(&path).await.unwrap();
+    let pending = journal.pending(&host, &key).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let frozen: SendSnapshot = serde_json::from_value(pending[0].correlation.clone()).unwrap();
+    assert_eq!(frozen.draft.text, "Review this patch");
+    assert_eq!(frozen.draft.mentions, ["reviewer"]);
+    assert_eq!(frozen.draft.reply_to.as_deref(), Some("original-message"));
+    journal.observe(&pending[0], &Receipt::Recorded {
         outcome: OperationOutcome::Returned {
-            result: OperationResult::Success { value: json!({"kind":"posted","sessionId":"room","messageId":"posted-message","deliveries":[]}) },
+            result: OperationResult::Success { value: json!({
+                "kind":"posted", "sessionId":"review-room", "messageId":"posted-message", "deliveries":[]
+            }) },
         },
         cleanup: OperationCleanup::Confirmed,
     }).await.unwrap();
-    assert!(reopened.pending(&host, &key).await.unwrap().is_empty());
-    let next = reopened.load_draft(&key).await.unwrap().unwrap();
-    assert_eq!(next.text, "Next thought");
-    assert_eq!(next.mentions, ["writer"]);
-    assert_eq!(next.reply_to, None);
-    let other = DraftKey {
-        session_id: "other-room".into(),
-        ..key
-    };
-    assert!(reopened.load_draft(&other).await.unwrap().is_none());
+    assert_eq!(journal.pending(&host, &key).await.unwrap().len(), 0);
+    let next = journal.load_draft(&key).await.unwrap().unwrap();
+    assert_eq!(next.text, "Check the layout next");
+    assert_eq!(next.mentions, ["designer"]);
+    assert_eq!(next.reply_to.as_deref(), Some("layout-message"));
+    journal.pool.close().await;
 }

@@ -432,6 +432,3 @@ fn integer(value: u64) -> Result<i64, StoreError> {
 fn unsigned(value: i64) -> Result<u64, StoreError> {
     u64::try_from(value).map_err(|_| invalid("negative Room position or timestamp"))
 }
-
-#[cfg(test)]
-mod tests;

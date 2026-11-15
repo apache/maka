@@ -40,6 +40,9 @@ use std::{
 };
 use tokio::sync::{Notify, watch};
 
+#[path = "desktop_new_session/rooms.rs"]
+mod rooms;
+
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
         let mut value = <$ty>::default();
@@ -624,241 +627,6 @@ async fn images_fixture() -> Fixture {
         ..Options::default()
     })
     .await
-}
-
-async fn desktop_rooms_preserve_drafts_and_deliver_mentions_and_replies() {
-    async fn messages(desktop: &Desktop, room: &str, count: usize) -> Vec<Value> {
-        desktop
-            .wait("Room messages did not reach durable history", async {
-                loop {
-                    let history = desktop
-                        .client
-                        .query(
-                            "agent",
-                            "history",
-                            json!({"sessionId":room,"position":{"kind":"tail"}}),
-                        )
-                        .await
-                        .unwrap();
-                    assert_eq!(history["kind"], "room", "{history}");
-                    let messages = history["page"]["items"].as_array().unwrap();
-                    if messages.len() >= count {
-                        return messages.clone();
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-    }
-
-    async fn focus_room_composer(desktop: &Desktop) {
-        let mention = desktop.control("Mention a session").await;
-        desktop.press_at(point(mention.center().x, mention.top() - px(32.)));
-        desktop.target_after(None).await;
-    }
-
-    let mut fixture = Fixture::open_with_configuration(
-        Options {
-            session_tools: true,
-            ..Options::default()
-        },
-        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
-    )
-    .await;
-    let desktop = Desktop::open_at(
-        &fixture,
-        &fixture.address,
-        size(
-            nsh_terminal::DevicePixels(1120),
-            nsh_terminal::DevicePixels(900),
-        ),
-        nsh_core::platform::Appearance::Dark,
-    )
-    .await;
-    let reviewer = mutate(
-        &desktop.client,
-        "create",
-        json!({
-            "title":"Build reviewer","labels":[],
-            "workspace":{"kind":"session","sessionId":fixture.session},
-            "backend":{
-                "kind":"model",
-                "connectionId":fixture.selection["connectionId"],
-                "modelId":fixture.selection["modelId"]
-            }
-        }),
-    )
-    .await;
-    let reviewer = reviewer["session"]["id"].as_str().unwrap();
-    desktop.press("Open conversation Build reviewer").await;
-    desktop.press("Focus message composer").await;
-    desktop.type_text("KEEP_AGENT_DRAFT").await;
-    assert!(desktop.controls("Rooms").is_empty());
-    desktop.press("Show more").await;
-    desktop.press("Rooms").await;
-    desktop.control("Conversations").await;
-    assert!(desktop.controls("Show more").is_empty());
-    assert!(desktop.controls("Show less").is_empty());
-    let create = desktop
-        .until("Room mode did not expose its create action", || {
-            desktop.controls("New room").first().copied()
-        })
-        .await;
-    let before_name = desktop.platform.text_input_target();
-    desktop.press_at(create.center());
-    desktop.target_after(before_name).await;
-    desktop.type_text("Build room").await;
-    desktop.key("enter", false);
-    desktop.control("Mention a session").await;
-    let room = desktop
-        .sessions()
-        .await
-        .into_iter()
-        .find(|session| session["kind"] == "room")
-        .unwrap();
-    assert_eq!(room["title"], "Build room");
-    let room = room["id"].as_str().unwrap();
-    desktop.right_click("Build room").await;
-    desktop.press("Rename room").await;
-    desktop.type_text("Release room").await;
-    desktop.press("Save").await;
-    desktop.control("Release room").await;
-    assert_eq!(
-        desktop
-            .client
-            .query("agent", "observe", json!({"sessionId":room}))
-            .await
-            .unwrap()["session"]["title"],
-        "Release room"
-    );
-    focus_room_composer(&desktop).await;
-    desktop.type_text("ROOM_OPENING").await;
-    desktop.press("Send message").await;
-    let first = messages(&desktop, room, 1).await.remove(0);
-    assert_eq!(first["author"]["kind"], "human");
-    assert_eq!(first["content"]["text"], "ROOM_OPENING");
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
-
-    let reply = desktop.control("Reply to message").await;
-    let composer = desktop.control("Mention a session").await.center();
-    desktop.hover_at(composer);
-    desktop
-        .until("Room reply action stayed visible at rest", || {
-            (!desktop.draws_in(reply)).then_some(())
-        })
-        .await;
-    let body = point(reply.left() - px(64.), reply.bottom() + px(16.));
-    desktop.press_at(body);
-    desktop.key("a", true);
-    desktop.key("c", true);
-    let selected = desktop
-        .until("Room text could not be selected and copied", || {
-            desktop.platform.take_clipboard_write()
-        })
-        .await;
-    assert!(selected.contains("ROOM_OPENING"), "{selected}");
-    desktop.click_at(body, MouseButton::Right);
-    desktop.press("Copy message").await;
-    let copied = desktop
-        .until("Room message was not copied", || {
-            desktop.platform.take_clipboard_write()
-        })
-        .await;
-    assert_eq!(copied, "ROOM_OPENING");
-    desktop.click_at(body, MouseButton::Right);
-    let menu_reply = desktop
-        .until("Room message context menu did not offer reply", || {
-            desktop
-                .controls("Reply to message")
-                .into_iter()
-                .find(|bounds| *bounds != reply)
-        })
-        .await;
-    desktop.press_at(menu_reply.center());
-    focus_room_composer(&desktop).await;
-    desktop.type_text("ROOM_REVIEW_REQUEST").await;
-    desktop.press("Mention a session").await;
-    desktop.press("Build reviewer").await;
-    desktop.control("Remove mention Build reviewer").await;
-    desktop.control("Cancel reply").await;
-    desktop.press("Conversations").await;
-    desktop.press("Focus message composer").await;
-    desktop.expect_text("KEEP_AGENT_DRAFT").await;
-    desktop.press("Rooms").await;
-    desktop.control("Remove mention Build reviewer").await;
-    desktop.control("Cancel reply").await;
-    focus_room_composer(&desktop).await;
-    desktop.expect_text("ROOM_REVIEW_REQUEST").await;
-    desktop.press("Send message").await;
-    let history = messages(&desktop, room, 2).await;
-    let request_message = &history[1];
-    assert_eq!(request_message["replyTo"], first["id"]);
-    assert_eq!(request_message["mentions"], json!([reviewer]));
-    assert_eq!(
-        request_message["deliveries"][0]["kind"], "accepted",
-        "{request_message}"
-    );
-    assert_eq!(request_message["deliveries"][0]["sessionId"], reviewer);
-    desktop.control("View replied message").await;
-    desktop.artifact("rooms-human-mention-and-reply");
-
-    let request = desktop.request(&mut fixture).await;
-    let provider_input = request.body.to_string();
-    assert!(
-        provider_input.contains("ROOM_REVIEW_REQUEST"),
-        "{provider_input}"
-    );
-    assert!(provider_input.contains(room), "{provider_input}");
-    assert!(
-        !provider_input.contains("KEEP_AGENT_DRAFT"),
-        "{provider_input}"
-    );
-    request
-        .tool_call(
-            "SessionSend",
-            json!({
-                "sessionId":room,
-                "message":"ROOM_AGENT_REPLY",
-                "replyTo":request_message["id"]
-            }),
-        )
-        .await;
-    desktop.request(&mut fixture).await.finish().await;
-    let history = messages(&desktop, room, 3).await;
-    assert_eq!(history.len(), 3);
-    assert_eq!(history[2]["author"]["kind"], "session");
-    assert_eq!(history[2]["author"]["execution"]["sessionId"], reviewer);
-    assert_eq!(history[2]["replyTo"], request_message["id"]);
-    assert_eq!(history[2]["content"]["text"], "ROOM_AGENT_REPLY");
-    desktop
-        .until(
-            "the agent reply did not arrive in the Room timeline",
-            || (desktop.controls("Reply to message").len() == 3).then_some(()),
-        )
-        .await;
-    desktop.artifact("rooms-agent-reply");
-    fixture.idle(&desktop.client, reviewer).await;
-    desktop.press("Room actions").await;
-    desktop.press("Delete room").await;
-    desktop.press("Cancel").await;
-    desktop.control("Release room").await;
-    desktop.right_click("Release room").await;
-    desktop.press("Delete room").await;
-    desktop.press("Confirm delete room").await;
-    desktop.control("Conversations").await;
-    assert!(desktop.controls("Release room").is_empty());
-    assert!(
-        !desktop
-            .sessions()
-            .await
-            .iter()
-            .any(|session| session["id"] == room)
-    );
-    desktop.press("Conversations").await;
-    desktop.press("Focus message composer").await;
-    desktop.expect_text("KEEP_AGENT_DRAFT").await;
-    desktop.close().await;
-    fixture.finish().await;
 }
 
 async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
@@ -2314,23 +2082,6 @@ async fn desktop_folds_the_conversations_a_conversation_created() {
     desktop.control(fold).await;
     desktop.control(child).await;
     last.finish().await;
-    fixture.idle(&desktop.client, &fixture.session).await;
-    desktop
-        .right_click("Open conversation NSH real Agent")
-        .await;
-    desktop.press("Child conversations").await;
-    desktop.right_click("Open Check Windows build").await;
-    desktop.press("Rename conversation").await;
-    desktop.type_text("Windows build verified").await;
-    desktop.press("Save conversation title").await;
-    desktop.control("Open Windows build verified").await;
-    assert!(
-        desktop
-            .sessions()
-            .await
-            .iter()
-            .any(|session| { session["title"] == "Windows build verified" })
-    );
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2465,57 +2216,8 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         }),
     )
     .await;
-    let row = desktop.control("Open conversation Side conversation").await;
-    let first_point = point(row.left() + px(16.), row.center().y - px(6.));
-    let second_point = point(row.right() - px(16.), row.center().y + px(6.));
-    desktop.click_at(first_point, MouseButton::Right);
-    let first_menu = desktop.control("Rename conversation").await;
-    desktop.key("escape", false);
-    desktop
-        .until("Escape did not close the conversation menu", || {
-            desktop
-                .controls("Rename conversation")
-                .is_empty()
-                .then_some(())
-        })
-        .await;
-    desktop.click_at(second_point, MouseButton::Right);
-    let second_menu = desktop.control("Rename conversation").await;
-    assert!(
-        (second_menu.left() - first_menu.left() - (second_point.x - first_point.x)).abs() < px(1.),
-        "context menu did not follow the horizontal pointer position: {first_menu:?} -> {second_menu:?}"
-    );
-    assert!(
-        (second_menu.top() - first_menu.top() - (second_point.y - first_point.y)).abs() < px(1.),
-        "context menu did not follow the vertical pointer position: {first_menu:?} -> {second_menu:?}"
-    );
-    desktop.press("Rename conversation").await;
-    desktop.type_text("Side conversation renamed").await;
-    desktop.press("Save conversation title").await;
-    desktop
-        .control("Open conversation Side conversation renamed")
-        .await;
-    desktop
-        .right_click("Open conversation Side conversation renamed")
-        .await;
-    desktop.press("Pin conversation").await;
-    desktop
-        .wait(
-            "the native context menu did not pin the conversation",
-            async {
-                loop {
-                    if desktop.sessions().await.iter().any(|session| {
-                        session["title"] == "Side conversation renamed" && session["pinned"] == true
-                    }) {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            },
-        )
-        .await;
     let original = desktop.platform.text_input_target();
-    desktop.press("Actions for Side conversation renamed").await;
+    desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
     desktop.target_after(original).await;
     desktop.type_text("SIDE_DRAFT").await;
@@ -2525,7 +2227,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     assert_eq!(desktop.controls("Focus message composer").len(), 1);
 
     let original = desktop.platform.text_input_target();
-    desktop.press("Actions for Side conversation renamed").await;
+    desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
     desktop.target_after(original).await;
     desktop
@@ -4009,7 +3711,8 @@ async fn desktop_composer_sandbox_choice_becomes_the_default() {
 
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
-    "desktop_rooms_preserve_drafts_and_deliver_mentions_and_replies",
+    "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
+    "desktop_context_menus_follow_the_pointer_and_manage_rooms",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_new_conversation_preserves_an_owned_worktree",
     "desktop_recovers_an_unavailable_remembered_folder",
@@ -4050,8 +3753,11 @@ pub(crate) fn run(name: &str) {
         .build()
         .unwrap();
     match name {
-        "desktop_rooms_preserve_drafts_and_deliver_mentions_and_replies" => {
-            runtime.block_on(desktop_rooms_preserve_drafts_and_deliver_mentions_and_replies())
+        "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
+            runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
+        }
+        "desktop_context_menus_follow_the_pointer_and_manage_rooms" => {
+            runtime.block_on(rooms::desktop_context_menus_follow_the_pointer_and_manage_rooms())
         }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
