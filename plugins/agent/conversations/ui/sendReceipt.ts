@@ -70,3 +70,28 @@ export function sendReceiptFailure(
       };
   }
 }
+
+export function shouldProjectPendingSend(
+  accepted: { kind: string } | null | undefined,
+  context: { immediate: boolean; activeRunId: string | null },
+): boolean {
+  if (!accepted) return false;
+  if (accepted.kind === 'started') return true;
+  return accepted.kind === 'queued' && context.immediate && context.activeRunId === null;
+}
+
+export function shouldHideAcceptedQueuedStatus(options: {
+  failed: boolean;
+  detail: UiText | undefined;
+  delivery: string | undefined;
+  messageId: string;
+  followups: ReadonlySet<string>;
+  inTranscript: (messageId: string) => boolean;
+}): boolean {
+  return (
+    !options.failed &&
+    !options.detail &&
+    options.delivery !== 'unknown' &&
+    (options.followups.has(options.messageId) || options.inTranscript(options.messageId))
+  );
+}
