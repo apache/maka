@@ -206,6 +206,16 @@ test('a recorded work group keeps one key and holds the steps read for it', () =
   const [[live]] = groups([message, preview]);
   assert.deepEqual(groups([message, work, answer]), [[live, []]]);
   assert.deepEqual(groups([answer, child, script, work, message]), [[live, [stableRowId(child)]]]);
+  const tooled = { ...work, work: { ...work.work, firstToolUseId: 'running' } };
+  const started = projectProcessGroups({
+    rows: [message],
+    toolActivity: [{ toolUseId: 'running', turnId: 'run', startSequence: 2 }],
+    activeTurnId: 'run',
+  }).entries.filter((entry) => entry.kind === 'process');
+  assert.deepEqual(
+    groups([message, tooled]).map(([key]) => key),
+    started.map((entry) => entry.key),
+  );
   const running = projectProcessGroups({
     rows: orderProcessRows([message, work, answer]),
     toolActivity: [{ toolUseId: 'running', turnId: 'run', startSequence: 2 }],

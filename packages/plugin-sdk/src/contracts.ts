@@ -13584,6 +13584,10 @@ export const contracts: {
                       },
                     ],
                   },
+                  firstToolUseId: {
+                    description: "The first step's tool, when it is one.",
+                    type: ['string', 'null'],
+                  },
                   thoughts: {
                     type: 'integer',
                     format: 'uint64',
@@ -22164,6 +22168,10 @@ export const contracts: {
                         type: 'null',
                       },
                     ],
+                  },
+                  firstToolUseId: {
+                    description: "The first step's tool, when it is one.",
+                    type: ['string', 'null'],
                   },
                   thoughts: {
                     type: 'integer',

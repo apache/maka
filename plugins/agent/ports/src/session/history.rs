@@ -546,6 +546,9 @@ pub struct WorkGroup {
     pub last: WorkKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_call: Option<Box<ToolCall>>,
+    /// The first step's tool, when it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_tool_use_id: Option<String>,
     pub thoughts: u64,
     pub tools: u64,
     pub messages: u64,

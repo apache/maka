@@ -8359,6 +8359,10 @@ export interface HistoryWorkGroup {
   kinds: HistoryWorkKind[];
   last: HistoryWorkKind;
   lastCall?: HistoryToolCall | null;
+  /**
+   * The first step's tool, when it is one.
+   */
+  firstToolUseId?: string | null;
   thoughts: number;
   tools: number;
   messages: number;

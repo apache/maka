@@ -606,22 +606,36 @@ async fn group(
     } else if reverse {
         members.reverse();
     }
+    let returned: std::collections::BTreeSet<String> = members
+        .iter()
+        .filter_map(|member| member.row.chunk.tool.as_ref())
+        .filter(|tool| tool.result.is_some())
+        .map(|tool| tool.tool_use_id.clone())
+        .collect();
     for member in &mut members {
+        if member
+            .row
+            .chunk
+            .tool
+            .as_ref()
+            .is_some_and(|tool| tool.call.is_some() && !returned.contains(&tool.tool_use_id))
+        {
+            pair(tree, member, cache, stop).await?;
+        }
         if member.row.chunk.field == wire::HistoryField::Thinking
             && matches!(member.row.body, projection::Body::Field(_))
-            && display(
+        {
+            let (_, offset, total, text) = display(
                 member,
                 wire::HistoryView::Chat,
                 SourcePosition::Start,
                 4096,
                 stop,
             )
-            .await?
-            .3
-            .trim()
-            .is_empty()
-        {
-            member.row.body = projection::Body::Empty;
+            .await?;
+            if offset + text.len() as u64 >= total && text.trim().is_empty() {
+                member.row.body = projection::Body::Empty;
+            }
         }
     }
     Ok(summarize(members))
@@ -738,6 +752,13 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
             offset: 0,
         },
         last: kind(last).unwrap_or(wire::WorkKind::Message),
+        first_tool_use_id: members
+            .first()?
+            .row
+            .chunk
+            .tool
+            .as_ref()
+            .map(|tool| tool.tool_use_id.clone()),
         last_call: match last {
             Seat::Tool(index) => tools[*index].0.call.clone().map(Box::new),
             _ => None,

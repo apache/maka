@@ -432,7 +432,9 @@ export function projectProcessGroups(input: {
         turnKey: rowTurn,
         members: [],
         workRowId: position.rowId,
-        first: stableRowId({ ...row, work: undefined }),
+        first: row.work.firstToolUseId
+          ? memberId({ kind: 'activity', toolUseId: row.work.firstToolUseId })
+          : stableRowId({ ...row, work: undefined }),
       };
       progressed.add(rowTurn);
       const presentation = turn(rowTurn);
