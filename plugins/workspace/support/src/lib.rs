@@ -23,7 +23,6 @@ use maka_fs_tools::{
     workspace::{self, directory::PublishedDirectory},
 };
 use maka_host_runtime::DirectoryRootSpec;
-use maka_sandbox::workspace::DirectoryIdentity;
 use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -95,10 +94,10 @@ pub struct Root {
 }
 
 impl Root {
-    pub fn execution_basis(&self) -> std::io::Result<(&Path, DirectoryIdentity, Option<&Path>)> {
+    pub fn execution_basis(&self) -> std::io::Result<(&Path, serde_json::Value, Option<&Path>)> {
         Ok((
             self.directory.path(),
-            self.directory.identity()?,
+            self.directory.execution_basis()?,
             self.temporary.as_deref(),
         ))
     }
@@ -191,7 +190,7 @@ fn add_temporary_workspaces(
 pub struct Located {
     pub name: String,
     pub path: String,
-    pub identity: DirectoryIdentity,
+    pub identity: directory::Observation,
 }
 
 /// A caller's path as the directory it names: a leading `~` replaced by `home`,
@@ -383,9 +382,7 @@ pub async fn query_excluding(
     .map_err(|_| "agent_directory_unavailable")?
 }
 
-/// The workspace at `path`, with its directory identity captured as the
-/// directory is opened and its workspace marker ensured. None is a confirmed
-/// pre-effect refusal. Marker initialization errors remain Unknown.
+/// Resolve and authorize a user-selected directory without modifying the filesystem.
 pub async fn initialize(
     roots: &[Root],
     path: &str,
@@ -398,47 +395,56 @@ pub async fn initialize(
     let path = path.to_owned();
     let home = home.map(Path::to_owned);
     let managed = managed.to_owned();
-    let prepared = tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path, home.as_deref())?;
-        if path.starts_with(&managed) {
-            return None;
+    let private_root = private_root.to_owned();
+    let control = control.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let private_root = private_root
+            .canonicalize()
+            .map_err(|_| "agent_workspace_unavailable".to_owned())?;
+        let control = control
+            .canonicalize()
+            .map_err(|_| "agent_workspace_unavailable".to_owned())?;
+        let Some(path) = resolve_path(&path, home.as_deref()) else {
+            return Ok(None);
+        };
+        if path.starts_with(&managed)
+            || path.starts_with(&private_root)
+            || path.starts_with(&control)
+        {
+            return Ok(None);
         }
-        let (root, located) = find(&roots, &path)?;
-        let directory = directory::open(&path, &located.identity).ok()?;
-        match workspace::read_directory_identity(path.clone(), directory.try_clone().ok()?) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return None,
+        let Some((root, located)) = find(&roots, &path) else {
+            return Ok(None);
+        };
+        if root.validate(&path).is_err() || directory::open(&path, &located.identity).is_err() {
+            return Ok(None);
         }
-        Some((root.clone(), path, directory, located.identity))
+        Ok(Some(Workspace {
+            worktree: None,
+            project_id: None,
+            path: host_path(&path)?,
+        }))
     })
     .await
-    .map_err(|_| "agent_workspace_unavailable")?;
-    let Some((published, path, directory, directory_identity)) = prepared else {
-        return Ok(None);
-    };
-    let identity = workspace::ensure_directory_identity(
-        path.clone(),
-        directory,
-        private_root.to_owned(),
-        control.to_owned(),
-        None,
-    )
-    .await
-    .map_err(|_| "agent_workspace_initialization_failed")?;
-    published
-        .validate(&path)
-        .map_err(|_| "agent_workspace_initialization_failed")?;
-    directory::open(&path, &directory_identity)
-        .map_err(|_| "agent_workspace_initialization_failed")?;
-    Ok(Some(Workspace {
-        worktree: None,
-        project_id: None,
-        path: host_path(&path)?,
-        directory_identity,
-        identity,
-    }))
+    .map_err(|_| "agent_workspace_unavailable".to_owned())?
 }
+
+pub fn capture_selected(
+    selected: &Workspace,
+) -> Result<(PathBuf, cap_std::fs::Dir, directory::Observation), String> {
+    let (path, directory, identity) = directory::capture_directory(Path::new(&selected.path))
+        .map_err(|_| "agent_workspace_unavailable")?;
+    if host_path(&path)? != selected.path {
+        return Err("agent_workspace_unavailable".into());
+    }
+    if let Some(binding) = &selected.worktree
+        && binding.directory() != Path::new(&selected.path)
+    {
+        return Err("agent_workspace_unavailable".into());
+    }
+    Ok((path, directory, identity))
+}
+
 pub async fn validate(roots: &[Root], selected: &Workspace, managed: &Path) -> Result<(), String> {
     open_workspace(roots, selected, managed).await.map(drop)
 }
@@ -448,22 +454,22 @@ pub async fn open_workspace(
     selected: &Workspace,
     managed: &Path,
 ) -> Result<cap_std::fs::Dir, String> {
+    open_workspace_observation(roots, selected, managed)
+        .await
+        .map(|(_, directory, _)| directory)
+}
+
+pub async fn open_workspace_observation(
+    roots: &[Root],
+    selected: &Workspace,
+    managed: &Path,
+) -> Result<(PathBuf, cap_std::fs::Dir, directory::Observation), String> {
     let roots = roots.to_vec();
     let selected = selected.clone();
     let managed = managed.to_owned();
     tokio::task::spawn_blocking(move || {
-        let path = Path::new(&selected.path)
-            .canonicalize()
-            .map_err(|_| "agent_workspace_unavailable")?;
-        if host_path(&path)? != selected.path {
-            return Err("agent_workspace_unavailable".into());
-        }
+        let (path, directory, identity) = capture_selected(&selected)?;
         let authorized = if let Some(binding) = &selected.worktree {
-            directory::open(binding.source(), binding.source_identity())
-                .map_err(|_| "agent_workspace_unavailable")?;
-            if binding.directory() != Path::new(&selected.path) {
-                return Err("agent_workspace_unavailable".into());
-            }
             maka_fs_tools::worktree::Worktrees::open(&managed)
                 .and_then(|worktrees| worktrees.inspect(binding))
                 .map_err(|_| "agent_workspace_unavailable")?;
@@ -474,79 +480,56 @@ pub async fn open_workspace(
             }
             path.as_path()
         };
-        let root = roots
-            .iter()
-            .find(|root| root.validate(authorized).is_ok())
-            .ok_or("agent_workspace_unavailable")?;
-        let directory = directory::open(&path, &selected.directory_identity)
-            .map_err(|_| "agent_workspace_unavailable")?;
-        if workspace::read_directory_identity(
-            path.clone(),
-            directory
-                .try_clone()
-                .map_err(|_| "agent_workspace_unavailable")?,
-        )
-        .map_err(|_| "agent_workspace_unavailable")?
-            != selected.identity
-        {
+        if !roots.iter().any(|root| root.validate(authorized).is_ok()) {
             return Err("agent_workspace_unavailable".into());
         }
-        root.validate(authorized)
-            .map_err(|_| "agent_workspace_unavailable")?;
-        Ok(directory)
+        Ok((path, directory, identity))
     })
     .await
     .map_err(|_| "agent_workspace_unavailable")?
 }
 
-/// Re-observe a published directory without creating a workspace marker.
+/// Re-observe a published directory without modifying the filesystem.
 pub async fn selected(
     roots: Vec<Root>,
     path: &str,
     home: Option<&Path>,
     managed: PathBuf,
 ) -> Result<Option<Located>, String> {
-    resolve(roots, path, home, managed, true)
-        .await
-        .map(|directory| directory.map(|(located, _)| located))
+    observed(roots, path, home, managed).await
 }
-/// A published directory as it is, marker or not; `excluded` and below is
-/// not published.
+
+/// A published directory as it is; `excluded` and below is not published.
 pub async fn observed(
     roots: Vec<Root>,
     path: &str,
     home: Option<&Path>,
     excluded: PathBuf,
 ) -> Result<Option<Located>, String> {
-    resolve(roots, path, home, excluded, false)
+    resolve(roots, path, home, excluded)
         .await
         .map(|directory| directory.map(|(located, _)| located))
 }
+
 pub async fn open_directory(
     roots: &[Root],
     selected: &Located,
     excluded: &Path,
 ) -> Result<cap_std::fs::Dir, String> {
-    let (current, directory) = resolve(
-        roots.to_vec(),
-        &selected.path,
-        None,
-        excluded.to_owned(),
-        false,
-    )
-    .await?
-    .ok_or("agent_directory_unavailable")?;
+    let (current, directory) = resolve(roots.to_vec(), &selected.path, None, excluded.to_owned())
+        .await?
+        .ok_or("agent_directory_unavailable")?;
     if current.path != selected.path || current.identity != selected.identity {
         return Err("agent_directory_unavailable".into());
     }
     Ok(directory)
 }
+
 async fn resolve(
     roots: Vec<Root>,
     path: &str,
     home: Option<&Path>,
     excluded: PathBuf,
-    workspace_marker: bool,
 ) -> Result<Option<(Located, cap_std::fs::Dir)>, String> {
     let path = path.to_owned();
     let home = home.map(Path::to_owned);
@@ -557,13 +540,6 @@ async fn resolve(
         }
         let (root, located) = find(&roots, &path)?;
         let directory = directory::open(&path, &located.identity).ok()?;
-        if workspace_marker {
-            match workspace::read_directory_identity(path.clone(), directory.try_clone().ok()?) {
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return None,
-            }
-        }
         root.validate(&path).ok()?;
         Some((located, directory))
     })
@@ -571,11 +547,15 @@ async fn resolve(
     .map_err(|_| "agent_directory_unavailable".into())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
+
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn default_home_accepts_private_scratch_workspaces_only() {
         let parent = tempfile::tempdir().unwrap();

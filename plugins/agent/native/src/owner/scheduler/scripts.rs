@@ -50,11 +50,14 @@ impl Owner {
                 approval.sandbox_ceiling().unwrap_or(&Sandbox::Disabled),
             )
             .await?;
-        let workspace = config.workspace;
+        let (path, directory, _) = workspace::open_workspace_observation(
+            &self.workspace_roots,
+            &config.workspace,
+            &self.managed_worktrees,
+        )
+        .await
+        .map_err(reason)?;
         let executor = tokio::task::spawn_blocking(move || {
-            let path = std::path::PathBuf::from(workspace.path);
-            let directory = maka_fs_tools::directory::open(&path, &workspace.directory_identity)
-                .map_err(reason)?;
             ShellExecutor::from_directory(path, directory.into_std_file(), sandbox).map_err(reason)
         })
         .await

@@ -18,11 +18,10 @@
  */
 
 //! Bounded single-directory snapshots and native invalidation within a Session workspace.
-use crate::{path::WorkspacePath, worktree::Binding};
+use crate::{directory::Observation, path::WorkspacePath, worktree::Binding};
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use gix::bstr::ByteSlice;
-use maka_sandbox::workspace::DirectoryIdentity;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -46,7 +45,7 @@ const MAX_PAGE_BYTES: usize = 512 * 1024;
 #[schemars(rename = "AgentFileCursor")]
 pub struct FileCursor {
     #[schemars(with = "String")]
-    pub directory_identity: DirectoryIdentity,
+    pub directory_identity: Observation,
     pub after: WorkspacePath,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -54,7 +53,7 @@ pub struct FileCursor {
 #[schemars(rename = "AgentFilePage")]
 pub struct FilePage {
     #[schemars(with = "String")]
-    pub directory_identity: DirectoryIdentity,
+    pub directory_identity: Observation,
     pub entries: Vec<FileEntry>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<FileCursor>")]
     pub next: Option<FileCursor>,
@@ -86,7 +85,7 @@ pub enum FileKind {
 pub enum FileChange {
     Ready {
         #[schemars(with = "String")]
-        directory_identity: DirectoryIdentity,
+        directory_identity: Observation,
     },
     Changed,
     Unavailable {
@@ -122,7 +121,7 @@ struct EntryMetadata {
 struct Anchor {
     path: PathBuf,
     directory: Dir,
-    identity: DirectoryIdentity,
+    identity: Observation,
 }
 pub struct Directory {
     anchors: Vec<Anchor>,
@@ -135,7 +134,7 @@ impl Directory {
     /// All paths and the Binding are trusted Owner authority; path alone is caller data.
     pub fn open(
         workspace: &Path,
-        identity: &DirectoryIdentity,
+        identity: &Observation,
         private_root: &Path,
         control: &Path,
         binding: Option<&Binding>,
@@ -196,7 +195,7 @@ impl Directory {
         }
         Ok(())
     }
-    pub fn directory_identity(&self) -> &DirectoryIdentity {
+    pub fn directory_identity(&self) -> &Observation {
         &self.anchors.last().expect("target anchor").identity
     }
     pub fn validate(&self) -> io::Result<()> {
@@ -232,7 +231,6 @@ impl Directory {
     }
     fn excluded_child(&self, directory: &Path, name: &std::ffi::OsStr) -> bool {
         name.as_encoded_bytes().eq_ignore_ascii_case(b".git")
-            || name == std::ffi::OsStr::new(crate::workspace::MARKER_FILE)
             || self.excluded(&directory.join(name))
     }
     /// Reconcile only direct, admitted entries through the held target descriptor.

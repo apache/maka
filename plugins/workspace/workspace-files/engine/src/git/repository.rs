@@ -35,14 +35,14 @@ pub(super) struct Repository {
     pub head: Option<String>,
     pub tree: gix::hash::ObjectId,
     pub cancel: Arc<AtomicBool>,
-    identity: DirectoryIdentity,
+    identity: Observation,
     private_root: PathBuf,
     index_before: Option<Vec<u8>>,
 }
 impl Repository {
     pub fn open(
         workspace: &Path,
-        identity: &DirectoryIdentity,
+        identity: &Observation,
         private_root: &Path,
         binding: Option<&Binding>,
         cancel: Arc<AtomicBool>,

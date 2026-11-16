@@ -6888,8 +6888,6 @@ export interface AgentWorkspace {
    */
   projectId?: string | null;
   path: string;
-  directoryIdentity: string;
-  identity: string;
 }
 /**
  * Immutable allocation intent, not the current child branch or HEAD.
@@ -6898,7 +6896,6 @@ export interface Binding {
   id: string;
   common_dir: string;
   source: string;
-  source_identity: string;
   base_commit: string;
   directory: string;
 }

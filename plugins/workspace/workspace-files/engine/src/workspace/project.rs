@@ -20,7 +20,7 @@
 //! Resolve a user's selected project directory without widening a subdirectory
 //! to its enclosing repository. Git worktrees share the common-directory identity.
 
-use super::{Workspace, git, invalid};
+use super::{git, invalid};
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -69,14 +69,14 @@ pub async fn resolve_selected(path: &Path) -> io::Result<ResolvedProject> {
         }
     }
     tokio::task::spawn_blocking(move || {
-        let workspace = Workspace::capture(&normalized)?;
-        let kind = if git::has_repository(&workspace.path)? {
-            let repository = git::discover(&workspace.path)?;
+        let (path, identity) = crate::directory::capture(&normalized)?;
+        let kind = if git::has_repository(&path)? {
+            let repository = git::discover(&path)?;
             let root = repository
                 .workdir()
                 .ok_or_else(|| invalid("selected Git repository has no worktree"))?
                 .canonicalize()?;
-            if root == workspace.path {
+            if root == path {
                 let common_dir = repository.common_dir().canonicalize()?;
                 ProjectKind::Git {
                     is_worktree: repository.git_dir().canonicalize()? != common_dir,
@@ -88,14 +88,12 @@ pub async fn resolve_selected(path: &Path) -> io::Result<ResolvedProject> {
         } else {
             ProjectKind::Folder
         };
-        workspace.validate_directory()?;
-        host_path(&workspace.path)?;
-        let name = default_name(&workspace.path, &kind)?;
-        let resolved = ResolvedProject {
-            path: workspace.path,
-            kind,
-            name,
-        };
+        if path.canonicalize()? != path || crate::directory::open(&path, &identity).is_err() {
+            return Err(invalid("workspace directory changed"));
+        }
+        host_path(&path)?;
+        let name = default_name(&path, &kind)?;
+        let resolved = ResolvedProject { path, kind, name };
         resolved.identity()?;
         Ok(resolved)
     })

@@ -168,18 +168,24 @@ impl Access {
             .map_err(|_| Error::Denied)?;
         let destination_copy = destination.clone();
         let allowed = tokio::task::spawn_blocking(move || {
-            let path = std::path::PathBuf::from(&workspace.path);
-            let directory = maka_fs_tools::directory::open(&path, &workspace.directory_identity)
-                .map_err(|_| Error::Denied)?;
-            if maka_fs_tools::workspace::read_directory_identity(path.clone(), directory)
-                .map_err(|_| Error::Denied)?
-                != workspace.identity
+            let requested = std::path::PathBuf::from(&workspace.path);
+            let (path, _directory, identity) =
+                maka_fs_tools::directory::capture_directory(&requested)
+                    .map_err(|_| Error::Denied)?;
+            if maka_fs_tools::workspace::project::host_path(&path).map_err(|_| Error::Denied)?
+                != workspace.path
+            {
+                return Err(Error::Denied);
+            }
+            if let Some(binding) = &workspace.worktree
+                && binding.directory() != requested.as_path()
             {
                 return Err(Error::Denied);
             }
             let (_, policy) =
                 maka_fs_tools::workspace::permissions::resolve(maka_sandbox::Mode::ReadOnly, &path)
                     .map_err(|_| Error::Denied)?;
+            maka_fs_tools::directory::open(&path, &identity).map_err(|_| Error::Denied)?;
             let metadata = match policy.intersect(&floor).map_err(|_| Error::Denied)? {
                 Sandbox::Managed { network, .. } | Sandbox::External { network } => network,
                 Sandbox::Disabled => Network::Allowed,

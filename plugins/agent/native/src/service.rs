@@ -705,8 +705,7 @@ fn handler_error(diagnostic: String) -> HandlerError {
         | "agent_worktree_initialization_unknown"
         | "agent_project_commit_unknown"
         | "agent_project_registration_unknown"
-        | "agent_project_selection_unknown"
-        | "agent_workspace_initialization_failed" => HandlerError::Unknown { diagnostic },
+        | "agent_project_selection_unknown" => HandlerError::Unknown { diagnostic },
         _ => HandlerError::Returned { diagnostic },
     }
 }

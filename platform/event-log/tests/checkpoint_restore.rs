@@ -113,7 +113,6 @@ async fn prepare_in_child(base: &Path) {
                 },
                 workspace: Some(WorkspaceCapture {
                     root: source,
-                    identity: "fixture-workspace".into(),
                     consistency: WorkspaceConsistency::Unverified,
                 }),
             },

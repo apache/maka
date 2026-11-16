@@ -25,7 +25,7 @@ struct Fixture {
     root: PathBuf,
     private: PathBuf,
     control: PathBuf,
-    identity: DirectoryIdentity,
+    identity: Observation,
 }
 impl Fixture {
     fn new() -> Self {
@@ -109,7 +109,6 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
     let f = Fixture::new();
     fs::write(f.root.join(".hidden"), "").unwrap();
     fs::create_dir(f.root.join(".git")).unwrap();
-    fs::write(f.root.join(crate::workspace::MARKER_FILE), "private marker").unwrap();
     symlink("missing", f.root.join("dangling")).unwrap();
     #[cfg(target_os = "macos")]
     let raw = b"raw-\\name";
@@ -332,7 +331,6 @@ fn shallow_snapshot_observes_actual_entries_without_native_hints() {
     fs::write(f.private.join("private"), b"private").unwrap();
     fs::write(f.control.join("control"), b"control").unwrap();
     fs::create_dir(f.root.join(".GiT")).unwrap();
-    fs::write(f.root.join(crate::workspace::MARKER_FILE), b"marker").unwrap();
     assert_eq!(directory.snapshot(&cancel).unwrap(), empty);
     let raw = std::ffi::OsString::from_vec(b"raw-\\name".to_vec());
     fs::write(f.root.join(&raw), b"first").unwrap();

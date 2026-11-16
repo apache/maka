@@ -615,6 +615,13 @@ impl DriverExecutor {
             .owner
             .upgrade()
             .ok_or_else(|| RunError::Internal("original native owner closed".into()))?;
+        crate::workspace::validate(
+            &owner.workspace_roots,
+            &configuration.workspace,
+            &owner.managed_worktrees,
+        )
+        .await
+        .map_err(RunError::InvalidInput)?;
         let reserved =
             super::access::reserved_sandbox_floor(&owner.store, &configuration.workspace)
                 .await
@@ -622,12 +629,9 @@ impl DriverExecutor {
         let state_root = self.state_root.clone();
         let ceiling = self.access.spec().permission_ceiling.sandbox.clone();
         tokio::task::spawn_blocking(move || {
-            maka_fs_tools::directory::open(
-                std::path::Path::new(&configuration.workspace.path),
-                &configuration.workspace.directory_identity,
-            )
-            .map_err(|error| error.to_string())?;
-            maka_workspace_support::sandbox(
+            let (path, _, observed) =
+                maka_workspace_support::capture_selected(&configuration.workspace)?;
+            let resolved = maka_workspace_support::sandbox(
                 &configuration.workspace,
                 configuration.permissions.access,
                 &state_root,
@@ -637,7 +641,9 @@ impl DriverExecutor {
                     .intersect(&ceiling)
                     .and_then(|sandbox| sandbox.intersect(&reserved))
                     .map_err(|error| error.to_string())
-            })
+            })?;
+            maka_fs_tools::directory::open(&path, &observed).map_err(|error| error.to_string())?;
+            Ok(resolved)
         })
         .await
         .map_err(|error| RunError::Internal(error.to_string()))?

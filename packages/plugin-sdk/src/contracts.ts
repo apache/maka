@@ -1480,17 +1480,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -1505,10 +1497,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -1517,14 +1505,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -1693,17 +1674,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -1718,10 +1691,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -1730,14 +1699,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentWorkspacePermissions: {
                 type: 'object',
@@ -2548,17 +2510,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -2573,10 +2527,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -2585,14 +2535,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -7105,17 +7048,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -7130,10 +7065,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -7142,14 +7073,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -10956,17 +10880,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -10981,10 +10897,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -10993,14 +10905,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -11751,17 +11656,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -11776,10 +11673,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -11788,14 +11681,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -14461,9 +14347,6 @@ export const contracts: {
               AgentCheckpointWorkspaceSnapshot: {
                 type: 'object',
                 properties: {
-                  identity: {
-                    type: 'string',
-                  },
                   consistency: {
                     $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
                   },
@@ -14475,7 +14358,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['identity', 'consistency', 'warning', 'inventory'],
+                required: ['consistency', 'warning', 'inventory'],
               },
               AgentCheckpointWorkspaceConsistency: {
                 oneOf: [
@@ -16437,17 +16320,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -16462,10 +16337,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -16474,14 +16345,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -17649,17 +17513,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -17674,10 +17530,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -17686,14 +17538,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -19885,17 +19730,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -19910,10 +19747,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -19922,14 +19755,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -20211,9 +20037,6 @@ export const contracts: {
               AgentCheckpointWorkspaceSnapshot: {
                 type: 'object',
                 properties: {
-                  identity: {
-                    type: 'string',
-                  },
                   consistency: {
                     $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
                   },
@@ -20225,7 +20048,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['identity', 'consistency', 'warning', 'inventory'],
+                required: ['consistency', 'warning', 'inventory'],
               },
               AgentCheckpointWorkspaceConsistency: {
                 oneOf: [
@@ -23653,17 +23476,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -23678,10 +23493,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -23690,14 +23501,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               ConfigurationLocation: {
                 description:
@@ -24528,17 +24332,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -24553,10 +24349,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -24565,14 +24357,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -24646,17 +24431,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -24671,10 +24448,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -24683,14 +24456,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
             },
           },
@@ -25482,17 +25248,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -25507,10 +25265,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -25519,14 +25273,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -26753,17 +26500,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -26778,10 +26517,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -26790,14 +26525,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -29099,9 +28827,6 @@ export const contracts: {
               AgentCheckpointWorkspaceSnapshot: {
                 type: 'object',
                 properties: {
-                  identity: {
-                    type: 'string',
-                  },
                   consistency: {
                     $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
                   },
@@ -29113,7 +28838,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['identity', 'consistency', 'warning', 'inventory'],
+                required: ['consistency', 'warning', 'inventory'],
               },
               AgentCheckpointWorkspaceConsistency: {
                 oneOf: [
@@ -29910,17 +29635,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -29935,10 +29652,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -29947,14 +29660,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -32276,9 +31982,6 @@ export const contracts: {
               AgentCheckpointWorkspaceSnapshot: {
                 type: 'object',
                 properties: {
-                  identity: {
-                    type: 'string',
-                  },
                   consistency: {
                     $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
                   },
@@ -32290,7 +31993,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['identity', 'consistency', 'warning', 'inventory'],
+                required: ['consistency', 'warning', 'inventory'],
               },
               AgentCheckpointWorkspaceConsistency: {
                 oneOf: [
@@ -32743,17 +32446,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -32768,10 +32463,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -32780,14 +32471,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentWorkspacePermissions: {
                 type: 'object',
@@ -33456,17 +33140,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -33481,10 +33157,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -33493,14 +33165,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentWorkspacePermissions: {
                 type: 'object',
@@ -34832,17 +34497,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -34857,10 +34514,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -34869,14 +34522,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -34959,17 +34605,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -34984,10 +34622,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -34996,14 +34630,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
             },
           },
@@ -36197,9 +35824,6 @@ export const contracts: {
               AgentCheckpointWorkspaceSnapshot: {
                 type: 'object',
                 properties: {
-                  identity: {
-                    type: 'string',
-                  },
                   consistency: {
                     $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
                   },
@@ -36211,7 +35835,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['identity', 'consistency', 'warning', 'inventory'],
+                required: ['consistency', 'warning', 'inventory'],
               },
               AgentCheckpointWorkspaceConsistency: {
                 oneOf: [
@@ -37075,17 +36699,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -37100,10 +36716,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -37112,14 +36724,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentSessionActivity: {
                 type: 'string',
@@ -41788,17 +41393,9 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
                 additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
@@ -41813,10 +41410,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -41825,14 +41418,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
               },
               AgentWorkspacePermissions: {
                 type: 'object',
@@ -44424,12 +44010,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity'],
+                required: ['path'],
                 description:
                   'A read-only directory observation; it does not allocate an execution workspace.',
               },
@@ -44577,16 +44159,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -44601,10 +44175,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -44612,14 +44182,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
             },
@@ -44709,16 +44272,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -44733,10 +44288,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -44744,14 +44295,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
             },
@@ -44892,16 +44436,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -44916,10 +44452,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -44927,14 +44459,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
               ConfigurationLocation: {
@@ -45098,16 +44623,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -45122,10 +44639,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -45133,14 +44646,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
               SkillLibraryCursor: {
@@ -45478,16 +44984,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -45502,10 +45000,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -45513,14 +45007,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
               SkillModelLoad: {
@@ -46000,16 +45487,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -46024,10 +45503,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -46035,14 +45510,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
               SkillPrepare: {
@@ -46344,16 +45812,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -46368,10 +45828,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -46379,14 +45835,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
             },
@@ -46683,16 +46132,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -46707,10 +46148,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -46718,14 +46155,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
               SkillModelSearch: {
@@ -46976,16 +46406,8 @@ export const contracts: {
                     type: 'string',
                     minLength: 1,
                   },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
                 },
-                required: ['path', 'directoryIdentity', 'identity'],
+                required: ['path'],
               },
               Binding: {
                 type: 'object',
@@ -47000,10 +46422,6 @@ export const contracts: {
                   source: {
                     type: 'string',
                   },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
                   base_commit: {
                     type: 'string',
                   },
@@ -47011,14 +46429,7 @@ export const contracts: {
                     type: 'string',
                   },
                 },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
             },

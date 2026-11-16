@@ -205,7 +205,7 @@ pub fn validate_boundary(boundary: &Boundary, request: &Request) -> Result<(), c
     let invalid = || crate::Error::Invalid("authorization boundary does not match proposal".into());
     let mode = match (boundary, &request.target) {
         (Boundary::Profile, Target::Profile) => SandboxMode::ReadOnly,
-        (Boundary::Directory { path, .. }, Target::Directory { .. }) if !path.is_empty() => {
+        (Boundary::Directory { path }, Target::Directory { .. }) if !path.is_empty() => {
             SandboxMode::DangerFullAccess
         }
         (
@@ -224,7 +224,7 @@ pub fn validate_boundary(boundary: &Boundary, request: &Request) -> Result<(), c
         {
             *sandbox_mode
         }
-        (Boundary::Session { boundary, .. }, Target::Session { session_id })
+        (Boundary::Session { boundary }, Target::Session { session_id })
             if &boundary.session_id == session_id =>
         {
             boundary.validate().map_err(|_| invalid())?;
