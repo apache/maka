@@ -238,6 +238,7 @@ impl Owner {
             };
             let (preview, _) = tokio::sync::watch::channel(None);
             original_model = Some(driver_model::DriverModel {
+                history: state.session_history(self.run_owner(), session_id.clone()),
                 state,
                 log: Arc::new(log),
                 source: Arc::new(source),

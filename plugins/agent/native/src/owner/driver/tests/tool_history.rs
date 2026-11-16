@@ -1156,6 +1156,7 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
             })?;
         let (knowledge, dependencies) = maka_agent_engine::preparation::project_cell_knowledge(
             maka_agent_engine::preparation::NotificationSource::Live(&driver.state),
+            &history,
             &maka_agent_state::artifacts::ArtifactScope {
                 owner: owner.clone(),
                 session,
