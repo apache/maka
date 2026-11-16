@@ -835,7 +835,7 @@ pub(super) fn view_with_late(
     snapshot: &Snapshot,
     run_id: RunId,
 ) -> Result<(crate::fold::RunView, u64), StoreError> {
-    read_view(c, snapshot, run_id, |_, _| {})
+    read_view(c, snapshot, run_id, None, |_, _| {})
 }
 
 pub(super) struct ExecutorView(pub Snapshot, pub RunId);
@@ -843,10 +843,19 @@ impl Query for ExecutorView {
     type Output = (crate::fold::RunView, ExecutorTranscript);
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let mut transcript = ExecutorTranscript::default();
-        let (view, _) = read_view(c, &self.0, self.1, |sequence, record| {
+        let (view, _) = read_view(c, &self.0, self.1, None, |sequence, record| {
             transcript.observe(sequence, record);
         })?;
         Ok((view, transcript))
+    }
+}
+
+pub(super) struct RecoveryFailureAt(pub Snapshot, pub RunId, pub u64);
+impl Query for RecoveryFailureAt {
+    type Output = Option<String>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let (view, _) = read_view(c, &self.0, self.1, Some(self.2), |_, _| {})?;
+        Ok(view.recovery_failure_diagnostic())
     }
 }
 
@@ -854,13 +863,18 @@ fn read_view(
     c: &Connection,
     snapshot: &Snapshot,
     run_id: RunId,
+    through: Option<u64>,
     mut observe: impl FnMut(u64, &RecordedFact),
 ) -> Result<(crate::fold::RunView, u64), StoreError> {
     authorize(c, snapshot)?;
     let source = run_registered(c, snapshot.id, run_id)?;
     let mut view = crate::fold::RunView::admitted(source.run, source.spec)?;
-    let mut statement=c.prepare_cached("SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND run=? ORDER BY json_extract(entry_json,'$.revision')")?;
-    let mut rows = statement.query(params![snapshot.id.to_string(), run_id.to_string()])?;
+    let mut statement=c.prepare_cached("SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND run=? AND sequence<=? ORDER BY json_extract(entry_json,'$.revision')")?;
+    let mut rows = statement.query(params![
+        snapshot.id.to_string(),
+        run_id.to_string(),
+        through.map(bind_u64).transpose()?.unwrap_or(i64::MAX)
+    ])?;
     let mut terminal_sequence = None;
     let mut late_sequence = 0;
     while let Some(row) = rows.next()? {

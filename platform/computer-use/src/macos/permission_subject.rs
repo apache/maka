@@ -264,11 +264,29 @@ pub(crate) fn matching_processes(
     Ok(pids)
 }
 
+pub(crate) fn running_window_owners(expected: &ComputerAppTarget) -> Vec<u32> {
+    let running = apps::list_running_apps();
+    let windows = platform_macos::windows::all_windows();
+    running
+        .into_iter()
+        .filter(|app| {
+            app.bundle_id.as_deref() == Some(expected.identity.application_id.as_str())
+                && app
+                    .launch_path
+                    .as_ref()
+                    .and_then(|path| std::fs::canonicalize(path).ok())
+                    .is_some_and(|path| path == Path::new(&expected.display.app_path))
+                && windows.iter().any(|window| window.pid == app.pid)
+        })
+        .filter_map(|app| u32::try_from(app.pid).ok())
+        .collect()
+}
+
 pub(crate) fn verify_launch(
     expected: &ComputerAppTarget,
     language: Language,
 ) -> Result<(), ToolError> {
-    let observed = Request::Name(expected.display.app_path.clone()).resolve(language)?;
+    let observed = Request::RawApp(expected.display.app_path.clone()).resolve(language)?;
     expected.check_observed(&observed)
 }
 

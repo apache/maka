@@ -35,6 +35,31 @@ impl HistoryDataSource {
             Self::Snapshot(source) => source.view_at(run).await,
         }
     }
+    pub async fn recovery_failure_at(
+        &self,
+        item: &HistoryItem,
+    ) -> Result<Option<String>, StoreError> {
+        let recorded = &item.recorded;
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::RecoveryFailureAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        recorded.run,
+                        recorded.revision,
+                        item.sequence,
+                    ))
+                    .await
+            }
+            Self::Snapshot(source) => {
+                source
+                    .recovery_failure_at(recorded.run, item.sequence)
+                    .await
+            }
+        }
+    }
     pub async fn executor_view(
         &self,
         run: RunId,

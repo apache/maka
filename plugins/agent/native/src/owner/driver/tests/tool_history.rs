@@ -71,6 +71,120 @@ fn timing(page: &Value) -> wire::TurnTiming {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_failure_shows_original_tool_diagnostic() {
+    use maka_plugin_core::operation::{Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef};
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig.tool(attempt, "Computer", "click", json!({})).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let owner = driver.state.frontier(run).await?.spec.owner;
+        let digest = format!("sha256-{}", "a".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let reason = BlockerKind::OperationUnknown {
+            tool: tool.clone(),
+            reference: reference.clone(),
+        };
+        let diagnostic = "The app started, but its window never appeared.";
+        let committed = rig
+            .append(
+                vec![
+                    Fact::ToolOriginalBound {
+                        tool: tool.clone(),
+                        reference: reference.clone(),
+                    },
+                    Fact::OperationObserved {
+                        tool,
+                        reply: maka_agent_facts::operation::RecordedOperationReply {
+                            reference,
+                            receipt: Receipt::Recorded {
+                                outcome: OperationOutcome::Unknown {
+                                    diagnostic: diagnostic.into(),
+                                },
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                        },
+                    },
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: reason.clone(),
+                    },
+                    Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        diagnostic: Some(format!("{reason:?}")),
+                    },
+                ],
+                vec![],
+            )
+            .await?;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let failures: Vec<_> = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "failure")
+            .map(|row| row["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(failures, [diagnostic]);
+
+        let history = driver.state.session_history(owner, session);
+        let cut = history.capture().await?;
+        let sequence = history
+            .fact_sequence(&cut, run, committed.facts.last().unwrap().id)
+            .await?
+            .ok_or("missing termination position")?;
+        let snapshot = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut,
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        let termination = snapshot
+            .item(sequence)
+            .await?
+            .ok_or("missing archived termination")?;
+        let archived =
+            maka_agent_state::session_history::source_tree::HistoryDataSource::Snapshot(snapshot);
+        assert_eq!(
+            archived.recovery_failure_at(&termination).await?.as_deref(),
+            Some(diagnostic)
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(()))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
     use maka_agent_engine::DriverExit;
 
