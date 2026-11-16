@@ -26,7 +26,7 @@ import {
   turnOutcome,
   turnWorkFold,
 } from '../app/processGroups.ts';
-import { historyTurnKey, stableRowId } from '../app/history.ts';
+import { HistoryRows, historyTurnKey, mergeHistoryPage, stableRowId } from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
 const row = (messageId, text, sequence, changes = {}) => ({
@@ -161,6 +161,85 @@ test('a turn has work to fold only beside its final answer', () => {
     worked([request, row('limit', 'Rate limited', 2, { role: 'failure' }), answer]),
     true,
     'a recovered failure folds away',
+  );
+});
+
+test('a recorded work group keeps one key and holds the steps read for it', () => {
+  const part = (ordinal) => ({ stepId: 'step', attemptId: 'attempt', ordinal });
+  const tool = (toolUseId, sequence, call) => ({
+    toolUseId,
+    call: { position: row('', '', sequence).position, ancestorToolUseIds: [], ...call },
+    result: null,
+  });
+  const message = row('message', 'Looking first.', 1, { modelPart: part(0) });
+  const work = row(undefined, '', 2, {
+    key: 'work',
+    role: 'tool_call',
+    modelPart: part(1),
+    work: { kinds: [{ kind: 'tool', presentation: null }], tools: 1 },
+  });
+  const script = row(undefined, '', 2, {
+    key: 'script',
+    role: 'tool_call',
+    modelPart: part(1),
+    tool: tool('script', 2, { origin: 'provider', name: 'exec' }),
+  });
+  const child = row(undefined, '', 3, {
+    key: 'child',
+    role: 'tool_result',
+    tool: tool('child', 3, { origin: 'code_mode', name: 'read', ancestorToolUseIds: ['script'] }),
+  });
+  const answer = row('answer', 'Done.', 4);
+  const groups = (rows) =>
+    projectProcessGroups({ rows: orderProcessRows(rows), toolActivity: [], activeTurnId: null })
+      .entries.filter((entry) => entry.kind === 'process')
+      .map((entry) => [entry.key, entry.rowIds]);
+
+  const preview = row(undefined, 'Checking', undefined, {
+    key: 'preview',
+    role: 'thinking',
+    field: 'thinking',
+    position: undefined,
+    order: undefined,
+    modelPart: part(1),
+  });
+  const [[live]] = groups([message, preview]);
+  assert.deepEqual(groups([message, work, answer]), [[live, []]]);
+  assert.deepEqual(groups([answer, child, script, work, message]), [[live, [stableRowId(child)]]]);
+  const tooled = { ...work, work: { ...work.work, firstToolUseId: 'running' } };
+  const started = projectProcessGroups({
+    rows: [message],
+    toolActivity: [{ toolUseId: 'running', turnId: 'run', startSequence: 2 }],
+    activeTurnId: 'run',
+  }).entries.filter((entry) => entry.kind === 'process');
+  assert.deepEqual(
+    groups([message, tooled]).map(([key]) => key),
+    started.map((entry) => entry.key),
+  );
+  const running = projectProcessGroups({
+    rows: orderProcessRows([message, work, answer]),
+    toolActivity: [{ toolUseId: 'running', turnId: 'run', startSequence: 2 }],
+    activeTurnId: 'run',
+  }).entries.filter((entry) => entry.kind === 'process');
+  assert.deepEqual(
+    running.map((entry) => [entry.key, entry.toolIds]),
+    [[live, ['running']]],
+  );
+
+  const rows = new HistoryRows();
+  const chunk = ({ key, messageId, ...rest }) => ({
+    ...rest,
+    offset: 0,
+    totalBytes: 0,
+  });
+  const put = (value) =>
+    rows.put(mergeHistoryPage([chunk(value)], (key) => rows.byKey.get(key), false, 5));
+  put(work);
+  put(script);
+  put({ ...work, work: { ...work.work, tools: 2 } });
+  assert.deepEqual(
+    rows.ordered.map((value) => value.work?.tools ?? value.tool.toolUseId),
+    [2, 'script'],
   );
 });
 

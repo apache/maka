@@ -374,6 +374,15 @@ pub(super) async fn selected(
 }
 // Recall positions include inspectable receipts that are not transcript entries.
 // Scan past them rather than returning an empty page before the actual history ends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shape {
+    Rows,
+    /// With `cursor`, a step at the anchor belongs to a group already returned.
+    Groups {
+        cursor: bool,
+    },
+    Steps,
+}
 pub(super) async fn window(
     tree: &SourceTree,
     anchor: Option<wire::HistoryRowAddress>,
@@ -382,13 +391,18 @@ pub(super) async fn window(
     limit: usize,
     cache: &mut Cache,
     turn: Option<RunRows>,
+    shape: Shape,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<Selected>, String> {
+    let origin = anchor.clone();
     let mut bound = anchor;
     let mut exclude_anchor = false;
     let mut rows = Vec::new();
     let mut folded = None;
     let mut first = true;
+    let mut seen = false;
+    let mut steps_turn = None;
+    let mut pending: Option<(Option<TurnKey>, Vec<Selected>, bool)> = None;
     'pages: loop {
         let filter = match turn {
             Some(RunRows::Only { run, start }) => Some(RunRows::Only {
@@ -432,16 +446,418 @@ pub(super) async fn window(
             {
                 continue;
             }
-            rows.push(row);
-            if rows.len() == limit {
+            let step = step(&row.row.chunk);
+            match shape {
+                Shape::Rows => rows.push(row),
+                Shape::Steps => {
+                    let key = turn_key(&row.row.chunk);
+                    if !step || *steps_turn.get_or_insert_with(|| key.clone()) != key {
+                        return Ok(rows);
+                    }
+                    rows.push(row);
+                }
+                Shape::Groups { cursor } => {
+                    if step {
+                        if cursor && origin.as_ref() == Some(&row.row.chunk.position) {
+                            continue;
+                        }
+                        let key = turn_key(&row.row.chunk);
+                        if pending.as_ref().is_some_and(|(turn, ..)| *turn != key) {
+                            let (_, members, extend) = pending.take().expect("pending group");
+                            rows.extend(
+                                group(
+                                    tree,
+                                    members,
+                                    reverse,
+                                    extend,
+                                    include_thinking,
+                                    cache,
+                                    stop,
+                                )
+                                .await?,
+                            );
+                        }
+                        pending
+                            .get_or_insert_with(|| (key, Vec::new(), !seen))
+                            .1
+                            .push(row);
+                        seen = true;
+                        continue;
+                    }
+                    if let Some((_, members, extend)) = pending.take() {
+                        rows.extend(
+                            group(
+                                tree,
+                                members,
+                                reverse,
+                                extend,
+                                include_thinking,
+                                cache,
+                                stop,
+                            )
+                            .await?,
+                        );
+                        if rows.len() >= limit {
+                            return Ok(rows);
+                        }
+                    }
+                    rows.push(row);
+                }
+            }
+            seen = true;
+            if rows.len() >= limit {
                 return Ok(rows);
             }
         }
         if !full {
+            if let Some((_, members, extend)) = pending.take() {
+                rows.extend(
+                    group(
+                        tree,
+                        members,
+                        reverse,
+                        extend,
+                        include_thinking,
+                        cache,
+                        stop,
+                    )
+                    .await?,
+                );
+            }
             return Ok(rows);
         }
         bound = last;
         exclude_anchor = true;
+    }
+}
+type TurnKey = (
+    Vec<RunId>,
+    Option<SnapshotId>,
+    Option<String>,
+    Option<maka_agent_facts::history_snapshot::ImportedTurnOrdinal>,
+);
+fn turn_key(chunk: &wire::Chunk) -> Option<TurnKey> {
+    let position = &chunk.position;
+    let path = position.path().to_vec();
+    match position {
+        wire::HistoryRowAddress::Imported { .. } => chunk
+            .imported_turn
+            .map(|turn| (path, snapshot_id(position), None, Some(turn))),
+        _ => chunk
+            .turn_id
+            .clone()
+            .map(|turn| (path, snapshot_id(position), Some(turn), None)),
+    }
+}
+fn step(chunk: &wire::Chunk) -> bool {
+    use maka_agent_facts::message::MessageOrigin;
+    if turn_key(chunk).is_none() {
+        return false;
+    }
+    if chunk.tool.is_some() {
+        return true;
+    }
+    match chunk.role {
+        wire::Role::Failure | wire::Role::Compaction => false,
+        wire::Role::Assistant => chunk.field == wire::HistoryField::Thinking,
+        wire::Role::User => chunk
+            .origin
+            .as_ref()
+            .is_some_and(|origin| !matches!(origin, MessageOrigin::Goal { .. })),
+        _ => true,
+    }
+}
+/// A scan that began inside a group also reads the group's rows behind its origin.
+async fn group(
+    tree: &SourceTree,
+    mut members: Vec<Selected>,
+    reverse: bool,
+    extend: bool,
+    include_thinking: bool,
+    cache: &mut Cache,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<Option<Selected>, String> {
+    if extend {
+        let from = members[0].row.chunk.position.clone();
+        let mut more = Box::pin(window(
+            tree,
+            Some(from.clone()),
+            !reverse,
+            include_thinking,
+            usize::MAX,
+            cache,
+            None,
+            Shape::Steps,
+            stop,
+        ))
+        .await?;
+        if more
+            .first()
+            .is_some_and(|row| row.row.chunk.position == from)
+        {
+            more.remove(0);
+        }
+        more.reverse();
+        more.extend(members);
+        members = more;
+        if reverse {
+            members.reverse();
+        }
+    } else if reverse {
+        members.reverse();
+    }
+    let returned: std::collections::BTreeSet<String> = members
+        .iter()
+        .filter_map(|member| member.row.chunk.tool.as_ref())
+        .filter(|tool| tool.result.is_some())
+        .map(|tool| tool.tool_use_id.clone())
+        .collect();
+    for member in &mut members {
+        if member
+            .row
+            .chunk
+            .tool
+            .as_ref()
+            .is_some_and(|tool| tool.call.is_some() && !returned.contains(&tool.tool_use_id))
+        {
+            pair(tree, member, cache, stop).await?;
+        }
+        if member.row.chunk.field == wire::HistoryField::Thinking
+            && matches!(member.row.body, projection::Body::Field(_))
+        {
+            let (_, offset, total, text) = display(
+                member,
+                wire::HistoryView::Chat,
+                SourcePosition::Start,
+                4096,
+                stop,
+            )
+            .await?;
+            if offset + text.len() as u64 >= total && text.trim().is_empty() {
+                member.row.body = projection::Body::Empty;
+            }
+        }
+    }
+    Ok(summarize(members))
+}
+fn summarize(members: Vec<Selected>) -> Option<Selected> {
+    enum Seat {
+        Tool(usize),
+        Thought,
+        Message,
+        Other,
+    }
+    let mut seats = Vec::new();
+    let mut tools: Vec<(wire::Tool, Pairing)> = Vec::new();
+    for (member, selected) in members.iter().enumerate() {
+        let chunk = &selected.row.chunk;
+        if let Some(tool) = &chunk.tool {
+            match tools
+                .iter()
+                .position(|(paired, _)| paired.tool_use_id == tool.tool_use_id)
+            {
+                Some(index) => {
+                    let (paired, pairing) = &mut tools[index];
+                    pairing.absorb(paired, selected);
+                }
+                None => {
+                    let mut paired = wire::Tool {
+                        tool_use_id: tool.tool_use_id.clone(),
+                        call: None,
+                        result: None,
+                    };
+                    let mut pairing = Pairing::default();
+                    pairing.absorb(&mut paired, selected);
+                    seats.push((member, Seat::Tool(tools.len())));
+                    tools.push((paired, pairing));
+                }
+            }
+        } else if chunk.field == wire::HistoryField::Thinking {
+            if !matches!(&selected.row.body, projection::Body::Text(body)
+                if body.chunks().all(|text| text.trim().is_empty()))
+                && !matches!(selected.row.body, projection::Body::Empty)
+            {
+                seats.push((member, Seat::Thought));
+            }
+        } else if chunk.role == wire::Role::User {
+            seats.push((member, Seat::Message));
+        } else {
+            seats.push((member, Seat::Other));
+        }
+    }
+    let callers: std::collections::BTreeSet<&str> = tools
+        .iter()
+        .filter_map(|(tool, _)| tool.call.as_ref())
+        .filter(|call| call.origin == wire::ToolCallOrigin::CodeMode)
+        .flat_map(|call| call.ancestor_tool_use_ids.iter().map(String::as_str))
+        .collect();
+    let shown: Vec<&(usize, Seat)> = seats
+        .iter()
+        .filter(|(_, seat)| match seat {
+            // A return whose call is outside the group belongs to the call's group.
+            Seat::Tool(index) => {
+                let tool = &tools[*index].0;
+                tool.call.is_some()
+                    && (!callers.contains(tool.tool_use_id.as_str())
+                        || tool.result.as_ref().is_some_and(|result| result.is_error))
+            }
+            _ => true,
+        })
+        .collect();
+    let kind = |seat: &Seat| match seat {
+        Seat::Tool(index) => Some(wire::WorkKind::Tool {
+            presentation: tools[*index]
+                .0
+                .call
+                .as_ref()
+                .and_then(|call| call.presentation.clone()),
+        }),
+        Seat::Thought => Some(wire::WorkKind::Thought),
+        Seat::Message => Some(wire::WorkKind::Message),
+        Seat::Other => None,
+    };
+    let first = shown.first()?.0;
+    let (_, last) = shown.last()?;
+    let mut kinds = Vec::new();
+    for kind in shown.iter().filter_map(|(_, seat)| kind(seat)) {
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    let mut images = Vec::new();
+    let mut tool_count = 0;
+    for (_, seat) in &shown {
+        let Seat::Tool(index) = seat else { continue };
+        tool_count += 1;
+        let Some(result) = &tools[*index].0.result else {
+            continue;
+        };
+        if result.image {
+            images.push(wire::WorkImage {
+                position: result.position.clone(),
+                image: None,
+            });
+        }
+        images.extend((0..result.images).map(|image| wire::WorkImage {
+            position: result.position.clone(),
+            image: Some(image),
+        }));
+    }
+    let image_count = images.len() as u64;
+    images.drain(..images.len().saturating_sub(4));
+    let end = &members.last()?.row.chunk;
+    let work = wire::WorkGroup {
+        end: wire::Cursor {
+            field: end.field,
+            position: end.position.clone(),
+            offset: 0,
+        },
+        last: kind(last).unwrap_or(wire::WorkKind::Message),
+        first_tool_use_id: members[first]
+            .row
+            .chunk
+            .tool
+            .as_ref()
+            .map(|tool| tool.tool_use_id.clone()),
+        last_call: match last {
+            Seat::Tool(index) => tools[*index].0.call.clone().map(Box::new),
+            _ => None,
+        },
+        kinds,
+        thoughts: shown
+            .iter()
+            .filter(|(_, seat)| matches!(seat, Seat::Thought))
+            .count() as u64,
+        tools: tool_count,
+        messages: shown
+            .iter()
+            .filter(|(_, seat)| matches!(seat, Seat::Message))
+            .count() as u64,
+        image_count,
+        images,
+    };
+    let first = members.into_iter().nth(first)?;
+    let mut chunk = first.row.chunk;
+    chunk.text.clear();
+    chunk.offset = 0;
+    chunk.total_bytes = 0;
+    chunk.tool = None;
+    chunk.attachments.clear();
+    chunk.has_references = false;
+    chunk.message_id = None;
+    chunk.work = Some(Box::new(work));
+    Some(Selected {
+        data: first.data,
+        item: first.item,
+        row: projection::Row {
+            chunk,
+            visible: true,
+            continuation: None,
+            body: projection::Body::Empty,
+            fields: Vec::new(),
+        },
+    })
+}
+#[derive(Default)]
+struct Pairing {
+    call: Option<wire::RowPosition>,
+    rank: (bool, u8),
+}
+impl Pairing {
+    fn absorb(&mut self, paired: &mut wire::Tool, selected: &Selected) -> bool {
+        let Some(tool) = &selected.row.chunk.tool else {
+            return true;
+        };
+        if let Some(call) = &tool.call {
+            if self
+                .call
+                .as_ref()
+                .is_some_and(|position| *position != call.position)
+            {
+                return false;
+            }
+            self.call = Some(call.position.clone());
+            paired.call = Some(call.clone());
+        }
+        let rank = match &selected.item {
+            SourceItem::Canonical(item)
+                if matches!(
+                    item.recorded.fact,
+                    Fact::ToolResultAccepted {
+                        outcome: AcceptedResult::CellRecovered { .. },
+                        ..
+                    }
+                ) =>
+            {
+                2
+            }
+            SourceItem::Canonical(item)
+                if matches!(item.recorded.fact, Fact::ToolResultAccepted { .. }) =>
+            {
+                3
+            }
+            _ if selected
+                .row
+                .fields
+                .iter()
+                .any(|(field, _)| *field == SourceField::Result) =>
+            {
+                2
+            }
+            _ => 1,
+        };
+        if let Some(result) = &tool.result {
+            let rank = (
+                result.settlement != Some(maka_agent_facts::tool_call::ToolSettlement::Unknown),
+                rank,
+            );
+            // Later uncertainty or cleanup receipts cannot replace a known return.
+            if rank >= self.rank {
+                paired.result = Some(result.clone());
+                self.rank = rank;
+            }
+        }
+        true
     }
 }
 pub(super) async fn pair(
@@ -471,8 +887,7 @@ pub(super) async fn pair(
     }
     let id = tool.tool_use_id.clone();
     let mut paired = tool.clone();
-    let mut call_position = None;
-    let mut result_rank = (false, 0);
+    let mut pairing = Pairing::default();
     let mut after = None;
     loop {
         let positions = tree
@@ -494,57 +909,9 @@ pub(super) async fn pair(
             if !selected.row.visible {
                 continue;
             }
-            let Some(tool) = selected.row.chunk.tool else {
-                continue;
-            };
-            if let Some(call) = tool.call {
-                if call_position
-                    .as_ref()
-                    .is_some_and(|position| *position != call.position)
-                {
-                    cache.tools.insert(key, None);
-                    return Ok(());
-                }
-                call_position = Some(call.position.clone());
-                paired.call = Some(call);
-            }
-            let rank = match &selected.item {
-                SourceItem::Canonical(item)
-                    if matches!(
-                        item.recorded.fact,
-                        Fact::ToolResultAccepted {
-                            outcome: AcceptedResult::CellRecovered { .. },
-                            ..
-                        }
-                    ) =>
-                {
-                    2
-                }
-                SourceItem::Canonical(item)
-                    if matches!(item.recorded.fact, Fact::ToolResultAccepted { .. }) =>
-                {
-                    3
-                }
-                _ if selected
-                    .row
-                    .fields
-                    .iter()
-                    .any(|(field, _)| *field == SourceField::Result) =>
-                {
-                    2
-                }
-                _ => 1,
-            };
-            if let Some(result) = tool.result {
-                let rank = (
-                    result.settlement != Some(maka_agent_facts::tool_call::ToolSettlement::Unknown),
-                    rank,
-                );
-                // Later uncertainty or cleanup receipts cannot replace a known return.
-                if rank >= result_rank {
-                    paired.result = Some(result);
-                    result_rank = rank;
-                }
+            if !pairing.absorb(&mut paired, &selected) {
+                cache.tools.insert(key, None);
+                return Ok(());
             }
         }
     }

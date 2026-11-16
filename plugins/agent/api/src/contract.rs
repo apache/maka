@@ -1438,6 +1438,8 @@ pub struct HistoryChunk {
     pub timing: Option<maka_agent_ports::session::history::TurnTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folded_work: Option<maka_agent_ports::session::history::FoldedWork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<Box<maka_agent_ports::session::history::WorkGroup>>,
     pub field: maka_agent_ports::session::history::HistoryField,
     pub message_id: Option<String>,
     pub turn_id: Option<String>,
@@ -1769,6 +1771,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                         .collect(),
                     timing: chunk.timing,
                     folded_work: chunk.folded_work,
+                    work: chunk.work,
                     field: chunk.field,
                     message_id: chunk.message_id,
                     turn_id: chunk.turn_id,

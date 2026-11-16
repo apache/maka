@@ -3117,6 +3117,7 @@ mod model_recovery {
     mod predictions;
     mod preset_acceptance;
     mod presets;
+    mod work_groups;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
