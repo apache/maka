@@ -187,6 +187,7 @@ import type { SessionAction } from '../../../../products/maka/workbench/app/sess
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
 import { createSessionGoal } from '../../../../products/maka/workbench/app/sessionGoal';
+import { createBackgroundTasks } from '../../../../products/maka/workbench/app/backgroundTaskState';
 import {
   createMessagePrediction,
   predictionTrigger,
@@ -3337,6 +3338,10 @@ export function Conversation(props: ConversationProps) {
     void send(text, expectedBackend, false, delivery);
   };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
+  const backgroundTasks = createBackgroundTasks(host, {
+    sessionId,
+    active: () => connected() && props.visible(),
+  });
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
   const messagePrediction = createMessagePrediction({
     sessionId,
@@ -3436,6 +3441,15 @@ export function Conversation(props: ConversationProps) {
       async stop(operationId) {
         await props.control('stopComputerApp', { sessionId, operationId });
       },
+    },
+    backgroundTasks: {
+      running: backgroundTasks.running,
+      finished: backgroundTasks.finished,
+      error: backgroundTasks.error,
+      refresh: backgroundTasks.refresh,
+      stop: backgroundTasks.stop,
+      stopping: backgroundTasks.stopping,
+      ...(props.previewTerminal ? { open: props.previewTerminal } : {}),
     },
     draft,
     attachments,

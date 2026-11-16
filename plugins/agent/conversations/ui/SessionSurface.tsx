@@ -2995,6 +2995,7 @@ function projectComposerSession(
     checkSend: owner.checkSend,
     dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
+    ...(owner.backgroundTasks ? { backgroundTasks: owner.backgroundTasks } : {}),
     completion: projectComposerCompletion(host, { kind: 'session', sessionId: owner.sessionId }),
     checklist: {
       read: (offset, limit) =>

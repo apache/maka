@@ -37,6 +37,7 @@ import type {
   ClientDraftAttachment,
   AgentBackendPreference,
   AgentModelChoice,
+  ShellStatus,
   WorkspacePath,
 } from './generated/runtime.js';
 import type { ServiceMethods } from './generated/methods.js';
@@ -188,6 +189,31 @@ export interface ComposerComputerAccess {
   stop(operationId: string): Promise<void>;
 }
 
+/** A background agent command of the Session. Times are Unix milliseconds. */
+export interface ComposerBackgroundTask {
+  readonly ref: string;
+  readonly command: string;
+  readonly status: ShellStatus;
+  readonly startedAt: number;
+  readonly completedAt?: number;
+  readonly exitCode?: number;
+  /** Running, owned by this Host and currently connected. */
+  readonly stoppable: boolean;
+}
+
+export interface ComposerBackgroundTasks {
+  running(): readonly ComposerBackgroundTask[];
+  /** Newest first. */
+  finished(): readonly ComposerBackgroundTask[];
+  error(): string;
+  refresh(): void;
+  /** Stops the process; the Host decides its final status. */
+  stop(ref: string): Promise<void>;
+  stopping(ref: string): boolean;
+  /** Absent where the surface has no output view. */
+  open?(ref: string, restoreFocus: () => boolean): void;
+}
+
 /** A suggested draft is separate from the text the user is editing. */
 export interface ComposerPrediction {
   current(): { sourceTurnId: string; text: string } | null;
@@ -235,6 +261,7 @@ export interface ComposerSession<Element = unknown> {
   readonly checklist: ComposerChecklistSource;
   readonly goal?: ComposerGoal;
   readonly computerAccess: ComposerComputerAccess;
+  readonly backgroundTasks?: ComposerBackgroundTasks;
   readonly completion: ComposerCompletionSource;
   draft(): string;
   previewImage(image: ComposerImagePreview): void;
