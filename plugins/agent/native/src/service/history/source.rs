@@ -649,7 +649,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
     }
     let mut seats = Vec::new();
     let mut tools: Vec<(wire::Tool, Pairing)> = Vec::new();
-    for selected in &members {
+    for (member, selected) in members.iter().enumerate() {
         let chunk = &selected.row.chunk;
         if let Some(tool) = &chunk.tool {
             match tools
@@ -668,7 +668,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
                     };
                     let mut pairing = Pairing::default();
                     pairing.absorb(&mut paired, selected);
-                    seats.push(Seat::Tool(tools.len()));
+                    seats.push((member, Seat::Tool(tools.len())));
                     tools.push((paired, pairing));
                 }
             }
@@ -677,12 +677,12 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
                 if body.chunks().all(|text| text.trim().is_empty()))
                 && !matches!(selected.row.body, projection::Body::Empty)
             {
-                seats.push(Seat::Thought);
+                seats.push((member, Seat::Thought));
             }
         } else if chunk.role == wire::Role::User {
-            seats.push(Seat::Message);
+            seats.push((member, Seat::Message));
         } else {
-            seats.push(Seat::Other);
+            seats.push((member, Seat::Other));
         }
     }
     let callers: std::collections::BTreeSet<&str> = tools
@@ -691,9 +691,9 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
         .filter(|call| call.origin == wire::ToolCallOrigin::CodeMode)
         .flat_map(|call| call.ancestor_tool_use_ids.iter().map(String::as_str))
         .collect();
-    let shown: Vec<&Seat> = seats
+    let shown: Vec<&(usize, Seat)> = seats
         .iter()
-        .filter(|seat| match seat {
+        .filter(|(_, seat)| match seat {
             // A return whose call is outside the group belongs to the call's group.
             Seat::Tool(index) => {
                 let tool = &tools[*index].0;
@@ -716,16 +716,17 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
         Seat::Message => Some(wire::WorkKind::Message),
         Seat::Other => None,
     };
-    let last = *shown.last()?;
+    let first = shown.first()?.0;
+    let (_, last) = shown.last()?;
     let mut kinds = Vec::new();
-    for kind in shown.iter().filter_map(|seat| kind(seat)) {
+    for kind in shown.iter().filter_map(|(_, seat)| kind(seat)) {
         if !kinds.contains(&kind) {
             kinds.push(kind);
         }
     }
     let mut images = Vec::new();
     let mut tool_count = 0;
-    for seat in &shown {
+    for (_, seat) in &shown {
         let Seat::Tool(index) = seat else { continue };
         tool_count += 1;
         let Some(result) = &tools[*index].0.result else {
@@ -752,8 +753,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
             offset: 0,
         },
         last: kind(last).unwrap_or(wire::WorkKind::Message),
-        first_tool_use_id: members
-            .first()?
+        first_tool_use_id: members[first]
             .row
             .chunk
             .tool
@@ -766,17 +766,17 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
         kinds,
         thoughts: shown
             .iter()
-            .filter(|seat| matches!(seat, Seat::Thought))
+            .filter(|(_, seat)| matches!(seat, Seat::Thought))
             .count() as u64,
         tools: tool_count,
         messages: shown
             .iter()
-            .filter(|seat| matches!(seat, Seat::Message))
+            .filter(|(_, seat)| matches!(seat, Seat::Message))
             .count() as u64,
         image_count,
         images,
     };
-    let first = members.into_iter().next()?;
+    let first = members.into_iter().nth(first)?;
     let mut chunk = first.row.chunk;
     chunk.text.clear();
     chunk.offset = 0;

@@ -1775,7 +1775,7 @@ export function Conversation(props: ConversationProps) {
     if (!owner || !row?.work || !row.position) return;
     loadPages(
       rowId,
-      row.metadataThrough ?? owner.through,
+      owner.through,
       { kind: 'row', position: row.position, field: row.field as 'body' | 'thinking' },
       'steps',
     );
@@ -1937,7 +1937,7 @@ export function Conversation(props: ConversationProps) {
             let position = historyFollowPosition(row, []);
             const chunks: AgentHistoryChunk[] = [];
             for (;;) {
-              const page = await history(fence, position, owner.view);
+              const page = await history(fence, position);
               if (!ownsWindow(owner.identity)) return;
               const matching = page.chunks.filter(
                 (chunk) =>

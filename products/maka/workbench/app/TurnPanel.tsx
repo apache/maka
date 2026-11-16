@@ -104,18 +104,18 @@ export function activityCounts(
   const counts = { thoughts: 0, tools: 0, messages: 0 };
   for (const group of groups) {
     const work = groupWork(group, row);
+    // A summary covers every recorded step; only live previews are newer.
+    const ids = work ? group.rowIds.filter((id) => row(id)?.preview) : group.rowIds;
     if (work) {
       counts.thoughts += work.thoughts;
-      counts.tools += work.tools;
+      counts.tools += work.tools + ids.filter((id) => row(id)?.tool).length;
       counts.messages += work.messages;
-      continue;
-    }
-    for (const id of group.rowIds) {
+    } else counts.tools += group.toolIds.length;
+    for (const id of ids) {
       const kind = stepKind(row(id));
       if (kind?.kind === 'thought') counts.thoughts += 1;
       if (kind?.kind === 'message') counts.messages += 1;
     }
-    counts.tools += group.toolIds.length;
   }
   return activityCountLabel(counts);
 }
@@ -124,6 +124,10 @@ type StepKind = NonNullable<Row['work']>['last'];
 
 export function groupWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
   return group.workRowId ? row(group.workRowId)?.work : undefined;
+}
+
+function latestWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
+  return row(group.rowIds.at(-1) ?? '')?.preview ? undefined : groupWork(group, row);
 }
 
 function stepKind(value: Row | undefined): StepKind | undefined {
@@ -722,7 +726,7 @@ function GroupHeader(props: TurnPanelProps) {
       props.group().rowIds.includes(activity.rowId)
     )
       return `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
-    const work = groupWork(props.group(), props.row);
+    const work = latestWork(props.group(), props.row);
     const latest = work ? work.lastCall : props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
     return latest ? activityTitle(latest) : tr('Working…');
   });
@@ -745,7 +749,7 @@ function GroupHeader(props: TurnPanelProps) {
   };
   const icon = () => {
     const last =
-      groupWork(props.group(), props.row)?.last ??
+      latestWork(props.group(), props.row)?.last ??
       stepKind(props.row(props.group().rowIds.at(-1) ?? ''));
     if (last?.kind === 'tool') return activityIcon(last.presentation);
     return last?.kind === 'thought' ? 'thinking' : 'activity';
