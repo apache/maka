@@ -299,6 +299,12 @@ impl Parser {
         super::markdown::parse(self, source, false).document
     }
 
+    /// The Markdown syntax tree with byte positions in the original source.
+    /// For editors that draw formatting over the editable source.
+    pub fn markdown_syntax(&self, source: &str) -> mdast::Node {
+        super::markdown::syntax(self, source)
+    }
+
     /// Markdown with canonical UTF-8 provenance for a rendered document.
     /// This uses the same parser and converter as `markdown`.
     pub(super) fn markdown_projection(&self, source: &str) -> super::markdown::Projection {

@@ -17,50 +17,88 @@
  * under the License.
  */
 
-import { computed, Text, View } from 'nsh';
+import { Text, View } from 'nsh';
 import { SkillInput } from './SkillInput';
+import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
 import { hasComposerToken, skillTextGroups } from './skillTokenText';
-import { C, bodyTextStyle } from './ui';
-import type { Row } from './history';
+import { hasTextPrefix, type Row } from './history';
+import { bodyTextStyle, C } from './ui';
 
-/** Message selection uses the same atom model and source serializer as the composer. */
+export function userMessagePresentation(row: Row) {
+  const prefix = hasTextPrefix(row);
+  if (prefix && /[\r\n]|!\[/.test(row.text)) return { kind: 'markdown' as const };
+  const groups = skillTextGroups(row.fragments ?? [{ offset: 0, text: row.text }]);
+  if (groups.some(hasComposerToken)) return { kind: 'tokens' as const, groups };
+  // Plain messages can keep their intrinsic bubble width. A block renderer
+  // needs a width up front and owns parsing the possible syntax.
+  if (
+    prefix &&
+    /[#*_~`\[\]<>!\\&@$]|^(?: {4}|\t)|^\s*(?:[-+=]|\d+[.)])|https?:|www\./i.test(row.text)
+  )
+    return { kind: 'markdown' as const };
+  return { kind: 'plain' as const };
+}
+
 export function SkillMessage(props: {
   row(): Row;
+  presentation(): ReturnType<typeof userMessagePresentation>;
   sourceId: string;
+  sessionId: string;
+  openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  userScroll(): void;
   openSession?(sessionId: string): void;
 }) {
-  const fragments = () => props.row().fragments ?? [{ offset: 0, text: props.row().text }];
-  const groups = computed(() => skillTextGroups(fragments()));
-  const hasTokens = computed(() => groups().some(hasComposerToken));
   return (
     <If
-      when={hasTokens()}
+      when={props.presentation().kind === 'markdown'}
       else={
-        <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
-          <SourceText row={props.row} sourceId={props.sourceId} />
-        </Text>
+        <If
+          when={props.presentation().kind === 'tokens'}
+          else={
+            <Text style={{ ...bodyTextStyle, color: C.text }}>
+              <SourceText row={props.row} sourceId={props.sourceId} />
+            </Text>
+          }
+        >
+          <View style={{ width: '100%', minWidth: 0 }}>
+            <Each
+              of={(() => {
+                const presentation = props.presentation();
+                return presentation.kind === 'tokens' ? presentation.groups : [];
+              })()}
+              key={(group) => group.offset}
+            >
+              {(group) => (
+                <SkillInput
+                  accessibilityLabel={group().text}
+                  value={group().text}
+                  readonly
+                  onOpenSessionReference={
+                    props.openSession
+                      ? ({ sessionId }) => props.openSession?.(sessionId)
+                      : undefined
+                  }
+                  autoFocus={false}
+                  placeholder=""
+                  sourceId={props.sourceId}
+                  sourceOffset={group().offset}
+                  style={{ width: '100%', minWidth: 0, flexShrink: 0 }}
+                />
+              )}
+            </Each>
+          </View>
+        </If>
       }
     >
-      <View style={{ width: '100%', minWidth: 0 }}>
-        <Each of={groups()} key={(group) => group.offset}>
-          {(group) => (
-            <SkillInput
-              accessibilityLabel={group().text}
-              value={group().text}
-              readonly
-              onOpenSessionReference={
-                props.openSession ? ({ sessionId }) => props.openSession?.(sessionId) : undefined
-              }
-              autoFocus={false}
-              placeholder=""
-              sourceId={props.sourceId}
-              sourceOffset={group().offset}
-              style={{ width: '100%', minWidth: 0, flexShrink: 0 }}
-            />
-          )}
-        </Each>
-      </View>
+      <MarkdownBody
+        row={props.row}
+        sourceId={props.sourceId}
+        sessionId={props.sessionId}
+        interactiveBlocks={false}
+        openLink={props.openLink}
+        userScroll={props.userScroll}
+      />
     </If>
   );
 }

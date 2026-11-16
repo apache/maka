@@ -51,7 +51,7 @@ type Props = {
 };
 type Binding = { key: string; action: () => void; options?: EditorKeyOptions };
 
-/** Product-owned plain-text composer; skills are inline atoms in the existing rich editor. */
+/** A source-preserving Markdown composer with native reference tokens. */
 export function SkillInput(props: Props) {
   const native = signal<ComposerInputRef | null>(null);
   const status = signal<ComposerInputState | null>(null);
