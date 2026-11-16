@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
+
 export type Selection = { start: number; end: number };
 export type CompletionToken = {
   kind: 'slash' | 'skill' | 'file';
@@ -168,10 +170,11 @@ export function fileInvocation(path: string): string {
   return '@' + (!path || /[\s"'\\\u0000-\u001f\u007f]/.test(path) ? JSON.stringify(path) : path);
 }
 
-/** A conversation reference retains the original title and stable ID in the message text. */
-export function sessionInvocation(session: { id: string; title: string }): string {
+/** A session reference retains its title and stable ID in the message text. */
+export function sessionInvocation(session: Pick<AgentSession, 'id' | 'title' | 'kind'>): string {
   const label = (session.title || session.id)
     .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ')
     .replace(/[\\\]/]/g, '\\$&');
-  return `[@${label}](maka://session/${session.id})`;
+  const marker = session.kind === 'room' ? '#' : '@';
+  return `[${marker}${label}](maka://session/${session.id})`;
 }

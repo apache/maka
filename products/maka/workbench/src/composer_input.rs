@@ -302,11 +302,7 @@ impl NodeView for ReferenceView {
             .as_str()
             .expect("a composer token's name is text");
         let is_session = node.ty().name() == "session";
-        let label = if is_session {
-            format!("@{name}")
-        } else {
-            name.to_owned()
-        };
+        let label = name.to_owned();
         let icon_size = 13.0;
         let icon = if nsh_base::terminal::is_terminal() {
             text("📖").into_element()

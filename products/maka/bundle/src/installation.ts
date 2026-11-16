@@ -215,7 +215,7 @@ export function installation(
     [
       'history',
       'SessionHistory',
-      'Read a session transcript. For a conversation reference like maka://session/<id>, use <id> as sessionId to look up the referenced context. Rooms return posted messages with immutable IDs, authors, mentions, replyTo and delivery receipts. Use message/before_message/after_message positions with messageId to navigate Room messages. Agent sessions expose delegated results and failures. Page with returned cursors; tool metadata alone is not the full tool output. Use the indicated result reader when evidence is archived.',
+      'Read a session transcript. A Markdown link like [#Room](maka://session/<id>) or [@Conversation](maka://session/<id>) in user text is a context reference for the current conversation. Use <id> as sessionId with position kind=tail to read recent context. Rooms return posted messages with immutable IDs, authors, mentions, replyTo and delivery receipts. Use message/before_message/after_message positions with messageId to navigate Room messages. Agent sessions expose delegated results and failures. Page with returned cursors; tool metadata alone is not the full tool output. Use the indicated result reader when evidence is archived.',
     ],
     [
       'create',
