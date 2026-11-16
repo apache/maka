@@ -898,11 +898,25 @@ pub(super) async fn project(
             diagnostic: Some(diagnostic),
             ..
         } => {
+            let recovery = if matches!(
+                item.recorded.fact,
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    ..
+                }
+            ) {
+                reader
+                    .recovery_failure_at(item)
+                    .await
+                    .map_err(|error| error.to_string())?
+            } else {
+                None
+            };
             let mut row = base(item, turn, 0, Role::Failure, address)?;
             text(
                 &mut row,
                 SourceField::FailureMessage,
-                diagnostic.clone().into(),
+                recovery.unwrap_or_else(|| diagnostic.clone()).into(),
             );
             result.push(row);
         }
