@@ -118,7 +118,7 @@ pub enum OpenaiReasoningReplay {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelRuntimeOverride {
     pub adapter: RuntimeAdapter,
     pub base_url: Option<String>,

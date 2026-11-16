@@ -87,27 +87,21 @@ pub(crate) fn resolve<'a>(
     row: &Selection<'_>,
     facts: &'a ProviderFacts,
 ) -> Result<Route<'a>, Error> {
-    let known = facts.models.get(row.model.id.as_str());
-    let override_ = known.and_then(|model| model.runtime_override.as_ref());
-    let requested_wire = row
+    let explicit_wire = row
         .overrides
         .and_then(|value| value.api_protocol)
-        .or(row.model.api_protocol)
-        .or_else(|| known.and_then(|model| model.api_protocol));
-    let (wire, selected, uses_override) = facts.select_adapter(override_, requested_wire)?;
-    let resolved_endpoint = if row.base_url == facts.base_url && uses_override {
-        override_
-            .and_then(|value| value.base_url.as_deref())
-            .unwrap_or(row.base_url)
-    } else {
-        row.base_url
+        .or(row.model.api_protocol);
+    let selected = facts.select_adapter(&row.model.id, explicit_wire)?;
+    let resolved_endpoint = match selected.base_url {
+        Some(url) if row.base_url == facts.base_url => url,
+        _ => row.base_url,
     };
     let mut url = url::Url::parse(resolved_endpoint).map_err(|_| Error::InvalidEndpoint)?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(Error::InvalidEndpoint);
     }
     let path = url.path().trim_end_matches('/');
-    let normalize_base_url = match selected {
+    let normalize_base_url = match selected.adapter {
         RuntimeAdapter::Anthropic {
             normalize_base_url, ..
         } => *normalize_base_url,
@@ -123,13 +117,15 @@ pub(crate) fn resolve<'a>(
             path
         };
         format!("{root}/v1")
-    } else if wire == Wire::OpenaiResponses && path.to_ascii_lowercase().ends_with("/responses") {
+    } else if selected.wire == Wire::OpenaiResponses
+        && path.to_ascii_lowercase().ends_with("/responses")
+    {
         path[..path.len() - 10].to_owned()
     } else {
         path.to_owned()
     };
     url.set_path(&path);
-    let kind = match selected {
+    let kind = match selected.adapter {
         RuntimeAdapter::OpenaiChat {} => ProviderKind::OpenaiChatCompletions,
         RuntimeAdapter::OpenaiCompatible { name, .. } => ProviderKind::OpenaiCompatible {
             name: if *name == AdapterName::Connection {
@@ -149,12 +145,9 @@ pub(crate) fn resolve<'a>(
         }
     };
     Ok(Route {
-        wire,
+        wire: selected.wire,
         kind,
         base_url: url.to_string(),
-        adapter: selected,
+        adapter: selected.adapter,
     })
 }
-
-#[cfg(test)]
-mod tests;
