@@ -22,26 +22,28 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use maka_agent_api::contract::{
+    BackendPreference, Created, DeliveryFact, DeliveryPage, Execution, ExecutionResult,
+    ExecutionState, HistoryPage, HistoryPosition, SendResult, Stopped, Work, WorkTarget,
+};
+use maka_agent_facts::accounting::{Activity, ActivityKind, Group, Origin, Selection};
+use maka_agent_facts::durable::{RunId, StepId};
+use maka_agent_state::usage::{UsageActivityCursor, UsageFence};
 use maka_app_client::{Client, Journal, Mutation, Subscription, SubscriptionEvent};
 use maka_capabilities::call::Attachments;
 use maka_host_runtime::application::host::Client as HostClient;
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt};
+use maka_sandbox::Mode as SandboxMode;
+use maka_settings_native::contract::{DefaultModel, ModelsPage};
+use maka_settings_native::usage::{Page as UsagePage, Report as UsageReport};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum SandboxMode {
-    ReadOnly,
-    WorkspaceWrite,
-    #[default]
-    DangerFullAccess,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GuestRunRequest {
     pub instruction: String,
@@ -58,19 +60,19 @@ pub struct GuestRunRequest {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GuestEvidence {
     pub steps_observed: u32,
     pub session_id: String,
-    pub run_id: String,
+    pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution: Option<Value>,
-    pub host_usage: Value,
-    pub host_usage_attempts: Value,
+    pub execution: Option<Execution>,
+    pub host_usage: UsageReport,
+    pub host_usage_attempts: UsagePage,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(
     tag = "status",
     rename_all = "camelCase",
@@ -79,17 +81,24 @@ pub struct GuestEvidence {
 )]
 pub enum GuestRunResult {
     Completed {
-        evidence: GuestEvidence,
+        evidence: Box<GuestEvidence>,
     },
     SubjectStopped {
         stop_reason: String,
-        evidence: GuestEvidence,
+        evidence: Box<GuestEvidence>,
     },
     InfraFailed {
         infra_error: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        evidence: Option<GuestEvidence>,
+        evidence: Option<Box<GuestEvidence>>,
     },
+}
+
+pub fn is_terminal_execution_state(state: &ExecutionState) -> bool {
+    matches!(
+        state,
+        ExecutionState::Completed | ExecutionState::Failed { .. } | ExecutionState::Cancelled
+    )
 }
 
 impl GuestRunResult {
@@ -100,7 +109,7 @@ impl GuestRunResult {
         }
     }
 
-    fn into_evidence(self) -> Option<GuestEvidence> {
+    fn into_evidence(self) -> Option<Box<GuestEvidence>> {
         match self {
             Self::Completed { evidence } | Self::SubjectStopped { evidence, .. } => Some(evidence),
             Self::InfraFailed { evidence, .. } => evidence,
@@ -298,14 +307,10 @@ async fn run_session_with_client(
     canonical_workspace_str: &str,
     client: &Client,
 ) -> Result<GuestRunResult, String> {
-    let connection_id = find_connection_id(client, &req.connection_slug).await?;
-    let backend = json!({
-        "kind": "model",
-        "connectionId": connection_id,
-        "modelId": req.model_id,
-    });
+    let backend = resolve_backend(client, req).await?;
 
-    let created = commit(
+    let created: Created = commit_typed(
+        "agent.create",
         client
             .control(
                 Uuid::new_v4(),
@@ -327,13 +332,15 @@ async fn run_session_with_client(
     )
     .await?;
 
-    if created["kind"] != "created" {
-        return Err(format!("session creation rejected: {created}"));
-    }
-    let session_id = created["session"]["id"]
-        .as_str()
-        .ok_or_else(|| format!("created session missing id: {created}"))?
-        .to_owned();
+    let session_id = match created {
+        Created::Created { session } => session.id,
+        Created::Rejected { reason } => {
+            return Err(format!(
+                "session creation rejected: {}",
+                serde_json::to_string(&reason).unwrap_or_default()
+            ));
+        }
+    };
 
     let watch = client
         .subscribe(
@@ -363,26 +370,27 @@ async fn run_session_with_client(
             .await
             .map_err(|e| format!("agent.send open failed: {e}"))?;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(req.timeout_ms);
-        let accepted = commit(send).await?;
-        let run_id = match accepted["kind"].as_str() {
-            Some("started") => accepted["runId"]
-                .as_str()
-                .ok_or_else(|| format!("started response missing runId: {accepted}"))?
-                .to_owned(),
-            Some("queued") => {
-                let message_id = accepted["messageId"]
-                    .as_str()
-                    .ok_or_else(|| format!("queued response missing messageId: {accepted}"))?;
-                resolve_queued_run_id(client, &session_id, message_id, deadline, req.timeout_ms)
+        let run_id = match commit_typed::<SendResult>("agent.send", send).await? {
+            SendResult::Started { run_id, .. } => run_id,
+            SendResult::Queued { message_id, .. } => {
+                resolve_queued_run_id(client, &session_id, &message_id, deadline, req.timeout_ms)
                     .await?
             }
-            _ => return Err(format!("agent.send did not start or queue run: {accepted}")),
+            SendResult::Rejected { reason, .. } => {
+                return Err(format!(
+                    "agent.send rejected: {}",
+                    serde_json::to_string(&reason).unwrap_or_default()
+                ));
+            }
+            SendResult::Posted { .. } | SendResult::NotYourWorker { .. } => {
+                return Err("agent.send did not target an owned agent session".into());
+            }
         };
 
         let (run_error, mut step_ids) =
-            observe_run(client, &watch, &session_id, &run_id, req, deadline).await?;
+            observe_run(client, &watch, &session_id, run_id, req, deadline).await?;
 
-        let final_execution = await_terminal_execution(client, &session_id, &run_id).await?;
+        let final_execution = await_terminal_execution(client, &session_id, run_id).await?;
 
         let transcript = export_history(client, &session_id).await?;
         let transcript_file = req.artifacts_dir.join("transcript.json");
@@ -393,13 +401,14 @@ async fn run_session_with_client(
             .map_err(|e| format!("failed to write transcript: {e}"))?;
 
         let host_usage = query_settled_usage_summary(client, &session_id).await?;
-        let through_fence = host_usage
-            .get("through")
-            .ok_or("usageSummary missing through fence")?
-            .clone();
-        let host_usage_attempts =
-            query_all_usage_attempts(client, &session_id, &run_id, through_fence, &mut step_ids)
-                .await?;
+        let host_usage_attempts = query_all_usage_attempts(
+            client,
+            &session_id,
+            run_id,
+            host_usage.through.clone(),
+            &mut step_ids,
+        )
+        .await?;
 
         let evidence = GuestEvidence {
             steps_observed: u32::try_from(step_ids.len()).unwrap_or(u32::MAX),
@@ -409,27 +418,27 @@ async fn run_session_with_client(
             host_usage,
             host_usage_attempts,
         };
-        let state_kind = evidence
-            .execution
-            .as_ref()
-            .and_then(|e| e["state"]["kind"].as_str());
-        if run_error.is_none() && state_kind == Some("completed") {
-            Ok(GuestRunResult::Completed { evidence })
+        if run_error.is_none()
+            && matches!(
+                evidence.execution.as_ref().map(|e| &e.state),
+                Some(ExecutionState::Completed)
+            )
+        {
+            Ok(GuestRunResult::Completed {
+                evidence: Box::new(evidence),
+            })
         } else {
             let stop_reason = run_error.unwrap_or_else(|| {
-                format!(
-                    "execution ended in state '{}': {}",
-                    state_kind.unwrap_or("unknown"),
-                    evidence
-                        .execution
-                        .as_ref()
-                        .map(|e| e["state"].to_string())
-                        .unwrap_or_default()
-                )
+                let state = evidence
+                    .execution
+                    .as_ref()
+                    .and_then(|e| serde_json::to_string(&e.state).ok())
+                    .unwrap_or_else(|| "missing".into());
+                format!("execution ended in non-completed state: {state}")
             });
             Ok(GuestRunResult::SubjectStopped {
                 stop_reason,
-                evidence,
+                evidence: Box::new(evidence),
             })
         }
     }
@@ -443,15 +452,37 @@ async fn run_session_with_client(
     }
 }
 
+fn delivery_fact_step_id(fact: &DeliveryFact) -> Option<StepId> {
+    match fact {
+        DeliveryFact::ExecutorMessageStarted { step_id, .. }
+        | DeliveryFact::StepEnded { step_id, .. }
+        | DeliveryFact::PartCommitted { step_id, .. }
+        | DeliveryFact::Delta { step_id, .. }
+        | DeliveryFact::ToolInputReady { step_id, .. } => Some(*step_id),
+        DeliveryFact::Opened
+        | DeliveryFact::ExecutorStarted
+        | DeliveryFact::ExecutorTextChanged { .. }
+        | DeliveryFact::TranscriptChanged
+        | DeliveryFact::ToolDispatched { .. }
+        | DeliveryFact::ToolRejected { .. }
+        | DeliveryFact::ToolSettled { .. }
+        | DeliveryFact::ProviderToolResult { .. }
+        | DeliveryFact::ExecutorToolStart { .. }
+        | DeliveryFact::ExecutorToolProgress { .. }
+        | DeliveryFact::ExecutorToolResult { .. }
+        | DeliveryFact::Ended { .. } => None,
+    }
+}
+
 async fn observe_run(
     client: &Client,
     watch: &Subscription,
     session_id: &str,
-    run_id: &str,
+    run_id: RunId,
     req: &GuestRunRequest,
     deadline: tokio::time::Instant,
-) -> Result<(Option<String>, BTreeSet<String>), String> {
-    let mut step_ids = BTreeSet::<String>::new();
+) -> Result<(Option<String>, BTreeSet<StepId>), String> {
+    let mut step_ids = BTreeSet::<StepId>::new();
     loop {
         let next_ev = tokio::select! {
             biased;
@@ -468,33 +499,32 @@ async fn observe_run(
             res = watch.next() => res,
         };
         match next_ev {
-            Ok(Some(SubscriptionEvent::Item(page))) => match page["kind"].as_str() {
-                Some("interactions") => {
-                    if page["pending"]["entries"]
-                        .as_array()
-                        .is_some_and(|entries| !entries.is_empty())
-                    {
+            Ok(Some(SubscriptionEvent::Item(raw))) => {
+                let page: DeliveryPage = serde_json::from_value(raw)
+                    .map_err(|e| format!("watch page decode failed: {e}"))?;
+                match page {
+                    DeliveryPage::Interactions { pending } if !pending.entries.is_empty() => {
+                        let request_ids: Vec<&str> = pending
+                            .entries
+                            .iter()
+                            .map(|entry| entry.request_id.as_str())
+                            .collect();
                         let reason = stop_with_reason(
                             client,
                             session_id,
                             run_id,
-                            format!(
-                                "execution blocked by pending interaction: {}",
-                                page["pending"]["entries"]
-                            ),
+                            format!("execution blocked by pending interaction(s): {request_ids:?}"),
                         )
                         .await;
                         return Ok((Some(reason), step_ids));
                     }
-                }
-                Some("events") => {
-                    if let Some(events) = page["events"].as_array() {
+                    DeliveryPage::Events { events, .. } => {
                         for ev in events {
-                            if ev["runId"].as_str() != Some(run_id) {
+                            if ev.run_id != run_id {
                                 continue;
                             }
-                            if let Some(step_id) = ev["fact"]["stepId"].as_str() {
-                                step_ids.insert(step_id.to_owned());
+                            if let Some(step_id) = delivery_fact_step_id(&ev.fact) {
+                                step_ids.insert(step_id);
                                 if step_ids.len() > req.max_steps as usize {
                                     let reason = stop_with_reason(
                                         client,
@@ -506,14 +536,14 @@ async fn observe_run(
                                     return Ok((Some(reason), step_ids));
                                 }
                             }
-                            if ev["fact"]["kind"].as_str() == Some("ended") {
+                            if matches!(ev.fact, DeliveryFact::Ended { .. }) {
                                 return Ok((None, step_ids));
                             }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Ok(Some(_)) | Ok(None) => return Err("watch stream closed before run settled".into()),
             Err(e) => return Err(format!("watch stream error: {e}")),
         }
@@ -526,10 +556,10 @@ async fn resolve_queued_run_id(
     message_id: &str,
     deadline: tokio::time::Instant,
     timeout_ms: u64,
-) -> Result<String, String> {
+) -> Result<RunId, String> {
     let input = json!({
         "sessionId": session_id,
-        "target": { "kind": "message", "messageId": message_id },
+        "target": WorkTarget::Message { message_id: message_id.to_owned() },
         "cursor": Value::Null,
     });
     let mut poll = tokio::time::interval(Duration::from_millis(25));
@@ -543,69 +573,66 @@ async fn resolve_queued_run_id(
                 ));
             }
             _ = poll.tick() => {
-                let work = client
-                    .query("agent", "work", input.clone())
-                    .await
-                    .map_err(|e| format!("agent.work query failed: {e}"))?;
-                match work["kind"].as_str() {
-                    Some("delivered") => {
-                        return work["execution"]["runId"]
-                            .as_str()
-                            .map(str::to_owned)
-                            .ok_or_else(|| format!("agent.work delivered missing runId: {work}"));
+                match query_typed::<Work>(client, "agent", "work", input.clone()).await? {
+                    Work::Delivered { execution, .. } => return Ok(execution.run_id),
+                    Work::Pending => {}
+                    other => {
+                        let encoded = serde_json::to_string(&other).unwrap_or_default();
+                        return Err(format!("queued send ended before execution: {encoded}"));
                     }
-                    Some("pending") => {}
-                    _ => return Err(format!("queued send ended before execution: {work}")),
                 }
             }
         }
     }
 }
 
-async fn find_connection_id(client: &Client, slug: &str) -> Result<String, String> {
-    let page = client
-        .query("settings", "connections", json!({ "kind": "start" }))
-        .await
-        .map_err(|e| format!("settings.connections query failed: {e}"))?;
-    if page["kind"].as_str() != Some("ready") {
-        return Err(format!("unexpected settings.connections response: {page}"));
+async fn resolve_backend(
+    client: &Client,
+    req: &GuestRunRequest,
+) -> Result<BackendPreference, String> {
+    let page: ModelsPage =
+        query_typed(client, "settings", "models", json!({ "kind": "start" })).await?;
+    let ModelsPage::Ready { default_model, .. } = page else {
+        return Err("settings.models changed during host startup".into());
+    };
+    let DefaultModel::Ready { choice, .. } = *default_model else {
+        return Err(format!(
+            "default target '{}/{}' is unavailable after host init",
+            req.connection_slug, req.model_id
+        ));
+    };
+    if choice.selection.model_id != req.model_id {
+        return Err(format!(
+            "resolved default model '{}' does not match requested '{}'",
+            choice.selection.model_id, req.model_id
+        ));
     }
-    page["connections"]
-        .as_array()
-        .and_then(|rows| {
-            rows.iter()
-                .find(|c| c["slug"].as_str() == Some(slug))
-                .and_then(|c| c["basis"]["connectionId"].as_str())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| format!("connection '{slug}' not found after host init"))
+    Ok(BackendPreference::Model {
+        connection_id: choice.selection.connection_id,
+        model_id: choice.selection.model_id,
+        thinking_level: None,
+    })
 }
 
 async fn await_terminal_execution(
     client: &Client,
     session_id: &str,
-    run_id: &str,
-) -> Result<Option<Value>, String> {
+    run_id: RunId,
+) -> Result<Option<Execution>, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut poll = tokio::time::interval(Duration::from_millis(50));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let resp = client
-            .query(
-                "agent",
-                "execution",
-                json!({ "sessionId": session_id, "runId": run_id }),
-            )
-            .await
-            .map_err(|e| format!("agent.execution query failed: {e}"))?;
-        if resp["kind"].as_str() == Some("found") {
-            let exec = &resp["execution"];
-            if matches!(
-                exec["state"]["kind"].as_str(),
-                Some("completed" | "failed" | "cancelled")
-            ) {
-                return Ok(Some(exec.clone()));
-            }
+        if let ExecutionResult::Found { execution } = query_typed(
+            client,
+            "agent",
+            "execution",
+            json!({ "sessionId": session_id, "runId": run_id }),
+        )
+        .await?
+            && is_terminal_execution_state(&execution.state)
+        {
+            return Ok(Some(execution));
         }
         if tokio::time::Instant::now() >= deadline {
             return Ok(None);
@@ -614,33 +641,34 @@ async fn await_terminal_execution(
     }
 }
 
-async fn query_settled_usage_summary(client: &Client, session_id: &str) -> Result<Value, String> {
+async fn query_settled_usage_summary(
+    client: &Client,
+    session_id: &str,
+) -> Result<UsageReport, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let mut poll = tokio::time::interval(Duration::from_millis(50));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let usage = client
-            .query(
-                "settings",
-                "usageSummary",
-                json!({
-                    "range": {
-                        "from": 0.0,
-                        "to": 9_007_199_254_740_991.0,
-                        "sessionId": session_id,
-                        "through": null
-                    },
-                    "group": "byModel",
-                    "cursor": null
-                }),
-            )
-            .await
-            .map_err(|e| format!("settings.usageSummary query failed: {e}"))?;
-        if (usage["summary"]["pending"]["models"].as_u64() == Some(0)
-            && usage["summary"]["pending"]["tools"].as_u64() == Some(0))
+        let report: UsageReport = query_typed(
+            client,
+            "settings",
+            "usageSummary",
+            json!({
+                "range": {
+                    "from": 0.0,
+                    "to": 9_007_199_254_740_991.0,
+                    "sessionId": session_id,
+                    "through": Value::Null,
+                },
+                "group": Group::ByModel,
+                "cursor": Value::Null,
+            }),
+        )
+        .await?;
+        if (report.summary.pending.models == 0 && report.summary.pending.tools == 0)
             || tokio::time::Instant::now() >= deadline
         {
-            return Ok(usage);
+            return Ok(report);
         }
         poll.tick().await;
     }
@@ -649,72 +677,65 @@ async fn query_settled_usage_summary(client: &Client, session_id: &str) -> Resul
 async fn query_all_usage_attempts(
     client: &Client,
     session_id: &str,
-    run_id: &str,
-    through_fence: Value,
-    step_ids: &mut BTreeSet<String>,
-) -> Result<Value, String> {
+    run_id: RunId,
+    through_fence: UsageFence,
+    step_ids: &mut BTreeSet<StepId>,
+) -> Result<UsagePage, String> {
     let mut expected_fence = through_fence;
-    let mut cursor = Value::Null;
-    let mut attempts = Vec::<Value>::new();
+    let mut cursor: Option<UsageActivityCursor> = None;
+    let mut attempts = Vec::<Activity>::new();
     let total;
     loop {
-        let page = client
-            .query(
-                "settings",
-                "usage",
-                json!({
-                    "range": {
-                        "from": 0.0,
-                        "to": 9_007_199_254_740_991.0,
-                        "sessionId": session_id,
-                        "through": expected_fence,
-                    },
-                    "selection": {
-                        "kind": "model",
-                        "status": Value::Null,
-                        "search": "",
-                    },
-                    "cursor": cursor,
-                }),
-            )
-            .await
-            .map_err(|e| format!("settings.usage query failed: {e}"))?;
-        expected_fence = page
-            .get("through")
-            .ok_or("usage page missing through fence")?
-            .clone();
-        if let Some(page_attempts) = page["attempts"].as_array() {
-            for item in page_attempts {
-                if item["attempt"]["origin"]["execution"]["runId"].as_str() == Some(run_id)
-                    && let Some(step) = item["attempt"]["origin"]["link"]["step"].as_str()
-                {
-                    step_ids.insert(step.to_owned());
-                }
+        let page: UsagePage = query_typed(
+            client,
+            "settings",
+            "usage",
+            json!({
+                "range": {
+                    "from": 0.0,
+                    "to": 9_007_199_254_740_991.0,
+                    "sessionId": session_id,
+                    "through": expected_fence,
+                },
+                "selection": Selection {
+                    kind: Some(ActivityKind::Model),
+                    status: None,
+                    search: String::new(),
+                },
+                "cursor": cursor,
+            }),
+        )
+        .await?;
+        expected_fence = page.through;
+        for item in &page.attempts {
+            if let Activity::Model(attempt) = item
+                && let Origin::Agent {
+                    execution, link, ..
+                } = &attempt.origin
+                && execution.run_id == run_id
+            {
+                step_ids.insert(link.step);
             }
-            attempts.extend(page_attempts.iter().cloned());
         }
-        let next = page
-            .get("nextCursor")
-            .ok_or("usage page missing nextCursor")?
-            .clone();
-        if next.is_null() {
-            total = page["total"].as_u64().unwrap_or(attempts.len() as u64);
+        attempts.extend(page.attempts);
+        if page.next_cursor.is_none() {
+            total = page.total;
             break;
         }
-        cursor = next;
+        cursor = page.next_cursor;
     }
-    Ok(json!({
-        "through": expected_fence,
-        "attempts": attempts,
-        "total": total,
-        "nextCursor": Value::Null,
-    }))
+    Ok(UsagePage {
+        through: expected_fence,
+        attempts,
+        total,
+        next_cursor: None,
+    })
 }
 
 async fn stop_with_reason(
     client: &Client,
     session_id: &str,
-    run_id: &str,
+    run_id: RunId,
     reason: String,
 ) -> String {
     match client
@@ -725,7 +746,7 @@ async fn stop_with_reason(
         )
         .await
     {
-        Ok(mutation) => match commit(mutation).await {
+        Ok(mutation) => match commit_typed::<Stopped>("agent.stop", mutation).await {
             Ok(_) => reason,
             Err(err) => format!("{reason}; stop failed: {err}"),
         },
@@ -734,41 +755,61 @@ async fn stop_with_reason(
 }
 
 async fn export_history(client: &Client, session_id: &str) -> Result<Value, String> {
-    let mut through = Value::Null;
-    let mut position = json!({ "kind": "start" });
-    let mut pages = Vec::new();
+    let mut through = None;
+    let mut position = HistoryPosition::Start;
+    let mut pages = Vec::<HistoryPage>::new();
     loop {
-        let page = client
-            .query(
-                "agent",
-                "history",
-                json!({
-                    "sessionId": session_id,
-                    "through": through,
-                    "position": position,
-                    "includeThinking": true,
-                }),
-            )
-            .await
-            .map_err(|e| format!("agent.history query failed: {e}"))?;
-        through = page
-            .get("through")
-            .ok_or("history page missing through fence")?
-            .clone();
-        let after = page
-            .get("after")
-            .ok_or("history page missing after cursor")?
-            .clone();
+        let page: HistoryPage = query_typed(
+            client,
+            "agent",
+            "history",
+            json!({
+                "sessionId": session_id,
+                "through": through,
+                "position": position,
+                "includeThinking": true,
+            }),
+        )
+        .await?;
+        let HistoryPage::Ready {
+            through: page_through,
+            after,
+            ..
+        } = &page
+        else {
+            return Err("unexpected room history page for agent session".into());
+        };
+        through = *page_through;
+        let next_after = after.clone();
         pages.push(page);
-        if after.is_null() {
+        let Some(cursor) = next_after else {
             return Ok(json!({
                 "sessionId": session_id,
                 "through": through,
                 "pages": pages,
             }));
-        }
-        position = json!({ "kind": "after", "cursor": after });
+        };
+        position = HistoryPosition::After { cursor };
     }
+}
+
+async fn query_typed<T: DeserializeOwned>(
+    client: &Client,
+    endpoint: &str,
+    method: &str,
+    input: Value,
+) -> Result<T, String> {
+    let raw = client
+        .query(endpoint, method, input)
+        .await
+        .map_err(|e| format!("{endpoint}.{method} query failed: {e}"))?;
+    serde_json::from_value(raw)
+        .map_err(|e| format!("{endpoint}.{method} response decode failed: {e}"))
+}
+
+async fn commit_typed<T: DeserializeOwned>(label: &str, mutation: Mutation) -> Result<T, String> {
+    let raw = commit(mutation).await?;
+    serde_json::from_value(raw).map_err(|e| format!("{label} receipt decode failed: {e}"))
 }
 
 async fn commit(mutation: Mutation) -> Result<Value, String> {
@@ -1048,8 +1089,10 @@ async fn spawn_host_serve(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use maka_agent_facts::accounting::{Cost, ModelTotals, Pending, Tokens, ToolTotals};
+    use maka_settings_native::usage::Totals;
 
     fn sample_request(base_url: Option<&str>) -> GuestRunRequest {
         GuestRunRequest {
@@ -1067,18 +1110,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sandbox_mode_kebab_case_roundtrip_and_default() {
-        assert_eq!(SandboxMode::default(), SandboxMode::DangerFullAccess);
-        for (mode, expected) in [
-            (SandboxMode::ReadOnly, "\"read-only\""),
-            (SandboxMode::WorkspaceWrite, "\"workspace-write\""),
-            (SandboxMode::DangerFullAccess, "\"danger-full-access\""),
-        ] {
-            let encoded = serde_json::to_string(&mode).unwrap();
-            assert_eq!(encoded, expected);
-            let decoded: SandboxMode = serde_json::from_str(&encoded).unwrap();
-            assert_eq!(decoded, mode);
+    pub(crate) fn sample_evidence(
+        state: ExecutionState,
+        pending_models: u64,
+        pending_tools: u64,
+        calls: u64,
+        input_missing: u64,
+        output_missing: u64,
+    ) -> GuestEvidence {
+        let run_id = RunId::new();
+        let through = UsageFence {
+            schema_version: 1,
+            state_domain: "domain-1".into(),
+            sequence: 12,
+            auxiliary_sequence: 0,
+            cell_sequence: 0,
+            query_digest: "sha256:00".into(),
+        };
+        GuestEvidence {
+            steps_observed: 2,
+            session_id: "sess-1".into(),
+            run_id,
+            execution: Some(Execution {
+                session_id: "sess-1".into(),
+                turn_id: "turn-1".into(),
+                run_id,
+                high_water: 12,
+                state,
+            }),
+            host_usage: UsageReport {
+                through: through.clone(),
+                summary: Totals {
+                    models: ModelTotals {
+                        calls,
+                        success: calls,
+                        error: 0,
+                        aborted: 0,
+                        unknown: 0,
+                        duration_ms: 10.0,
+                        input: Tokens {
+                            known: 100,
+                            missing: input_missing,
+                        },
+                        output: Tokens {
+                            known: 20,
+                            missing: output_missing,
+                        },
+                        cache_read: Tokens {
+                            known: 0,
+                            missing: 0,
+                        },
+                        cache_write: Tokens {
+                            known: 0,
+                            missing: 0,
+                        },
+                        reasoning: Tokens {
+                            known: 0,
+                            missing: 0,
+                        },
+                        cost: Cost {
+                            known_usd: 0.0,
+                            unvalued: 0,
+                            unpriced: 0,
+                        },
+                    },
+                    tools: ToolTotals {
+                        calls: 0,
+                        success: 0,
+                        error: 0,
+                        unknown: 0,
+                        rejected: 0,
+                        duration_ms: 0.0,
+                        mean_latency_ms: None,
+                    },
+                    pending: Pending {
+                        models: pending_models,
+                        tools: pending_tools,
+                    },
+                    by_provider: Vec::new(),
+                    by_model: Vec::new(),
+                    by_tool: Vec::new(),
+                },
+                next_cursor: None,
+            },
+            host_usage_attempts: UsagePage {
+                through,
+                attempts: Vec::new(),
+                total: 0,
+                next_cursor: None,
+            },
         }
     }
 
@@ -1120,7 +1240,10 @@ mod tests {
             .await
             .unwrap();
 
-        let err = run_from_files(&req_path, &res_path).await.unwrap_err();
+        let err = match run_from_files(&req_path, &res_path).await {
+            Ok(()) => panic!("expected invalid JSON to fail"),
+            Err(err) => err,
+        };
         assert!(err.contains("invalid guest request JSON"));
         assert!(!req_path.exists());
         let saved: GuestRunResult =
@@ -1133,86 +1256,82 @@ mod tests {
 
     #[test]
     fn finalize_run_result_preserves_evidence_when_shutdown_fails() {
-        let evidence = GuestEvidence {
-            steps_observed: 2,
-            session_id: "sess-1".into(),
-            run_id: "run-1".into(),
-            execution: Some(json!({ "state": { "kind": "completed" } })),
-            host_usage: json!({ "summary": { "pending": { "models": 0, "tools": 0 } } }),
-            host_usage_attempts: json!({ "attempts": [], "total": 0, "nextCursor": null }),
-        };
+        let evidence = || sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0);
 
         let ok_both = finalize_run_result(
             Ok(GuestRunResult::Completed {
-                evidence: evidence.clone(),
+                evidence: Box::new(evidence()),
             }),
             Ok(()),
         );
-        assert_eq!(
-            ok_both,
-            GuestRunResult::Completed {
-                evidence: evidence.clone()
-            }
-        );
+        assert!(matches!(ok_both, GuestRunResult::Completed { .. }));
 
         let err_session_ok_shutdown = finalize_run_result(Err("session broke".into()), Ok(()));
-        assert_eq!(
+        assert!(matches!(
             err_session_ok_shutdown,
             GuestRunResult::InfraFailed {
-                infra_error: "session broke".into(),
+                ref infra_error,
                 evidence: None,
-            }
-        );
+            } if infra_error == "session broke"
+        ));
 
         let err_both =
             finalize_run_result(Err("session broke".into()), Err("cleanup broke".into()));
-        assert_eq!(
+        assert!(matches!(
             err_both,
             GuestRunResult::InfraFailed {
-                infra_error: "session broke; host shutdown failed: cleanup broke".into(),
+                ref infra_error,
                 evidence: None,
-            }
-        );
+            } if infra_error == "session broke; host shutdown failed: cleanup broke"
+        ));
 
         let ok_session_err_shutdown = finalize_run_result(
             Ok(GuestRunResult::Completed {
-                evidence: evidence.clone(),
+                evidence: Box::new(evidence()),
             }),
             Err("cleanup broke".into()),
         );
-        assert_eq!(
+        assert!(matches!(
             ok_session_err_shutdown,
             GuestRunResult::InfraFailed {
-                infra_error: "host shutdown failed: cleanup broke".into(),
-                evidence: Some(evidence.clone()),
-            }
-        );
+                ref infra_error,
+                evidence: Some(_),
+            } if infra_error == "host shutdown failed: cleanup broke"
+        ));
     }
 
     #[test]
     fn needs_immediate_cleanup_distinguishes_completed_from_stop_and_errors() {
-        let evidence = GuestEvidence {
-            steps_observed: 1,
-            session_id: "sess-1".into(),
-            run_id: "run-1".into(),
-            execution: Some(json!({ "state": { "kind": "completed" } })),
-            host_usage: json!({}),
-            host_usage_attempts: json!({}),
-        };
+        let evidence = || sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0);
 
         assert!(!needs_immediate_cleanup(&Ok(GuestRunResult::Completed {
-            evidence: evidence.clone(),
+            evidence: Box::new(evidence()),
         })));
         assert!(needs_immediate_cleanup(&Ok(
             GuestRunResult::SubjectStopped {
                 stop_reason: "exceeded maxSteps".into(),
-                evidence: evidence.clone(),
+                evidence: Box::new(evidence()),
             }
         )));
         assert!(needs_immediate_cleanup(&Ok(GuestRunResult::InfraFailed {
             infra_error: "host shutdown failed".into(),
-            evidence: Some(evidence),
+            evidence: Some(Box::new(evidence())),
         })));
         assert!(needs_immediate_cleanup(&Err("boom".into())));
+    }
+
+    #[test]
+    fn terminal_execution_state_matches_only_settled_states() {
+        assert!(is_terminal_execution_state(&ExecutionState::Completed));
+        assert!(is_terminal_execution_state(&ExecutionState::Failed {
+            reason: None,
+        }));
+        assert!(is_terminal_execution_state(&ExecutionState::Cancelled));
+        assert!(!is_terminal_execution_state(&ExecutionState::Admitted));
+        assert!(!is_terminal_execution_state(&ExecutionState::Running));
+        assert!(!is_terminal_execution_state(&ExecutionState::Waiting {
+            waits: Vec::new(),
+            authority_unavailable: false,
+        }));
     }
 }

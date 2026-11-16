@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-use crate::guest::{GuestRunResult, SandboxMode};
+use crate::guest::{GuestRunResult, is_terminal_execution_state};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct HarborRunOptions {
@@ -48,15 +48,24 @@ pub struct HarborRunOptions {
     pub connection_slug: String,
     #[arg(long = "model")]
     pub model_id: String,
-    #[arg(long, value_enum, default_value_t = SandboxMode::DangerFullAccess)]
-    pub sandbox_mode: SandboxMode,
+    #[arg(long, value_parser = parse_sandbox_mode, default_value = "danger-full-access")]
+    pub sandbox_mode: maka_sandbox::Mode,
     #[arg(long, default_value_t = 64)]
     pub max_steps: u32,
     #[arg(long, default_value_t = 600_000)]
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn parse_sandbox_mode(raw: &str) -> Result<maka_sandbox::Mode, String> {
+    match raw {
+        "read-only" => Ok(maka_sandbox::Mode::ReadOnly),
+        "workspace-write" => Ok(maka_sandbox::Mode::WorkspaceWrite),
+        "danger-full-access" => Ok(maka_sandbox::Mode::DangerFullAccess),
+        _ => Err("expected read-only, workspace-write, or danger-full-access".into()),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarborRunOutcome {
     pub reward: Option<f64>,
@@ -276,17 +285,20 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
         GuestRunResult::InfraFailed { infra_error, .. } => {
             return Err(format!("guest infrastructure failed: {infra_error}"));
         }
-        GuestRunResult::Completed { evidence } => (true, evidence),
-        GuestRunResult::SubjectStopped { evidence, .. } => (false, evidence),
+        GuestRunResult::Completed { evidence } => (true, evidence.as_ref()),
+        GuestRunResult::SubjectStopped { evidence, .. } => (false, evidence.as_ref()),
     };
-    let state_kind = evidence
+    if !evidence
         .execution
         .as_ref()
-        .and_then(|e| e["state"]["kind"].as_str());
-    if !matches!(state_kind, Some("completed" | "failed" | "cancelled")) {
+        .is_some_and(|exec| is_terminal_execution_state(&exec.state))
+    {
+        let encoded = evidence
+            .execution
+            .as_ref()
+            .and_then(|exec| serde_json::to_string(exec).ok());
         return Err(format!(
-            "guest execution receipt missing terminal state: {:?}",
-            evidence.execution
+            "guest execution receipt missing terminal state: {encoded:?}"
         ));
     }
     if !outcome
@@ -299,38 +311,24 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
             outcome.transcript_path
         ));
     }
-    let usage = &evidence.host_usage;
-    let pending_models = usage
-        .pointer("/summary/pending/models")
-        .and_then(Value::as_u64);
-    let pending_tools = usage
-        .pointer("/summary/pending/tools")
-        .and_then(Value::as_u64);
-    if pending_models != Some(0) || pending_tools != Some(0) {
+    let summary = &evidence.host_usage.summary;
+    if summary.pending.models != 0 || summary.pending.tools != 0 {
         return Err(format!(
-            "incomplete host usage accounting: pending_models={pending_models:?}, pending_tools={pending_tools:?}"
+            "incomplete host usage accounting: pending_models={}, pending_tools={}",
+            summary.pending.models, summary.pending.tools
         ));
     }
-    let Some(calls) = usage
-        .pointer("/summary/models/calls")
-        .and_then(Value::as_u64)
-    else {
-        return Err("incomplete host usage accounting: missing summary.models.calls".into());
-    };
+    let calls = summary.models.calls;
     if is_completed && calls == 0 {
         return Err(
             "incomplete host usage accounting: completed run recorded 0 model calls".into(),
         );
     }
-    let input_missing = usage
-        .pointer("/summary/models/input/missing")
-        .and_then(Value::as_u64);
-    let output_missing = usage
-        .pointer("/summary/models/output/missing")
-        .and_then(Value::as_u64);
-    if input_missing != Some(0) || output_missing != Some(0) {
+    let input_missing = summary.models.input.missing;
+    let output_missing = summary.models.output.missing;
+    if input_missing != 0 || output_missing != 0 {
         return Err(format!(
-            "incomplete token usage across {calls} model call(s): input_missing={input_missing:?}, output_missing={output_missing:?}"
+            "incomplete token usage across {calls} model call(s): input_missing={input_missing}, output_missing={output_missing}"
         ));
     }
     Ok(())
@@ -368,33 +366,9 @@ fn find_trial_result_json(job_dir: &Path) -> Result<Option<PathBuf>, String> {
 mod tests {
     use super::*;
     use crate::guest::GuestEvidence;
+    use crate::guest::tests::sample_evidence;
+    use maka_agent_api::contract::ExecutionState;
     use serde_json::json;
-
-    fn sample_evidence(state_kind: &str, pending_models: u64) -> GuestEvidence {
-        GuestEvidence {
-            steps_observed: 3,
-            session_id: "sess-1".into(),
-            run_id: "run-1".into(),
-            execution: Some(json!({ "state": { "kind": state_kind } })),
-            host_usage: json!({
-                "through": { "sequence": 12 },
-                "summary": {
-                    "pending": { "models": pending_models, "tools": 0 },
-                    "models": {
-                        "calls": 1,
-                        "input": { "known": 100, "missing": 0 },
-                        "output": { "known": 20, "missing": 0 }
-                    }
-                }
-            }),
-            host_usage_attempts: json!({
-                "through": { "sequence": 12 },
-                "attempts": [],
-                "total": 0,
-                "nextCursor": null
-            }),
-        }
-    }
 
     fn outcome_with(
         transcript_path: Option<PathBuf>,
@@ -418,12 +392,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_sandbox_mode_accepts_kebab_case_variants_and_rejects_unknown() {
+        assert_eq!(
+            parse_sandbox_mode("read-only").unwrap(),
+            maka_sandbox::Mode::ReadOnly
+        );
+        assert_eq!(
+            parse_sandbox_mode("workspace-write").unwrap(),
+            maka_sandbox::Mode::WorkspaceWrite
+        );
+        assert_eq!(
+            parse_sandbox_mode("danger-full-access").unwrap(),
+            maka_sandbox::Mode::DangerFullAccess
+        );
+        assert!(parse_sandbox_mode("full").is_err());
+    }
+
+    #[test]
     fn accepts_completed_subject_with_zero_reward() {
         let (_dir, transcript) = temp_transcript_file();
         let outcome = outcome_with(
             Some(transcript),
             GuestRunResult::Completed {
-                evidence: sample_evidence("completed", 0),
+                evidence: Box::new(sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0)),
             },
         );
         assert!(validate_trial_evidence(&outcome).is_ok());
@@ -436,7 +427,7 @@ mod tests {
             Some(transcript),
             GuestRunResult::SubjectStopped {
                 stop_reason: "exceeded maxSteps (3)".into(),
-                evidence: sample_evidence("cancelled", 0),
+                evidence: Box::new(sample_evidence(ExecutionState::Cancelled, 0, 0, 1, 0, 0)),
             },
         );
         assert!(validate_trial_evidence(&outcome).is_ok());
@@ -450,7 +441,14 @@ mod tests {
             Some(transcript.clone()),
             GuestRunResult::InfraFailed {
                 infra_error: "host startup failed".into(),
-                evidence: Some(sample_evidence("failed", 0)),
+                evidence: Some(Box::new(sample_evidence(
+                    ExecutionState::Failed { reason: None },
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                ))),
             },
         );
         assert!(
@@ -459,10 +457,22 @@ mod tests {
                 .contains("infrastructure failed")
         );
 
+        let non_terminal = outcome_with(
+            Some(transcript.clone()),
+            GuestRunResult::Completed {
+                evidence: Box::new(sample_evidence(ExecutionState::Running, 0, 0, 1, 0, 0)),
+            },
+        );
+        assert!(
+            validate_trial_evidence(&non_terminal)
+                .unwrap_err()
+                .contains("missing terminal state")
+        );
+
         let mut with_exc = outcome_with(
             Some(transcript.clone()),
             GuestRunResult::Completed {
-                evidence: sample_evidence("completed", 0),
+                evidence: Box::new(sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0)),
             },
         );
         with_exc.exception_info = Some(json!({ "exception_type": "RuntimeError" }));
@@ -475,7 +485,7 @@ mod tests {
         let mut no_reward = outcome_with(
             Some(transcript.clone()),
             GuestRunResult::Completed {
-                evidence: sample_evidence("completed", 0),
+                evidence: Box::new(sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0)),
             },
         );
         no_reward.reward = None;
@@ -485,94 +495,37 @@ mod tests {
                 .contains("finite numeric reward")
         );
 
-        let pending_usage = outcome_with(
-            Some(transcript.clone()),
-            GuestRunResult::Completed {
-                evidence: sample_evidence("completed", 1),
-            },
-        );
-        assert!(
-            validate_trial_evidence(&pending_usage)
-                .unwrap_err()
-                .contains("incomplete host usage")
-        );
-
-        for (summary, expected_err) in [
+        for (evidence, expected_err) in [
             (
-                json!({
-                    "pending": { "models": 0, "tools": 0 },
-                    "models": {
-                        "calls": 2,
-                        "input": { "known": 0, "missing": 2 },
-                        "output": { "known": 0, "missing": 2 }
-                    }
-                }),
-                "incomplete token usage",
-            ),
-            (
-                json!({
-                    "pending": { "models": 0, "tools": 1 },
-                    "models": {
-                        "calls": 1,
-                        "input": { "known": 100, "missing": 0 },
-                        "output": { "known": 20, "missing": 0 }
-                    }
-                }),
+                sample_evidence(ExecutionState::Completed, 1, 0, 1, 0, 0),
                 "incomplete host usage",
             ),
             (
-                json!({
-                    "pending": { "models": 0, "tools": 0 },
-                    "models": {
-                        "calls": 0,
-                        "input": { "known": 0, "missing": 0 },
-                        "output": { "known": 0, "missing": 0 }
-                    }
-                }),
+                sample_evidence(ExecutionState::Completed, 0, 1, 1, 0, 0),
+                "incomplete host usage",
+            ),
+            (
+                sample_evidence(ExecutionState::Completed, 0, 0, 0, 0, 0),
                 "0 model calls",
             ),
             (
-                json!({
-                    "pending": { "models": 0, "tools": 0 },
-                    "models": {
-                        "calls": 2,
-                        "input": { "known": 100, "missing": 1 },
-                        "output": { "known": 40, "missing": 0 }
-                    }
-                }),
+                sample_evidence(ExecutionState::Completed, 0, 0, 2, 2, 2),
                 "incomplete token usage",
             ),
             (
-                json!({
-                    "pending": { "models": 0, "tools": 0 },
-                    "models": {
-                        "calls": 2,
-                        "input": { "known": 200, "missing": 0 },
-                        "output": { "known": 20, "missing": 1 }
-                    }
-                }),
+                sample_evidence(ExecutionState::Completed, 0, 0, 2, 1, 0),
                 "incomplete token usage",
             ),
             (
-                json!({
-                    "pending": { "models": 0, "tools": 0 },
-                    "models": {
-                        "calls": 1,
-                        "input": { "known": 100 },
-                        "output": { "known": 20, "missing": 0 }
-                    }
-                }),
+                sample_evidence(ExecutionState::Completed, 0, 0, 2, 0, 1),
                 "incomplete token usage",
             ),
         ] {
-            let mut evidence = sample_evidence("completed", 0);
-            evidence.host_usage = json!({
-                "through": { "sequence": 12 },
-                "summary": summary,
-            });
             let outcome = outcome_with(
                 Some(transcript.clone()),
-                GuestRunResult::Completed { evidence },
+                GuestRunResult::Completed {
+                    evidence: Box::new(evidence),
+                },
             );
             assert!(
                 validate_trial_evidence(&outcome)
@@ -580,5 +533,11 @@ mod tests {
                     .contains(expected_err)
             );
         }
+
+        let mut malformed_json =
+            serde_json::to_value(sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0))
+                .unwrap();
+        malformed_json["hostUsage"]["summary"]["models"]["input"] = json!({ "known": 100 });
+        assert!(serde_json::from_value::<GuestEvidence>(malformed_json).is_err());
     }
 }

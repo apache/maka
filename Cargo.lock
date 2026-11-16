@@ -8873,10 +8873,15 @@ name = "maka-eval"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "maka-agent-api",
+ "maka-agent-facts",
+ "maka-agent-state",
  "maka-app-client",
  "maka-capabilities",
  "maka-host-runtime",
  "maka-plugin-core",
+ "maka-sandbox",
+ "maka-settings-native",
  "serde",
  "serde_json",
  "tempfile",
