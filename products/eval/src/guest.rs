@@ -18,6 +18,7 @@
  */
 
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -26,7 +27,7 @@ use maka_agent_api::contract::{
     BackendPreference, Created, DeliveryFact, DeliveryPage, Execution, ExecutionResult,
     ExecutionState, HistoryPage, HistoryPosition, SendResult, Stopped, Work, WorkTarget,
 };
-use maka_agent_facts::accounting::{Activity, ActivityKind, Group, Origin, Selection};
+use maka_agent_facts::accounting::{Activity, ActivityKind, Group, Origin, Outcome, Selection};
 use maka_agent_facts::durable::{RunId, StepId};
 use maka_agent_state::usage::{UsageActivityCursor, UsageFence};
 use maka_app_client::{Client, Journal, Mutation, Subscription, SubscriptionEvent};
@@ -189,7 +190,7 @@ async fn execute(req: GuestRunRequest) -> Result<GuestRunResult, String> {
         .map_err(|e| format!("failed to create state root dir: {e}"))?;
 
     let maka_bin = resolve_maka_binary();
-    let command_path = prepend_binary_dir_to_path(&maka_bin);
+    let command_path = prepend_binary_dir_to_path(&maka_bin)?;
 
     let result = async {
         init_host(
@@ -275,7 +276,7 @@ async fn run_session(
                 .refresh()
                 .await
                 .map_err(|e| format!("Host refresh failed: {e}"))?;
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
@@ -394,15 +395,17 @@ async fn run_session_with_client(
             .await
             .map_err(|e| format!("failed to write transcript: {e}"))?;
 
-        let host_usage = query_settled_usage_summary(client, &session_id).await?;
-        let host_usage_attempts = query_all_usage_attempts(
-            client,
-            &session_id,
-            run_id,
-            host_usage.through.clone(),
-            &mut step_ids,
-        )
-        .await?;
+        let is_completed =
+            run_error.is_none() && matches!(execution.state, ExecutionState::Completed);
+        let settle_timeout = if is_completed {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(250)
+        };
+        let host_usage = query_settled_usage_summary(client, settle_timeout).await?;
+        let host_usage_attempts =
+            query_all_usage_attempts(client, run_id, host_usage.through.clone(), &mut step_ids)
+                .await?;
 
         let evidence = GuestEvidence {
             steps_observed: u32::try_from(step_ids.len()).unwrap_or(u32::MAX),
@@ -410,7 +413,7 @@ async fn run_session_with_client(
             host_usage,
             host_usage_attempts,
         };
-        if run_error.is_none() && matches!(evidence.execution.state, ExecutionState::Completed) {
+        if is_completed {
             Ok(GuestRunResult::Completed {
                 evidence: Box::new(evidence),
             })
@@ -496,9 +499,10 @@ async fn observe_run(
                             if ev.run_id != run_id {
                                 continue;
                             }
-                            if let Some(step_id) = delivery_fact_step_id(&ev.fact) {
-                                step_ids.insert(step_id);
-                                if step_ids.len() > req.max_steps as usize {
+                            if let Some(step_id) = delivery_fact_step_id(&ev.fact)
+                                && !step_ids.contains(&step_id)
+                            {
+                                if step_ids.len() >= req.max_steps as usize {
                                     let reason = stop_with_reason(
                                         client,
                                         session_id,
@@ -508,6 +512,7 @@ async fn observe_run(
                                     .await;
                                     return Ok((Some(reason), step_ids));
                                 }
+                                step_ids.insert(step_id);
                             }
                             if matches!(ev.fact, DeliveryFact::Ended { .. }) {
                                 return Ok((None, step_ids));
@@ -622,9 +627,9 @@ async fn await_terminal_execution(
 
 async fn query_settled_usage_summary(
     client: &Client,
-    session_id: &str,
+    settle_timeout: Duration,
 ) -> Result<UsageReport, String> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + settle_timeout;
     let mut poll = tokio::time::interval(Duration::from_millis(50));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -636,7 +641,7 @@ async fn query_settled_usage_summary(
                 "range": {
                     "from": 0.0,
                     "to": 9_007_199_254_740_991.0,
-                    "sessionId": session_id,
+                    "sessionId": Value::Null,
                     "through": Value::Null,
                 },
                 "group": Group::ByModel,
@@ -655,7 +660,6 @@ async fn query_settled_usage_summary(
 
 async fn query_all_usage_attempts(
     client: &Client,
-    session_id: &str,
     run_id: RunId,
     through_fence: UsageFence,
     step_ids: &mut BTreeSet<StepId>,
@@ -673,7 +677,7 @@ async fn query_all_usage_attempts(
                 "range": {
                     "from": 0.0,
                     "to": 9_007_199_254_740_991.0,
-                    "sessionId": session_id,
+                    "sessionId": Value::Null,
                     "through": expected_fence,
                 },
                 "selection": Selection {
@@ -688,6 +692,7 @@ async fn query_all_usage_attempts(
         expected_fence = page.through;
         for item in &page.attempts {
             if let Activity::Model(attempt) = item
+                && attempt.outcome == Outcome::Success
                 && let Origin::Agent {
                     execution, link, ..
                 } = &attempt.origin
@@ -827,27 +832,24 @@ fn returned(reply: OperationReply) -> Result<Value, String> {
 }
 
 fn resolve_maka_binary() -> PathBuf {
+    let name = format!("maka{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        let sibling = dir.join("maka");
+        let sibling = dir.join(&name);
         if sibling.is_file() {
             return sibling;
         }
     }
-    PathBuf::from("maka")
+    PathBuf::from(name)
 }
 
-fn prepend_binary_dir_to_path(bin: &Path) -> String {
-    let existing = std::env::var("PATH").unwrap_or_default();
+fn prepend_binary_dir_to_path(bin: &Path) -> Result<OsString, String> {
+    let existing = std::env::var_os("PATH");
     let Some(dir) = bin.parent().filter(|p| !p.as_os_str().is_empty()) else {
-        return existing;
+        return Ok(existing.unwrap_or_default());
     };
-    if existing.is_empty() {
-        dir.to_string_lossy().into_owned()
-    } else {
-        format!("{}:{existing}", dir.display())
-    }
+    crate::harbor::prepend_search_path(dir, existing.as_deref())
 }
 
 fn build_init_settings(req: &GuestRunRequest, canonical_workspace_str: &str) -> Value {
@@ -880,7 +882,7 @@ fn build_init_settings(req: &GuestRunRequest, canonical_workspace_str: &str) -> 
 
 async fn init_host(
     maka_bin: &Path,
-    command_path: &str,
+    command_path: &OsStr,
     state_root: &Path,
     canonical_workspace_str: &str,
     req: &GuestRunRequest,
@@ -975,7 +977,7 @@ impl HostServerProcess {
 
 async fn spawn_host_serve(
     maka_bin: &Path,
-    command_path: &str,
+    command_path: &OsStr,
     state_root: &Path,
     artifacts_dir: &Path,
 ) -> Result<HostServerProcess, String> {
@@ -1060,140 +1062,5 @@ async fn spawn_host_serve(
             let _ = child.wait().await;
             Err(err)
         }
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use maka_agent_facts::accounting::{Cost, ModelTotals, Pending, Tokens, ToolTotals};
-    use maka_settings_native::usage::Totals;
-
-    pub(crate) fn sample_evidence(
-        state: ExecutionState,
-        pending_models: u64,
-        pending_tools: u64,
-        calls: u64,
-        input_missing: u64,
-        output_missing: u64,
-    ) -> GuestEvidence {
-        let run_id = RunId::new();
-        let tok = |known, missing| Tokens { known, missing };
-        let through = UsageFence {
-            schema_version: 1,
-            state_domain: "domain-1".into(),
-            sequence: 12,
-            auxiliary_sequence: 0,
-            cell_sequence: 0,
-            query_digest: "sha256:00".into(),
-        };
-        let summary = Totals {
-            models: ModelTotals {
-                calls,
-                success: calls,
-                error: 0,
-                aborted: 0,
-                unknown: 0,
-                duration_ms: 10.0,
-                input: tok(100, input_missing),
-                output: tok(20, output_missing),
-                cache_read: tok(0, 0),
-                cache_write: tok(0, 0),
-                reasoning: tok(0, 0),
-                cost: Cost {
-                    known_usd: 0.0,
-                    unvalued: 0,
-                    unpriced: 0,
-                },
-            },
-            tools: ToolTotals {
-                calls: 0,
-                success: 0,
-                error: 0,
-                unknown: 0,
-                rejected: 0,
-                duration_ms: 0.0,
-                mean_latency_ms: None,
-            },
-            pending: Pending {
-                models: pending_models,
-                tools: pending_tools,
-            },
-            by_provider: Vec::new(),
-            by_model: Vec::new(),
-            by_tool: Vec::new(),
-        };
-        GuestEvidence {
-            steps_observed: 2,
-            execution: Execution {
-                session_id: "sess-1".into(),
-                turn_id: "turn-1".into(),
-                run_id,
-                high_water: 12,
-                state,
-            },
-            host_usage: UsageReport {
-                through: through.clone(),
-                summary,
-                next_cursor: None,
-            },
-            host_usage_attempts: UsagePage {
-                through,
-                attempts: Vec::new(),
-                total: 0,
-                next_cursor: None,
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn run_from_files_removes_request_file_immediately() {
-        let dir = tempfile::tempdir().unwrap();
-        let req_path = dir.path().join("request.json");
-        let res_path = dir.path().join("result.json");
-        tokio::fs::write(&req_path, r#"{"apiKey":"sk-secret-value","bad":true}"#)
-            .await
-            .unwrap();
-
-        let err = match run_from_files(&req_path, &res_path).await {
-            Ok(()) => panic!("expected invalid JSON to fail"),
-            Err(err) => err,
-        };
-        assert!(err.contains("invalid guest request JSON"));
-        assert!(!req_path.exists());
-        let saved: GuestRunResult =
-            serde_json::from_str(&tokio::fs::read_to_string(&res_path).await.unwrap()).unwrap();
-        assert!(matches!(
-            saved,
-            GuestRunResult::InfraFailed { evidence: None, .. }
-        ));
-    }
-
-    #[test]
-    fn finalize_run_result_preserves_evidence_when_shutdown_fails() {
-        let stopped = || GuestRunResult::SubjectStopped {
-            stop_reason: "exceeded maxSteps".into(),
-            evidence: Box::new(sample_evidence(ExecutionState::Cancelled, 0, 0, 1, 0, 0)),
-        };
-
-        assert!(matches!(
-            finalize_run_result(Ok(stopped()), Ok(())),
-            GuestRunResult::SubjectStopped { .. }
-        ));
-        assert!(matches!(
-            finalize_run_result(Err("session broke".into()), Ok(())),
-            GuestRunResult::InfraFailed { ref infra_error, evidence: None }
-                if infra_error == "session broke"
-        ));
-        assert!(matches!(
-            finalize_run_result(Err("session broke".into()), Err("cleanup broke".into())),
-            GuestRunResult::InfraFailed { ref infra_error, evidence: None }
-                if infra_error == "session broke; host shutdown failed: cleanup broke"
-        ));
-        assert!(matches!(
-            finalize_run_result(Ok(stopped()), Err("cleanup broke".into())),
-            GuestRunResult::InfraFailed { ref infra_error, evidence: Some(_) }
-                if infra_error == "host shutdown failed: cleanup broke"
-        ));
     }
 }

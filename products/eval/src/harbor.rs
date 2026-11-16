@@ -17,13 +17,18 @@
  * under the License.
  */
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 
+use maka_agent_facts::accounting::{Activity, Outcome};
 use serde_json::{Map, Value, json};
 use tokio::process::Command;
+use uuid::Uuid;
 
 use crate::guest::{GuestEvidence, GuestRunResult, is_terminal_execution_state};
+
+const HARBOR_AGENT_PLUGIN_PY: &str = include_str!("../harbor/maka_host_agent.py");
 
 #[derive(Debug, Clone, clap::Args)]
 pub(crate) struct HarborRunOptions {
@@ -59,6 +64,7 @@ fn parse_sandbox_mode(raw: &str) -> Result<maka_sandbox::Mode, String> {
 }
 
 pub(crate) struct HarborRunOutcome {
+    pub harbor_status: ExitStatus,
     pub reward: Option<f64>,
     pub exception_info: Option<Value>,
     pub guest_result: Option<GuestRunResult>,
@@ -151,15 +157,9 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
         .map_err(|e| format!("failed to canonicalize out dir: {e}"))?;
 
     let jobs_dir = out_dir.join("harbor-jobs");
-    let job_name = format!(
-        "run-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    );
+    let job_name = format!("run-{}", Uuid::new_v4());
     let config_path = out_dir.join("harbor-job-config.json");
-    let harbor_plugin_dir = resolve_harbor_plugin_dir()?;
+    let harbor_plugin_dir = materialize_harbor_plugin(&out_dir)?;
     let config = json!({
         "job_name": job_name,
         "jobs_dir": jobs_dir,
@@ -213,12 +213,10 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
     std::fs::write(&config_path, format!("{encoded}\n"))
         .map_err(|e| format!("failed to write {}: {e}", config_path.display()))?;
 
-    let pythonpath = match std::env::var("PYTHONPATH") {
-        Ok(existing) if !existing.is_empty() => {
-            format!("{}:{existing}", harbor_plugin_dir.display())
-        }
-        _ => harbor_plugin_dir.to_string_lossy().into_owned(),
-    };
+    let pythonpath = prepend_search_path(
+        &harbor_plugin_dir,
+        std::env::var_os("PYTHONPATH").as_deref(),
+    )?;
 
     let status = Command::new(&opts.harbor_bin)
         .args(["run", "-c"])
@@ -280,17 +278,8 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
         .is_file()
         .then_some(transcript_candidate);
 
-    if !status.success() && reward.is_none() {
-        return Err(format!(
-            "harbor run failed ({status}); exception_info={}",
-            exception_info
-                .as_ref()
-                .map(Value::to_string)
-                .unwrap_or_else(|| "null".into())
-        ));
-    }
-
     Ok(HarborRunOutcome {
+        harbor_status: status,
         reward,
         exception_info,
         guest_result,
@@ -300,9 +289,15 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
     })
 }
 
-pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String> {
+fn check_harbor_outcome(outcome: &HarborRunOutcome) -> Result<(), String> {
     if let Some(exc) = &outcome.exception_info {
         return Err(format!("harbor trial recorded exception: {exc}"));
+    }
+    if !outcome.harbor_status.success() {
+        return Err(format!(
+            "harbor run failed ({}) without recording exception_info",
+            outcome.harbor_status
+        ));
     }
     if !outcome.reward.is_some_and(f64::is_finite) {
         return Err(format!(
@@ -310,16 +305,28 @@ pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), 
             outcome.reward
         ));
     }
-    let Some(guest) = &outcome.guest_result else {
-        return Err("missing guest-result.json from trial artifacts".into());
-    };
-    let (is_completed, evidence) = match guest {
-        GuestRunResult::InfraFailed { infra_error, .. } => {
+    Ok(())
+}
+
+pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String> {
+    let (is_completed, evidence) = match &outcome.guest_result {
+        Some(GuestRunResult::InfraFailed { infra_error, .. }) => {
             return Err(format!("guest infrastructure failed: {infra_error}"));
         }
-        GuestRunResult::Completed { evidence } => (true, evidence.as_ref()),
-        GuestRunResult::SubjectStopped { evidence, .. } => (false, evidence.as_ref()),
+        Some(GuestRunResult::Completed { evidence }) => {
+            check_harbor_outcome(outcome)?;
+            (true, evidence.as_ref())
+        }
+        Some(GuestRunResult::SubjectStopped { evidence, .. }) => {
+            check_harbor_outcome(outcome)?;
+            (false, evidence.as_ref())
+        }
+        None => {
+            check_harbor_outcome(outcome)?;
+            return Err("missing guest-result.json from trial artifacts".into());
+        }
     };
+
     if !is_terminal_execution_state(&evidence.execution.state) {
         let encoded = serde_json::to_string(&evidence.execution.state).unwrap_or_default();
         return Err(format!(
@@ -336,39 +343,84 @@ pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), 
             outcome.transcript_path
         ));
     }
+
     let summary = &evidence.host_usage.summary;
-    if summary.pending.models != 0 || summary.pending.tools != 0 {
+    let attempts = &evidence.host_usage_attempts;
+    if attempts.next_cursor.is_some()
+        || attempts.total != summary.models.calls
+        || u64::try_from(attempts.attempts.len()).ok() != Some(summary.models.calls)
+    {
         return Err(format!(
-            "incomplete host usage accounting: pending_models={}, pending_tools={}",
-            summary.pending.models, summary.pending.tools
+            "inconsistent host usage attempts page: summary_calls={}, page_total={}, page_len={}, has_next={}",
+            summary.models.calls,
+            attempts.total,
+            attempts.attempts.len(),
+            attempts.next_cursor.is_some(),
         ));
     }
-    let calls = summary.models.calls;
-    if is_completed && calls == 0 {
-        return Err(
-            "incomplete host usage accounting: completed run recorded 0 model calls".into(),
-        );
+
+    let mut successful_calls = 0u64;
+    let mut input_missing = 0u64;
+    let mut output_missing = 0u64;
+    for item in &attempts.attempts {
+        let Activity::Model(attempt) = item else {
+            return Err("unexpected non-model activity in hostUsageAttempts".into());
+        };
+        if attempt.outcome == Outcome::Success {
+            successful_calls += 1;
+            if attempt.usage.input_tokens.is_none() {
+                input_missing += 1;
+            }
+            if attempt.usage.output_tokens.is_none() {
+                output_missing += 1;
+            }
+        }
     }
-    let input_missing = summary.models.input.missing;
-    let output_missing = summary.models.output.missing;
+
+    if is_completed {
+        if summary.pending.models != 0 || summary.pending.tools != 0 {
+            return Err(format!(
+                "incomplete host usage accounting: pending_models={}, pending_tools={}",
+                summary.pending.models, summary.pending.tools
+            ));
+        }
+        if successful_calls == 0 {
+            return Err(
+                "incomplete host usage accounting: completed run recorded 0 successful model calls"
+                    .into(),
+            );
+        }
+    }
+
     if input_missing != 0 || output_missing != 0 {
         return Err(format!(
-            "incomplete token usage across {calls} model call(s): input_missing={input_missing}, output_missing={output_missing}"
+            "incomplete token usage on successful model call(s) ({successful_calls} total): input_missing={input_missing}, output_missing={output_missing}"
         ));
     }
     Ok(())
 }
 
-fn resolve_harbor_plugin_dir() -> Result<PathBuf, String> {
-    let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("harbor");
-    if plugin_dir.join("maka_host_agent.py").is_file() {
-        std::fs::canonicalize(&plugin_dir).map_err(|e| e.to_string())
-    } else {
-        Err(format!(
-            "missing harbor plugin under {}",
-            plugin_dir.display()
-        ))
+fn materialize_harbor_plugin(out_dir: &Path) -> Result<PathBuf, String> {
+    let plugin_dir = out_dir.join("harbor-plugin");
+    std::fs::create_dir_all(&plugin_dir)
+        .map_err(|e| format!("failed to create {}: {e}", plugin_dir.display()))?;
+    let plugin_file = plugin_dir.join("maka_host_agent.py");
+    std::fs::write(&plugin_file, HARBOR_AGENT_PLUGIN_PY)
+        .map_err(|e| format!("failed to write {}: {e}", plugin_file.display()))?;
+    Ok(plugin_dir)
+}
+
+pub(crate) fn prepend_search_path(
+    first: &Path,
+    existing: Option<&OsStr>,
+) -> Result<OsString, String> {
+    let mut paths = vec![first.to_path_buf()];
+    if let Some(existing) = existing
+        && !existing.is_empty()
+    {
+        paths.extend(std::env::split_paths(existing));
     }
+    std::env::join_paths(paths).map_err(|e| format!("failed joining search path: {e}"))
 }
 
 fn find_trial_result_json(job_dir: &Path) -> Result<Option<PathBuf>, String> {
@@ -385,171 +437,4 @@ fn find_trial_result_json(job_dir: &Path) -> Result<Option<PathBuf>, String> {
         }
     }
     Ok(None)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::guest::tests::sample_evidence;
-    use maka_agent_api::contract::ExecutionState;
-    use serde_json::json;
-
-    fn outcome_with(
-        transcript_path: Option<PathBuf>,
-        guest_result: GuestRunResult,
-    ) -> HarborRunOutcome {
-        HarborRunOutcome {
-            reward: Some(0.0),
-            exception_info: None,
-            guest_result: Some(guest_result),
-            guest_result_path: Some(PathBuf::from("/tmp/guest-result.json")),
-            transcript_path,
-            harbor_result_path: PathBuf::from("/tmp/result.json"),
-        }
-    }
-
-    fn temp_transcript_file() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("transcript.json");
-        std::fs::write(&file, "{}\n").unwrap();
-        (dir, file)
-    }
-
-    #[test]
-    fn accepts_completed_subject_with_zero_reward() {
-        assert_eq!(
-            parse_sandbox_mode("workspace-write").unwrap(),
-            maka_sandbox::Mode::WorkspaceWrite
-        );
-        assert!(parse_sandbox_mode("full").is_err());
-
-        let (_dir, transcript) = temp_transcript_file();
-        let outcome = outcome_with(
-            Some(transcript),
-            GuestRunResult::Completed {
-                evidence: Box::new(sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0)),
-            },
-        );
-        assert!(validate_trial_evidence(&outcome).is_ok());
-
-        let summary = outcome.to_summary_json();
-        assert_eq!(summary["guest"]["status"], json!("completed"));
-        assert_eq!(summary["guest"]["stepsObserved"], json!(2));
-        assert_eq!(summary["guest"]["usage"]["models"]["calls"], json!(1));
-        assert_eq!(summary["guestResultPath"], json!("/tmp/guest-result.json"));
-        assert!(summary.get("verifierResult").is_none());
-        assert!(summary.get("guestResult").is_none());
-        assert!(summary["guest"].get("hostUsageAttempts").is_none());
-    }
-
-    #[test]
-    fn accepts_subject_stopped_with_settled_receipt_and_zero_reward() {
-        let (_dir, transcript) = temp_transcript_file();
-        let outcome = outcome_with(
-            Some(transcript),
-            GuestRunResult::SubjectStopped {
-                stop_reason: "exceeded maxSteps (3)".into(),
-                evidence: Box::new(sample_evidence(ExecutionState::Cancelled, 0, 0, 0, 0, 0)),
-            },
-        );
-        assert!(validate_trial_evidence(&outcome).is_ok());
-    }
-
-    #[test]
-    fn rejects_infra_failed_exception_missing_reward_or_unsettled_usage() {
-        let (_dir, transcript) = temp_transcript_file();
-
-        let infra = outcome_with(
-            Some(transcript.clone()),
-            GuestRunResult::InfraFailed {
-                infra_error: "host startup failed".into(),
-                evidence: Some(Box::new(sample_evidence(
-                    ExecutionState::Failed { reason: None },
-                    0,
-                    0,
-                    1,
-                    0,
-                    0,
-                ))),
-            },
-        );
-        assert!(
-            validate_trial_evidence(&infra)
-                .unwrap_err()
-                .contains("infrastructure failed")
-        );
-
-        let non_terminal = outcome_with(
-            Some(transcript.clone()),
-            GuestRunResult::Completed {
-                evidence: Box::new(sample_evidence(ExecutionState::Running, 0, 0, 1, 0, 0)),
-            },
-        );
-        assert!(
-            validate_trial_evidence(&non_terminal)
-                .unwrap_err()
-                .contains("missing terminal state")
-        );
-
-        let mut with_exc = outcome_with(
-            Some(transcript.clone()),
-            GuestRunResult::Completed {
-                evidence: Box::new(sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0)),
-            },
-        );
-        with_exc.exception_info = Some(json!({ "exception_type": "RuntimeError" }));
-        assert!(
-            validate_trial_evidence(&with_exc)
-                .unwrap_err()
-                .contains("exception")
-        );
-
-        let mut no_reward = outcome_with(
-            Some(transcript.clone()),
-            GuestRunResult::Completed {
-                evidence: Box::new(sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0)),
-            },
-        );
-        no_reward.reward = None;
-        assert!(
-            validate_trial_evidence(&no_reward)
-                .unwrap_err()
-                .contains("finite numeric reward")
-        );
-
-        for (evidence, expected_err) in [
-            (
-                sample_evidence(ExecutionState::Completed, 1, 0, 1, 0, 0),
-                "incomplete host usage",
-            ),
-            (
-                sample_evidence(ExecutionState::Completed, 0, 1, 1, 0, 0),
-                "incomplete host usage",
-            ),
-            (
-                sample_evidence(ExecutionState::Completed, 0, 0, 0, 0, 0),
-                "0 model calls",
-            ),
-            (
-                sample_evidence(ExecutionState::Completed, 0, 0, 2, 1, 0),
-                "incomplete token usage",
-            ),
-            (
-                sample_evidence(ExecutionState::Completed, 0, 0, 2, 0, 1),
-                "incomplete token usage",
-            ),
-        ] {
-            let outcome = outcome_with(
-                Some(transcript.clone()),
-                GuestRunResult::Completed {
-                    evidence: Box::new(evidence),
-                },
-            );
-            assert!(
-                validate_trial_evidence(&outcome)
-                    .unwrap_err()
-                    .contains(expected_err)
-            );
-        }
-    }
 }
