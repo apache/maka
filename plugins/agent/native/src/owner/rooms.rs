@@ -67,10 +67,10 @@ impl Owner {
         if session.archived {
             return Err("agent_session_unavailable".into());
         }
-        if input.message.trim().is_empty()
-            && input.attachments.is_empty()
-            && input.quotes.is_empty()
-        {
+        if !input.quotes.is_empty() {
+            return Err("agent_room_quotes_unsupported".into());
+        }
+        if input.message.trim().is_empty() && input.attachments.is_empty() {
             return Err("agent_message_invalid".into());
         }
         let writer = self.message_writer(scope)?;
@@ -83,7 +83,6 @@ impl Owner {
                 execution: execution.clone(),
             });
         let mut content: MessageInput = input.message.clone().into();
-        content.quotes = (!input.quotes.is_empty()).then(|| std::mem::take(&mut input.quotes));
         content.attachments = self
             .attachment_refs(&input.session_id, input.attachments.clone(), scope)
             .await?;
@@ -115,22 +114,19 @@ impl Owner {
         }
         let mut forwarded = content.clone();
         if let Some(replied) = &replied {
-            forwarded
-                .quotes
-                .get_or_insert_with(Vec::new)
-                .push(maka_agent_facts::input::QuoteRef {
-                    text: replied.content.text.clone(),
-                    label: Some(format!(
-                        "Reply to {} · {}",
-                        match &replied.author {
-                            RoomAuthor::Human => "Human",
-                            RoomAuthor::Session { execution } => &execution.session_id,
-                        },
-                        replied.id
-                    )),
-                    source_turn_id: None,
-                    source: None,
-                });
+            forwarded.quotes = Some(vec![maka_agent_facts::input::QuoteRef {
+                text: replied.content.text.clone(),
+                label: Some(format!(
+                    "Reply to {} · {}",
+                    match &replied.author {
+                        RoomAuthor::Human => "Human",
+                        RoomAuthor::Session { execution } => &execution.session_id,
+                    },
+                    replied.id
+                )),
+                source_turn_id: None,
+                source: None,
+            }]);
         }
         let origin = MessageOrigin::Room {
             session_id: input.session_id.clone(),
