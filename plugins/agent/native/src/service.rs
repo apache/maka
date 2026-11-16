@@ -81,7 +81,8 @@ impl Handler for Agent {
         }
         if matches!(
             method.as_str(),
-            "createPreset"
+            "changeMemory"
+                | "createPreset"
                 | "updatePreset"
                 | "deletePreset"
                 | "markRead"
@@ -110,6 +111,10 @@ impl Handler for Agent {
                 let result: Result<HandlerValue, String> = async {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     match method.as_str() {
+                        "changeMemory" => owner
+                            .change_memory(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
                         "createPreset" => owner
                             .create_preset(decode(input)?, context.scope())
                             .await?
@@ -303,6 +308,13 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "memoryHistory" => encode(
+                    owner
+                        .memory_history(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "memories" => encode(owner.memories(decode(input)?, context.scope()).await?),
+                "memory" => encode(owner.memory(decode(input)?, context.scope()).await?),
                 "globalInstructions" => {
                     let _: GlobalInstructionsRead = decode(input)?;
                     encode(owner.global_instructions(context.scope()).await?)

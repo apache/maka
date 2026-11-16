@@ -28,6 +28,7 @@ pub mod external_publication;
 pub mod external_steering;
 pub mod fold;
 pub mod interactions;
+pub mod memory;
 pub mod operation;
 pub mod queue;
 pub mod recall;
@@ -231,6 +232,11 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "index history tool result metadata",
         sql: include_str!("../migrations/0041_history_tool_metadata.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 43,
+        description: "scoped ordinary memory",
+        sql: include_str!("../migrations/0043_memory.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -249,7 +255,10 @@ mod migration_tests {
             if upgrade {
                 let previous: Vec<_> = catalog
                     .iter()
-                    .filter(|m| m.description != "checkpoint repository")
+                    .filter(|m| {
+                        m.description != "checkpoint repository"
+                            && m.description != "scoped ordinary memory"
+                    })
                     .copied()
                     .collect();
                 maka_event_log::migration::run(&db, &previous).unwrap();

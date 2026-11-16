@@ -1628,6 +1628,10 @@ export type SettingsPreferencesMutation =
       avatar?: ProfileAvatar | null;
     }
   | {
+      kind: 'memory';
+      value: MemoryPolicy;
+    }
+  | {
       kind: 'workspace_instructions';
       enabled: boolean;
     }
@@ -6467,6 +6471,7 @@ export interface SettingsAssistantPreferences {
   displayName: string;
   avatar?: ProfileAvatar | null;
   workspaceInstructions: boolean;
+  memory: MemoryPolicy;
   defaultSandboxMode: Mode;
   shell: ShellPolicy;
 }
@@ -6479,6 +6484,10 @@ export interface MessagePredictionSettings {
    * None or blank selects the localized built-in instructions.
    */
   prompt?: string | null;
+}
+export interface MemoryPolicy {
+  enabled: boolean;
+  agentReadEnabled: boolean;
 }
 export interface ShellPolicy {
   preference: ShellPreference;

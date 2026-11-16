@@ -437,6 +437,10 @@ impl Rig {
         )?;
         let methods: &[&str] = if model_test {
             &[
+                "memories",
+                "memory",
+                "memoryHistory",
+                "changeMemory",
                 "presets",
                 "preset",
                 "createPreset",
@@ -3114,6 +3118,7 @@ mod source_recovery {
 
 mod model_recovery {
     mod bot_tools;
+    mod memory;
     mod predictions;
     mod preset_acceptance;
     mod presets;

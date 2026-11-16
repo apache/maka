@@ -2008,6 +2008,10 @@ pub fn contract() -> Contract {
             methods: BTreeMap::from([
                 ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
                 ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),
+                ("memories".into(), method::<MemoriesRead, MemoryPage>(MethodMode::Query)),
+                ("memory".into(), method::<MemoryRead, Option<MemoryRecord>>(MethodMode::Query)),
+                ("changeMemory".into(), method::<MemoryChange, MemoryResult>(MethodMode::Mutation)),
                 ("createPreset".into(), method::<PresetCreate, PresetResult>(MethodMode::Mutation)),
                 ("updatePreset".into(), method::<PresetUpdate, PresetResult>(MethodMode::Mutation)),
                 ("deletePreset".into(), method::<PresetDelete, PresetResult>(MethodMode::Mutation)),
@@ -2393,3 +2397,6 @@ pub fn contract() -> Contract {
         },
     }
 }
+
+pub mod memory;
+pub use memory::*;

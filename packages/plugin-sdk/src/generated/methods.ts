@@ -20,6 +20,42 @@
 // Generated from Rust runtime schemas. Run npm run schema:generate -w @maka-agent/plugin-sdk.
 import type * as Runtime from './runtime.js';
 
+export type AgentChangeMemoryInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentChangeMemoryInput_MemoryEdit =
+  | {
+      kind: 'create';
+      body: string;
+    }
+  | {
+      kind: 'correct';
+      id: string;
+      expectedRevision: number;
+      body: string;
+    }
+  | {
+      kind: 'set_always';
+      id: string;
+      expectedRevision: number;
+      always: boolean;
+    }
+  | {
+      kind: 'delete';
+      id: string;
+      expectedRevision: number;
+    }
+  | {
+      kind: 'restore';
+      id: string;
+      expectedRevision: number;
+      body: string;
+    };
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -634,6 +670,39 @@ export type AgentLoadedHistoryCheckpointToolImageInput_HistoryRowAddress =
     };
 export type AgentLoadedHistoryCheckpointToolImageInput_FactId = string;
 export type AgentLoadedHistoryCheckpointToolImageInput_RunId = string;
+export type AgentMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
+export type AgentMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentMemoryInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoryOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
+export type AgentMemoryOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentMemoryHistoryInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoryHistoryOutput_MemorySource = {
+  kind: 'user_operation';
+  operationId: string;
+  observedAt: number;
+};
 export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
@@ -1380,6 +1449,34 @@ export interface ServiceMethods {
       input: Runtime.AgentGoalChange;
       output: Runtime.AgentGoalResult;
     };
+    changeMemory: {
+      mode: 'mutation';
+      input: {
+        scope: AgentChangeMemoryInput_MemoryScope;
+        edit: AgentChangeMemoryInput_MemoryEdit;
+      };
+      output:
+        | {
+            kind: 'saved';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'conflict';
+            actual: number;
+          }
+        | {
+            kind: 'not_found';
+          }
+        | {
+            kind: 'invalid_state';
+          };
+    };
     changeSession: {
       mode: 'mutation';
       input: Runtime.AgentChangeSession;
@@ -1883,6 +1980,39 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentMcpConfigurations;
       output: Runtime.AgentMcpConfigurationList;
+    };
+    memories: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoriesInput_MemoryScope;
+        after?: string | null;
+        limit: number;
+      };
+      output: {
+        records: AgentMemoriesOutput_MemoryRecord[];
+        next?: string | null;
+      };
+    };
+    memory: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoryInput_MemoryScope;
+        id: string;
+      };
+      output: AgentMemoryOutput_MemoryRecord | null;
+    };
+    memoryHistory: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoryHistoryInput_MemoryScope;
+        id: string;
+        after?: number | null;
+        limit: number;
+      };
+      output: {
+        versions: AgentMemoryHistoryOutput_MemoryVersion[];
+        next?: number | null;
+      };
     };
     metadata: {
       mode: 'mutation';
@@ -2457,6 +2587,7 @@ export interface ServiceMethods {
         displayName: string;
         avatar: SettingsAssistantPreferencesOutput_ProfileAvatar | null;
         workspaceInstructions: boolean;
+        memory: SettingsAssistantPreferencesOutput_MemoryPolicy;
         defaultSandboxMode: SettingsAssistantPreferencesOutput_Mode;
         shell: SettingsAssistantPreferencesOutput_ShellPolicy;
       };
@@ -3649,6 +3780,30 @@ export interface AgentMarkBotReadOutput_AgentBotMessage {
    */
   turnId?: string | null;
 }
+export interface AgentMemoriesOutput_MemoryRecord {
+  id: string;
+  revision: number;
+  mode: AgentMemoriesOutput_MemoryMode;
+  state: AgentMemoriesOutput_MemoryState;
+  body: string;
+  createdAt: number;
+  modifiedAt: number;
+}
+export interface AgentMemoryOutput_MemoryRecord {
+  id: string;
+  revision: number;
+  mode: AgentMemoryOutput_MemoryMode;
+  state: AgentMemoryOutput_MemoryState;
+  body: string;
+  createdAt: number;
+  modifiedAt: number;
+}
+export interface AgentMemoryHistoryOutput_MemoryVersion {
+  revision: number;
+  body: string;
+  source: AgentMemoryHistoryOutput_MemorySource;
+  corrects?: number | null;
+}
 export interface AgentPresetOutput_PresetDetail {
   preset: AgentPresetOutput_Preset;
   availability: AgentPresetOutput_PresetAvailability;
@@ -3981,6 +4136,10 @@ export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
    * None or blank selects the localized built-in instructions.
    */
   prompt: string | null;
+}
+export interface SettingsAssistantPreferencesOutput_MemoryPolicy {
+  enabled: boolean;
+  agentReadEnabled: boolean;
 }
 export interface SettingsAssistantPreferencesOutput_ShellPolicy {
   preference: SettingsAssistantPreferencesOutput_ShellPreference;

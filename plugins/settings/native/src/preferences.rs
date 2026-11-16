@@ -45,6 +45,7 @@ pub struct Preferences {
     pub display_name: String,
     pub avatar: Option<ProfileAvatar>,
     pub workspace_instructions: bool,
+    pub memory: maka_agent_facts::configuration::policy::MemoryPolicy,
     pub default_sandbox_mode: SandboxMode,
     pub shell: maka_agent_facts::configuration::policy::ShellPolicy,
 }
@@ -77,6 +78,9 @@ pub enum Mutation {
     Personalization {
         display_name: String,
         avatar: Option<ProfileAvatar>,
+    },
+    Memory {
+        value: maka_agent_facts::configuration::policy::MemoryPolicy,
     },
     WorkspaceInstructions {
         enabled: bool,
@@ -138,6 +142,7 @@ pub(crate) async fn read(
         display_name: snapshot.policy.personalization.display_name,
         avatar: snapshot.policy.personalization.avatar,
         workspace_instructions: snapshot.policy.workspace_instructions.enabled,
+        memory: snapshot.policy.memory,
         default_sandbox_mode: snapshot.policy.chat_defaults.sandbox_mode,
         shell: snapshot.policy.shell,
     })
@@ -201,6 +206,7 @@ pub(crate) async fn update(
                 )
                 .await
         }
+        Mutation::Memory { value } => store.set_memory(input.expected_revision, value).await,
         Mutation::WorkspaceInstructions { enabled } => {
             store
                 .set_workspace_instructions(input.expected_revision, EnabledPolicy { enabled })

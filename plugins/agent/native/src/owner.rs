@@ -65,6 +65,7 @@ mod initialization;
 mod interactions;
 mod lifecycle;
 mod mcp;
+mod memory;
 mod models;
 mod notifications;
 mod patches;
