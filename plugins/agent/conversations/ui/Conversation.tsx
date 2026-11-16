@@ -96,7 +96,6 @@ import {
   historyTurnKey,
   historyChunkKey,
   historyRowKey,
-  readHistoryTail,
   rootEventSequence,
   historyFollowPosition,
   historyFollowTail,
@@ -1594,7 +1593,7 @@ export function Conversation(props: ConversationProps) {
       ? 'chat'
       : 'conversation';
   const history = async (
-    through: number,
+    through: number | null,
     position: HistoryPosition,
     view: HistoryListView | 'turn' | 'steps' = 'conversation',
   ) => {
@@ -1606,7 +1605,8 @@ export function Conversation(props: ConversationProps) {
       view,
     });
     if (page.kind !== 'ready') throw new Error('Expected conversation history.');
-    if (page.through !== through) throw new UiError('History changed its requested fence.');
+    if (page.through === null || (through !== null && page.through !== through))
+      throw new UiError('History changed its requested fence.');
     return { ...page, through: page.through };
   };
   const ownsWindow = (identity: object) => alive && historyIdentity === identity;
@@ -1614,7 +1614,7 @@ export function Conversation(props: ConversationProps) {
   // Superseded reads can finish, but never publish into its replacement.
   const resetHistory = (
     position: HistoryPosition,
-    through: number,
+    through: number | null,
     verify?: (page: ConversationHistoryPage) => void,
     current: () => boolean = () => true,
     view: HistoryListView = chatHistoryView(),
@@ -1653,6 +1653,7 @@ export function Conversation(props: ConversationProps) {
         page = await history(through, location, view);
         if (!canPublish()) return false;
         verify?.(page);
+        through = page.through;
         if (page.chunks.length) break;
         const reverse = location.kind === 'tail' || location.kind === 'before';
         const cursor = reverse ? page.before : page.after;
@@ -1660,14 +1661,7 @@ export function Conversation(props: ConversationProps) {
         location = reverse ? { kind: 'before', cursor } : { kind: 'after', cursor };
       }
       if (!canPublish()) return false;
-      if (position.kind === 'tail' && !jumpToTail) {
-        const tail = await readHistoryTail(page, async (cursor) => {
-          const older = await history(through, { kind: 'before', cursor }, view);
-          return canPublish() ? older : null;
-        });
-        if (tail === null || !canPublish()) return false;
-        page = { ...tail, through };
-      }
+      latestKnown = Math.max(latestKnown, page.through);
       batch(() => {
         deferOlderUntilScroll = jumpToTail;
         if (jumpToTail) historyScrollInput = 'idle';
@@ -1699,7 +1693,8 @@ export function Conversation(props: ConversationProps) {
         )
           loadTurnWork(key);
       }
-      if (page.after === null && latestKnown > through) void follow().catch(report);
+      if (subscription && page.after === null && latestKnown > page.through)
+        void follow().catch(report);
       return true;
     })()
       .catch((reason) => {
@@ -2144,7 +2139,13 @@ export function Conversation(props: ConversationProps) {
       requestMetadata(
         rows().find((row) => row.position?.kind === 'live' && row.turnId === previousTurn),
       );
-    const observed = await observe();
+    const opening =
+      !ready() && !historyDestination.explicit && windowTask === null
+        ? resetHistory(historyDestination.position, null).then((opened) => {
+            if (opened && !navigation()) list?.scrollToEnd({ animated: false });
+          })
+        : undefined;
+    const [observed] = await Promise.all([observe(), opening]);
     if (!alive) return;
     const tailThrough = atHistoryTail() ? historyWindow()?.through : undefined;
     const after = replayStartCursor(
@@ -2164,8 +2165,9 @@ export function Conversation(props: ConversationProps) {
       // Recall may have opened its exact window before initial history arrived.
       while (windowTask !== null) await windowTask;
       if (!alive) return;
-      if (ready()) await follow();
-      else if (
+      if (ready()) {
+        if (latestKnown > (historyWindow()?.through ?? -1) || refreshFrom !== null) await follow();
+      } else if (
         !historyDestination.explicit &&
         (await resetHistory(historyDestination.position, observed.through))
       ) {
@@ -2175,8 +2177,7 @@ export function Conversation(props: ConversationProps) {
       immediateTranscriptRetry = true;
       if (!historyDestination.failed) error.set('');
       transcriptStatus.set('live');
-      // Subscribe before reading history so facts cannot fall between fences.
-      // The snapshot is sufficient for readiness; no new event is required.
+      // Replay from the older of the observed fence and the first visible page.
       for (;;) {
         const page = await stream.next();
         if (!alive) return;
@@ -2345,16 +2346,7 @@ export function Conversation(props: ConversationProps) {
     };
     navigation.set(target);
     try {
-      const observed = await observe();
-      if (!alive || navigation() !== target) return;
-      if (
-        !(await resetHistory(
-          { kind: 'start' },
-          observed.through,
-          undefined,
-          () => navigation() === target,
-        ))
-      )
+      if (!(await resetHistory({ kind: 'start' }, null, undefined, () => navigation() === target)))
         return;
       if (navigation() === target)
         list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
@@ -2424,12 +2416,9 @@ export function Conversation(props: ConversationProps) {
     historyDestination = destination;
     navigation.set(target);
     try {
-      const observed = await observe();
-      if (!alive || navigation() !== target || !current())
-        throw new UiError('History navigation was cancelled.');
       const opened = await resetHistory(
         { kind: 'row', position: anchor.position, field: 'body' },
-        observed.through,
+        null,
         (page) => {
           if (
             !page.chunks.some(
@@ -3647,12 +3636,10 @@ export function Conversation(props: ConversationProps) {
       props.focusComposer();
       void (async () => {
         try {
-          const observed = await observe();
-          if (!alive || navigation() !== target) return;
           if (
             !(await resetHistory(
               { kind: 'tail' },
-              observed.through,
+              null,
               undefined,
               () => navigation() === target,
             )) ||
