@@ -20,7 +20,7 @@
 import { computed, Text, View } from 'nsh';
 import { SkillInput } from './SkillInput';
 import { SourceText } from './SourceText';
-import { hasSkillToken, skillTextGroups } from './skillTokenText';
+import { hasComposerToken, skillTextGroups } from './skillTokenText';
 import { C, bodyTextStyle } from './ui';
 import type { Row } from './history';
 
@@ -28,10 +28,10 @@ import type { Row } from './history';
 export function SkillMessage(props: { row(): Row; sourceId: string }) {
   const fragments = () => props.row().fragments ?? [{ offset: 0, text: props.row().text }];
   const groups = computed(() => skillTextGroups(fragments()));
-  const hasSkills = computed(() => groups().some(hasSkillToken));
+  const hasTokens = computed(() => groups().some(hasComposerToken));
   return (
     <If
-      when={hasSkills()}
+      when={hasTokens()}
       else={
         <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
           <SourceText row={props.row} sourceId={props.sourceId} />

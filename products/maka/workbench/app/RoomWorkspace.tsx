@@ -45,7 +45,7 @@ import type {
   SettingsAssistantPreferences,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { createBrowsing } from './browsing';
-import { HostProvider, type Host, type Output } from './host';
+import { HostProvider, searchAgentSessions, type Host, type Output } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -105,15 +105,9 @@ export function createRoomPeople(host: Host) {
       );
     },
     async searchSessions(query: string) {
-      const page = await host.query('agent', 'list', {
-        kind: 'agent',
-        filter: 'all',
-        scope: { kind: 'all' },
-        position: { kind: 'start' },
-        titleQuery: query,
-      });
-      remember(page.sessions);
-      return page.sessions;
+      const sessions = await searchAgentSessions(host, query);
+      remember(sessions);
+      return sessions;
     },
   };
 }

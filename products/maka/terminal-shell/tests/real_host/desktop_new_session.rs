@@ -915,6 +915,81 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
     assert_eq!(images, vec![bytes.to_vec()], "{}", request.body);
 }
 
+async fn desktop_composer_references_a_conversation_without_waking_it() {
+    let mut fixture = Fixture::open_with_configuration(Options::default(), |_, root| {
+        std::fs::write(root.join("workspace/Release-notes.md"), "Reference").unwrap();
+    })
+    .await;
+    let client = fixture.client().await;
+    let conversation = |title| {
+        json!({
+            "title":title,"labels":[],
+            "workspace":{"kind":"session","sessionId":fixture.session},
+            "backend":{
+                "kind":"model",
+                "connectionId":fixture.selection["connectionId"],
+                "modelId":fixture.selection["modelId"],
+            },
+        })
+    };
+    let current = mutate(&client, "create", conversation("Current conversation")).await;
+    let referenced = mutate(&client, "create", conversation("Release checklist")).await;
+    assert_eq!(current["kind"], "created", "{current}");
+    assert_eq!(referenced["kind"], "created", "{referenced}");
+    let current = current["session"]["id"].as_str().unwrap();
+    let referenced = referenced["session"]["id"].as_str().unwrap();
+    client.close().await.unwrap();
+
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop
+        .press("Open conversation Current conversation")
+        .await;
+    desktop.press("Focus message composer").await;
+    desktop.paste("Review @Release").await;
+    desktop.control("Release checklist").await;
+    desktop.control("Release-notes.md").await;
+    desktop.artifact("composer-session-reference-menu");
+    desktop.press("Release checklist").await;
+    let mention = format!("Review [@Release checklist](maka://session/{referenced}) ");
+    desktop.expect_text(&mention).await;
+    desktop.key("right", false);
+    desktop.paste("with @Release").await;
+    desktop.press("Release-notes.md").await;
+    let text = format!("{mention}with @Release-notes.md ");
+    desktop.expect_text(&text).await;
+    desktop.key("right", false);
+    desktop.artifact("composer-session-reference-draft");
+    desktop.press("Send message").await;
+
+    let request = desktop.request(&mut fixture).await;
+    let message = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(message["role"], "user");
+    assert_eq!(
+        message["content"].as_str().unwrap().trim_end(),
+        text.trim_end()
+    );
+    desktop
+        .wait("the current conversation did not finish", request.finish())
+        .await;
+    desktop
+        .wait(
+            "the current conversation did not settle",
+            fixture.idle(&desktop.client, current),
+        )
+        .await;
+    let target = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":referenced}))
+        .await
+        .unwrap();
+    assert!(target["session"]["tailMessageId"].is_null(), "{target}");
+    assert_eq!(target["session"]["activity"], "idle");
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+    desktop.artifact("composer-session-reference-sent");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session() {
     let fixture = Fixture::open_with_configuration(Options::default(), |_, directory| {
         let skill = directory.join("assistant-home/.maka/skills/draft-guide");
@@ -3511,6 +3586,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_new_conversation_preserves_an_owned_worktree",
     "desktop_recovers_an_unavailable_remembered_folder",
+    "desktop_composer_references_a_conversation_without_waking_it",
     "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
@@ -3562,6 +3638,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_recovers_an_unavailable_remembered_folder" => {
             runtime.block_on(desktop_recovers_an_unavailable_remembered_folder())
+        }
+        "desktop_composer_references_a_conversation_without_waking_it" => {
+            runtime.block_on(desktop_composer_references_a_conversation_without_waking_it())
         }
         "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session" => {
             runtime.block_on(

@@ -167,3 +167,11 @@ export function referenceEdit(
 export function fileInvocation(path: string): string {
   return '@' + (!path || /[\s"'\\\u0000-\u001f\u007f]/.test(path) ? JSON.stringify(path) : path);
 }
+
+/** A conversation reference retains the original title and stable ID in the message text. */
+export function sessionInvocation(session: { id: string; title: string }): string {
+  const label = (session.title || session.id)
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ')
+    .replace(/[\\\]/]/g, '\\$&');
+  return `[@${label}](maka://session/${session.id})`;
+}
