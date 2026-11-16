@@ -383,6 +383,10 @@ pub(super) enum Shape {
     },
     Steps,
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Window scanning binds source tree, cursor direction, view shape, turn scope, cache and cancellation"
+)]
 pub(super) async fn window(
     tree: &SourceTree,
     anchor: Option<wire::HistoryRowAddress>,
@@ -402,6 +406,7 @@ pub(super) async fn window(
     let mut first = true;
     let mut seen = false;
     let mut steps_turn = None;
+    let mut skip_turn: Option<Option<TurnKey>> = None;
     let mut pending: Option<(Option<TurnKey>, Vec<Selected>, bool)> = None;
     'pages: loop {
         let filter = match turn {
@@ -458,10 +463,19 @@ pub(super) async fn window(
                 }
                 Shape::Groups { cursor } => {
                     if step {
-                        if cursor && origin.as_ref() == Some(&row.row.chunk.position) {
-                            continue;
-                        }
                         let key = turn_key(&row.row.chunk);
+                        if cursor {
+                            if origin.as_ref() == Some(&row.row.chunk.position) {
+                                if reverse {
+                                    skip_turn = Some(key);
+                                }
+                                continue;
+                            }
+                            if skip_turn.as_ref().is_some_and(|turn| *turn == key) {
+                                continue;
+                            }
+                        }
+                        skip_turn = None;
                         if pending.as_ref().is_some_and(|(turn, ..)| *turn != key) {
                             let (_, members, extend) = pending.take().expect("pending group");
                             rows.extend(
@@ -476,6 +490,9 @@ pub(super) async fn window(
                                 )
                                 .await?,
                             );
+                            if rows.len() >= limit {
+                                return Ok(rows);
+                            }
                         }
                         pending
                             .get_or_insert_with(|| (key, Vec::new(), !seen))
@@ -484,6 +501,7 @@ pub(super) async fn window(
                         seen = true;
                         continue;
                     }
+                    skip_turn = None;
                     if let Some((_, members, extend)) = pending.take() {
                         rows.extend(
                             group(
@@ -716,7 +734,10 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
         Seat::Message => Some(wire::WorkKind::Message),
         Seat::Other => None,
     };
-    let first = shown.first()?.0;
+    let first = seats
+        .iter()
+        .find(|(_, seat)| !matches!(seat, Seat::Tool(index) if tools[*index].0.call.is_none()))?
+        .0;
     let (_, last) = shown.last()?;
     let mut kinds = Vec::new();
     for kind in shown.iter().filter_map(|(_, seat)| kind(seat)) {

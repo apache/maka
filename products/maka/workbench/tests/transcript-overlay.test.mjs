@@ -26,7 +26,13 @@ import {
   turnOutcome,
   turnWorkFold,
 } from '../app/processGroups.ts';
-import { HistoryRows, historyTurnKey, mergeHistoryPage, stableRowId } from '../app/history.ts';
+import {
+  HistoryRows,
+  historyFollowTail,
+  historyTurnKey,
+  mergeHistoryPage,
+  stableRowId,
+} from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
 const row = (messageId, text, sequence, changes = {}) => ({
@@ -326,4 +332,35 @@ test('recovered snapshot failures mark only their source-aware turn as having wo
   assert.equal(projection.turns.size, 1);
   assert.equal(projection.turns.get(historyTurnKey(failure)).worked, true);
   assert.equal(projection.turns.has('run'), false);
+});
+
+test('expanded group steps keep the chat follow tail and newer streamed text intact', () => {
+  const rows = new HistoryRows();
+  const chunk = ({ key, ...rest }) => ({ ...rest, offset: 0, totalBytes: rest.text.length });
+  const put = (items, through) =>
+    rows.put(mergeHistoryPage(items, (key) => rows.byKey.get(key), false, through));
+
+  const work = row(undefined, '', 2, {
+    role: 'thinking',
+    field: 'thinking',
+    work: {
+      end: { position: row('', '', 3).position, field: 'thinking', offset: 0 },
+      last: { kind: 'thought' },
+      firstToolUseId: null,
+      lastCall: null,
+      kinds: [{ kind: 'thought' }],
+      thoughts: 1,
+      tools: 0,
+      messages: 0,
+      imageCount: 0,
+      images: [],
+    },
+  });
+  const thought = row('ext-thought', 'First.', 3, { role: 'thinking', field: 'thinking' });
+  put([chunk(work), chunk(thought)], 3);
+  assert.equal(historyFollowTail(rows.ordered, 'chat')?.work?.thoughts, 1);
+
+  put([chunk({ ...thought, text: 'First. Second.' })], 5);
+  put([chunk({ ...thought, text: 'First.' })], 4);
+  assert.equal(rows.byMessage.get('ext-thought/thinking').text, 'First. Second.');
 });
