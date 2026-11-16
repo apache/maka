@@ -66,9 +66,14 @@ fn durable_lease_blocks_other_process_even_after_cache_removal() {
     RootOwner::open(&path, &ns).unwrap();
 }
 
-#[test]
-fn relocated_root_keeps_logical_identity_and_blocks_competing_copy() {
-    use maka_event_log::root::{ROOT_MARKER, resolve};
+#[tokio::test]
+async fn relocated_root_keeps_logical_identity_and_blocks_competing_copy() {
+    use maka_event_log::{
+        ROOT_MIGRATIONS, RootStore,
+        root::{ROOT_DATABASE, ROOT_MARKER, resolve},
+    };
+    use serde_json::{Value, json};
+    use std::sync::Arc;
 
     if let Some(base) = std::env::var_os("MAKA_ROOT_RELOCATION_TEST_BASE") {
         let base = Path::new(&base);
@@ -83,16 +88,43 @@ fn relocated_root_keeps_logical_identity_and_blocks_competing_copy() {
     let ns = namespaces(temp.path());
     let original = temp.path().join("original");
     let relocated = temp.path().join("relocated");
-    let owner = RootOwner::create(&original, &ns).unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+
+    let owner = Arc::new(RootOwner::create(&original, &ns).unwrap());
     let root_id = owner.root_id().to_owned();
+    let store = RootStore::open(owner.clone(), ROOT_MIGRATIONS)
+        .await
+        .unwrap();
+    let attached = store
+        .attach_workspace("fixture", &json!({"path": workspace}))
+        .await
+        .unwrap();
+    store.close().await.unwrap();
     drop(owner);
 
     fs::create_dir(&relocated).unwrap();
-    fs::copy(original.join(ROOT_MARKER), relocated.join(ROOT_MARKER)).unwrap();
+    for entry in fs::read_dir(&original).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            fs::copy(entry.path(), relocated.join(entry.file_name())).unwrap();
+        }
+    }
+    assert!(relocated.join(ROOT_MARKER).is_file());
+    assert!(relocated.join(ROOT_DATABASE).is_file());
     assert_eq!(resolve(&relocated).unwrap().root_id(), root_id);
 
-    let relocated_owner = RootOwner::open(&relocated, &ns).unwrap();
+    let relocated_owner = Arc::new(RootOwner::open(&relocated, &ns).unwrap());
     assert_eq!(relocated_owner.root_id(), root_id);
+    let relocated_store = RootStore::open(relocated_owner.clone(), ROOT_MIGRATIONS)
+        .await
+        .unwrap();
+    let persisted = relocated_store
+        .workspace_binding::<Value>(attached.id)
+        .await
+        .unwrap()
+        .expect("persisted workspace binding must survive offline relocation");
+    assert_eq!(persisted.workspace["path"], json!(workspace));
 
     let status = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -104,6 +136,7 @@ fn relocated_root_keeps_logical_identity_and_blocks_competing_copy() {
         .status()
         .unwrap();
     assert!(status.success());
+    relocated_store.close().await.unwrap();
     drop(relocated_owner);
     assert_eq!(RootOwner::open(&original, &ns).unwrap().root_id(), root_id);
 }

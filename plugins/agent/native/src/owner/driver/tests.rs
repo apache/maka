@@ -6371,12 +6371,50 @@ async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_marker
 
     let mut rig = Rig::new().expect("workspace reclone fixture");
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let run_git = |cwd: &std::path::Path, args: &[&str]| -> Result<(), String> {
+            let output = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .map_err(|e| format!("git {args:?}: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Ok(())
+        };
+
+        let remote_a = rig.directory.path().join("remote-a");
+        std::fs::create_dir_all(&remote_a)?;
+        run_git(&remote_a, &["init"])?;
+        std::fs::write(remote_a.join("before.txt"), "v1\n")?;
+        run_git(&remote_a, &["add", "before.txt"])?;
+        run_git(&remote_a, &["commit", "-m", "initial"])?;
+
         let root_workspace = rig.directory.path().join("workspace");
         let repo_a = root_workspace.join("repo-a");
         let repo_b = root_workspace.join("repo-b");
-        std::fs::create_dir_all(&repo_a)?;
+        std::fs::create_dir_all(&root_workspace)?;
         std::fs::create_dir_all(&repo_b)?;
-        std::fs::write(repo_a.join("before.txt"), "v1")?;
+        run_git(
+            &root_workspace,
+            &[
+                "clone",
+                remote_a.to_str().ok_or("invalid remote_a path")?,
+                "repo-a",
+            ],
+        )?;
+        let baseline_exclude = std::fs::read_to_string(repo_a.join(".git/info/exclude"))?;
 
         let _initial = rig.start().await?;
         let client = rig.client.as_ref().ok_or("client missing")?;
@@ -6396,6 +6434,10 @@ async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_marker
         let first_id = first["session"]["id"]
             .as_str()
             .ok_or("first session id missing")?
+            .to_owned();
+        let project_id = first["session"]["workspace"]["projectId"]
+            .as_str()
+            .ok_or("projectId missing on cloned git workspace")?
             .to_owned();
 
         let other = model_recovery::call(
@@ -6424,13 +6466,32 @@ async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_marker
         };
         assert_eq!(
             names(&repo_a)?,
-            vec![std::ffi::OsString::from("before.txt")]
+            vec![
+                std::ffi::OsString::from(".git"),
+                std::ffi::OsString::from("before.txt"),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_a.join(".git/info/exclude"))?,
+            baseline_exclude
         );
         assert!(names(&repo_b)?.is_empty());
 
+        run_git(&remote_a, &["rm", "before.txt"])?;
+        std::fs::write(remote_a.join("after-reclone.txt"), "v2\n")?;
+        run_git(&remote_a, &["add", "after-reclone.txt"])?;
+        run_git(&remote_a, &["commit", "-m", "advance remote"])?;
+
         std::fs::remove_dir_all(&repo_a)?;
-        std::fs::create_dir_all(&repo_a)?;
-        std::fs::write(repo_a.join("after-reclone.txt"), "v2")?;
+        run_git(
+            &root_workspace,
+            &[
+                "clone",
+                remote_a.to_str().ok_or("invalid remote_a path")?,
+                "repo-a",
+            ],
+        )?;
+        let recloned_exclude = std::fs::read_to_string(repo_a.join(".git/info/exclude"))?;
 
         let files = model_recovery::call(
             client,
@@ -6468,30 +6529,43 @@ async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_marker
             .as_str()
             .ok_or("second session id missing")?
             .to_owned();
+        assert_eq!(second["session"]["workspace"]["projectId"], project_id);
 
-        let scoped = model_recovery::call(
-            client,
-            "agent",
-            "list",
-            json!({
-                "filter": "all",
-                "scope": {"kind": "workspace", "sessionId": &first_id},
-                "position": {"kind": "start"},
-            }),
-        )
-        .await?;
-        let scoped_ids: Vec<_> = scoped["sessions"]
-            .as_array()
-            .ok_or("scoped sessions missing")?
-            .iter()
-            .filter_map(|entry| entry["id"].as_str())
-            .collect();
-        assert!(scoped_ids.contains(&first_id.as_str()), "{scoped_ids:?}");
-        assert!(scoped_ids.contains(&second_id.as_str()), "{scoped_ids:?}");
-        assert!(!scoped_ids.contains(&other_id.as_str()), "{scoped_ids:?}");
+        for scope in [
+            json!({"kind": "workspace", "sessionId": &first_id}),
+            json!({"kind": "project", "projectId": &project_id}),
+        ] {
+            let scoped = model_recovery::call(
+                client,
+                "agent",
+                "list",
+                json!({
+                    "filter": "all",
+                    "scope": scope,
+                    "position": {"kind": "start"},
+                }),
+            )
+            .await?;
+            let scoped_ids: Vec<_> = scoped["sessions"]
+                .as_array()
+                .ok_or("scoped sessions missing")?
+                .iter()
+                .filter_map(|entry| entry["id"].as_str())
+                .collect();
+            assert!(scoped_ids.contains(&first_id.as_str()), "{scoped_ids:?}");
+            assert!(scoped_ids.contains(&second_id.as_str()), "{scoped_ids:?}");
+            assert!(!scoped_ids.contains(&other_id.as_str()), "{scoped_ids:?}");
+        }
         assert_eq!(
             names(&repo_a)?,
-            vec![std::ffi::OsString::from("after-reclone.txt")]
+            vec![
+                std::ffi::OsString::from(".git"),
+                std::ffi::OsString::from("after-reclone.txt"),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_a.join(".git/info/exclude"))?,
+            recloned_exclude
         );
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
