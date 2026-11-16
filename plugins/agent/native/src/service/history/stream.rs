@@ -375,6 +375,20 @@ async fn returned_source(
     budget: &Arc<dyn SourceBudget>,
     stop: &CancellationToken,
 ) -> Result<Option<ToolResultFields>, String> {
+    let Some(reference) = returned_reference(item) else {
+        return Ok(None);
+    };
+    let source = data::tool_reader(data, item.recorded.run, stop)
+        .result(&item.recorded.fact, reference, budget.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    source
+        .fields(budget.clone())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn returned_reference(item: &HistoryItem) -> Option<&ContentRef> {
     let reference = match &item.recorded.fact {
         Fact::LocalToolReturned { result, .. }
         | Fact::HostToolResultRecorded { result, .. }
@@ -387,27 +401,33 @@ async fn returned_source(
                 maka_agent_facts::cells::CellEvent::LocalChildReturned { result, .. }
                 | maka_agent_facts::cells::CellEvent::ChildResultRecorded { result, .. },
         } => result,
-        _ => return Ok(None),
+        _ => return None,
     };
-    let source = data::tool_reader(data, item.recorded.run, stop)
-        .result(&item.recorded.fact, reference, budget.clone())
-        .await
-        .map_err(|error| error.to_string())?;
-    source
-        .fields(budget.clone())
-        .await
-        .map_err(|error| error.to_string())
+    Some(reference)
 }
 
 pub(super) async fn external_result_metadata(
     data: &data::DataSource,
-    run: RunId,
+    item: &HistoryItem,
     reference: &ContentRef,
     stop: &CancellationToken,
 ) -> Result<(bool, maka_agent_facts::tool_call::ToolSettlement), String> {
     use maka_agent_facts::tool_call::ToolSettlement;
+    if let data::DataSource::Live { history, cut } = data {
+        let metadata = history
+            .tool_result_metadata(cut, item.sequence)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("agent_history_external_return_metadata_missing")?;
+        return Ok((
+            metadata.is_error,
+            metadata
+                .external_settlement
+                .ok_or("agent_history_external_return_codec_invalid")?,
+        ));
+    }
     let budget = budget();
-    let body = data::tool_reader(data, run, stop)
+    let body = data::tool_reader(data, item.recorded.run, stop)
         .source(reference)
         .await
         .map_err(|error| error.to_string())?;
@@ -430,6 +450,16 @@ pub(super) async fn media_metadata_from(
     item: &HistoryItem,
     stop: &CancellationToken,
 ) -> Result<Option<(bool, u32, bool)>, String> {
+    if let data::DataSource::Live { history, cut } = data {
+        if returned_reference(item).is_none() {
+            return Ok(None);
+        }
+        return history
+            .tool_result_metadata(cut, item.sequence)
+            .await
+            .map(|metadata| metadata.map(|m| (m.image, m.images, m.is_error)))
+            .map_err(|error| error.to_string());
+    }
     let budget = budget();
     let Some(source) = returned_source(data, item, &budget, stop).await? else {
         return Ok(None);

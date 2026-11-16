@@ -1635,6 +1635,50 @@ fn result_source(fact: &Fact) -> bool {
             }
     )
 }
+
+pub(super) fn tool_result_metadata(
+    c: &Connection,
+    history: &HistoryNamespace,
+    cut: &HistoryCut,
+    sequence: u64,
+) -> Result<Option<ToolResultMetadata>, StoreError> {
+    let owner = check_cut(c, history, cut)?;
+    let row = c
+        .prepare_cached(
+            "SELECT m.is_error,m.image,m.images,m.external_settlement
+         FROM agent_session_history h JOIN agent_history_tool_metadata m ON m.sequence=h.sequence
+         WHERE h.owner=? AND h.session=? AND h.sequence=? AND h.sequence<=?",
+        )?
+        .query_row(
+            params![
+                owner,
+                history.session,
+                bind_u64(sequence)?,
+                bind_u64(cut.through_sequence)?
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|(is_error, image, images, external_settlement)| {
+        Ok(ToolResultMetadata {
+            is_error,
+            image,
+            images,
+            external_settlement: external_settlement
+                .map(|settlement| serde_json::from_value(serde_json::Value::String(settlement)))
+                .transpose()?,
+        })
+    })
+    .transpose()
+}
+
 pub(super) fn resolve_tool_result(
     c: &Connection,
     scope: &SessionHistory,
