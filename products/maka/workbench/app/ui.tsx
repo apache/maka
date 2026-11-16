@@ -180,6 +180,14 @@ export const toolbarControlStyle = {
   ...controlStyle,
   paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
 } as const;
+export const sidebarDisclosureStyle = {
+  alignSelf: 'flex-start',
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingHorizontal: 8,
+  paddingVertical: 4,
+  borderRadius: 8,
+} as const;
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and

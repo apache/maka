@@ -48,6 +48,7 @@ import {
   controlFocusStyle,
   controlDisabledStyle,
   floatingStyle,
+  sidebarDisclosureStyle,
 } from './ui';
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
@@ -925,31 +926,28 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 const groupKey = key().slice('show-more:'.length);
                 const open = () => expanded().has(groupKey);
                 return (
-                  <Button
-                    accessibilityLabel={tr(
-                      open()
-                        ? 'Show fewer conversations in {name}'
-                        : 'Show more conversations in {name}',
-                      { name: groupsById().get(groupKey)?.name ?? '' },
-                    )}
-                    onPress={inputAction(toggleProjectSessions, groupKey)}
-                    style={{
-                      height: rowHeight(),
-                      justifyContent: 'center',
-                      paddingHorizontal: 8,
-                      borderRadius: 8,
-                    }}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Text style={{ fontSize: 14, color: C.muted }}>
-                      {tr(
+                  <View>
+                    <Button
+                      accessibilityLabel={tr(
                         open()
-                          ? 'Show fewer project conversations'
-                          : 'Show more project conversations',
+                          ? 'Show fewer conversations in {name}'
+                          : 'Show more conversations in {name}',
+                        { name: groupsById().get(groupKey)?.name ?? '' },
                       )}
-                    </Text>
-                  </Button>
+                      onPress={inputAction(toggleProjectSessions, groupKey)}
+                      style={sidebarDisclosureStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Text style={{ fontSize: 14, color: C.muted }}>
+                        {tr(
+                          open()
+                            ? 'Show fewer project conversations'
+                            : 'Show more project conversations',
+                        )}
+                      </Text>
+                    </Button>
+                  </View>
                 );
               }
               if (key().startsWith('family:')) {
