@@ -688,13 +688,8 @@ pub(super) async fn project(
                     row
                 }
                 ExternalEffectEvent::Returned { output, .. } => {
-                    let (is_error, settlement) = super::stream::external_result_metadata(
-                        reader,
-                        item.recorded.run,
-                        output,
-                        stop,
-                    )
-                    .await?;
+                    let (is_error, settlement) =
+                        super::stream::external_result_metadata(reader, item, output, stop).await?;
                     let mut row = base(item, turn, 0, Role::ToolResult, address)?;
                     tool(&mut row, id, None, Some(is_error));
                     row.chunk

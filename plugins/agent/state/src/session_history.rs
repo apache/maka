@@ -61,6 +61,13 @@ pub struct HistoryItem {
     /// retain their original typed Run/attempt identity without reinterpretation.
     pub recorded: RecordedFact,
 }
+
+pub struct ToolResultMetadata {
+    pub is_error: bool,
+    pub image: bool,
+    pub images: u32,
+    pub external_settlement: Option<maka_agent_facts::tool_call::ToolSettlement>,
+}
 /// Read-time projection of native assistant text at a captured history cut.
 #[derive(Default)]
 pub struct ExecutorTranscript {
@@ -186,6 +193,19 @@ impl SessionHistory {
                 self.clone(),
                 cut.clone(),
                 locator.to_owned(),
+            ))
+            .await
+    }
+    pub async fn tool_result_metadata(
+        &self,
+        cut: &HistoryCut,
+        sequence: u64,
+    ) -> Result<Option<ToolResultMetadata>, StoreError> {
+        self.data
+            .query(ReadToolResultMetadata(
+                self.namespace.clone(),
+                cut.clone(),
+                sequence,
             ))
             .await
     }
@@ -419,6 +439,16 @@ impl SessionHistory {
     /// Explicit repair on the original writer; canonical facts and pins remain.
     pub async fn rebuild(&self) -> Result<HistoryCut, StoreError> {
         self.data.write(Rebuild(self.clone())).await
+    }
+}
+
+struct ReadToolResultMetadata(HistoryNamespace, HistoryCut, u64);
+
+impl Query for ReadToolResultMetadata {
+    type Output = Option<ToolResultMetadata>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::tool_result_metadata(c, &self.0, &self.1, self.2)
     }
 }
 struct Capture(SessionHistory, Option<RunId>);

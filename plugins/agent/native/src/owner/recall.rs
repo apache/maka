@@ -257,6 +257,7 @@ impl Recall {
             passages.push(passage(
                 hit.session,
                 address,
+                hit.cut.through_sequence,
                 hit.anchor,
                 hit.messages,
                 hit.matched_terms,
@@ -319,6 +320,7 @@ impl Recall {
             passages: vec![passage(
                 context.session,
                 address,
+                context.cut.through_sequence,
                 context.anchor,
                 context.messages,
                 vec![],
@@ -470,6 +472,17 @@ impl ToolPreparer for Recall {
                             Input::More(more) => recall.more_result(call, more).await?,
                         };
                         recall.check(call).await?;
+                        let stop = call.cancellation.child_token();
+                        let _guard = stop.clone().drop_guard();
+                        let found = recall
+                            .worker(call, async move {
+                                tokio::task::spawn_blocking(move || {
+                                    preview::tool_passages(found, &stop).map_err(failed)
+                                })
+                                .await
+                                .map_err(failed)?
+                            })
+                            .await?;
                         let text = found.render();
                         Ok(ToolSuccess::projected(
                             ToolOutput::Json(serde_json::to_value(found).map_err(failed)?),
@@ -509,6 +522,7 @@ fn invalid(error: impl std::fmt::Display) -> ToolRejection {
 fn passage(
     record: Record,
     address: maka_agent_facts::history::HistoryRowAddress,
+    through: u64,
     anchor: indexed::Message,
     messages: Vec<indexed::Message>,
     matched_terms: Vec<String>,
@@ -530,6 +544,7 @@ fn passage(
         session_title: title,
         anchor_message_id: anchor_id.clone(),
         anchor_position: address,
+        through,
         turn_id: anchor.turn_id,
         messages: messages
             .into_iter()
