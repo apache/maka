@@ -173,9 +173,9 @@ impl RootStore {
             catalog,
         )
         .await?;
-        log.checkpoint_agent =
-            match checkpoints::repository::configure(&log, storage.as_ref()).await {
-                Ok(agent) => agent,
+        log.checkpoint = Some(
+            match checkpoints::authority::configure(&log, storage).await {
+                Ok(authority) => authority,
                 Err(cause) => {
                     return match log.shutdown().await {
                         Ok(()) => Err(cause),
@@ -185,8 +185,8 @@ impl RootStore {
                         }),
                     };
                 }
-            };
-        log.checkpoint_storage = storage;
+            },
+        );
         let log = Arc::new(log);
         let mut store = Self {
             log,

@@ -22,7 +22,7 @@
 mod load;
 pub mod repository;
 mod restore;
-mod workspace;
+pub(crate) mod workspace;
 use crate::StoreError;
 pub use load::{LoadOperation, LoadState, LoadedCheckpoint};
 pub(crate) use load::{LoadRequest, load_key};
@@ -183,4 +183,12 @@ impl Request {
             self.publication.operation,
         ))?))
     }
+}
+
+#[derive(Debug)]
+pub struct Checkout {
+    pub head: Head,
+    pub manifest: Manifest,
+    /// Verified, rewound bytes; this is history material, not activation authority.
+    pub snapshot: std::fs::File,
 }

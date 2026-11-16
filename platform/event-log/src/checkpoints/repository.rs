@@ -119,13 +119,18 @@ pub struct VerifiedCheckpoint {
     object_store: String,
     reference: ObjectRef,
     manifest: Manifest,
-    snapshot: File,
 }
 impl VerifiedCheckpoint {
     pub fn verify(
         objects: &dyn ImmutableObjectStore,
         reference: ObjectRef,
     ) -> Result<Self, StoreError> {
+        Self::read_verified(objects, reference).map(|(verified, _)| verified)
+    }
+    fn read_verified(
+        objects: &dyn ImmutableObjectStore,
+        reference: ObjectRef,
+    ) -> Result<(Self, File), StoreError> {
         let manifest: Manifest = serde_json::from_reader(objects.read(&reference)?)?;
         Source {
             root_id: manifest.root_id.clone(),
@@ -138,39 +143,55 @@ impl VerifiedCheckpoint {
         }
         let snapshot = objects.read(&manifest.history.object)?;
         if let Some(workspace) = &manifest.workspace {
-            for entry in crate::root_store::checkpoints::workspace::read_inventory(
-                objects.read(&workspace.inventory)?,
-            )? {
+            for entry in super::workspace::read_inventory(objects.read(&workspace.inventory)?)? {
                 if let super::WorkspaceEntry::File { object, .. } = entry {
                     objects.read(&object)?;
                 }
             }
         }
-        Ok(Self {
-            object_store: objects.identity().into(),
+        Ok((
+            Self::captured(objects.identity(), reference, manifest),
+            snapshot,
+        ))
+    }
+    // Only the Root capture pipeline can attest newly written, durable local material.
+    // Recovery and external reads must go through full verification instead.
+    pub(crate) fn captured(object_store: &str, reference: ObjectRef, manifest: Manifest) -> Self {
+        Self {
+            object_store: object_store.into(),
             reference,
             manifest,
-            snapshot,
-        })
+        }
+    }
+    fn validate_source(&self, source: &Source) -> Result<(), StoreError> {
+        if self.manifest.root_id != source.root_id
+            || self.manifest.scope != source.scope
+            || self.manifest.session_id != source.session
+        {
+            return Err(invalid("checkpoint belongs to another source"));
+        }
+        Ok(())
     }
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
     pub fn validate(&self, object_store: &str, request: &Commit) -> Result<(), StoreError> {
         request.key()?;
-        let source = &request.binding.source;
-        if self.object_store != object_store
-            || self.reference != request.manifest
-            || self.manifest.root_id != source.root_id
-            || self.manifest.scope != source.scope
-            || self.manifest.session_id != source.session
-        {
+        self.validate_source(&request.binding.source)?;
+        if self.object_store != object_store || self.reference != request.manifest {
             return Err(invalid(
                 "checkpoint belongs to another source or object store",
             ));
         }
         Ok(())
     }
+}
+
+/// A Head and its immutable provenance, read together from the same authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundHead {
+    pub binding: Binding,
+    pub head: Head,
 }
 
 /// Head and its original commit receipt are one atomic authority. A conflict is
@@ -187,7 +208,7 @@ pub trait SessionRepository: Send + Sync {
     fn read_head(
         &self,
         identity: SessionIdentity,
-    ) -> BoxFuture<'_, Result<Option<Head>, StoreError>>;
+    ) -> BoxFuture<'_, Result<Option<BoundHead>, StoreError>>;
     fn receipt(&self, request: Commit) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>>;
     fn commit(
         &self,
@@ -231,7 +252,7 @@ impl Storage {
         &self,
         identity: SessionIdentity,
         revision: Revision,
-    ) -> Result<crate::root_store::Checkout, StoreError> {
+    ) -> Result<super::Checkout, StoreError> {
         if identity.agent != self.agent {
             return Err(invalid("checkpoint agent binding differs"));
         }
@@ -239,21 +260,27 @@ impl Storage {
             .sessions
             .read_head(identity.clone())
             .await?
-            .filter(|h| h.revision == revision)
+            .filter(|h| h.head.revision == revision)
             .ok_or_else(|| invalid("checkpoint revision unavailable"))?;
+        if head.binding.identity != identity {
+            return Err(invalid("checkpoint logical Session binding differs"));
+        }
+        let source = head.binding.source.clone();
         let objects = self.objects.clone();
-        let reference = head.manifest.clone();
+        let reference = head.head.manifest.clone();
         let (manifest, snapshot) = tokio::task::spawn_blocking(move || {
-            let verified = VerifiedCheckpoint::verify(objects.as_ref(), reference)?;
-            Ok::<_, StoreError>((verified.manifest, verified.snapshot))
+            let (verified, snapshot) =
+                VerifiedCheckpoint::read_verified(objects.as_ref(), reference)?;
+            verified.validate_source(&source)?;
+            Ok::<_, StoreError>((verified.manifest, snapshot))
         })
         .await
         .map_err(|_| StoreError::OperationUnknown)??;
         if self.sessions.read_head(identity).await?.as_ref() != Some(&head) {
             return Err(invalid("checkpoint revision unavailable"));
         }
-        Ok(crate::root_store::Checkout {
-            head,
+        Ok(super::Checkout {
+            head: head.head,
             manifest,
             snapshot,
         })

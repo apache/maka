@@ -20,12 +20,6 @@
 use super::*;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-#[derive(Clone, Copy)]
-pub(crate) enum Layout {
-    Local,
-    Shared,
-}
-
 pub(crate) fn lookup(
     db: &Connection,
     source: &Source,
@@ -51,42 +45,15 @@ pub(crate) fn lookup(
 }
 
 pub(crate) fn bind(
-    db: &Connection,
+    tx: &Transaction<'_>,
     source: &Source,
     agent: Uuid,
-    layout: Layout,
 ) -> Result<Binding, StoreError> {
     if agent.is_nil() {
         return Err(invalid("checkpoint agent identity is nil"));
     }
-    let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
-    if let Some(binding) = lookup(&tx, source, agent)? {
+    if let Some(binding) = lookup(tx, source, agent)? {
         return Ok(binding);
-    }
-    if matches!(layout, Layout::Local) {
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?)",
-            [&source.session],
-            |r| r.get(0),
-        )?;
-        if !exists {
-            return Err(StoreError::SessionNotFound);
-        }
-        let scope: Option<String> = tx
-            .query_row(
-                "SELECT scope_json FROM history_checkpoint_bindings WHERE session_id=?",
-                [&source.session],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(scope) = scope
-            && serde_json::from_str::<Scope>(&scope)? != source.scope
-        {
-            return Err(invalid("checkpoint local scope differs"));
-        }
-    }
-    if matches!(layout, Layout::Local) {
-        tx.execute("INSERT INTO history_checkpoint_bindings VALUES(?,?) ON CONFLICT(session_id) DO NOTHING", params![&source.session,serde_json::to_string(&source.scope)?])?;
     }
     let identity = SessionIdentity {
         session: Uuid::new_v4(),
@@ -104,44 +71,49 @@ pub(crate) fn bind(
             identity.session.to_string()
         ],
     )?;
-    tx.commit().map_err(StoreError::CommitUnknown)?;
     Ok(Binding {
         source: source.clone(),
         identity,
     })
 }
 
-fn source_for(db: &Connection, identity: &SessionIdentity) -> Result<Option<Source>, StoreError> {
+pub(crate) fn binding_for(
+    db: &Connection,
+    identity: &SessionIdentity,
+) -> Result<Option<Binding>, StoreError> {
     let row: Option<(String,String)> = db.query_row("SELECT s.agent_id,b.source_json FROM checkpoint_repository_sessions s JOIN checkpoint_repository_sources b USING(session_id) WHERE s.session_id=?", [identity.session.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
     row.map(|(agent, source)| {
         if agent != identity.agent.to_string() {
             return Err(invalid("checkpoint Session agent binding differs"));
         }
-        serde_json::from_str(&source).map_err(Into::into)
+        Ok(Binding {
+            identity: identity.clone(),
+            source: serde_json::from_str(&source)?,
+        })
     })
     .transpose()
 }
 pub(crate) fn head(
     db: &Connection,
     identity: &SessionIdentity,
-    layout: Layout,
-) -> Result<Option<Head>, StoreError> {
-    let Some(source) = source_for(db, identity)? else {
+) -> Result<Option<BoundHead>, StoreError> {
+    let Some(binding) = binding_for(db, identity)? else {
         return Ok(None);
     };
-    let (query, key) = match layout {
-        Layout::Local => (
-            "SELECT head_json FROM history_checkpoint_heads WHERE session_id=?",
-            source.session,
-        ),
-        Layout::Shared => (
+    let json: Option<String> = db
+        .query_row(
             "SELECT head_json FROM checkpoint_repository_heads WHERE session_id=?",
-            identity.session.to_string(),
-        ),
-    };
-    let json: Option<String> = db.query_row(query, [key], |r| r.get(0)).optional()?;
-    json.map(|v| serde_json::from_str(&v).map_err(Into::into))
-        .transpose()
+            [identity.session.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    json.map(|json| {
+        Ok(BoundHead {
+            binding,
+            head: serde_json::from_str(&json)?,
+        })
+    })
+    .transpose()
 }
 
 pub(crate) fn receipt(
@@ -165,16 +137,12 @@ pub(crate) fn receipt(
     })
     .transpose()
 }
-pub(crate) fn commit(
-    db: &Connection,
-    request: &Commit,
-    layout: Layout,
-) -> Result<CommitReceipt, StoreError> {
+pub(crate) fn commit(db: &Connection, request: &Commit) -> Result<CommitReceipt, StoreError> {
     let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
     if let Some(receipt) = receipt(&tx, request)? {
         return Ok(receipt);
     }
-    let actual = head(&tx, &request.binding.identity, layout)?.map(|h| h.revision);
+    let actual = head(&tx, &request.binding.identity)?.map(|h| h.head.revision);
     let receipt = if actual != request.expected_revision {
         CommitReceipt::Conflict { actual }
     } else {
@@ -182,27 +150,29 @@ pub(crate) fn commit(
             revision: Revision(Uuid::new_v4()),
             manifest: request.manifest.clone(),
         };
-        let (query, key) = match layout {
-            Layout::Local => (
-                "INSERT INTO history_checkpoint_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json",
-                request.binding.source.session.clone(),
-            ),
-            Layout::Shared => (
-                "INSERT INTO checkpoint_repository_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json",
-                request.binding.identity.session.to_string(),
-            ),
-        };
-        tx.execute(query, params![key, serde_json::to_string(&head)?])?;
+        tx.execute(
+            "INSERT INTO checkpoint_repository_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json",
+            params![request.binding.identity.session.to_string(), serde_json::to_string(&head)?],
+        )?;
         CommitReceipt::Published { head }
     };
+    record_receipt(&tx, request, &receipt)?;
+    tx.commit().map_err(StoreError::CommitUnknown)?;
+    Ok(receipt)
+}
+
+pub(crate) fn record_receipt(
+    tx: &Transaction<'_>,
+    request: &Commit,
+    receipt: &CommitReceipt,
+) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO checkpoint_repository_receipts VALUES(?,?,?)",
         params![
             request.key()?,
             serde_json::to_string(request)?,
-            serde_json::to_string(&receipt)?
+            serde_json::to_string(receipt)?
         ],
     )?;
-    tx.commit().map_err(StoreError::CommitUnknown)?;
-    Ok(receipt)
+    Ok(())
 }

@@ -50,8 +50,8 @@ object storage from logical Session identity, Head CAS and original commit
 receipts. A logical Session/agent binding is durable; Root/scope/native Session
 remain source provenance. A missing expected revision means create-if-absent;
 conflicts never retry against a newer Head. Exact checkout verifies all
-object bytes and Workspace closure, and rejects a Head that moves during
-verification. The canonical history owner remains responsible for its format
+object bytes and Workspace closure, compares Manifest provenance with the persisted
+logical Session Binding, and rejects a Head or Binding that moves during verification. The canonical history owner remains responsible for its format
 and semantic validation.
 
 The existing publisher and reads use these ports. `RootStore::open` keeps the
@@ -59,7 +59,10 @@ local adapter and existing Head table. Trusted bootstrap can instead pass a
 `Storage` pair to `RootStore::open_with_checkpoint_storage` before opening a
 Host. `FileRepository::open` supplies a durable reference implementation outside
 worker Roots: SQLite arbitrates independent processes and files hold immutable
-objects. Initialize this blocking adapter on a physical I/O lane. It supports
+objects. Each adapter owns a bounded connection worker; clones share that worker,
+while independent adapters/processes arbitrate through SQLite. Its schema and identity
+column are independent of the worker Root migration catalog. Initialize this blocking
+adapter on a physical I/O lane. It supports
 Unix local filesystems, not network-filesystem or distributed-database leases.
 
 A shared Root keeps capture/recovery records but no local Head. The repository
@@ -70,10 +73,15 @@ Head. Head lookup does not claim a new source scope. Startup requires the same r
 object-store and agent binding. Existing local publications require an explicit
 migration before switching authorities. The reference adapter's directory must
 be private and outside the captured Workspace. Objects are retained without GC;
-streaming publication uses an independent temporary copy before durable storage.
+external streaming publication uses an independent temporary copy before durable storage.
+The local adapter promotes already verified private staging files without copying and
+syncs the object directory before recording Prepared. Fresh local commits carry that
+capture's verification witness; recovery and external publication verify retained bytes.
+Root-private SQL stays in `root_store::checkpoints::local` and Root assembly in `authority`.
 
 `Storage::checkout_exact` can read a logical Session after its source Root is
-gone. It grants no execution authority. Shared loading/restore, activation leases,
+gone. It selects only the current retained Head: publishing r2 makes r1 unavailable to
+checkout even while its objects and original receipt remain. It grants no execution authority. Shared loading/restore, activation leases,
 cross-Root handoff and concrete cloud transports are separate follow-ups. Local
 restore and portable export retain their existing behavior; the operator CLI
 is not an external-repository configuration surface. Credentials, runtime images

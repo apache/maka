@@ -136,9 +136,11 @@ impl ImmutableObjectStore for FileObjects {
     }
 }
 
+type RepositoryJob = Box<dyn FnOnce(&Connection) + Send>;
+
 #[derive(Clone)]
 pub struct FileRepository {
-    directory: PathBuf,
+    jobs: async_channel::Sender<RepositoryJob>,
     identity: String,
     objects: Arc<FileObjects>,
 }
@@ -168,7 +170,7 @@ impl FileRepository {
             ));
         }
         initialization.lock()?;
-        let db = connect(&directory, true)?;
+        let db = connect(&directory)?;
         let application: i64 = db.query_row("PRAGMA application_id", [], |r| r.get(0))?;
         let tables: i64 = db.query_row(
             "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
@@ -186,7 +188,7 @@ impl FileRepository {
                 crate::migration::Migration {
                     version: 1,
                     description: "checkpoint repository",
-                    sql: include_str!("../../../migrations/0040_checkpoint_repository.sql"),
+                    sql: include_str!("../../../migrations/repository/0001_repository.sql"),
                 },
                 crate::migration::Migration {
                     version: 2,
@@ -197,18 +199,20 @@ impl FileRepository {
         )?;
         let id: Option<String> = tx
             .query_row(
-                "SELECT configuration_json FROM checkpoint_repository_settings WHERE singleton=1",
+                "SELECT repository_id FROM checkpoint_repository_settings WHERE singleton=1",
                 [],
                 |r| r.get(0),
             )
             .optional()?;
         let identity = match id {
-            Some(id) => serde_json::from_str::<Uuid>(&id)?.to_string(),
+            Some(id) => Uuid::parse_str(&id)
+                .map_err(|e| invalid(e.to_string()))?
+                .to_string(),
             None => {
                 let id = Uuid::new_v4();
                 tx.execute(
                     "INSERT INTO checkpoint_repository_settings VALUES(1,?)",
-                    [serde_json::to_string(&id)?],
+                    [id.to_string()],
                 )?;
                 id.to_string()
             }
@@ -222,8 +226,16 @@ impl FileRepository {
         if let Some(parent) = directory.parent() {
             File::open(parent)?.sync_all()?;
         }
+        let (jobs, receiver) = async_channel::bounded::<RepositoryJob>(32);
+        std::thread::Builder::new()
+            .name("checkpoint-repository".into())
+            .spawn(move || {
+                while let Ok(job) = receiver.recv_blocking() {
+                    job(&db);
+                }
+            })?;
         Ok(Self {
-            directory,
+            jobs,
             identity,
             objects,
         })
@@ -238,26 +250,22 @@ impl FileRepository {
         &self,
         action: impl FnOnce(&Connection) -> Result<T, StoreError> + Send + 'static,
     ) -> BoxFuture<'static, Result<T, StoreError>> {
-        let directory = self.directory.clone();
-        let identity = self.identity.clone();
+        let jobs = self.jobs.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                let db = connect(&directory, false)?;
-                let original: String = db.query_row("SELECT configuration_json FROM checkpoint_repository_settings WHERE singleton=1", [], |r|r.get(0))?;
-                if serde_json::from_str::<Uuid>(&original)?.to_string() != identity {
-                    return Err(invalid("checkpoint repository identity changed"));
-                }
-                action(&db)
-            })
-                .await.map_err(|_| StoreError::OperationUnknown)?
+            let (send, receive) = tokio::sync::oneshot::channel();
+            jobs.send(Box::new(move |db| {
+                let _ = send.send(action(db));
+            }))
+            .await
+            .map_err(|_| StoreError::ConnectionClosed)?;
+            receive.await.map_err(|_| StoreError::OperationUnknown)?
         })
     }
 }
-fn connect(directory: &Path, create: bool) -> Result<Connection, StoreError> {
-    let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    if create {
-        flags |= OpenFlags::SQLITE_OPEN_CREATE;
-    }
+fn connect(directory: &Path) -> Result<Connection, StoreError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW
+        | OpenFlags::SQLITE_OPEN_CREATE;
     let db = Connection::open_with_flags(directory.join("repository.sqlite"), flags)?;
     db.busy_timeout(Duration::from_secs(10))?;
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
@@ -278,13 +286,23 @@ impl SessionRepository for FileRepository {
         self.run(move |db| sql::lookup(db, &source, agent))
     }
     fn bind(&self, source: Source, agent: Uuid) -> BoxFuture<'_, Result<Binding, StoreError>> {
-        self.run(move |db| sql::bind(db, &source, agent, sql::Layout::Shared))
+        self.run(move |db| {
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            let binding = sql::bind(&tx, &source, agent)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            Ok(binding)
+        })
     }
     fn read_head(
         &self,
         identity: SessionIdentity,
-    ) -> BoxFuture<'_, Result<Option<Head>, StoreError>> {
-        self.run(move |db| sql::head(db, &identity, sql::Layout::Shared))
+    ) -> BoxFuture<'_, Result<Option<BoundHead>, StoreError>> {
+        self.run(move |db| {
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+            sql::head(&tx, &identity)
+        })
     }
     fn receipt(&self, request: Commit) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>> {
         self.run(move |db| sql::receipt(db, &request))
@@ -297,7 +315,7 @@ impl SessionRepository for FileRepository {
         let identity = self.identity.clone();
         self.run(move |db| {
             verified.validate(&identity, &request)?;
-            sql::commit(db, &request, sql::Layout::Shared)
+            sql::commit(db, &request)
         })
     }
 }

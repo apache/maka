@@ -44,13 +44,15 @@ Agent 事实、历史、索引和内容所有权由
 [`checkpoints::repository`](src/checkpoints/repository.rs) 将不可变对象与逻辑 Session
 身份、Head CAS、原提交回执分开。Session/agent 绑定持久保存，Root/scope/native Session
 保留为来源信息。缺省 expected revision 表示仅当 Head 不存在时创建；冲突不自动改用
-新 Head 重试。精确读取验证对象字节与 Workspace 依赖闭包，并拒绝验证期间已移动的
-Head；历史格式与语义校验仍由原生历史所属领域负责。
+新 Head 重试。精确读取验证对象字节与 Workspace 依赖闭包，将 Manifest 来源与持久化的
+逻辑 Session Binding 比对，并拒绝验证期间已移动的 Head 或 Binding；历史格式与语义校验仍由原生历史所属领域负责。
 
 现有发布与读取路径实际使用这些接口。`RootStore::open` 默认使用本地适配和原 Head 表。
 可信装配层可以在打开 Host 前，通过 `RootStore::open_with_checkpoint_storage` 注入
 `Storage`。`FileRepository::open` 提供独立于 worker Root 的持久参考实现：SQLite
-仲裁独立进程，对象文件保存不可变内容。初始化需放在物理 I/O 线程；首版支持 Unix
+仲裁独立进程，对象文件保存不可变内容。每个适配器持有有界的常驻连接工作线程，克隆共享线程，
+独立适配器和进程由 SQLite 仲裁。仓库 schema 与身份列独立于 Root 的迁移目录。
+初始化需放在物理 I/O 线程；首版支持 Unix
 本地文件系统，不提供网络文件系统或分布式数据库租约保证。
 
 共享模式的 Root 只保留捕获与恢复记录，不写本地 Head。仓库同时提交 Head 与原回执；
@@ -58,9 +60,13 @@ Head；历史格式与语义校验仍由原生历史所属领域负责。
 缺失或非法材料不能推进 Head。读取 Head 不会认领新的来源 scope。
 启动必须装配同一仓库、对象库和 agent 绑定。
 已有本地发布需要显式迁移才能切换 authority。参考仓库目录必须私有且位于捕获的
-Workspace 之外。对象尚无 GC；流式发布先生成独立临时副本，再确认持久化。
+Workspace 之外。对象尚无 GC；外部流式发布先生成独立临时副本，再确认持久化。
+本地适配器直接晋升已验证的私有暂存文件，在记录 Prepared 前同步对象目录。
+同轮本地提交复用捕获的验证凭据；恢复和外部发布重新验证保留字节。
+Root 私有 SQL 位于 `root_store::checkpoints::local`，Root 装配位于 `authority`。
 
-`Storage::checkout_exact` 可在源 Root 消失后读取逻辑 Session，但不授予执行权。
+`Storage::checkout_exact` 可在源 Root 消失后读取逻辑 Session，但只选择当前保留的 Head：
+发布 r2 后，即使 r1 的对象和原回执仍在，也不能再检出 r1。读取不授予执行权。
 共享加载/恢复、Activation 租约、跨 Root 接管和具体云端传输仍是后续工作。
 本地恢复及归档导出保持原行为，当前 operator CLI 不提供外部仓库配置入口。
 checkpoint 未增加凭据、运行镜像或完整辅助 Agent 状态。

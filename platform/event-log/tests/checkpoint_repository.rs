@@ -24,8 +24,8 @@ use maka_event_log::{
     checkpoints::{
         Head, HistorySnapshot, ObjectRef, PublicationRequest, PublicationState, Scope,
         repository::{
-            Binding, Commit, CommitReceipt, SessionIdentity, SessionRepository, Source, Storage,
-            VerifiedCheckpoint, files::FileRepository,
+            Binding, BoundHead, Commit, CommitReceipt, SessionIdentity, SessionRepository, Source,
+            Storage, VerifiedCheckpoint, files::FileRepository,
         },
     },
     connection::BoxFuture,
@@ -107,6 +107,171 @@ fn head(state: PublicationState) -> Head {
     match state {
         PublicationState::Published { head } => head,
         other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn exact_checkout_rejects_an_intact_manifest_from_another_session() {
+    let base = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let repo = FileRepository::open(external.path()).unwrap();
+    let storage = repo.storage(Uuid::new_v4()).unwrap();
+    let store = open(base.path(), true, Some(storage.clone())).await;
+    session(&store).await;
+    store
+        .create_session("other", "create-other", &json!({}), 1)
+        .await
+        .unwrap();
+    let a = store.history_checkpoints("session", scope()).await.unwrap();
+    let b = store.history_checkpoints("other", scope()).await.unwrap();
+    let binding = a.binding().await.unwrap();
+    let mut saved = head(a.publish(request(), material()).await.unwrap().state);
+    let other = head(b.publish(request(), material()).await.unwrap().state);
+    VerifiedCheckpoint::verify(repo.objects().as_ref(), other.manifest.clone()).unwrap();
+    saved.manifest = other.manifest;
+    let db = rusqlite::Connection::open(external.path().join("repository.sqlite")).unwrap();
+    db.execute(
+        "UPDATE checkpoint_repository_heads SET head_json=? WHERE session_id=?",
+        rusqlite::params![
+            serde_json::to_string(&saved).unwrap(),
+            binding.identity.session.to_string()
+        ],
+    )
+    .unwrap();
+    let result = storage
+        .checkout_exact(binding.identity, saved.revision)
+        .await;
+    store.shutdown().await.unwrap();
+    assert!(
+        result.is_err(),
+        "an intact foreign Manifest must not pass logical Session checkout"
+    );
+}
+
+#[tokio::test]
+async fn local_recovery_reverifies_material_after_fresh_capture_loses_its_witness() {
+    for missing in [false, true] {
+        let base = tempfile::tempdir().unwrap();
+        let store = open(base.path(), true, None).await;
+        session(&store).await;
+        let history = store.history_checkpoints("session", scope()).await.unwrap();
+        let original = request();
+        let db_path = base
+            .path()
+            .join("root")
+            .join(maka_event_log::root::ROOT_DATABASE);
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_head BEFORE INSERT ON history_checkpoint_heads BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+        assert!(history.publish(original.clone(), material()).await.is_err());
+        assert!(matches!(
+            history
+                .receipt(original.clone())
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            PublicationState::Prepared { .. }
+        ));
+        store.shutdown().await.unwrap();
+        drop(history);
+        drop(store);
+        db.execute_batch("DROP TRIGGER fail_head").unwrap();
+        drop(db);
+        if missing {
+            fs::remove_file(
+                base.path()
+                    .join("root/history-checkpoints/objects")
+                    .join(&original.history.object.digest),
+            )
+            .unwrap();
+        }
+        let store = open(base.path(), false, None).await;
+        let history = store.history_checkpoints("session", scope()).await.unwrap();
+        let result = history.receipt(original).await.unwrap().unwrap();
+        if missing {
+            assert!(matches!(result.state, PublicationState::Unavailable { .. }));
+            assert!(history.read_head().await.unwrap().is_none());
+        } else {
+            assert_eq!(history.read_head().await.unwrap(), Some(head(result.state)));
+        }
+        store.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn local_capture_rejects_corrupt_deduplicated_objects_without_advancing_head() {
+    let base = tempfile::tempdir().unwrap();
+    let store = open(base.path(), true, None).await;
+    session(&store).await;
+    let history = store.history_checkpoints("session", scope()).await.unwrap();
+    let mut next = request();
+    let saved = head(
+        history
+            .publish(next.clone(), material())
+            .await
+            .unwrap()
+            .state,
+    );
+    fs::write(
+        base.path()
+            .join("root/history-checkpoints/objects")
+            .join(&next.history.object.digest),
+        b"corrupt",
+    )
+    .unwrap();
+    next.operation = Uuid::new_v4();
+    next.expected_revision = Some(saved.revision);
+    assert!(history.publish(next, material()).await.is_err());
+    assert_eq!(history.read_head().await.unwrap(), Some(saved));
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "manual local capture I/O baseline: 3 fresh 100 MiB workspaces"]
+async fn local_workspace_capture_baseline() {
+    use maka_event_log::checkpoints::{WorkspaceCapture, WorkspaceConsistency};
+    for sample in 0..3 {
+        let base = tempfile::tempdir().unwrap();
+        let store = open(base.path(), true, None).await;
+        session(&store).await;
+        let source = base.path().join("project");
+        fs::create_dir(&source).unwrap();
+        for index in 0..10u8 {
+            fs::write(
+                source.join(format!("file-{index}.bin")),
+                vec![index; 10 * 1024 * 1024],
+            )
+            .unwrap();
+        }
+        let workspace = store
+            .workspace(
+                cap_std::fs::Dir::open_ambient_dir(&source, cap_std::ambient_authority()).unwrap(),
+            )
+            .await
+            .unwrap();
+        let fence = store.fence_workspace(&workspace).await.unwrap();
+        let history = store.history_checkpoints("session", scope()).await.unwrap();
+        let mut publication = request();
+        publication.workspace = Some(WorkspaceCapture {
+            root: source,
+            identity: "workspace".into(),
+            consistency: WorkspaceConsistency::CallerConfirmedQuiescent,
+        });
+        let started = std::time::Instant::now();
+        let saved = head(
+            history
+                .publish_fenced(publication, material(), &fence)
+                .await
+                .unwrap()
+                .state,
+        );
+        eprintln!(
+            "local capture sample={sample} files=10 bytes=104857600 elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        drop(fence);
+        history.checkout_exact(saved.revision).await.unwrap();
+        store.shutdown().await.unwrap();
     }
 }
 
@@ -241,7 +406,10 @@ impl SessionRepository for LoseReply {
     fn bind(&self, s: Source, a: Uuid) -> BoxFuture<'_, Result<Binding, StoreError>> {
         self.inner.bind(s, a)
     }
-    fn read_head(&self, s: SessionIdentity) -> BoxFuture<'_, Result<Option<Head>, StoreError>> {
+    fn read_head(
+        &self,
+        s: SessionIdentity,
+    ) -> BoxFuture<'_, Result<Option<BoundHead>, StoreError>> {
         self.inner.read_head(s)
     }
     fn receipt(&self, c: Commit) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>> {
@@ -311,7 +479,8 @@ async fn lost_commit_reply_recovers_original_head_without_recapture_or_local_fal
         .read_head(binding.identity.clone())
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .head;
     assert_eq!(
         head(
             history
@@ -336,7 +505,10 @@ async fn lost_commit_reply_recovers_original_head_without_recapture_or_local_fal
         committed
     );
     assert_eq!(
-        repo.read_head(binding.identity).await.unwrap(),
+        repo.read_head(binding.identity)
+            .await
+            .unwrap()
+            .map(|bound| bound.head),
         Some(committed)
     );
     store.shutdown().await.unwrap();

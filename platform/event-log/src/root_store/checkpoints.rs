@@ -25,13 +25,15 @@ use crate::checkpoints::{
     Revision, Scope, invalid,
 };
 use std::future::Future;
+pub(crate) mod authority;
 mod journal;
 pub(in crate::root_store) mod load;
+mod local;
 mod objects;
 pub mod portable;
-pub(in crate::root_store) mod repository;
 pub(crate) mod restore;
 pub(crate) mod workspace;
+use crate::checkpoints::repository::VerifiedCheckpoint;
 use objects::Objects;
 
 #[derive(Clone)]
@@ -40,13 +42,7 @@ pub struct HistoryCheckpoints {
     scope: Scope,
 }
 
-#[derive(Debug)]
-pub struct Checkout {
-    pub head: Head,
-    pub manifest: Manifest,
-    /// Verified, rewound bytes; this is history material, not activation authority.
-    pub snapshot: std::fs::File,
-}
+pub use crate::checkpoints::Checkout;
 
 impl RootStore {
     /// Trusted assembly only. The Agent owner must authorize its namespace and Session.
@@ -173,8 +169,8 @@ impl HistoryCheckpoints {
                 }
                 boundary("claimed");
                 let prepared = capture(&objects, &request, snapshot, fence.as_ref());
-                let manifest = match prepared {
-                    Ok(manifest) => manifest,
+                let (manifest, verified) = match prepared {
+                    Ok(captured) => captured,
                     Err(error) => {
                         // Only capture has run: no Head commit can be outstanding here.
                         journal::interrupt(&log, request.clone()).await?;
@@ -191,8 +187,8 @@ impl HistoryCheckpoints {
                     return Err(error);
                 }
                 boundary("prepared");
-                // The repository verifies the retained object closure before publication.
-                let value = repository::commit(&log, &objects, &request, manifest).await?;
+                // Fresh local capture carries its verification; recovery rechecks retained bytes.
+                let value = authority::commit(&log, &objects, &request, manifest, verified).await?;
                 boundary("published");
                 Ok(finish_cleanup(&log, &objects, &request, value).await)
             },
@@ -210,7 +206,7 @@ impl HistoryCheckpoints {
             return Ok(None);
         };
         if let PublicationState::Prepared { manifest } = &value.state
-            && let Some(receipt) = repository::receipt(&log, &request, manifest.clone()).await?
+            && let Some(receipt) = authority::receipt(&log, &request, manifest.clone()).await?
         {
             value.state = match receipt {
                 crate::checkpoints::repository::CommitReceipt::Published { head } => {
@@ -225,7 +221,7 @@ impl HistoryCheckpoints {
     }
 
     pub async fn read_head(&self) -> Result<Option<Head>, StoreError> {
-        repository::head(
+        authority::head(
             &self.session.scoped().await?,
             self.scope.clone(),
             self.session.id().into(),
@@ -258,7 +254,7 @@ async fn checkout(
     let (head, manifest) = selected_checkpoint(log, objects, &scope, &session, revision).await?;
     let snapshot = objects.read(&manifest.history.object)?;
     // Confirm the retained revision again after expensive verification.
-    if repository::head(log, scope, session).await?.as_ref() != Some(&head) {
+    if authority::head(log, scope, session).await?.as_ref() != Some(&head) {
         return Err(invalid("history checkpoint revision unavailable"));
     }
     Ok(Checkout {
@@ -275,7 +271,7 @@ async fn selected_checkpoint(
     session: &str,
     revision: Revision,
 ) -> Result<(Head, Manifest), StoreError> {
-    let head = repository::head(log, scope.clone(), session.to_owned())
+    let head = authority::head(log, scope.clone(), session.to_owned())
         .await?
         .filter(|head| head.revision == revision)
         .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
@@ -300,7 +296,7 @@ fn capture(
     request: &Request,
     mut snapshot: std::fs::File,
     fence: Option<&WorkspaceFence>,
-) -> Result<ObjectRef, StoreError> {
+) -> Result<(ObjectRef, Option<VerifiedCheckpoint>), StoreError> {
     use std::io::{Read, Seek, SeekFrom};
     if !snapshot.metadata()?.is_file() {
         return Err(invalid("checkpoint snapshot is not a regular file"));
@@ -323,7 +319,7 @@ fn capture(
     if &reference != expected {
         return Err(invalid("checkpoint snapshot digest or size differs"));
     }
-    objects.publish(&path)?;
+    objects.link_staged(&path, &reference)?;
     boundary("payload");
     let workspace = request
         .publication
@@ -342,7 +338,12 @@ fn capture(
         history: request.publication.history.clone(),
         workspace,
     };
-    objects.publish_manifest(request, &manifest)
+    let reference = objects.publish_manifest(request, &manifest)?;
+    objects.finish_capture()?;
+    let verified = objects.is_local().then(|| {
+        VerifiedCheckpoint::captured(objects.storage().identity(), reference.clone(), manifest)
+    });
+    Ok((reference, verified))
 }
 
 async fn resume(
@@ -351,7 +352,7 @@ async fn resume(
     request: &Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
-    repository::commit(log, objects, request, manifest).await
+    authority::commit(log, objects, request, manifest, None).await
 }
 
 async fn finish_cleanup(
@@ -444,7 +445,12 @@ where
     Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
 {
     let root = log.owned_root()?;
-    let storage = log.checkpoint_storage.clone();
+    let storage = log
+        .checkpoint
+        .as_ref()
+        .ok_or_else(|| invalid("checkpoint authority is not configured"))?
+        .storage()
+        .cloned();
     gates.start_work()?;
     let custody = Arc::new(log);
     let log = custody.scoped(custody.clone());
@@ -465,7 +471,7 @@ where
                     .build()?;
                 let mut objects = open(root)?;
                 if let Some(storage) = storage {
-                    objects.storage = storage.objects;
+                    objects.use_shared(storage.objects);
                 }
                 runtime.block_on(action(log, objects))
             })();

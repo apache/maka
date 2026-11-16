@@ -30,9 +30,35 @@ use std::{
 pub(super) struct Objects {
     pub(super) owner: Arc<root::RootOwner>,
     directory: PathBuf,
-    pub(super) storage: Arc<dyn ImmutableObjectStore>,
+    backend: Backend,
+}
+enum Backend {
+    Local(FileObjects),
+    Shared(Arc<dyn ImmutableObjectStore>),
 }
 impl Objects {
+    pub(super) fn storage(&self) -> &dyn ImmutableObjectStore {
+        match &self.backend {
+            Backend::Local(objects) => objects,
+            Backend::Shared(objects) => objects.as_ref(),
+        }
+    }
+    pub(super) fn use_shared(&mut self, objects: Arc<dyn ImmutableObjectStore>) {
+        self.backend = Backend::Shared(objects);
+    }
+    pub(super) fn is_local(&self) -> bool {
+        matches!(self.backend, Backend::Local(_))
+    }
+    // New local objects have already been fsynced in private staging. One directory
+    // barrier makes all promotions durable before the Prepared record is committed.
+    pub(super) fn finish_capture(&self) -> Result<(), StoreError> {
+        self.validate()?;
+        if self.is_local() {
+            File::open(self.directory.join("objects"))?.sync_all()?;
+        }
+        self.owner.validate_current()?;
+        Ok(())
+    }
     pub(super) fn open(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
         if !cfg!(unix) {
             return Err(invalid(
@@ -47,14 +73,11 @@ impl Objects {
         }
         File::open(&directory)?.sync_all()?;
         File::open(owner.canonical_path())?.sync_all()?;
-        let storage = Arc::new(FileObjects::existing(
-            directory.join("objects"),
-            owner.root_id().into(),
-        )?);
+        let storage = FileObjects::existing(directory.join("objects"), owner.root_id().into())?;
         Ok(Self {
             owner,
             directory,
-            storage,
+            backend: Backend::Local(storage),
         })
     }
     pub(super) fn existing(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
@@ -64,14 +87,11 @@ impl Objects {
             ));
         }
         let directory = owner.canonical_path().join("history-checkpoints");
-        let storage = Arc::new(FileObjects::existing(
-            directory.join("objects"),
-            owner.root_id().into(),
-        )?);
+        let storage = FileObjects::existing(directory.join("objects"), owner.root_id().into())?;
         let objects = Self {
             owner,
             directory,
-            storage,
+            backend: Backend::Local(storage),
         };
         objects.validate()?;
         Ok(objects)
@@ -108,33 +128,40 @@ impl Objects {
     }
     pub(super) fn has(&self, reference: &ObjectRef) -> Result<bool, StoreError> {
         self.validate()?;
-        match self.storage.read(reference) {
+        match self.storage().read(reference) {
             Ok(_) => Ok(true),
             Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
     }
     pub(super) fn link_staged(&self, path: &Path, reference: &ObjectRef) -> Result<(), StoreError> {
-        if self.publish(path)? != *reference {
-            return Err(invalid("staged checkpoint object differs"));
+        self.validate()?;
+        if self.is_local() {
+            match fs::hard_link(path, self.directory.join("objects").join(&reference.digest)) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    self.read(reference)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            let mut source = open_regular(path)?;
+            if self.storage().put(&mut source)? != *reference {
+                return Err(invalid("staged checkpoint object differs"));
+            }
         }
+        self.owner.validate_current()?;
         Ok(())
-    }
-    pub(super) fn sync_objects(&self) -> Result<(), StoreError> {
-        // The object port acknowledges each object only after durable publication.
-        self.validate()
     }
     pub(super) fn read(&self, reference: &ObjectRef) -> Result<File, StoreError> {
         self.validate()?;
-        let file = self.storage.read(reference)?;
+        let file = self.storage().read(reference)?;
         self.owner.validate_current()?;
         Ok(file)
     }
     pub(super) fn publish(&self, path: &Path) -> Result<ObjectRef, StoreError> {
-        self.validate()?;
-        let mut source = open_regular(path)?;
-        let reference = self.storage.put(&mut source)?;
-        self.owner.validate_current()?;
+        let reference = measure(&mut open_regular(path)?)?;
+        self.link_staged(path, &reference)?;
         Ok(reference)
     }
     pub(super) fn publish_manifest(

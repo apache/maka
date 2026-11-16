@@ -17,15 +17,39 @@
  * under the License.
  */
 
+use super::local::Local;
 use super::*;
 use crate::checkpoints::repository::{
-    Binding, Commit, CommitReceipt, SessionIdentity, SessionRepository, Source, Storage,
-    VerifiedCheckpoint, sql,
+    Binding, Commit, CommitReceipt, SessionRepository, Source, Storage, VerifiedCheckpoint,
 };
-use crate::connection::BoxFuture;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+#[derive(Clone)]
+pub(crate) enum Authority {
+    Local { agent: Uuid },
+    Shared(Storage),
+}
+impl Authority {
+    fn agent(&self) -> Uuid {
+        match self {
+            Self::Local { agent } => *agent,
+            Self::Shared(storage) => storage.agent,
+        }
+    }
+    pub(crate) fn storage(&self) -> Option<&Storage> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Shared(storage) => Some(storage),
+        }
+    }
+}
+fn authority(log: &EventLog) -> Result<&Authority, StoreError> {
+    log.checkpoint
+        .as_ref()
+        .ok_or_else(|| invalid("checkpoint authority is not configured"))
+}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -48,14 +72,14 @@ impl Configuration {
 }
 pub(in crate::root_store) async fn configure(
     log: &EventLog,
-    storage: Option<&Storage>,
-) -> Result<Uuid, StoreError> {
-    let expected = storage.map(|s| Configuration::Shared {
+    storage: Option<Storage>,
+) -> Result<Authority, StoreError> {
+    let expected = storage.as_ref().map(|s| Configuration::Shared {
         repository: s.sessions.identity().into(),
         objects: s.objects.identity().into(),
         agent: s.agent,
     });
-    log.connection.run(move |db| {
+    let agent = log.connection.run(move |db| {
         let tx = db.unchecked_transaction()?;
         let current: Option<String> = tx.query_row("SELECT configuration_json FROM checkpoint_repository_settings WHERE singleton=1", [], |r|r.get(0)).optional()?;
         let configuration = match current {
@@ -80,69 +104,15 @@ pub(in crate::root_store) async fn configure(
         };
         tx.commit().map_err(StoreError::CommitUnknown)?;
         Ok(configuration.agent())
-    }).await
+    }).await?;
+    Ok(match storage {
+        Some(storage) => Authority::Shared(storage),
+        None => Authority::Local { agent },
+    })
 }
 
-struct Local {
-    log: EventLog,
-    identity: String,
-}
-impl SessionRepository for Local {
-    fn identity(&self) -> &str {
-        &self.identity
-    }
-    fn object_store_identity(&self) -> &str {
-        &self.identity
-    }
-    fn lookup(
-        &self,
-        source: Source,
-        agent: Uuid,
-    ) -> BoxFuture<'_, Result<Option<Binding>, StoreError>> {
-        Box::pin(
-            self.log
-                .connection
-                .read(move |db| sql::lookup(db, &source, agent)),
-        )
-    }
-    fn bind(&self, source: Source, agent: Uuid) -> BoxFuture<'_, Result<Binding, StoreError>> {
-        Box::pin(
-            self.log
-                .connection
-                .run(move |db| sql::bind(db, &source, agent, sql::Layout::Local)),
-        )
-    }
-    fn read_head(
-        &self,
-        identity: SessionIdentity,
-    ) -> BoxFuture<'_, Result<Option<Head>, StoreError>> {
-        Box::pin(
-            self.log
-                .connection
-                .read(move |db| sql::head(db, &identity, sql::Layout::Local)),
-        )
-    }
-    fn receipt(&self, request: Commit) -> BoxFuture<'_, Result<Option<CommitReceipt>, StoreError>> {
-        Box::pin(
-            self.log
-                .connection
-                .read(move |db| sql::receipt(db, &request)),
-        )
-    }
-    fn commit(
-        &self,
-        request: Commit,
-        verified: VerifiedCheckpoint,
-    ) -> BoxFuture<'_, Result<CommitReceipt, StoreError>> {
-        let identity = self.identity.clone();
-        Box::pin(self.log.connection.run(move |db| {
-            verified.validate(&identity, &request)?;
-            sql::commit(db, &request, sql::Layout::Local)
-        }))
-    }
-}
 fn backend(log: &EventLog) -> Result<Arc<dyn SessionRepository>, StoreError> {
-    if let Some(storage) = &log.checkpoint_storage {
+    if let Some(storage) = authority(log)?.storage() {
         return Ok(storage.sessions.clone());
     }
     let root = log.owned_root()?;
@@ -160,40 +130,19 @@ fn source(log: &EventLog, scope: Scope, session: String) -> Result<Source, Store
     source.validate()?;
     Ok(source)
 }
-fn validate_scope(db: &Connection, scope: &Scope, session: &str) -> Result<(), StoreError> {
-    let bound: Option<String> = db
-        .query_row(
-            "SELECT scope_json FROM history_checkpoint_bindings WHERE session_id=?",
-            [session],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(bound) = bound
-        && serde_json::from_str::<Scope>(&bound)? != *scope
-    {
-        return Err(invalid("checkpoint local scope differs"));
-    }
-    Ok(())
-}
 pub(super) async fn binding(
     log: &EventLog,
     scope: Scope,
     session: String,
 ) -> Result<Binding, StoreError> {
     let source = source(log, scope.clone(), session.clone())?;
-    if log.checkpoint_storage.is_some() {
+    if authority(log)?.storage().is_some() {
         // Reserve the same local provenance as publication before registering it remotely.
-        log.connection.run(move |db| {
-            let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
-            validate_scope(&tx, &scope, &session)?;
-            tx.execute(
-                "INSERT INTO history_checkpoint_bindings VALUES(?,?) ON CONFLICT(session_id) DO NOTHING",
-                params![session, serde_json::to_string(&scope)?],
-            )?;
-            tx.commit().map_err(StoreError::CommitUnknown)
-        }).await?;
+        log.connection
+            .run(move |db| super::local::reserve_source(db, &scope, &session))
+            .await?;
     }
-    backend(log)?.bind(source, log.checkpoint_agent).await
+    backend(log)?.bind(source, authority(log)?.agent()).await
 }
 pub(super) async fn head(
     log: &EventLog,
@@ -201,29 +150,20 @@ pub(super) async fn head(
     session: String,
 ) -> Result<Option<Head>, StoreError> {
     let source = source(log, scope.clone(), session.clone())?;
-    let local = log.checkpoint_storage.is_none();
+    let local = authority(log)?.storage().is_none();
     let legacy = log
         .connection
-        .read(move |db| {
-            let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
-            validate_scope(&tx, &scope, &session)?;
-            let head: Option<String> = if local {
-                tx.query_row(
-                    "SELECT head_json FROM history_checkpoint_heads WHERE session_id=?",
-                    [session],
-                    |r| r.get(0),
-                )
-                .optional()?
-            } else {
-                None
-            };
-            head.map(|json| serde_json::from_str(&json).map_err(StoreError::from))
-                .transpose()
-        })
+        .read(move |db| super::local::legacy_head(db, &scope, &session, local))
         .await?;
     let repository = backend(log)?;
-    match repository.lookup(source, log.checkpoint_agent).await? {
-        Some(binding) => repository.read_head(binding.identity).await,
+    match repository.lookup(source, authority(log)?.agent()).await? {
+        Some(binding) => {
+            let bound = repository.read_head(binding.identity.clone()).await?;
+            if bound.as_ref().is_some_and(|bound| bound.binding != binding) {
+                return Err(invalid("checkpoint logical Session binding differs"));
+            }
+            Ok(bound.map(|bound| bound.head))
+        }
         // Existing local Heads predate logical bindings. Reading them must not claim a scope.
         None => Ok(legacy),
     }
@@ -248,7 +188,7 @@ pub(super) async fn receipt(
 ) -> Result<Option<CommitReceipt>, StoreError> {
     let repository = backend(log)?;
     let source = source(log, request.scope.clone(), request.session_id.clone())?;
-    let Some(binding) = repository.lookup(source, log.checkpoint_agent).await? else {
+    let Some(binding) = repository.lookup(source, authority(log)?.agent()).await? else {
         return Ok(None);
     };
     repository
@@ -261,6 +201,7 @@ pub(super) async fn commit(
     objects: &Objects,
     request: &Request,
     manifest: ObjectRef,
+    captured: Option<VerifiedCheckpoint>,
 ) -> Result<Publication, StoreError> {
     let binding = binding(log, request.scope.clone(), request.session_id.clone()).await?;
     let request_commit = commit_request(binding, request, manifest.clone())?;
@@ -268,10 +209,11 @@ pub(super) async fn commit(
     let receipt = match repository.receipt(request_commit.clone()).await? {
         Some(receipt) => receipt,
         None => {
-            let verified =
-                match VerifiedCheckpoint::verify(objects.storage.as_ref(), manifest.clone()) {
+            let verified = match captured {
+                Some(verified) => verified,
+                None => match VerifiedCheckpoint::verify(objects.storage(), manifest.clone()) {
                     Ok(verified) => verified,
-                    Err(error) if unavailable(&error) => {
+                    Err(error) if is_permanent_material_error(&error) => {
                         return journal::unavailable(
                             log,
                             request.clone(),
@@ -281,7 +223,8 @@ pub(super) async fn commit(
                         .await;
                     }
                     Err(error) => return Err(error),
-                };
+                },
+            };
             if verified.manifest().history != request.publication.history {
                 return journal::unavailable(
                     log,
@@ -298,7 +241,7 @@ pub(super) async fn commit(
 }
 
 // An outage is not evidence that immutable material is invalid: retain Prepared for retry.
-fn unavailable(error: &StoreError) -> bool {
+fn is_permanent_material_error(error: &StoreError) -> bool {
     match error {
         StoreError::InvalidTransition(_) => true,
         StoreError::Json(error) => !error.is_io(),
@@ -318,7 +261,10 @@ impl HistoryCheckpoints {
         .await
     }
     pub(super) fn require_local_restore(&self) -> Result<(), StoreError> {
-        if self.session.owner()?.checkpoint_storage.is_some() {
+        if authority(self.session.owner()?.as_ref())?
+            .storage()
+            .is_some()
+        {
             return Err(invalid(
                 "shared checkpoint loading/activation requires an explicit cross-Root authority handoff",
             ));

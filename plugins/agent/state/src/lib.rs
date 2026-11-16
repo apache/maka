@@ -243,7 +243,9 @@ mod migration_tests {
             .copied()
             .collect();
         for upgrade in [false, true] {
-            let db = rusqlite::Connection::open_in_memory().unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("root.sqlite");
+            let db = rusqlite::Connection::open(&path).unwrap();
             if upgrade {
                 let previous: Vec<_> = catalog
                     .iter()
@@ -253,6 +255,8 @@ mod migration_tests {
                 maka_event_log::migration::run(&db, &previous).unwrap();
             }
             maka_event_log::migration::run(&db, &catalog).unwrap();
+            drop(db);
+            let db = rusqlite::Connection::open(&path).unwrap();
             maka_event_log::migration::run(&db, &catalog).unwrap();
             let identities: i64 = db
                 .query_row(
