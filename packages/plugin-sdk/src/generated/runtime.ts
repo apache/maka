@@ -77,6 +77,7 @@ export type RuntimeProtocol =
   | WebSet
   | WebKey
   | WebUpdate
+  | WebSnapshot
   | WebResult
   | WebProbe
   | WebEndpoint
@@ -689,7 +690,7 @@ export type McpTransport =
  */
 export type AgentWorkspaceAccess = 'read_only' | 'workspace_write' | 'danger_full_access';
 export type AgentToolInput = ('json' | 'skill' | 'web') | 'shell';
-export type AgentToolResult = ('json' | 'image') | 'computer';
+export type AgentToolResult = 'json' | 'image' | 'computer';
 export type AgentToolConfirmation = 'required' | 'preapproved';
 /**
  * A selected service is either an imported provider or the caller's own export.
@@ -782,7 +783,27 @@ export type DecisionsAnswer =
   | {
       type: 'refusal';
     };
-export type WebSource = 'model' | 'tavily';
+export type WebSource = 'model' | 'custom';
+export type WebBackend =
+  | {
+      kind: 'tavily';
+    }
+  | {
+      kind: 'brave';
+    }
+  | {
+      kind: 'exa';
+    }
+  | {
+      kind: 'serper';
+    }
+  | {
+      kind: 'custom';
+      endpoint: WebSearchEndpoint;
+    };
+export type WebSearchMethod = 'get' | 'post';
+export type WebParameterLocation = 'query' | 'body';
+export type WebAuthLocation = 'header' | 'query' | 'body';
 export type WebUpdate =
   | {
       kind: 'updated';
@@ -793,6 +814,10 @@ export type WebUpdate =
     }
   | {
       kind: 'invalid_key';
+    }
+  | {
+      kind: 'invalid_settings';
+      message: string;
     }
   | {
       kind: 'check_unavailable';
@@ -1534,6 +1559,7 @@ export type PricingMutation =
       modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+export type ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
  */
@@ -1598,6 +1624,7 @@ export type SettingsPreferencesMutation =
   | {
       kind: 'personalization';
       displayName: string;
+      avatar?: ProfileAvatar | null;
     }
   | {
       kind: 'workspace_instructions';
@@ -2307,6 +2334,7 @@ export type SkillPreparation =
       invocation: SkillInvocationResult;
     };
 export type SkillInvocationFailure = SkillRequestFailure;
+export type AgentSessionKind = 'agent' | 'room';
 export type AgentSessionFilter = 'all' | 'archived' | 'needs_you';
 export type AgentSessionPosition =
   | {
@@ -3926,6 +3954,7 @@ export type Ownership =
       sourceSessionId: string;
     };
 export type ShellVisibility = 'model' | 'user';
+export type ShellInitiator = 'user' | 'agent';
 export type SnapshotKind = 'shell_run';
 export type ShellMode = 'pipes' | 'pty';
 export type ShellStatus =
@@ -4028,6 +4057,12 @@ export type QuestionResult =
     };
 export type AgentSendResult =
   | {
+      kind: 'posted';
+      sessionId: string;
+      messageId: string;
+      deliveries: RoomDelivery[];
+    }
+  | {
       kind: 'rejected';
       sessionId: string;
       reason: AgentSendRejection;
@@ -4050,6 +4085,17 @@ export type AgentSendResult =
   | {
       kind: 'not_your_worker';
       sessionId: string;
+    };
+export type RoomDelivery =
+  | {
+      kind: 'accepted';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
     };
 export type AgentSendRejection =
   | 'model_unavailable'
@@ -4277,6 +4323,18 @@ export type HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'message';
+      messageId: string;
+    }
+  | {
+      kind: 'before_message';
+      messageId: string;
+    }
+  | {
+      kind: 'after_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
       position: HistoryRowAddress;
       field: HistoryField;
@@ -4316,6 +4374,13 @@ export type MessageOrigin =
       execution: ExecutionIdentity;
     }
   | {
+      kind: 'room';
+      sessionId: string;
+      messageId: string;
+      author: RoomAuthor;
+      replyTo?: string | null;
+    }
+  | {
       kind: 'automation';
       automationId: string;
       title: string;
@@ -4329,7 +4394,19 @@ export type MessageOrigin =
       kind: 'bot_worker';
       sessionId: string;
     };
+export type RoomAuthor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      execution: ExecutionIdentity;
+    };
 export type AgentDeliveryPage =
+  | {
+      kind: 'room';
+      through: number;
+    }
   | {
       kind: 'events';
       through: number;
@@ -4494,13 +4571,18 @@ export type ExternalToolTarget =
       kind: 'search';
       query: string;
     };
-export type AgentHistoryPage = {
-  kind: 'ready';
-  through: number | null;
-  chunks: AgentHistoryChunk[];
-  before: Cursor | null;
-  after: Cursor | null;
-};
+export type AgentHistoryPage =
+  | {
+      kind: 'room';
+      page: AgentRoomHistoryPage;
+    }
+  | {
+      kind: 'ready';
+      through: number | null;
+      chunks: AgentHistoryChunk[];
+      before: Cursor | null;
+      after: Cursor | null;
+    };
 export type AgentHistorySearchPage = {
   kind: 'ready';
   through: number;
@@ -4760,6 +4842,11 @@ export type AgentToolImagePage = {
 };
 export type AgentAttachmentImageSource =
   | {
+      kind: 'room';
+      messageId: string;
+      attachmentIndex: number;
+    }
+  | {
       kind: 'uploaded';
       id: string;
     }
@@ -4887,6 +4974,8 @@ export interface ClientDraft {
   revision: number;
   text: string;
   attachments: ClientDraftAttachment[];
+  mentions?: string[];
+  replyTo?: string | null;
 }
 /**
  * Display metadata for an immutable Host upload in this exact draft owner.
@@ -4904,6 +4993,8 @@ export interface ClientDraftEdit {
   text: string;
   attachments?: ClientDraftAttachment[];
   settledUploads?: string[];
+  mentions?: string[];
+  replyTo?: string | null;
 }
 /**
  * Stable product owner, independent of endpoint aliases, VM instances and UI nodes.
@@ -5736,7 +5827,7 @@ export interface WebCapture {
   basis: WebBasis;
   available: boolean;
   source: WebSource;
-  credentialConfigured: boolean;
+  customAvailable: boolean;
 }
 export interface WebBasis {
   revision?: number | null;
@@ -5764,14 +5855,49 @@ export interface WebSet {
 export interface WebSettings {
   enabled: boolean;
   source: WebSource;
+  backend?: WebBackend;
+}
+export interface WebSearchEndpoint {
+  url: string;
+  method: WebSearchMethod;
+  query: WebParameter;
+  limit?: WebParameter | null;
+  urlParameters: {
+    [k: string]: string | undefined;
+  };
+  body: {
+    [k: string]: unknown | undefined;
+  };
+  auth?: WebAuth | null;
+  results: WebResultMapping;
+}
+export interface WebParameter {
+  location: WebParameterLocation;
+  name: string;
+}
+export interface WebAuth {
+  location: WebAuthLocation;
+  name: string;
+  prefix: string;
+}
+/**
+ * JSON pointers, with an empty list pointer selecting the response root.
+ */
+export interface WebResultMapping {
+  list: string;
+  title?: string | null;
+  url: string;
+  snippet?: string | null;
 }
 export interface WebKey {
   revision?: number | null;
+  settingsRevision?: number | null;
 }
 export interface WebSnapshot {
   revision?: number | null;
   settings: WebSettings;
   credential: WebCredential;
+  presets: WebSearchPreset[];
   [k: string]: unknown | undefined;
 }
 export interface WebCredential {
@@ -5781,8 +5907,14 @@ export interface WebCredential {
   [k: string]: unknown | undefined;
 }
 export interface WebCheck {
-  credential_revision: number;
+  credential_revision?: number | null;
+  settings_revision?: number | null;
   outcome: WebCheckOutcome;
+}
+export interface WebSearchPreset {
+  id: string;
+  endpoint: WebSearchEndpoint;
+  [k: string]: unknown | undefined;
 }
 export interface WebProbe {
   url: string;
@@ -6334,6 +6466,7 @@ export interface SettingsAssistantPreferences {
   defaultCompactionPrompt: string;
   revision: number;
   displayName: string;
+  avatar?: ProfileAvatar | null;
   workspaceInstructions: boolean;
   defaultSandboxMode: Mode;
   shell: ShellPolicy;
@@ -7005,6 +7138,10 @@ export interface SkillRequestFailure {
   reason: SkillFailureReason;
 }
 export interface AgentList {
+  /**
+   * Omission includes both Agent conversations and Rooms.
+   */
+  kind?: AgentSessionKind | null;
   filter: AgentSessionFilter;
   /**
    * Include archived conversations alongside active ones.
@@ -7022,6 +7159,10 @@ export interface AgentList {
   titleQuery?: string;
 }
 export interface AgentCreate {
+  /**
+   * Rooms receive messages without running a model. Their mentions address Agent sessions.
+   */
+  kind?: AgentSessionKind & string;
   /**
    * Apply a preset at creation; mutually exclusive with backend.
    */
@@ -7209,6 +7350,7 @@ export interface AgentRecallPage {
   gaps: string[];
 }
 export interface AgentSession {
+  kind: AgentSessionKind;
   appliedPreset?: AppliedPreset | null;
   /**
    * Session that initiated creation, independent of fork ancestry and task ownership.
@@ -7445,6 +7587,14 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  /**
+   * Agent Session IDs explicitly addressed by this Room message.
+   */
+  mentions?: string[];
+  /**
+   * Original message ID in the destination Room.
+   */
+  replyTo?: string | null;
   /**
    * Best-effort notification to the caller when this message finishes,
    * fails or is cancelled, and once per pending interaction or authority blocker
@@ -7847,6 +7997,7 @@ export interface ResourceUpdate {
   ownership: Ownership;
   correlation: unknown;
   visibility: ShellVisibility;
+  initiator: ShellInitiator;
   result: ShellSnapshot;
 }
 export interface ShellSnapshot {
@@ -8248,14 +8399,34 @@ export interface HistoryToolResult {
    */
   isError: boolean;
   /**
-   * Canonical content is an image; this does not grant artifact reads.
+   * The result exposes an unindexed image distinct from its indexed projection images.
    */
   image: boolean;
   /**
-   * Images the model received beside non-image content, readable by index.
+   * Images in the model projection, readable by index.
    */
   images: number;
   details?: ToolResultDetails | null;
+}
+export interface AgentRoomHistoryPage {
+  items: AgentRoomMessage[];
+  through: number;
+  before?: string | null;
+  after?: string | null;
+}
+export interface AgentRoomMessage {
+  id: string;
+  sequence: number;
+  at: number;
+  author: RoomAuthor;
+  content: AgentRoomContent;
+  replyTo?: string | null;
+  mentions: string[];
+  deliveries: RoomDelivery[];
+}
+export interface AgentRoomContent {
+  text: string;
+  attachments: AgentHistoryAttachment[];
 }
 export interface AgentHistorySearch {
   sessionId: string;

@@ -98,6 +98,14 @@ pub(crate) fn fact_message(
                     .collect::<String>(),
             ),
         )),
+        Fact::ExternalTaskObserved {
+            task,
+            output: maka_agent_facts::executor::Output::OutputDelta { message_id, text },
+            ..
+        } if !text.is_empty() => Some((
+            maka_agent_facts::executor::message_id(fact.run, *task, message_id),
+            Some(text.chars().take(160).collect()),
+        )),
         _ => None,
     }
 }
@@ -382,6 +390,10 @@ pub(super) fn rebuild(
             run_cursor = run;
         }
     }
+    c.execute(
+        "INSERT INTO agent_catalog_sessions(owner,session,last_sequence) SELECT owner,session,MAX(sequence) FROM agent_room_messages WHERE owner=? AND session=? GROUP BY owner,session",
+        params![owner, session],
+    )?;
     let mut revision = 0;
     loop {
         let events:Vec<(i64,u32,String)> = c.prepare_cached("SELECT revision,schema_version,event_json FROM agent_catalog_events WHERE owner=? AND session=? AND revision>? ORDER BY revision LIMIT 128")?.query_map(params![owner,session,revision],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<_,_>>()?;

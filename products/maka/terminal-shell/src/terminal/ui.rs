@@ -470,7 +470,12 @@ mod tests {
                 .join("tests/fixtures/components.tsx"),
             minify: false,
             split: false,
-            ui_sets: vec![nsh_base::registry().into(), (&registry).into()],
+            ui_sets: nsh_base::registry()
+                .sets()
+                .into_iter()
+                .map(Into::into)
+                .chain(std::iter::once((&registry).into()))
+                .collect(),
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),

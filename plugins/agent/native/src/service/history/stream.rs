@@ -19,6 +19,7 @@
 
 //! Read the original scoped BLOB through the shared pull-JSON source adapters.
 use super::*;
+use maka_agent_facts::attachment::StorageRef;
 use maka_agent_facts::model::prompt_source::source::{
     self as pull, ChargedBuffer, JsonSource, SourceBudget, SourceBytes,
     json::{self, JsonKind, JsonValue},
@@ -447,12 +448,7 @@ async fn media_metadata_value(
         .is_error(budget.clone())
         .await
         .map_err(|error| error.to_string())?;
-    let image = match source.inline_output() {
-        Some(output) => {
-            small::<String>(required(output, &["format"], budget).await?, budget).await? == "image"
-        }
-        None => false,
-    };
+    let mut inline_image = inline_image_reference(source, budget).await?;
     let mut images = 0u32;
     match source
         .projection(budget.clone())
@@ -468,13 +464,23 @@ async fn media_metadata_value(
                     small(required(&part.source, &["kind"], budget).await?, budget).await?;
                 if kind == "artifact" {
                     images = images.checked_add(1).ok_or("agent_image_count_overflow")?;
+                    if let Some(inline) = &inline_image {
+                        let projected: StorageRef = small(
+                            required(&part.source, &["image", "ref"], budget).await?,
+                            budget,
+                        )
+                        .await?;
+                        if inline == &projected {
+                            inline_image = None;
+                        }
+                    }
                 }
             }
         }
         None if !optional_projection => return Err("agent_history_projection_missing".into()),
         _ => {}
     }
-    Ok((image, images, is_error))
+    Ok((inline_image.is_some(), images, is_error))
 }
 
 pub(super) async fn image_reference_from(
@@ -521,13 +527,26 @@ async fn image_reference_value(
         }
         Err("agent_image_source_invalid".into())
     } else {
-        let output = source.inline_output().ok_or("agent_image_source_invalid")?;
-        let format: String = small(required(output, &["format"], budget).await?, budget).await?;
-        if format != "image" {
-            return Err("agent_image_source_invalid".into());
-        }
-        small(required(output, &["value", "ref"], budget).await?, budget).await
+        inline_image_reference(source, budget)
+            .await?
+            .ok_or_else(|| "agent_image_source_invalid".into())
     }
+}
+
+async fn inline_image_reference(
+    source: &ToolResultFields,
+    budget: &Arc<dyn SourceBudget>,
+) -> Result<Option<StorageRef>, String> {
+    let Some(output) = source.inline_output() else {
+        return Ok(None);
+    };
+    let format: String = small(required(output, &["format"], budget).await?, budget).await?;
+    if format != "image" {
+        return Ok(None);
+    }
+    small(required(output, &["value", "ref"], budget).await?, budget)
+        .await
+        .map(Some)
 }
 
 #[expect(

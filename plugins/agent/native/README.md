@@ -180,11 +180,9 @@ isolates unreadable records, so one stored Goal cannot prevent other Goals from 
 All-session `Recall` searches and `catalog` pages likewise isolate unreadable session metadata
 and transcript source events into reported `gaps` or skipped entries without legacy decoders,
 while targeted single-session queries still surface the error directly.
-New admission reads the current settings after shared discovery completes.
+New admission accepts models already present in the connection catalog without awaiting network discovery or OAuth refresh, while starting any cold or due inventory refresh in the background; it awaits shared discovery only when the selected model is not yet in the connection catalog.
 
-A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including
-background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts
-at 270 seconds to leave 30 seconds before the 300-second catalog TTL. Each discovery has a 15-second deadline; account replacement may first await the old flight and
+A cold or expired ChatGPT catalog refresh is awaited during logical request preparation, including background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts in the background at 270 seconds while continuing to serve the valid observation until the 300-second catalog TTL. Each discovery has a 15-second deadline; account replacement may first await the old flight and
 then the new identity’s discovery. This is not a 15-second deadline for the complete model request.
 Failure uses the existing model with no new compatibility claim,
 then retries after a jittered 30–60-second backoff to avoid a request storm. Warm and backed-off

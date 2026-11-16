@@ -39,6 +39,7 @@ export default {
         setup: one(sdk.contracts.settingsSetup),
         agent: one(sdk.contracts.agent),
         skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
+        web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
         management: one(sdk.contracts.deploymentManager),
         receipts: one(sdk.contracts.receiptReader),
       },
@@ -51,8 +52,8 @@ export default {
         connections: {
           kind: 'settings',
           title: {
-            fallback: 'Connections & models',
-            translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
+            fallback: 'Models',
+            translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
           },
         },
         subagents: {
@@ -73,11 +74,11 @@ export default {
             translations: { 'zh-CN': 'MCP 服务器', 'zh-TW': 'MCP 伺服器' },
           },
         },
-        'external-agents': {
+        'web-search': {
           kind: 'settings',
           title: {
-            fallback: 'External agents',
-            translations: { 'zh-CN': '外部 Agent', 'zh-TW': '外部 Agent' },
+            fallback: 'Web search',
+            translations: { 'zh-CN': '网页搜索', 'zh-TW': '網頁搜尋' },
           },
         },
         network: {

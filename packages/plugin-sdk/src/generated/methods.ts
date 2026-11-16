@@ -481,6 +481,18 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'message';
+      messageId: string;
+    }
+  | {
+      kind: 'before_message';
+      messageId: string;
+    }
+  | {
+      kind: 'after_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
       position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress;
       field: AgentLoadedHistoryCheckpointHistoryInput_HistoryField;
@@ -1002,6 +1014,7 @@ export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'zh-CN'
   | 'zh-TW';
 export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
+export type SettingsAssistantPreferencesOutput_ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
  */
@@ -2434,6 +2447,7 @@ export interface ServiceMethods {
         defaultCompactionPrompt: string;
         revision: number;
         displayName: string;
+        avatar: SettingsAssistantPreferencesOutput_ProfileAvatar | null;
         workspaceInstructions: boolean;
         defaultSandboxMode: SettingsAssistantPreferencesOutput_Mode;
         shell: SettingsAssistantPreferencesOutput_ShellPolicy;
@@ -3145,6 +3159,53 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.SkillLibraryManageSkill;
       output: Runtime.SkillLibraryChangeResult;
+    };
+  };
+  workspaceWeb: {
+    capture: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebCapture;
+    };
+    checkKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    deleteKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    fetch: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebFetch;
+      output: Runtime.WebResult;
+    };
+    probe: {
+      mode: 'mutation';
+      input: Runtime.WebProbe;
+      output: Runtime.WebResult;
+    };
+    save: {
+      mode: 'mutation';
+      input: Runtime.WebSet;
+      output: Runtime.WebUpdate;
+    };
+    saveKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    search: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebQuery;
+      output: Runtime.WebResult;
+    };
+    snapshot: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebSnapshot;
     };
   };
 }

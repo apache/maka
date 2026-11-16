@@ -82,7 +82,11 @@ import {
   tr,
   type MessageKey,
 } from '../../../../products/maka/workbench/app/locale';
-import { loadDraft, type Host } from '../../../../products/maka/workbench/app/host';
+import {
+  loadDraft,
+  searchAgentSessions,
+  type Host,
+} from '../../../../products/maka/workbench/app/host';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   bodyTextStyle,
@@ -148,7 +152,6 @@ import {
   applicationMenu,
   ownTitleBar,
   PANEL_INSET,
-  windowTitle,
 } from '../../../../products/maka/workbench/app/chrome';
 import {
   performSessionAction,
@@ -811,24 +814,14 @@ export function createConversationUi(
       if (current?.kind === 'models' && current.sessionId === sessionId) closeOverlay(instance);
     } else if (current?.kind !== 'models') open({ kind: 'models', sessionId });
   };
-  const manageModels = ({
-    sessionId,
-    instance,
-    model,
-    page,
-  }: {
-    sessionId: string;
-    instance: number;
-    model?: ModelSelection;
-    page?: string;
-  }) => {
+  const manageModels = ({ sessionId, instance }: { sessionId: string; instance: number }) => {
     if (
       alive &&
       selected() === sessionId &&
       handle()?.sessionId === sessionId &&
       closeOverlay(instance)
     )
-      open({ kind: 'settings', sessionId, model, page });
+      open({ kind: 'settings', sessionId });
   };
   const chooseModel = async (
     owner: ConversationHandle,
@@ -1197,6 +1190,8 @@ export function createConversationUi(
                   position: { kind: 'start' },
                   view: 'conversation',
                 });
+                if (history.kind !== 'ready')
+                  throw new Error('Expected Agent conversation history.');
                 sendFirst = !history.chunks.some((row) => row.role === 'user');
               }
             }
@@ -1471,6 +1466,15 @@ export function createConversationUi(
   const commandFiles = (context: ActionContext) => {
     if (closeCommand(context) && context.sessionId)
       resources.openFiles({ sessionId: context.sessionId });
+  };
+  const previewTerminal = async (sessionId: string, ref: string, restoreFocus: () => boolean) => {
+    if (!alive || selected() !== sessionId || overlay()) return;
+    browserFocus.set(false);
+    try {
+      await requireWorkspace().openAgentTerminal({ sessionId, ref }, restoreFocus);
+    } catch (reason) {
+      report(reason);
+    }
   };
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!alive || selected() !== sessionId || overlay()) return;
@@ -1758,7 +1762,6 @@ export function createConversationUi(
   let paneRoot: ViewRef | undefined;
   if (!side) {
     bindKeys();
-    windowTitle(() => handle()?.title() ?? null);
     watchNotifications({
       sessions: browsing.sessions,
       foreground,
@@ -2156,6 +2159,10 @@ export function createConversationUi(
     ),
   );
   const sessionHandle: ConversationSessionHandle = {
+    title: () => handle()?.title() ?? null,
+    async kind(sessionId) {
+      return (await host.query('agent', 'observe', { sessionId })).session.kind;
+    },
     async openBot() {
       const result = await control('openBot', {});
       if (result.kind !== 'opened')
@@ -2198,9 +2205,10 @@ export function createConversationUi(
     focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
     command: invokeOwn,
     browsing,
-    navigation(input: ConversationNavigationInput) {
+    sessionHandle,
+    navigation(input: ConversationNavigationInput<JSX.Element>) {
       bind(input.shell);
-      return <WorkspaceBrowser {...browserProps} />;
+      return <WorkspaceBrowser {...browserProps} navigationMore={input.navigationMore} />;
     },
     preview(input: ConversationPreviewInput) {
       bind(input.shell);
@@ -2210,6 +2218,8 @@ export function createConversationUi(
         workspaceViewContract,
         {
           sessions: window.sessions,
+          directory: (id) =>
+            browsing.sessions().find((session) => session.id === id)?.workspace.path,
           blocked: () => reloading() || !(shell()?.visible() ?? false),
           get docked() {
             return input.docked;
@@ -2582,6 +2592,7 @@ export function createConversationUi(
                   }
                   filesOpener={(node) => resources.attachOpener(id(), node)}
                   previewImage={previewImage}
+                  previewTerminal={(ref, restoreFocus) => previewTerminal(id(), ref, restoreFocus)}
                   openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
                   knownSession={(sessionId) =>
                     browsing.sessions().find((session) => session.id === sessionId)
@@ -2657,10 +2668,10 @@ export function createConversationUi(
                           pendingModelInstance.set(null);
                           return true;
                         }}
-                        manage={({ instance, model, page }) => {
+                        manage={({ instance }) => {
                           if (pendingModelInstance() !== instance) return;
                           pendingModelInstance.set(null);
-                          shell()?.openSettings(model, page);
+                          shell()?.openSettings();
                         }}
                         select={async (_instance, backend) => {
                           if (pendingSending()) return;
@@ -2965,6 +2976,7 @@ function projectComposerCompletion(
               query,
               ...(directory ? { directory } : {}),
             }),
+    sessions: (query) => searchAgentSessions(host, query),
     skills: ({ query, backend }) =>
       host.query('agent', 'skillCandidates', { target, backend, query }),
     pathLabel: host.pathLabel,

@@ -24,7 +24,10 @@ import type { ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { Terminal } from '../../../../products/maka/workbench/app/Terminal';
-import { Terminals } from '../../../../products/maka/workbench/app/Terminals';
+import {
+  AgentTerminals,
+  PersonalTerminals,
+} from '../../../../products/maka/workbench/app/Terminals';
 import { WorkspaceFiles } from '../../../../products/maka/workbench/app/WorkspaceFiles';
 import { CurrentFile } from '../../../../products/maka/workbench/app/CurrentFile';
 import type { Resources } from './resources';
@@ -46,6 +49,12 @@ import { controlsRight, windowDrag } from '../../../../products/maka/workbench/a
 
 export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const resources = props.resources;
+  const agent = () => resources.terminalSection() === 'agent-terminals';
+  const personal = () => resources.terminalSection() === 'terminals';
+  const terminal = () => resources.activeTerminal();
+  const showTerminals = (kind: 'terminals' | 'agent-terminals') =>
+    inputAction(resources.inventory, { sessionId: closeTarget.sessionId, kind });
+  const previews = () => resources.tabs().filter((tab) => tab.kind !== 'terminal');
   const closeTarget = {
     sessionId: resources.sessionId()!,
     instance: resources.instance(),
@@ -115,11 +124,8 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             </Button>
             <Button
               accessibilityLabel={tr('Show conversation terminals')}
-              selected={resources.active() === 'terminals'}
-              onPress={inputAction(resources.inventory, {
-                sessionId: resources.sessionId()!,
-                kind: 'terminals',
-              })}
+              selected={personal()}
+              onPress={showTerminals('terminals')}
               style={{
                 ...controlStyle,
                 paddingHorizontal: 8,
@@ -131,13 +137,13 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               <Text
                 style={{
                   ...captionTextStyle,
-                  color: resources.active() === 'terminals' ? C.text : C.muted,
+                  color: personal() ? C.text : C.muted,
                 }}
               >
                 {tr('Terminal')}
               </Text>
             </Button>
-            <Each of={resources.tabs()} key={(tab) => tab.instance}>
+            <Each of={previews()} key={(tab) => tab.instance}>
               {(tab) => (
                 <View
                   style={{
@@ -159,16 +165,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
                   >
-                    <Icon
-                      name={
-                        tab().kind === 'terminal'
-                          ? 'terminal'
-                          : tab().kind === 'image'
-                            ? 'image'
-                            : 'file'
-                      }
-                      color={C.muted}
-                    />
+                    <Icon name={tab().kind === 'image' ? 'image' : 'file'} color={C.muted} />
                     <Text
                       style={[
                         {
@@ -208,6 +205,38 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           </View>
         </Scroll>
         <Button
+          accessibilityLabel={tr('Agent terminals')}
+          selected={agent()}
+          onPress={showTerminals('agent-terminals')}
+          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          selectedStyle={{ backgroundColor: C.raised }}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+        >
+          <Icon name="bot" size={14} color={C.muted} />
+          <Text style={{ ...captionTextStyle, color: agent() ? C.text : C.muted }}>Agent</Text>
+          <If
+            when={
+              resources.terminalSection() !== null && resources.runningAgentTerminals().length > 0
+            }
+          >
+            <Text
+              accessibilityLabel={tr('{count} running commands', {
+                count: String(resources.runningAgentTerminals().length),
+              })}
+              style={{
+                ...captionTextStyle,
+                color: C.text,
+                paddingHorizontal: 4,
+                borderRadius: 4,
+                backgroundColor: C.cardRaised,
+              }}
+            >
+              {resources.runningAgentTerminals().length}
+            </Text>
+          </If>
+        </Button>
+        <Button
           accessibilityLabel={tr('Close workspace preview')}
           onPress={inputAction(resources.close, closeTarget)}
           tooltip={textTooltip(() => tr('Close workspace preview · Esc'))}
@@ -218,8 +247,22 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           <Icon name="close" color={C.muted} />
         </Button>
       </View>
-      <If when={resources.active() === 'terminals'}>
-        <Terminals model={resources.terminals} />
+      <If when={personal()}>
+        <PersonalTerminals
+          model={resources.terminals}
+          entries={resources.personalTerminals()}
+          selected={terminal()?.target.ref}
+          cwd={resources.directory()}
+          open={resources.showTerminal}
+        />
+      </If>
+      <If when={agent() && !terminal()}>
+        <AgentTerminals
+          model={resources.terminals}
+          running={resources.runningAgentTerminals()}
+          finished={resources.finishedAgentTerminals()}
+          open={resources.showTerminal}
+        />
       </If>
       <If when={resources.active() === 'files'}>
         <WorkspaceFiles model={resources.files} />
@@ -234,7 +277,40 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             );
           if (current.kind === 'file')
             return <CurrentFile model={current.model} openImageViewer={openImageViewer} />;
-          if (current.kind === 'terminal') return <Terminal model={current.model} />;
+          if (current.kind === 'terminal')
+            return (
+              <>
+                <If when={current.model.agentOwned()}>
+                  <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
+                    <Button
+                      accessibilityLabel={tr('Back to Agent terminals')}
+                      onPress={showTerminals('agent-terminals')}
+                      tooltip={textTooltip(() => tr('Back to Agent terminals'))}
+                      style={{
+                        ...controlStyle,
+                        flexDirection: 'row',
+                        gap: 4,
+                        alignItems: 'center',
+                      }}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Icon name="back" size={14} color={C.muted} />
+                    </Button>
+                    <Text
+                      tooltip={textTooltip(() => current.title)}
+                      style={[
+                        { ...captionTextStyle, flex: 1, color: C.muted },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {current.title}
+                    </Text>
+                  </View>
+                </If>
+                <Terminal model={current.model} />
+              </>
+            );
           return <OriginalImage image={current.image} openImageViewer={openImageViewer} />;
         }}
       </Each>

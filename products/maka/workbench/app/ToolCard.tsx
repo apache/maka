@@ -19,7 +19,19 @@
 
 import { tr } from './locale';
 import { formatDuration } from './duration';
-import { computed, effect, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
+import {
+  cleanup,
+  computed,
+  effect,
+  inputAction,
+  platform,
+  Scroll,
+  signal,
+  Text,
+  View,
+  type ViewRef,
+} from 'nsh';
+import { Button } from 'nsh/base';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { MessageSenders } from './messageSenders';
@@ -34,6 +46,7 @@ import {
 import {
   cardFamily,
   processFamily,
+  processResourceRef,
   toolArguments,
   toolResult,
   type ToolProjection,
@@ -50,6 +63,8 @@ import {
   C,
   captionTextStyle,
   controlStyle,
+  controlFocusStyle,
+  controlHoverStyle,
   Disclosure,
   disclosureContentInset,
   disclosureTitleStyle,
@@ -234,6 +249,7 @@ function Field(props: {
   senders?: MessageSenders;
   /** Called once a complete result is read, with whether its view shows a process's command. */
   showsCommand?(shown: boolean): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
 }) {
   const host = useHost();
   const plugins = viewRuntimeContext()!;
@@ -243,6 +259,19 @@ function Field(props: {
   const renderer = () => plugins.renderer(source.original.presentation);
   const presentation = activityPresentation(source.original.presentation);
   const value = computed(() => (source.format() === 'json' ? source.json() : source.content()));
+  const terminalRef = () =>
+    props.previewTerminal &&
+    props.reference.field === 'result' &&
+    props.reference.position.kind === 'live' &&
+    family === 'execute' &&
+    source.complete() &&
+    !source.error()
+      ? processResourceRef(value())
+      : null;
+  let terminalLink: ViewRef | undefined;
+  cleanup(() => {
+    terminalLink = undefined;
+  });
   const projection = computed<ToolProjection | null>(() => {
     if (!source.complete() || source.error()) return null;
     const result = props.tool().result;
@@ -310,6 +339,34 @@ function Field(props: {
       }
       else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
     >
+      <If when={terminalRef()}>
+        <Button
+          ref={(node) => {
+            terminalLink = node;
+          }}
+          onPress={() => {
+            const ref = terminalRef();
+            if (!ref) return;
+            props.previewTerminal?.(ref, () => {
+              if (!terminalLink) return false;
+              terminalLink.focus();
+              return true;
+            });
+          }}
+          style={{
+            ...controlStyle,
+            alignSelf: 'flex-start',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+          }}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+        >
+          <Icon name="terminal" size={14} color={C.muted} />
+          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('View terminal')}</Text>
+        </Button>
+      </If>
       <If
         when={!props.original() && !!renderer() && source.complete() && !source.error()}
         else={
@@ -415,6 +472,7 @@ export function ToolCard(props: {
   showOriginal(action: { sessionId: string; key: string; value: boolean }): void;
   inspect?(key: string): void;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   userScroll(): void;
   senders?: MessageSenders;
 }) {
@@ -678,6 +736,7 @@ export function ToolCard(props: {
                       userScroll={readDetails}
                       tool={() => tool()!}
                       senders={props.senders}
+                      previewTerminal={props.previewTerminal}
                       showsCommand={
                         value().field === 'result'
                           ? (shown) => resultShowsCommand.set(shown)

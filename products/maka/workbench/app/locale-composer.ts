@@ -65,6 +65,11 @@ export const composerMessages = {
   'Searching files…': ['Searching files…', '正在搜索文件…', '正在搜尋檔案…'],
   'Loading skills…': ['Loading skills…', '正在加载技能…', '正在載入技能…'],
   'No matching files.': ['No matching files.', '没有匹配的文件。', '沒有相符的檔案。'],
+  'No matching files or conversations': [
+    'No matching files or conversations',
+    '没有匹配的文件或会话',
+    '沒有相符的檔案或對話',
+  ],
   'No matching skills.': ['No matching skills.', '没有匹配的技能。', '沒有相符的技能。'],
   'No matching commands.': ['No matching commands.', '没有匹配的命令。', '沒有相符的命令。'],
   'Choose a model to browse skills.': [

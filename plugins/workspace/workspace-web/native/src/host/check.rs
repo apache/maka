@@ -28,32 +28,33 @@ pub(super) async fn run(
     failure: network::Failure,
 ) -> Result<Value, String> {
     let input: Key = serde_json::from_value(input).map_err(message)?;
-    let credential = owner
-        .repository
-        .credentials
-        .read(settings::KEY.into())
-        .await
-        .map_err(message)?;
-    if credential.as_ref().map(|value| value.revision) != input.revision {
+    let current = owner.repository.search_settings().await.map_err(message)?;
+    if current.revision != input.settings_revision
+        || current.credential_revision() != input.revision
+    {
         return encode(Update::Changed);
     }
-    let Some(credential) = credential else {
+    if current.key.is_some() && current.secret().is_none() {
         return encode(Update::CheckUnavailable);
-    };
-    let Some(secret) = credential.secret else {
-        return encode(Update::CheckUnavailable);
+    }
+    let basis = Basis {
+        revision: current.revision,
+        credential_revision: current.credential_revision(),
     };
     let authority = network::CredentialCheck {
         owner: owner.clone(),
         caller: context.scope().clone(),
-        revision: credential.revision,
+        basis,
+        key: current.key.clone(),
+        destination: current.endpoint.destination.clone(),
         failure: failure.clone(),
     };
     let http = Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority)));
     let result = search::Search::new(http)
         .query(
             context.scope(),
-            &secret,
+            &current.endpoint,
+            current.secret(),
             &Query {
                 query: "Maka AI assistant".into(),
                 limit: 1,
@@ -79,25 +80,21 @@ pub(super) async fn run(
             | search::Error::Cancelled,
         ) => return encode(Update::CheckUnavailable),
     };
-    if owner
+    if !owner
         .repository
-        .snapshot()
+        .record_check(
+            settings::Check {
+                settings_revision: current.revision,
+                credential_revision: current.credential_revision(),
+                outcome,
+            },
+            current.key.as_deref(),
+        )
         .await
         .map_err(message)?
-        .credential
-        .revision
-        != input.revision
     {
         return encode(Update::Changed);
     }
-    owner
-        .repository
-        .record_check(settings::Check {
-            credential_revision: credential.revision,
-            outcome,
-        })
-        .await
-        .map_err(message)?;
     encode(Update::Updated {
         snapshot: owner.repository.snapshot().await.map_err(message)?,
     })

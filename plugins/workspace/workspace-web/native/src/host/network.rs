@@ -98,8 +98,9 @@ pub(super) async fn native_call(
 }
 
 #[derive(Clone)]
-enum Purpose {
-    Retrieval { basis: Basis, search: bool },
+pub(super) enum Purpose {
+    Fetch { basis: Basis },
+    Search { basis: Basis, key: Option<String> },
     Health,
 }
 #[derive(Clone)]
@@ -115,30 +116,6 @@ impl Access {
         owner: Arc<Web>,
         scope: &Scope,
         native: Arc<NativeCallContext>,
-        basis: Basis,
-        search: bool,
-        failure: Failure,
-    ) -> Result<Self, String> {
-        Self::for_purpose(
-            owner,
-            scope,
-            native,
-            Purpose::Retrieval { basis, search },
-            failure,
-        )
-    }
-    pub fn health(
-        owner: Arc<Web>,
-        scope: &Scope,
-        native: Arc<NativeCallContext>,
-        failure: Failure,
-    ) -> Result<Self, String> {
-        Self::for_purpose(owner, scope, native, Purpose::Health, failure)
-    }
-    fn for_purpose(
-        owner: Arc<Web>,
-        scope: &Scope,
-        native: Arc<NativeCallContext>,
         purpose: Purpose,
         failure: Failure,
     ) -> Result<Self, String> {
@@ -150,6 +127,14 @@ impl Access {
             failure,
         })
     }
+    pub fn health(
+        owner: Arc<Web>,
+        scope: &Scope,
+        native: Arc<NativeCallContext>,
+        failure: Failure,
+    ) -> Result<Self, String> {
+        Self::new(owner, scope, native, Purpose::Health, failure)
+    }
     async fn current(
         &self,
         call: &Scope,
@@ -157,7 +142,13 @@ impl Access {
     ) -> Result<(maka_agent_api::session::ResolvedConfiguration, bool), Error> {
         let _lease = self.admit(call)?;
         let available = match &self.purpose {
-            Purpose::Retrieval { basis, search } => self.owner.current(basis, *search).await,
+            Purpose::Fetch { basis } => self.owner.fetch_is_current(basis).await,
+            Purpose::Search { basis, key } => self
+                .owner
+                .repository
+                .search_is_current(basis, key.as_deref())
+                .await
+                .map_err(message),
             Purpose::Health => Ok(true),
         }
         .map_err(Error::Failed)?;
@@ -233,7 +224,9 @@ impl Access {
                 PermissionRequest {
                     reason: match self.purpose {
                         Purpose::Health => format!("Allow health check access to {origin}"),
-                        Purpose::Retrieval { .. } => format!("Allow Web access to {origin}"),
+                        Purpose::Fetch { .. } | Purpose::Search { .. } => {
+                            format!("Allow Web access to {origin}")
+                        }
                     },
                     command: None,
                     permissions: maka_sandbox::grant::Permissions {
@@ -387,7 +380,9 @@ fn spawn(owner: &Web, worker: Worker) -> Result<(), Error> {
 pub(super) struct CredentialCheck {
     pub owner: Arc<Web>,
     pub caller: Scope,
-    pub revision: u64,
+    pub basis: Basis,
+    pub key: Option<String>,
+    pub destination: Destination,
     pub failure: Failure,
 }
 impl Authority for CredentialCheck {
@@ -431,22 +426,19 @@ impl Authority for CredentialCheck {
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             let _lease = self.admit(call)?;
-            if destination.host() != "api.tavily.com"
-                || destination.port() != 443
+            if *destination != self.destination
                 || !self.owner.network.allows(destination)
                 || !floor_network(call.sandbox_floor()).allows(destination)
                 || !floor_network(self.caller.sandbox_floor()).allows(destination)
             {
                 return Err(Error::Denied);
             }
-            let snapshot = self
+            if !self
                 .owner
                 .repository
-                .snapshot()
+                .search_is_current(&self.basis, self.key.as_deref())
                 .await
-                .map_err(|e| Error::Failed(e.to_string()))?;
-            if snapshot.credential.revision != Some(self.revision)
-                || !snapshot.credential.configured
+                .map_err(|error| Error::Failed(error.to_string()))?
             {
                 return Err(Error::Denied);
             }

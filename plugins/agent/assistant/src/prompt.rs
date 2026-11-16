@@ -72,6 +72,7 @@ mod tests {
         let base = compose(snapshot.clone(), Language::En, "");
         snapshot.personalization = Personalization {
             display_name: "🦀".repeat(70),
+            ..Personalization::default()
         };
         let prompt = compose(snapshot.clone(), Language::En, "");
         prompt.validate().unwrap();

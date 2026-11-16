@@ -66,6 +66,8 @@ pub(super) struct OuterInput {
     pub(super) max: f32,
     /// None of the scrolls issued to it is pending.
     pub(super) settled: bool,
+    /// An enclosing cell is anchored as a whole by its list.
+    pub(super) outer_anchors: bool,
     /// Where the cells start in the list: its border and padding, along
     /// the main and the cross axis.
     pub(super) inset: (f32, f32),
@@ -450,12 +452,17 @@ impl<M: TextEngine> Core<M> {
         };
         let main = |x: Points, y: Points| if horizontal { x.0 } else { y.0 };
         let mut start = inset.0;
+        let mut outer_anchors = false;
         let mut k = key;
         while k != outer.view {
             let n = &self.nodes[k as usize];
             let at = main(n.frame.origin.x, n.frame.origin.y);
             if at.is_nan() || n.parent == NO_KEY {
                 return None;
+            }
+            if let Some(list) = self.nodes[n.parent as usize].list.as_ref() {
+                let anchors = list.cell_anchors_scroll(n.slot?, k)?;
+                outer_anchors |= list.horizontal == horizontal && anchors;
             }
             start += at;
             k = n.parent;
@@ -500,9 +507,32 @@ impl<M: TextEngine> Core<M> {
             viewport,
             max,
             settled,
+            outer_anchors,
             inset,
             cross: cross.max(0.0),
         })
+    }
+
+    pub(super) fn forward_outer_anchor(&mut self, key: Key, outer: OuterInput, by: f32) {
+        if outer.outer_anchors || self.nodes[outer.view as usize].scroll.is_none() {
+            return;
+        }
+        let horizontal = self.nodes[key as usize]
+            .list
+            .as_ref()
+            .expect("list")
+            .horizontal;
+        let mut cell = key;
+        while cell != outer.view {
+            let parent = self.nodes[cell as usize].parent;
+            if let Some(list) = self.nodes[parent as usize].list.as_mut()
+                && list.horizontal == horizontal
+            {
+                list.note_descendant_anchor(cell, by);
+            }
+            cell = parent;
+        }
+        self.ask_outer(outer.view, None, by);
     }
 
     /// A parent-viewport list asks its view to scroll to `to` (animated or
@@ -564,11 +594,13 @@ impl<M: TextEngine> Core<M> {
     /// growing content comes first (it is queued already), a scroll back
     /// goes before the view's content shrinks.
     pub(super) fn send_outer_scrolls(&mut self) {
-        let batch = self.batches;
         for view in std::mem::take(&mut self.outer_asked) {
             let Some(node) = self.nodes.get_mut(view as usize) else {
                 continue;
             };
+            if let Some(list) = node.list.as_mut() {
+                list.clear_descendant_anchors();
+            }
             let id = node.id;
             let Some(scroll) = node.scroll.as_mut() else {
                 continue;
@@ -576,10 +608,22 @@ impl<M: TextEngine> Core<M> {
             let Some(asked) = scroll.asked.take() else {
                 continue;
             };
+            for i in 0..scroll.dependents.len() {
+                let dependent = self.nodes[view as usize]
+                    .scroll
+                    .as_ref()
+                    .expect("scroll")
+                    .dependents[i];
+                if let Some(list) = self.nodes[dependent as usize].list.as_mut() {
+                    list.clear_descendant_anchors();
+                }
+            }
+            let node = &mut self.nodes[view as usize];
+            let scroll = node.scroll.as_mut().expect("scroll");
             // The scroll to goes last and to the sum, since a scroll back may
             // go before the content shrinks. An animated one starts from the
             // offset the scroll by compensated; an instant one makes it moot.
-            let (to, by) = match asked.to {
+            let (to, mut by) = match asked.to {
                 Some((to, animated)) => (
                     Some((to + asked.by, animated)),
                     if animated { asked.by } else { 0.0 },
@@ -587,7 +631,33 @@ impl<M: TextEngine> Core<M> {
                 None => (None, asked.by),
             };
             let horizontal = scroll.horizontal;
-            let content_item = scroll.content_item.filter(|&(b, _)| b == batch);
+            let geometry = scroll.anchor_geometry;
+            let length = scroll.content.map(|size| {
+                if horizontal {
+                    size.width.0
+                } else {
+                    size.height.0
+                }
+            });
+            let mut before = None;
+            if to.is_none()
+                && by != 0.0
+                && let Some(previous) = self.retract_list_scroll(view)
+            {
+                by += previous;
+                if let Some((_, extent, grew)) = geometry {
+                    if grew {
+                        before = self.mount.iter().position(
+                            |item| matches!(item, MountItem::Frame { id: target, .. } if *target == id),
+                        );
+                    }
+                    if before.is_none() && length.is_some_and(|len| len < extent) {
+                        before = self.scroll_content_position(view);
+                    }
+                }
+            } else if by < 0.0 {
+                before = self.scroll_content_position(view);
+            }
             let along = |v: f32| {
                 if horizontal {
                     (Points(v), Points::ZERO)
@@ -596,21 +666,13 @@ impl<M: TextEngine> Core<M> {
                 }
             };
             if by != 0.0 {
+                let node = &mut self.nodes[view as usize];
                 match node.list.as_mut() {
                     Some(own) => own.issue_scroll_by(by),
-                    None => issue(scroll, PendingScroll::By(by)),
+                    None => issue(node.scroll.as_mut().expect("scroll"), PendingScroll::By(by)),
                 }
                 let (dx, dy) = along(by);
                 let item = MountItem::ScrollBy { id, dx, dy };
-                let before = (by < 0.0)
-                    .then_some(content_item)
-                    .flatten()
-                    .and_then(|(_, i)| {
-                        let at = self.mount.get(i..)?.iter().position(
-                            |m| matches!(m, MountItem::ScrollContent { id: c, .. } if *c == id),
-                        )?;
-                        Some(i + at)
-                    });
                 match before {
                     Some(at) => self.mount.insert(at, item),
                     None => self.mount.push(item),

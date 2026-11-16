@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sendReceiptFailure } from '../../../../plugins/agent/conversations/ui/sendReceipt.ts';
+import {
+  sendReceiptFailure,
+  shouldHideAcceptedQueuedStatus,
+  shouldProjectPendingSend,
+} from '../../../../plugins/agent/conversations/ui/sendReceipt.ts';
 
 const recorded = (outcome) => ({ kind: 'recorded', outcome, cleanup: { kind: 'confirmed' } });
 
@@ -64,4 +68,72 @@ test('an unknown outcome supplies no definitive send failure', () => {
     sendReceiptFailure(recorded({ kind: 'unknown', diagnostic: 'connection lost' })),
     null,
   );
+});
+
+test('idle queued sends project immediately at history tail while followups and anchored windows stay in the dock', () => {
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: true, activeRunId: null, atHistoryTail: true },
+    ),
+    true,
+  );
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: true, activeRunId: null, atHistoryTail: false },
+    ),
+    false,
+  );
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: false, activeRunId: 'run-1', atHistoryTail: true },
+    ),
+    false,
+  );
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'queued' },
+      { immediate: true, activeRunId: 'run-1', atHistoryTail: true },
+    ),
+    false,
+  );
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'started' },
+      { immediate: false, activeRunId: 'run-1', atHistoryTail: true },
+    ),
+    true,
+  );
+  assert.equal(
+    shouldProjectPendingSend(
+      { kind: 'started' },
+      { immediate: false, activeRunId: 'run-1', atHistoryTail: false },
+    ),
+    false,
+  );
+});
+
+test('accepted queued sends already visible in transcript or followups hide transient dock status', () => {
+  const base = {
+    failed: false,
+    detail: undefined,
+    delivery: 'accepted',
+    messageId: 'msg-1',
+    followups: new Set(),
+    inTranscript: (id) => id === 'msg-1',
+  };
+  assert.equal(shouldHideAcceptedQueuedStatus(base), true);
+  assert.equal(shouldHideAcceptedQueuedStatus({ ...base, delivery: 'unknown' }), false);
+  assert.equal(shouldHideAcceptedQueuedStatus({ ...base, failed: true }), false);
+  assert.equal(
+    shouldHideAcceptedQueuedStatus({
+      ...base,
+      inTranscript: () => false,
+      followups: new Set(['msg-1']),
+    }),
+    true,
+  );
+  assert.equal(shouldHideAcceptedQueuedStatus({ ...base, inTranscript: () => false }), false);
 });

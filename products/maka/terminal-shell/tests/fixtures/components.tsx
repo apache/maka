@@ -278,6 +278,7 @@ function CompletionComposer(props: { prediction?: boolean; switchBackend?: boole
       clearNotice() {},
     },
     completion: {
+      sessions: async () => [],
       async files(query, directory) {
         lookup.set(`files:${query}:${directory?.bytesBase64 ?? 'root'}`);
         let first = true;

@@ -174,6 +174,17 @@ export function toolArguments(kind: ToolFamily, input: unknown): ToolProjection 
   return { kind: 'sections', sections: [{ label: tr('File'), text: path, style: 'code' }] };
 }
 
+export function processResourceRef(input: unknown): string | null {
+  const result = record(input);
+  const value = record(result?.value);
+  return result?.kind === 'completed' &&
+    value?.kind === 'shell_run' &&
+    typeof value.ref === 'string' &&
+    value.ref !== ''
+    ? value.ref
+    : null;
+}
+
 // Only complete originals under the explicitly recorded display contract are
 // decoded. A malformed or unfamiliar value keeps the literal original view.
 export function toolResult(kind: ToolFamily, input: unknown): ToolProjection | null {

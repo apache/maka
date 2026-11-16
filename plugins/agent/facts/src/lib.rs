@@ -48,6 +48,7 @@ pub mod pricing;
 pub mod provider;
 pub mod public_catalog;
 pub mod read;
+pub mod room;
 pub mod session;
 pub mod tool_call;
 pub mod tool_output;

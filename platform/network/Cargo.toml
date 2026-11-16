@@ -43,8 +43,12 @@ tokio-socks = "0.5.3"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 rustls-platform-verifier = "0.7.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-cf-network = { version = "0.3.2", default-features = false, features = ["std", "CFProxySupport"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDate", "CFDictionary", "CFError", "CFNumber", "CFRunLoop", "CFStream", "CFString", "CFURL"] }
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Networking_WinSock"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "io-util"] }

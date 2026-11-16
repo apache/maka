@@ -30,7 +30,6 @@ pub async fn read(
     scope: SessionScope,
     id: String,
     request: ReadRequest,
-    image: bool,
     cancellation: &CancellationToken,
 ) -> Result<Output, ToolError> {
     let stop = cancellation.clone();
@@ -43,12 +42,7 @@ pub async fn read(
             if record.kind == ArtifactKind::Pdf {
                 return Err(failed("PDF attachments cannot be decoded by Read"));
             }
-            if image != (record.kind == ArtifactKind::Image) {
-                return Err(failed(
-                    "Use readImage for images and readText for UTF-8 text attachments",
-                ));
-            }
-            if image {
+            if record.kind == ArtifactKind::Image {
                 let mime_type = record
                     .mime_type
                     .as_deref()

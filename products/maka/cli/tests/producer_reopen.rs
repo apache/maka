@@ -565,7 +565,10 @@ async fn failed_run_history(client: &Client, session: &str, execution: &Value) -
         chunks,
         before,
         after,
-    } = page;
+    } = page
+    else {
+        return Err("producer history unexpectedly selected a Room".into());
+    };
     let mut remaining = 2048;
     let mut failures = Vec::new();
     for row in chunks
@@ -1731,11 +1734,23 @@ async fn automation_delivery(
         edited["kind"], "committed",
         "a background check must not invalidate an open editor: {edited}"
     );
-    let expired = wait(expiring, 1).await?;
-    assert_eq!(expired["task"]["status"], "expired");
-    assert_eq!(
-        expired["task"]["runs"][0]["message"],
-        "Automation expired before delivery"
+    let expired = phase("automation expires without delivery", async {
+        loop {
+            let task = schedule(client, &expiring).await?;
+            if task["task"]["status"] == "expired" && task["pendingFire"].is_null() {
+                return Ok(task);
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await?;
+    assert!(
+        expired["task"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|run| run["outcome"] == "blocked" && run["runId"].is_null()),
+        "{expired}"
     );
     assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
     tokio::fs::write(&condition, "ready")
@@ -1743,10 +1758,7 @@ async fn automation_delivery(
         .map_err(|e| e.to_string())?;
     let steered = wait(steering.clone(), 1).await?;
     assert_eq!(steered["task"]["runs"][0]["runId"], original["runId"]);
-    assert_eq!(
-        steered["task"]["runs"][0]["message"],
-        "Message delivered as steering"
-    );
+
     let delivered = query(
         client,
         "work",
@@ -1761,7 +1773,6 @@ async fn automation_delivery(
     let queued = wait(followup, 1).await?;
     let queued_run = &queued["task"]["runs"][0];
     assert_ne!(queued_run["runId"], original["runId"]);
-    assert_eq!(queued_run["message"], "Message admitted");
     // A fire settles at admission; finish the timer Run before the next script edge.
     let completed = work(
         client,
@@ -1796,7 +1807,6 @@ async fn automation_delivery(
         .map_err(|e| e.to_string())?;
     let again = wait(steering, 2).await?;
     let latest = &again["task"]["runs"][0];
-    assert_eq!(latest["message"], "Message admitted");
     assert_ne!(latest["runId"], original["runId"]);
     assert_ne!(latest["runId"], queued_run["runId"]);
     let completed = work(
@@ -1839,9 +1849,7 @@ async fn automation_delivery(
     assert_eq!(posted["kind"], "committed", "{posted}");
     let posted = wait(posted["taskId"].as_str().unwrap().to_owned(), 1).await?;
     assert_eq!(posted["task"]["status"], "completed", "{posted}");
-    assert_eq!(
-        posted["task"]["runs"][0]["message"], "Message admitted",
-        "{posted}"
-    );
+    assert_eq!(posted["task"]["runs"][0]["outcome"], "ok", "{posted}");
+    assert!(posted["task"]["runs"][0]["runId"].is_string(), "{posted}");
     Ok(())
 }

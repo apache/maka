@@ -28,63 +28,11 @@ import {
   SettingsBody,
   SettingsButton,
   SettingsLede,
+  SettingsMonogram,
   SettingsProblem,
-  SettingsRow,
   SettingsSection,
   SettingsSwitch,
 } from './SettingsPage';
-
-function installationText(value: AgentExternalRuntime['installation']) {
-  switch (value.kind) {
-    case 'available':
-      return value.version
-        ? tr('Installed ({version})', { version: value.version })
-        : tr('Installed');
-    case 'not_found':
-      return tr('Not installed');
-    case 'unsupported':
-      return tr('Unsupported: {detail}', { detail: value.detail });
-    case 'error':
-      return tr('Error: {detail}', { detail: value.detail });
-  }
-}
-function authenticationText(value: AgentExternalRuntime['authentication']) {
-  switch (value.kind) {
-    case 'authenticated':
-      return tr('Signed in ({source})', { source: value.source });
-    case 'unauthenticated':
-      return [tr('Not signed in ({source})', { source: value.source }), value.detail]
-        .filter(Boolean)
-        .join(' — ');
-    case 'unsupported':
-      return tr('Authentication status is not supported');
-    case 'unknown':
-      return [
-        tr('Authentication status unknown'),
-        value.source,
-        value.detail,
-        value.configured?.join(', '),
-      ]
-        .filter(Boolean)
-        .join(' — ');
-    case 'error':
-      return tr('Error: {detail}', { detail: value.detail });
-  }
-}
-function modelsText(value: AgentExternalRuntime['models']) {
-  switch (value.kind) {
-    case 'ready':
-      return tr('{count} models available', { count: value.count });
-    case 'unauthenticated':
-      return [tr('Sign in to discover models'), value.detail].filter(Boolean).join(' — ');
-    case 'unsupported':
-      return tr('Unsupported: {detail}', { detail: value.detail });
-    case 'unavailable':
-      return tr('Models unavailable');
-    case 'error':
-      return tr('Error: {detail}', { detail: value.detail });
-  }
-}
 
 /** What an enabled agent needs before it can be used, or null when it is ready. */
 function attention(value: AgentExternalRuntime) {
@@ -99,131 +47,115 @@ function attention(value: AgentExternalRuntime) {
   return tr('Models unavailable');
 }
 
-export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner }) {
+function runtimeDescription(owner: ExternalAgentSettingsOwner, id: string, enabled: boolean) {
+  if (!enabled) return tr('Disabled');
+  const status = owner.status(id);
+  if (!status) {
+    return owner.catalog()?.state.kind === 'workspace_required'
+      ? tr('Choose a workspace to check status')
+      : undefined;
+  }
+  if (status.installation.kind === 'not_found')
+    return tr('Install and sign in using the native CLI.');
+  if (status.installation.kind === 'unsupported' || status.installation.kind === 'error')
+    return status.installation.detail;
+  if (status.authentication.kind === 'unauthenticated')
+    return (
+      status.authentication.detail ||
+      tr('Sign in using the agent’s native login. Maka does not manage these credentials.')
+    );
+  const version = status.installation.version;
+  if (status.models.kind === 'ready')
+    return [version, tr('{count} models available', { count: status.models.count })]
+      .filter(Boolean)
+      .join(' · ');
+  if (status.authentication.kind === 'error' || status.authentication.kind === 'unknown')
+    return status.authentication.detail || version || undefined;
+  if (status.models.kind === 'unauthenticated')
+    return (
+      status.models.detail ||
+      tr('Sign in using the agent’s native login. Maka does not manage these credentials.')
+    );
+  if (status.models.kind === 'unsupported' || status.models.kind === 'error')
+    return status.models.detail;
+  return version || undefined;
+}
+
+export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner; query: string }) {
   const host = useHost();
   const owner = props.owner;
   const unavailable = () => {
     const state = owner.catalog()?.state;
     return owner.failure() ?? (state?.kind === 'unavailable' ? state.message : null);
   };
-  const description = (id: string) => {
-    const status = owner.status(id);
-    if (status?.models.kind === 'ready')
-      return tr('{count} models available', { count: status.models.count });
-    if (status) return undefined;
-    if (owner.catalog()?.state.kind === 'workspace_required')
-      return tr('Choose a workspace to check status');
-    return undefined;
+  const filtered = () => {
+    const query = props.query.trim().toLowerCase();
+    return query
+      ? owner
+          .runtimes()
+          .filter(
+            (item) =>
+              item.name.toLowerCase().includes(query) || item.id.toLowerCase().includes(query),
+          )
+      : owner.runtimes();
   };
   return (
-    <If when={!owner.confirmation()} else={<Confirmation owner={owner} />}>
-      <SettingsBody accessibilityLabel={tr('External agent runtimes')}>
-        <If when={owner.loading() && !owner.basis()}>
-          <LoadingIndicator label={tr('Checking external agents…')} />
-        </If>
-        <If when={unavailable()}>
-          <SettingsProblem
-            message={unavailable()!}
-            retry={inputAction(owner.reload, owner.action())}
-          />
-        </If>
-        <If when={owner.runtimes().length > 0}>
-          <SettingsSection>
-            <Each of={owner.runtimes()} key={(runtime) => runtime.id}>
-              {(runtime) => (
-                <>
-                  <SettingsSwitch
-                    label={runtime().name}
-                    description={runtime().enabled ? description(runtime().id) : undefined}
-                    status={
-                      runtime().enabled && owner.status(runtime().id)
-                        ? (attention(owner.status(runtime().id)!) ?? undefined)
-                        : undefined
-                    }
-                    accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {
-                      name: runtime().name,
-                    })}
-                    checked={runtime().enabled}
-                    disabled={owner.disabled()}
-                    onPress={
-                      runtime().enabled
-                        ? inputAction(owner.disable, { ...owner.action(), runtime: runtime().id })
-                        : inputAction(owner.requestEnable, {
-                            ...owner.action(),
-                            runtime: runtime().id,
-                          })
-                    }
-                  />
+    <>
+      <If when={filtered().length > 0}>
+        <SettingsSection title={tr('External agents')}>
+          <Each of={filtered()} key={(runtime) => runtime.id}>
+            {(runtime) => (
+              <SettingsSwitch
+                label={runtime().name}
+                tone={runtime().enabled ? undefined : 'muted'}
+                leading={<SettingsMonogram name={runtime().name} muted={!runtime().enabled} />}
+                description={runtimeDescription(owner, runtime().id, runtime().enabled)}
+                status={
+                  runtime().enabled && owner.status(runtime().id)
+                    ? (attention(owner.status(runtime().id)!) ?? undefined)
+                    : undefined
+                }
+                detail={
                   <If when={runtime().enabled && runtime().usageLimits}>
-                    <SettingsRow
-                      label={tr('Usage limits')}
-                      detail={
-                        <UsageLimits
-                          query={() =>
-                            host.query('agent', 'externalUsageLimits', { runtime: runtime().id })
-                          }
-                        />
+                    <UsageLimits
+                      query={() =>
+                        host.query('agent', 'externalUsageLimits', { runtime: runtime().id })
                       }
                     />
                   </If>
-                  <If when={runtime().enabled && owner.status(runtime().id)}>
-                    <SettingsRow
-                      label={owner.details() === runtime().id ? tr('Hide details') : tr('Details')}
-                      accessibilityLabel={tr(
-                        owner.details() === runtime().id
-                          ? 'Hide {name} details'
-                          : 'Show {name} details',
-                        { name: runtime().name },
-                      )}
-                      tone="muted"
-                      onPress={inputAction(owner.toggleDetails, {
+                }
+                accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {
+                  name: runtime().name,
+                })}
+                checked={runtime().enabled}
+                disabled={owner.disabled()}
+                onPress={
+                  runtime().enabled
+                    ? inputAction(owner.disable, { ...owner.action(), runtime: runtime().id })
+                    : inputAction(owner.requestEnable, {
                         ...owner.action(),
                         runtime: runtime().id,
-                      })}
-                    />
-                    <If when={owner.details() === runtime().id}>
-                      <Details status={owner.status(runtime().id)!} />
-                    </If>
-                  </If>
-                </>
-              )}
-            </Each>
-          </SettingsSection>
-        </If>
-      </SettingsBody>
-    </If>
-  );
-}
-
-function Details(props: { status: AgentExternalRuntime }) {
-  const available = () => props.status.installation.kind === 'available';
-  return (
-    <>
-      <SettingsRow
-        label={tr('Installation')}
-        description={installationText(props.status.installation)}
-      />
-      <If when={available()}>
-        <SettingsRow
-          label={tr('Sign-in')}
-          description={authenticationText(props.status.authentication)}
-        />
-        <SettingsRow label={tr('Models')} description={modelsText(props.status.models)} />
+                      })
+                }
+              />
+            )}
+          </Each>
+        </SettingsSection>
       </If>
-      <SettingsRow
-        label=""
-        tone="muted"
-        description={
-          available()
-            ? tr('Sign in using the agent’s native login. Maka does not manage these credentials.')
-            : tr('Install and sign in using the native CLI.')
-        }
-      />
+      <If when={owner.loading() && !owner.basis()}>
+        <LoadingIndicator label={tr('Checking external agents…')} />
+      </If>
+      <If when={unavailable()}>
+        <SettingsProblem
+          message={unavailable()!}
+          retry={inputAction(owner.reload, owner.action())}
+        />
+      </If>
     </>
   );
 }
 
-function Confirmation(props: { owner: ExternalAgentSettingsOwner }) {
+export function ExternalAgentConfirmation(props: { owner: ExternalAgentSettingsOwner }) {
   const owner = props.owner;
   const confirmation = () => owner.confirmation()!;
   return (

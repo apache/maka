@@ -333,7 +333,12 @@ fn tool_text(content: Vec<acp::ToolCallContent>) -> Result<String, Error> {
     let mut text = String::new();
     for part in content {
         let part = match part {
-            acp::ToolCallContent::Content(content) => content_text(content.content)?,
+            acp::ToolCallContent::Content(content) => match content.content {
+                acp::ContentBlock::ResourceLink(resource) => {
+                    format!("{} ({})", resource.name, resource.uri)
+                }
+                content => content_text(content)?,
+            },
             acp::ToolCallContent::Diff(diff) => format!(
                 "File: {}\nBefore:\n{}\nAfter:\n{}",
                 diff.path.display(),
@@ -462,6 +467,71 @@ mod tests {
         );
         assert!(matches!(&events[3], Output::ToolStart { .. }));
         assert!(matches!(&events[8], Output::ToolStart { .. }));
+    }
+
+    #[tokio::test]
+    async fn resource_link_tool_result_preserves_reference_and_allows_turn_completion() {
+        let sink = Sink::default();
+        let mut projection = Projection::new("s".into(), "turn".into());
+        for update in [
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "search",
+                "title": "MCP Tool sites_search",
+                "status": "in_progress",
+                "rawInput": {"query": "twitter", "limit": 100}
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "search",
+                "status": "completed",
+                "rawOutput": "file:///missing/output.txt",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "Output stored at:"}},
+                    {"type": "content", "content": {
+                        "type": "resource_link",
+                        "uri": "file:///missing/output.txt",
+                        "name": "mcp_tool_output"
+                    }}
+                ]
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "answer"}
+            }),
+        ] {
+            projection
+                .update_json(
+                    serde_json::json!({"sessionId": "s", "update": update}),
+                    &sink,
+                )
+                .await
+                .unwrap();
+        }
+        projection.finish(&sink, true).await.unwrap();
+        let events = sink.0.lock().unwrap();
+        let results: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Output::ToolResult { text, is_error, .. } => Some((text.as_str(), *is_error)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            results,
+            [(
+                "Output stored at:\nmcp_tool_output (file:///missing/output.txt)",
+                false
+            )]
+        );
+        assert!(events.iter().any(|event| matches!(event,
+            Output::OutputDelta { text, .. } if text == "answer"
+        )));
+        assert!(matches!(events.last(), Some(Output::MessageEnd { .. })));
+        assert_eq!(
+            projection.last_body_message_id().as_deref(),
+            Some("4:turn:message:0")
+        );
     }
 
     #[tokio::test]

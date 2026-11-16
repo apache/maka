@@ -61,7 +61,7 @@ impl Source {
                 let node = if self.offset > 0
                     && paragraph_index == 0
                     && node_index == 0
-                    && original.ty().name() == "skill"
+                    && super::model::is_token(original)
                 {
                     schema.text(&raw, vec![])
                 } else {
@@ -87,8 +87,8 @@ impl Source {
                     attrs.insert("sourceOffset".to_owned(), json!(offset));
                     nodes.push(
                         schema
-                            .node("skill", Some(attrs), Fragment::empty(), vec![])
-                            .expect("source metadata preserves a skill node"),
+                            .node(node.ty().name(), Some(attrs), Fragment::empty(), vec![])
+                            .expect("source metadata preserves a composer token"),
                     );
                 }
                 offset += raw.len() as u64;
@@ -142,13 +142,10 @@ pub(super) fn attachment(node: &Node, chip: AnyElement) -> AnyElement {
     };
     let offset = node.attrs()["sourceOffset"]
         .as_u64()
-        .expect("skill source offset is a byte offset");
-    let length = 7 + node.attrs()["name"]
-        .as_str()
-        .expect("a skill name is text")
-        .len() as u64;
+        .expect("a composer token's source offset is a byte offset");
+    let length = super::model::node_source(node).len() as u64;
     text("")
-        .line_height(super::SKILL_LINE_HEIGHT)
+        .line_height(super::TOKEN_LINE_HEIGHT)
         .text_source(Some(Arc::new(TextSource::Mapped {
             id: Arc::from(id),
             segments: vec![TextSourceSegment {

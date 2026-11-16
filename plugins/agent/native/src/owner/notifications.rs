@@ -168,7 +168,7 @@ impl Owner {
                 model,
                 thinking_level,
             } => {
-                let (model, _) = crate::model::Source::select(
+                let model = crate::model::Source::select(
                     self.configuration.clone(),
                     self.catalog.clone(),
                     self.credentials.clone(),
@@ -430,6 +430,10 @@ impl Owner {
                     .sandbox
                     .contains(&view.spec.permission_ceiling.sandbox)
                     .map_err(|error| error.to_string())?
+                && request
+                    .spec
+                    .network_approval_ceiling()
+                    .contains(view.spec.network_approval_ceiling())
                 && view
                     .spec
                     .permission_ceiling

@@ -56,8 +56,7 @@ impl Processes {
             .map_err(failed)?;
         cancelled(&context.scope().cancellation)?;
         access.current().await?;
-        let id = maka_host_runtime::shell::request::parse_ref(&input.reference)
-            .ok_or_else(|| failed("Invalid process resource ref"))?;
+        let id = maka_host_runtime::shell::request::require_ref(&input.reference)?;
         let record = self.read_model(tool, id).await?;
         let snapshot = if input.include_logs {
             maka_presentation::shell::local_observation(record).map(|update| update.result)

@@ -17,19 +17,9 @@
  * under the License.
  */
 
-import {
-  cleanup,
-  computed,
-  inputAction,
-  List,
-  Scroll,
-  signal,
-  Text,
-  View,
-  type ViewRef,
-  type JSX,
-} from 'nsh';
-import { Button } from 'nsh/base';
+import { cleanup, computed, inputAction, List, Scroll, signal, Text, View, type JSX } from 'nsh';
+import { Button, ContextMenu, Menu } from 'nsh/base';
+import { SessionMenuItems, type SessionMenuAction } from './SessionMenu';
 import type { AgentSession, AgentSessionPage } from '../../../../packages/plugin-sdk/src/index.js';
 import { useHost } from './host';
 import { tr } from './locale';
@@ -49,12 +39,13 @@ import {
   controlFocusStyle,
   controlDisabledStyle,
   textTooltip,
+  floatingStyle,
 } from './ui';
 
 type TreeSession = SessionActionTarget & Partial<Pick<AgentSession, 'activity'>>;
 export type TreeActions = {
   session: SessionActionTarget;
-  anchor(): ViewRef | null;
+  action: SessionMenuAction;
   run(operation: () => Promise<void>): Promise<void>;
   current(): boolean;
   close(): void;
@@ -300,23 +291,18 @@ export function SessionTree(props: {
                 }
                 const session = () => (currentRow() as Extract<Row, { kind: 'session' }>).session;
                 const present = () => tree().rowsByKey.has(key());
-                const actionTrigger = signal<ViewRef | null>(null);
-                cleanup(() => {
-                  actionTrigger.set(null);
-                });
-                const showActions = (target: SessionActionTarget) => {
+                const showActions = (target: SessionActionTarget, action: SessionMenuAction) => {
                   const current = session();
                   if (
                     !interactive() ||
                     !present() ||
-                    !actionTrigger() ||
                     current.id !== target.id ||
                     current.revision !== target.revision
                   )
                     return;
                   const menu: TreeActions = {
                     session: target,
-                    anchor: actionTrigger,
+                    action,
                     run: async (operation) => {
                       busy.set(true);
                       try {
@@ -338,6 +324,15 @@ export function SessionTree(props: {
                   };
                   actions.set(menu);
                 };
+                const menuItems = () => {
+                  const target = actionTarget(session());
+                  return (
+                    <SessionMenuItems
+                      session={target}
+                      select={(action) => showActions(target, action)}
+                    />
+                  );
+                };
                 const branch = () => branches().get(session().id);
                 const leaf = () => branch()?.page?.sessions.length === 0 && !branch()?.page?.after;
                 const caption = () => {
@@ -354,99 +349,115 @@ export function SessionTree(props: {
                     .join(' · ');
                 };
                 return (
-                  <View
-                    role="treeitem"
-                    onContextMenu={
-                      interactive() && present()
-                        ? inputAction(showActions, actionTarget(session()))
-                        : undefined
-                    }
-                    accessibilityLevel={initial.depth + 1}
-                    accessibilityLabel={session().title}
-                    accessibilityState={{
-                      expanded: leaf() ? undefined : expanded().has(session().id),
-                    }}
-                    style={{
-                      height: 48,
-                      paddingLeft: initial.depth * 16,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <If when={!leaf()} else={<View style={{ width: 32 }} />}>
-                      <Button
-                        accessibilityLabel={tr(
-                          expanded().has(session().id) ? 'Collapse {name}' : 'Expand {name}',
-                          { name: session().title },
-                        )}
-                        disabled={!interactive() || !present()}
-                        onPress={inputAction(toggle, session().id)}
-                        style={{
-                          ...controlStyle,
-                          width: 32,
-                          alignItems: 'center',
-                          justifyContent: 'center',
+                  <ContextMenu
+                    disabled={!interactive() || !present()}
+                    offset={4}
+                    margin={8}
+                    popupStyle={floatingStyle()}
+                    trigger={
+                      <View
+                        role="treeitem"
+                        accessibilityLevel={initial.depth + 1}
+                        accessibilityLabel={session().title}
+                        accessibilityState={{
+                          expanded: leaf() ? undefined : expanded().has(session().id),
                         }}
-                        hoverStyle={controlHoverStyle()}
-                        focusStyle={controlFocusStyle()}
-                        disabledStyle={controlDisabledStyle}
+                        style={{
+                          height: 48,
+                          paddingLeft: initial.depth * 16,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                        }}
                       >
-                        <Icon
-                          name={expanded().has(session().id) ? 'down' : 'right'}
-                          color={C.muted}
-                        />
-                      </Button>
-                    </If>
-                    <Button
-                      role="link"
-                      accessibilityLabel={tr('Open {name}', { name: session().title })}
-                      tooltip={textTooltip(() => session().title)}
-                      disabled={!interactive() || !present()}
-                      onPress={inputAction(open, session().id)}
-                      style={{
-                        ...controlStyle,
-                        flex: 1,
-                        minWidth: 0,
-                        height: 48,
-                        paddingHorizontal: 8,
-                        justifyContent: 'center',
-                      }}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                      disabledStyle={controlDisabledStyle}
-                    >
-                      <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
-                        {session().title}
-                      </Text>
-                      <If when={caption()}>
-                        <Text
-                          style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}
+                        <If when={!leaf()} else={<View style={{ width: 32 }} />}>
+                          <Button
+                            accessibilityLabel={tr(
+                              expanded().has(session().id) ? 'Collapse {name}' : 'Expand {name}',
+                              { name: session().title },
+                            )}
+                            disabled={!interactive() || !present()}
+                            onPress={inputAction(toggle, session().id)}
+                            style={{
+                              ...controlStyle,
+                              width: 32,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                            hoverStyle={controlHoverStyle()}
+                            focusStyle={controlFocusStyle()}
+                            disabledStyle={controlDisabledStyle}
+                          >
+                            <Icon
+                              name={expanded().has(session().id) ? 'down' : 'right'}
+                              color={C.muted}
+                            />
+                          </Button>
+                        </If>
+                        <Button
+                          role="link"
+                          accessibilityLabel={tr('Open {name}', { name: session().title })}
+                          tooltip={textTooltip(() => session().title)}
+                          disabled={!interactive() || !present()}
+                          onPress={inputAction(open, session().id)}
+                          style={{
+                            ...controlStyle,
+                            flex: 1,
+                            minWidth: 0,
+                            height: 48,
+                            paddingHorizontal: 8,
+                            justifyContent: 'center',
+                          }}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
+                          disabledStyle={controlDisabledStyle}
                         >
-                          {caption()}
-                        </Text>
-                      </If>
-                    </Button>
-                    <Button
-                      ref={(node) => {
-                        actionTrigger.set(node);
-                      }}
-                      accessibilityLabel={tr('Actions for {title}', { title: session().title })}
-                      tooltip={textTooltip(() => tr('Conversation actions'))}
-                      disabled={!interactive() || !present()}
-                      onPress={inputAction(showActions, actionTarget(session()))}
-                      style={{
-                        ...controlStyle,
-                        width: 32,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                      disabledStyle={controlDisabledStyle}
-                    >
-                      <Icon name="more" color={C.muted} />
-                    </Button>
-                  </View>
+                          <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
+                            {session().title}
+                          </Text>
+                          <If when={caption()}>
+                            <Text
+                              style={[
+                                { ...captionTextStyle, color: C.muted },
+                                { numberOfLines: 1 },
+                              ]}
+                            >
+                              {caption()}
+                            </Text>
+                          </If>
+                        </Button>
+                        <Menu
+                          align="end"
+                          offset={4}
+                          margin={8}
+                          popupStyle={floatingStyle()}
+                          trigger={
+                            <Button
+                              accessibilityLabel={tr('Actions for {title}', {
+                                title: session().title,
+                              })}
+                              tooltip={textTooltip(() => tr('Conversation actions'))}
+                              disabled={!interactive() || !present()}
+                              style={{
+                                ...controlStyle,
+                                width: 32,
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                              }}
+                              hoverStyle={controlHoverStyle()}
+                              focusStyle={controlFocusStyle()}
+                              disabledStyle={controlDisabledStyle}
+                            >
+                              <Icon name="more" color={C.muted} />
+                            </Button>
+                          }
+                        >
+                          {menuItems()}
+                        </Menu>
+                      </View>
+                    }
+                  >
+                    {menuItems()}
+                  </ContextMenu>
                 );
               }}
             </Each>

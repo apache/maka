@@ -20,52 +20,25 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const externalAgentMessages = {
-  'Install and sign in using the native CLI, then Refresh.': [
-    'Install and sign in using the native CLI, then Refresh.',
-    '请通过原生 CLI 安装并登录，然后刷新。',
-    '請透過原生 CLI 安裝並登入，然後重新整理。',
-  ],
   'External agents': ['External agents', '外部 Agent', '外部 Agent'],
   'External agent runtimes': [
     'External agent runtimes',
     '外部 Agent 运行环境',
     '外部 Agent 執行環境',
   ],
-  'Manage external agents': ['Manage external agents', '管理外部 Agent', '管理外部 Agent'],
-  'Installed ({version})': ['Installed ({version})', '已安装（{version}）', '已安裝（{version}）'],
-  Installed: ['Installed', '已安装', '已安裝'],
-  'Not installed': ['Not installed', '未安装', '未安裝'],
-  'Unsupported: {detail}': ['Unsupported: {detail}', '不支持：{detail}', '不支援：{detail}'],
-  'Error: {detail}': ['Error: {detail}', '错误：{detail}', '錯誤：{detail}'],
-  'Signed in ({source})': ['Signed in ({source})', '已登录（{source}）', '已登入（{source}）'],
-  'Not signed in ({source})': [
-    'Not signed in ({source})',
-    '未登录（{source}）',
-    '未登入（{source}）',
-  ],
-  'Authentication status is not supported': [
-    'Authentication status is not supported',
-    '不支持查询登录状态',
-    '不支援查詢登入狀態',
-  ],
-  'Authentication status unknown': [
-    'Authentication status unknown',
-    '登录状态未知',
-    '登入狀態未知',
-  ],
-  '{count} models available': [
-    '{count} models available',
-    '{count} 个可用模型',
-    '{count} 個可用模型',
-  ],
-  'Sign in to discover models': ['Sign in to discover models', '登录后发现模型', '登入後探索模型'],
-  'Models unavailable': ['Models unavailable', '模型不可用', '模型無法使用'],
-  'Refresh external agents': ['Refresh external agents', '刷新外部 Agent', '重新整理外部 Agent'],
   'Checking external agents…': [
     'Checking external agents…',
     '正在检查外部 Agent…',
     '正在檢查外部 Agent…',
   ],
+  'Not installed': ['Not installed', '未安装', '未安裝'],
+  'Error: {detail}': ['Error: {detail}', '错误：{detail}', '錯誤：{detail}'],
+  '{count} models available': [
+    '{count} models available',
+    '{count} 个可用模型',
+    '{count} 個可用模型',
+  ],
+  'Models unavailable': ['Models unavailable', '模型不可用', '模型無法使用'],
   'I understand and accept the external agent permissions': [
     'I understand and accept the external agent permissions',
     '我理解并接受外部 Agent 的权限',
@@ -81,11 +54,6 @@ export const externalAgentMessages = {
     '取消启用外部 Agent',
     '取消啟用外部 Agent',
   ],
-  'Sign in using the agent’s native login, then Refresh. Maka does not manage these credentials.': [
-    'Sign in using the agent’s native login, then Refresh. Maka does not manage these credentials.',
-    '请使用 Agent 原生登录方式登录，然后刷新。Maka 不管理这些凭据。',
-    '請使用 Agent 原生登入方式登入，然後重新整理。Maka 不管理這些憑證。',
-  ],
   'This agent belongs to another deployment and cannot be configured here.': [
     'This agent belongs to another deployment and cannot be configured here.',
     '此 Agent 属于其他部署，无法在此配置。',
@@ -93,9 +61,6 @@ export const externalAgentMessages = {
   ],
   'Enable {name}': ['Enable {name}', '启用 {name}', '啟用 {name}'],
   'Disable {name}': ['Disable {name}', '停用 {name}', '停用 {name}'],
-  'Show {name} details': ['Show {name} details', '显示 {name} 详情', '顯示 {name} 詳細資訊'],
-  'Hide {name} details': ['Hide {name} details', '收起 {name} 详情', '收合 {name} 詳細資訊'],
-  'Hide details': ['Hide details', '收起详情', '收合詳細資訊'],
   'Not supported on this device': [
     'Not supported on this device',
     '此设备暂不支持',
@@ -116,12 +81,6 @@ export const externalAgentMessages = {
     'Choose a workspace to check status',
     '选择工作区后可检查状态',
     '選擇工作區後可檢查狀態',
-  ],
-  'Status unavailable': ['Status unavailable', '暂时无法获取状态', '暫時無法取得狀態'],
-  'Show external agent error details': [
-    'Show external agent error details',
-    '显示外部 Agent 错误详情',
-    '顯示外部 Agent 錯誤詳細資訊',
   ],
   'This agent runs in its native full-access mode. It can read and write files, run commands and access the network outside the Maka sandbox.':
     [

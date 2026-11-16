@@ -158,8 +158,9 @@ impl Provider for Codex {
             if summary || level.is_some() {
                 options["openai"]["forceReasoning"] = json!(true);
             }
-            info.capabilities.get_or_insert_default().native_compaction =
-                Some(configuration.server_side_compaction);
+            let capabilities = info.capabilities.get_or_insert_default();
+            capabilities.web_search.get_or_insert(true);
+            capabilities.native_compaction = Some(configuration.server_side_compaction);
             let model = Model {
                 main_output_limit: request
                     .overrides

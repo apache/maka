@@ -66,6 +66,7 @@ fn spec(backend: BackendSpec, reference: &ContentRef) -> RunSpec {
             sandbox: maka_sandbox::Sandbox::Disabled,
             approval: maka_sandbox::Approval::Never,
         },
+        network_approval_ceiling: None,
         backend,
         collaboration: Default::default(),
         language: Default::default(),
@@ -83,6 +84,84 @@ fn spec(backend: BackendSpec, reference: &ContentRef) -> RunSpec {
         },
         budget_basis: None,
     }
+}
+
+#[test]
+fn finish_turn_settles_after_cell_cleanup_with_an_undelivered_notification() {
+    use maka_agent_facts::cells::{CellEvent, CellId, CellOwner, CellView};
+
+    let source = ContentBlob::new(vec![]).reference().clone();
+    let spec = spec(
+        BackendSpec::Model {
+            binding: ModelBinding {
+                connection_id: "policy".into(),
+                connection_slug: "policy".into(),
+                model: "policy".into(),
+            },
+            descriptor: source.clone(),
+        },
+        &source,
+    );
+    let spec_ref = ContentBlob::json(&spec).unwrap().reference().clone();
+    let mut view = RunView::admitted(RunId::new(), spec).unwrap();
+    apply(&mut view, Fact::RunAdmitted { spec: spec_ref });
+    let link = AgentStepLink {
+        run: view.run,
+        step: StepId::new(),
+        attempt: ModelAttemptId::new(),
+    };
+    let cell = CellId::for_agent(link, "background");
+    let background = CellView::started(&CellEvent::Started {
+        cell,
+        owner: CellOwner::Agent {
+            link,
+            call: "background".into(),
+        },
+        source: source.clone(),
+    })
+    .unwrap();
+    view.cells.insert(cell, background);
+    let complete = |view: &mut RunView| {
+        let fact = record(
+            view,
+            Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            },
+        );
+        view.apply(&fact)
+    };
+    view.finish_requested = true;
+    assert!(complete(&mut view).is_err());
+
+    apply(
+        &mut view,
+        Fact::Cell {
+            event: CellEvent::Interrupted {
+                cell,
+                report: source.clone(),
+            },
+        },
+    );
+    let notification = FactId::new();
+    apply(
+        &mut view,
+        Fact::Cell {
+            event: CellEvent::FinalNotificationQueued {
+                cell,
+                notification,
+                content: source,
+            },
+        },
+    );
+    let mut continuing = view.clone();
+    continuing.finish_requested = false;
+    assert!(complete(&mut continuing).is_err());
+
+    complete(&mut view).unwrap();
+    assert_eq!(view.terminal, Some(Terminal::Completed));
+    assert!(view.cells[&cell].notifications.contains(&notification));
+    assert!(!view.cells[&cell].blocks_session_retirement(view.terminal.as_ref()));
 }
 
 #[test]

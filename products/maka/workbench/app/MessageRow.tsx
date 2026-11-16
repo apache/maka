@@ -156,7 +156,9 @@ export function MessageRow({
   through,
   viewState,
   previewImage,
+  previewTerminal,
   openLink,
+  openSession,
   senders,
   userScroll,
   onExpand,
@@ -178,7 +180,9 @@ export function MessageRow({
   through: () => number;
   viewState?: MessageViewState;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  openSession?(sessionId: string): void;
   senders?: MessageSenders;
   userScroll(): void;
   onExpand?(key: string): void;
@@ -628,6 +632,7 @@ export function MessageRow({
                         if (expanded()) onToolReading?.(rowKey(row()));
                       }}
                       previewImage={previewImage}
+                      previewTerminal={previewTerminal}
                       senders={senders}
                       userScroll={userScroll}
                       expand={setExpanded}
@@ -658,7 +663,7 @@ export function MessageRow({
                         gap: 8,
                       }}
                     >
-                      <SkillMessage row={row} sourceId={sourceId()} />
+                      <SkillMessage row={row} sourceId={sourceId()} openSession={openSession} />
                       <If when={(row().attachments?.length ?? 0) > 0}>
                         <HistoryAttachments
                           userScroll={userScroll}

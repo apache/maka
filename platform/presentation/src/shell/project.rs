@@ -106,6 +106,11 @@ fn project(
         ownership: Ownership::Local,
         correlation: record.correlation,
         visibility: record.visibility,
+        initiator: if record.source_work_id.is_some() {
+            super::ShellInitiator::Agent
+        } else {
+            super::ShellInitiator::User
+        },
         result,
     })
 }

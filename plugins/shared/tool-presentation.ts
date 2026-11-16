@@ -20,7 +20,7 @@
 // Only the display contract recorded by the Host opts into a specialized view.
 export function filePresentation(key: string | null | undefined) {
   switch (key) {
-    case 'maka.workspace.Files@1/readText':
+    case 'maka.workspace.Files@1/read':
       return 'read';
     case 'maka.workspace.Files@1/write':
       return 'write';

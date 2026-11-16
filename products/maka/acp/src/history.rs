@@ -126,7 +126,10 @@ where
             field,
         },
     )
-    .await?;
+    .await?
+    else {
+        return Err("ACP history requires an Agent session".into());
+    };
     freeze(&mut Some(through), fence)?;
     let chunk = chunks
         .into_iter()
@@ -156,7 +159,10 @@ where
             chunks,
             after: next,
             ..
-        } = query(through, position).await?;
+        } = query(through, position).await?
+        else {
+            return Err("ACP history requires an Agent session".into());
+        };
         let fence = freeze(&mut through, fence)?;
         for chunk in chunks {
             if let Some(row) = &row {

@@ -159,11 +159,28 @@ pub struct Cursor {
 /// Event addresses the raw event log. Returned chunks retain ascending presentation
 /// order, including a reverse window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 #[schemars(rename = "HistoryPosition")]
 pub enum Position {
     Start,
     Tail,
+    /// A Room message and its following messages.
+    Message {
+        message_id: String,
+    },
+    /// Room messages preceding this message.
+    BeforeMessage {
+        message_id: String,
+    },
+    /// Room messages following this message.
+    AfterMessage {
+        message_id: String,
+    },
     /// Reveal this exact row field from its beginning, including empty tool rows.
     Row {
         position: RowPosition,
@@ -202,6 +219,11 @@ impl Read {
             return Err(invalid());
         }
         match &self.position {
+            Position::Message { message_id }
+            | Position::BeforeMessage { message_id }
+            | Position::AfterMessage { message_id } => {
+                crate::name(message_id).map_err(|_| invalid())?;
+            }
             Position::Row { position, field } => {
                 if self.through.is_none()
                     || position.validate().is_err()
@@ -323,9 +345,9 @@ pub struct ToolResult {
     pub position: RowPosition,
     /// A failed or unknown effect, or a returned result that reports failure.
     pub is_error: bool,
-    /// Canonical content is an image; this does not grant artifact reads.
+    /// The result exposes an unindexed image distinct from its indexed projection images.
     pub image: bool,
-    /// Images the model received beside non-image content, readable by index.
+    /// Images in the model projection, readable by index.
     pub images: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<maka_agent_facts::executor::ToolResultDetails>,

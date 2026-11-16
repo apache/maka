@@ -948,6 +948,12 @@ impl TextLayout {
     }
 }
 
+impl PartialEq for TextLayout {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 impl fmt::Debug for TextLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("TextLayout")
@@ -1136,6 +1142,32 @@ impl<T: TextEngine> TextEngine for std::rc::Rc<T> {
 
     fn register_font(&self, data: &[u8]) -> Result<(), String> {
         (**self).register_font(data)
+    }
+}
+
+/// Queries on the final layout used to draw text, without preparing or measuring it again.
+pub trait TextLayoutQueries {
+    /// The nearest caret to a point in the layout's content box.
+    fn hit(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition;
+
+    /// The line-high caret box for an offset in the final layout.
+    fn caret(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>>;
+
+    /// Appends the line-high boxes covered by the given range of UTF-16 offsets.
+    fn ranges(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>);
+}
+
+impl<T: TextEngine> TextLayoutQueries for T {
+    fn hit(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
+        self.hit_test(layout, point)
+    }
+
+    fn caret(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        self.caret_rect(layout, position)
+    }
+
+    fn ranges(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        self.range_rects(layout, range, out)
     }
 }
 

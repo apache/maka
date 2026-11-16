@@ -501,8 +501,7 @@ async fn encode_message(
                         ));
                     }
                     AssistantRecipe::ToolResult(result) => {
-                        if plaintext.is_none()
-                            && !store
+                        if (plaintext.is_some() || !store)
                             && let Some(replay) = field(
                                 &result.provider_options,
                                 &["openai", "responsesReplay"],

@@ -105,17 +105,22 @@ mod tests {
         }
     }
 
-    fn completion_fixture() -> nsh_testing::Headless {
+    fn fixture(entry: &str) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-            entry: std::path::Path::new("tests/fixtures/composer-completion.tsx")
+            entry: std::path::Path::new("tests/fixtures")
+                .join(entry)
                 .canonicalize()
                 .unwrap(),
             minify: false,
             split: false,
-            ui_sets: sets.iter().map(Into::into).collect(),
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
@@ -136,8 +141,72 @@ mod tests {
     }
 
     #[test]
+    fn terminal_sidebar_restores_the_personal_shell_and_opens_the_exact_agent_resource() {
+        let mut app = fixture("terminal-sidebar.tsx");
+        app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
+        app.wait_for("role:button[View terminal]").unwrap();
+        app.press("role:button[View terminal]").unwrap();
+        app.wait_for("text:cargo fmt").unwrap();
+        app.wait_for("text:/completed.*Read only/").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Terminal keyboard input")
+                .unwrap()
+        );
+
+        app.press("label:Show conversation terminals").unwrap();
+        app.wait_for("text:/maka/").unwrap();
+        assert!(!app.screen().matches("text:cargo test").unwrap());
+        app.press("label:New terminal").unwrap();
+        app.wait_for("text:Shell 1").unwrap();
+        app.wait_for("label:Terminal keyboard input").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("text:1: Enter reached shell-1").unwrap();
+        app.press_key("ctrl+c").unwrap();
+        app.wait_for("text:Interrupt reached shell-1").unwrap();
+        app.paste(
+            "label:Terminal keyboard input",
+            &nsh_core::PasteEvent::new("printf demo"),
+        )
+        .unwrap();
+        app.wait_for("text:Pasted into shell-1: printf demo")
+            .unwrap();
+
+        app.press("label:New terminal").unwrap();
+        app.wait_for("text:Shell 2").unwrap();
+        app.press("text:Shell 1").unwrap();
+        app.press("role:button[Agent terminals]").unwrap();
+        app.wait_for("text:cargo test").unwrap();
+        assert!(!app.screen().matches("text:cargo fmt").unwrap());
+        app.press_key("ctrl+c").unwrap();
+        app.wait_for("text:Workbench interrupt").unwrap();
+        app.press("role:button[Finished commands]").unwrap();
+        app.wait_for("text:cargo fmt").unwrap();
+        app.press("label:Open terminal cargo fmt").unwrap();
+        app.wait_for("text:/completed.*Read only/").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Terminal keyboard input")
+                .unwrap()
+        );
+        app.press("label:Show conversation terminals").unwrap();
+        app.wait_for("label:Terminal keyboard input").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("text:2: Enter reached shell-1").unwrap();
+    }
+
+    #[test]
+    fn original_tool_arguments_show_freeform_script_and_reject_another_tool() {
+        let mut app = fixture("tool-source.tsx");
+        app.wait_for(r"text:/const word = '雪'; text\(word\);/")
+            .unwrap();
+        app.wait_for("text:The original tool source could not be verified.")
+            .unwrap();
+    }
+
+    #[test]
     fn recycled_completion_cells_refresh_labels_and_press_actions() {
-        let mut app = completion_fixture();
+        let mut app = fixture("composer-completion.tsx");
         app.wait_for("role:button[skill-00]").unwrap();
         app.scroll("label:Skills", px(900.0)).unwrap();
         app.wait_for("text:/Description of skill-15/").unwrap();
@@ -151,9 +220,10 @@ mod tests {
 
     #[test]
     fn pending_composer_selects_slash_skills_with_enter_and_tab() {
-        let mut app = completion_fixture();
+        let mut app = fixture("composer-completion.tsx");
         app.wait_for("text:Open new chat").unwrap();
         app.press("id:pending").unwrap();
+        app.wait_for("label:New chat").unwrap();
         app.type_text("label:New chat", "/skill-1").unwrap();
         app.wait_for("role:button[skill-11]").unwrap();
         app.press_key("down").unwrap();
@@ -182,7 +252,11 @@ mod tests {
                 .unwrap(),
             minify: false,
             split: false,
-            ui_sets: sets.iter().map(Into::into).collect(),
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
@@ -274,6 +348,183 @@ mod tests {
         app.press_key("mod+n").unwrap();
         app.wait_for("text:Shortcut received").unwrap();
     }
+
+    #[test]
+    fn model_select_switches_in_place_and_cascades_reasoning_effort() {
+        let mut app = fixture("model-select.tsx");
+        app.set_viewport(Size::new(px(640.0), px(480.0))).unwrap();
+        app.wait_for("label:Choose model and effort").unwrap();
+        app.press("label:Choose model and effort").unwrap();
+        app.wait_for("label:Search models and sources").unwrap();
+        app.wait_for("label:Manage models").unwrap();
+        app.wait_for("text:Unsupported").unwrap();
+
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+        let search_before = bounds_of(&app, "label:Search models and sources");
+        let manage_before = bounds_of(&app, "label:Manage models");
+
+        app.press_key("f6").unwrap();
+        app.press("label:Use Reasoning model · OpenAI").unwrap();
+        assert!(
+            !app.screen()
+                .enabled("label:Use Plain model · DeepSeek")
+                .unwrap()
+        );
+        assert!(
+            !app.screen()
+                .enabled("label:Choose reasoning effort")
+                .unwrap()
+        );
+        assert!(!app.screen().enabled("label:Manage models").unwrap());
+        assert!(!app.screen().matches("text:Saving selection…").unwrap());
+
+        app.press_key("f7").unwrap();
+        assert!(
+            app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+        app.wait_for("text: · medium").unwrap();
+        assert!(
+            app.screen()
+                .enabled("label:Choose reasoning effort")
+                .unwrap()
+        );
+        assert_eq!(
+            bounds_of(&app, "label:Search models and sources"),
+            search_before
+        );
+        assert_eq!(bounds_of(&app, "label:Manage models"), manage_before);
+
+        app.press("label:Choose reasoning effort").unwrap();
+        app.wait_for("label:Use effort high").unwrap();
+        app.press("label:Use effort high").unwrap();
+        app.wait_for("text: · high").unwrap();
+        assert!(!app.screen().matches("label:Use effort high").unwrap());
+        assert!(
+            app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+
+        app.press("label:Use Plain model · DeepSeek").unwrap();
+        app.wait_for("text:Unsupported").unwrap();
+        assert!(
+            !app.screen()
+                .enabled("label:Choose reasoning effort")
+                .unwrap()
+        );
+        assert!(
+            app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+        assert_eq!(bounds_of(&app, "label:Manage models"), manage_before);
+
+        app.press("label:Manage models").unwrap();
+        app.wait_for("text:Managed:1").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Search models and sources")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn models_settings_unifies_sources_without_inline_layout_jumps() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Checking external agents…").unwrap();
+
+        app.press_key("f7").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("text:0.42.0 · 5 models available").unwrap();
+        app.wait_for("label:Enable Claude Code").unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Checking external agents…")
+                .unwrap()
+        );
+        assert!(!app.screen().matches("text:Details").unwrap());
+
+        let y_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+                .origin
+                .y
+        };
+        let codex_y = y_of(&app, "label:Disable Codex");
+
+        app.press_key("f6").unwrap();
+        app.set_environment("background", |env| {
+            env.lifecycle = nsh_core::platform::Lifecycle::Background;
+        })
+        .unwrap();
+        app.set_environment("active", |env| {
+            env.lifecycle = nsh_core::platform::Lifecycle::Active;
+        })
+        .unwrap();
+        assert!(app.screen().matches("label:Disable Codex").unwrap());
+        assert!(!app.screen().enabled("label:Disable Codex").unwrap());
+        assert!(
+            !app.screen()
+                .matches("label:Checking external agents…")
+                .unwrap()
+        );
+        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+
+        app.press_key("f7").unwrap();
+        assert!(app.settle());
+        assert!(app.screen().enabled("label:Disable Codex").unwrap());
+        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+
+        app.press("label:Enable Claude Code").unwrap();
+        app.wait_for("text:Confirm permissions and enable").unwrap();
+        app.press("label:Cancel enabling external agents").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+
+        app.press("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+        let model_row_y = y_of(&app, "label:Edit model gpt-4.1");
+        app.type_text("label:API key", "sk-test").unwrap();
+        app.wait_for("text:Save or discard the connection changes before editing models.")
+            .unwrap();
+        assert_eq!(y_of(&app, "label:Edit model gpt-4.1"), model_row_y);
+        app.press("label:Discard changes and reload").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+
+        app.press("label:Edit model gpt-4.1").unwrap();
+        app.wait_for("label:Use provider reasoning efforts: On")
+            .unwrap();
+        assert!(!app.screen().enabled("label:Support effort high").unwrap());
+        let remove_model_y = y_of(&app, "text:Remove model");
+        app.press("label:Use provider reasoning efforts: On")
+            .unwrap();
+        app.wait_for("label:Use provider reasoning efforts: Off")
+            .unwrap();
+        assert!(app.screen().enabled("label:Support effort high").unwrap());
+        assert_eq!(y_of(&app, "text:Remove model"), remove_model_y);
+
+        app.press_key("f8").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press("text:Discard changes").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -281,3 +532,6 @@ mod desktop_residency_tests;
 
 #[cfg(test)]
 mod preset_settings_tests;
+
+#[cfg(test)]
+mod spec_view_tests;

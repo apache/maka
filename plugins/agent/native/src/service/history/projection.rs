@@ -729,7 +729,7 @@ pub(super) async fn project(
                     let message = executor
                         .and_then(|transcript| transcript.text(message_id, thinking))
                         .ok_or("agent_history_executor_text_missing")?;
-                    row.chunk.message_id = Some(super::super::delivery::executor_message_id(
+                    row.chunk.message_id = Some(maka_agent_facts::executor::message_id(
                         item.recorded.run,
                         *task,
                         message_id,

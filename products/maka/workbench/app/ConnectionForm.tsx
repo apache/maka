@@ -61,7 +61,16 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
   return (
     <SettingsBody
       footerShown={!form().baseline || owner.dirty()}
-      footer={<ConnectionFooter owner={owner} />}
+      footer={
+        <ConnectionFooter
+          owner={owner}
+          note={
+            form().baseline && owner.dirty()
+              ? tr('Save or discard the connection changes before editing models.')
+              : undefined
+          }
+        />
+      }
     >
       <If when={interactive()}>
         <ConnectionLogin owner={owner} disabled={disabled()} />
@@ -114,15 +123,13 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
         <SettingsSection
           title={tr('Models · {count}', { count: models().length })}
           note={
-            owner.dirty()
-              ? tr('Save or discard the connection changes before editing models.')
-              : owner.discovery() === 'failed'
-                ? tr(
-                    'Could not fetch models. Check the provider credential, endpoint and network, or add a model manually.',
-                  )
-                : undefined
+            owner.discovery() === 'failed'
+              ? tr(
+                  'Could not fetch models. Check the provider credential, endpoint and network, or add a model manually.',
+                )
+              : undefined
           }
-          noteWarns={!owner.dirty() && owner.discovery() === 'failed'}
+          noteWarns={owner.discovery() === 'failed'}
           trailing={
             <>
               <If when={form().provider.descriptor.discovery}>
@@ -393,11 +400,16 @@ export function ConnectionAdvanced(props: { settings: ModelSettingsOwner }) {
   );
 }
 
-function ConnectionFooter(props: { owner: ModelSettingsOwner }) {
+function ConnectionFooter(props: { owner: ModelSettingsOwner; note?: string }) {
   const owner = props.owner;
   const form = () => owner.editor()!;
   return (
     <>
+      <If when={props.note}>
+        <Text style={{ ...captionTextStyle, color: C.muted, flex: 1, minWidth: 160 }}>
+          {props.note}
+        </Text>
+      </If>
       <If when={form().baseline}>
         <SettingsButton
           label={tr('Discard')}

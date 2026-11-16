@@ -178,55 +178,61 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
               : owner.useProviderThinking(owner.modelAction())
           }
         />
-        <If when={model().thinkingLevels !== null}>
-          <SettingsRow
-            label={tr('Supported reasoning efforts')}
-            trailing={
-              <View
-                style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  justifyContent: 'flex-end',
-                  gap: 4,
-                  flexShrink: 1,
-                }}
-              >
-                <Each of={thinkingLevels} key={(level) => level}>
-                  {(level) => (
-                    <Button
-                      disabled={disabled()}
-                      selected={supported().includes(level())}
-                      accessibilityLabel={tr('Support effort {level}', { level: level() })}
-                      onPress={inputAction(owner.toggleThinking, {
-                        ...owner.modelAction(),
-                        level: level(),
-                      })}
+        <SettingsRow
+          label={tr('Supported reasoning efforts')}
+          tone={model().thinkingLevels === null ? 'muted' : undefined}
+          trailing={
+            <View
+              style={{
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
+                gap: 4,
+                flexShrink: 1,
+              }}
+            >
+              <Each of={thinkingLevels} key={(level) => level}>
+                {(level) => (
+                  <Button
+                    disabled={disabled() || model().thinkingLevels === null}
+                    selected={supported().includes(level())}
+                    accessibilityLabel={tr('Support effort {level}', { level: level() })}
+                    onPress={inputAction(owner.toggleThinking, {
+                      ...owner.modelAction(),
+                      level: level(),
+                    })}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                      minHeight: platform.idiom === 'terminal' ? 16 : 28,
+                      paddingHorizontal: platform.idiom === 'terminal' ? 0 : 8,
+                      borderRadius: 8,
+                    }}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
+                    activeStyle={{ backgroundColor: C.line }}
+                    disabledStyle={controlDisabledStyle}
+                  >
+                    <ChoiceIndicator
+                      kind="checkbox"
+                      checked={supported().includes(level())}
+                      disabled={disabled() || model().thinkingLevels === null}
+                    />
+                    <Text
                       style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 6,
-                        minHeight: platform.idiom === 'terminal' ? 16 : 28,
-                        paddingHorizontal: platform.idiom === 'terminal' ? 0 : 8,
-                        borderRadius: 8,
+                        ...captionTextStyle,
+                        color: model().thinkingLevels === null ? C.muted : C.text,
                       }}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                      activeStyle={{ backgroundColor: C.line }}
-                      disabledStyle={controlDisabledStyle}
                     >
-                      <ChoiceIndicator
-                        kind="checkbox"
-                        checked={supported().includes(level())}
-                        disabled={disabled()}
-                      />
-                      <Text style={{ ...captionTextStyle, color: C.text }}>{level()}</Text>
-                    </Button>
-                  )}
-                </Each>
-              </View>
-            }
-          />
-        </If>
+                      {level()}
+                    </Text>
+                  </Button>
+                )}
+              </Each>
+            </View>
+          }
+        />
       </SettingsSection>
       <SettingsSection title={tr('Model capabilities')}>
         <Each of={tools} key={(tool) => tool.key}>

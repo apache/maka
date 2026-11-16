@@ -21,7 +21,7 @@ import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { JSX, ViewRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
-import { colorScheme, keymap, platform, windowSize } from 'nsh';
+import { colorScheme, keymap, LayoutAnimation, platform, reduceMotion, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import {
   controlsLeft,
@@ -180,6 +180,14 @@ export const toolbarControlStyle = {
   ...controlStyle,
   paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
 } as const;
+export const sidebarDisclosureStyle = {
+  alignSelf: 'flex-start',
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingHorizontal: 8,
+  paddingVertical: 4,
+  borderRadius: 8,
+} as const;
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and
@@ -295,6 +303,34 @@ export function IconButton(props: {
 
 export const disclosureTitleStyle = { ...captionTextStyle, flex: 1, minWidth: 0 } as const;
 
+/**
+ * Glides what a disclosure moves when the user opens or folds it. Rows it
+ * reveals appear in place at once, so they can be pressed from the first frame.
+ */
+export function animateDisclosure() {
+  if (!reduceMotion())
+    LayoutAnimation.configureNext({ duration: 200, update: { type: 'easeInEaseOut' } });
+}
+export function DisclosureChevron(props: { open: boolean; size?: number; color?: string }) {
+  const color = () => props.color ?? C.secondary;
+  return (
+    <If
+      when={platform.idiom !== 'terminal'}
+      else={<Icon name={props.open ? 'down' : 'right'} size={props.size} color={color()} />}
+    >
+      <View
+        style={{
+          rotate: props.open ? '90deg' : '0deg',
+          transitionProperty: 'transform',
+          transitionDuration: 150,
+          transitionTimingFunction: 'ease-out',
+        }}
+      >
+        <Icon name="right" size={props.size} color={color()} />
+      </View>
+    </If>
+  );
+}
 export function Disclosure(props: {
   label: string;
   tooltip?: string;
@@ -350,7 +386,7 @@ export function Disclosure(props: {
                 </If>
               }
             >
-              <Icon name={props.open ? 'down' : 'right'} color={C.secondary} />
+              <DisclosureChevron open={props.open} />
             </If>
           }
         >

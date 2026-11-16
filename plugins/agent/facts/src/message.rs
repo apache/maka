@@ -38,6 +38,12 @@ pub enum MessageOrigin {
     Session {
         execution: crate::durable::ExecutionIdentity,
     },
+    Room {
+        session_id: String,
+        message_id: String,
+        author: crate::room::RoomAuthor,
+        reply_to: Option<String>,
+    },
     Automation {
         automation_id: String,
         title: String,
@@ -53,11 +59,55 @@ pub enum MessageOrigin {
 }
 impl MessageOrigin {
     pub fn prompt_header(&self, language: crate::language::Language) -> String {
-        format!(
+        let mut header = format!(
             "{}{}]\n",
             Self::prompt_header_prefix(language),
             serde_json::to_string(self).expect("message origin is serializable")
-        )
+        );
+        if let Self::Room {
+            session_id,
+            message_id,
+            author,
+            ..
+        } = self
+        {
+            use crate::{language::Language, room::RoomAuthor};
+            let sender = match (language, author) {
+                (Language::ZhCn, RoomAuthor::Human) => "用户在房间里 @ 了你。".into(),
+                (Language::ZhTw, RoomAuthor::Human) => "使用者在房間裡 @ 了你。".into(),
+                (_, RoomAuthor::Human) => "The user mentioned you in a Room.".into(),
+                (Language::ZhCn, RoomAuthor::Session { execution }) => {
+                    format!("Agent 会话 {} 在房间里 @ 了你。", execution.session_id)
+                }
+                (Language::ZhTw, RoomAuthor::Session { execution }) => {
+                    format!("Agent 對話 {} 在房間裡 @ 了你。", execution.session_id)
+                }
+                (_, RoomAuthor::Session { execution }) => format!(
+                    "Agent session {} mentioned you in a Room.",
+                    execution.session_id
+                ),
+            };
+            let history = serde_json::json!({
+                "sessionId": session_id,
+                "position": {"kind": "before_message", "messageId": message_id},
+            });
+            let reply = serde_json::json!({"sessionId": session_id, "replyTo": message_id});
+            let instruction = match language {
+                Language::ZhCn => format!(
+                    "如果这条消息引用了房间里之前的内容，先调用 SessionHistory({history}) 读取 @ 你之前的消息。用 SessionSend 回这个房间，地址参数为 {reply}，在 message 里填答复。\n"
+                ),
+                Language::ZhTw => format!(
+                    "如果這則訊息引用了房間裡先前的內容，先呼叫 SessionHistory({history}) 讀取 @ 你之前的訊息。用 SessionSend 回覆這個房間，地址參數為 {reply}，在 message 裡填答覆。\n"
+                ),
+                _ => format!(
+                    "If the mention refers to earlier Room context, call SessionHistory({history}) to read the messages before it. Reply in the Room using SessionSend with {reply} and your response in message.\n"
+                ),
+            };
+            header.push_str(&sender);
+            header.push('\n');
+            header.push_str(&instruction);
+        }
+        header
     }
 
     pub fn prompt_header_prefix(language: crate::language::Language) -> &'static str {
@@ -81,6 +131,23 @@ impl MessageOrigin {
             Self::Session { execution } => {
                 crate::interaction::entity_id(&execution.session_id)?;
                 crate::interaction::entity_id(&execution.turn_id)?;
+                Ok(())
+            }
+            Self::Room {
+                session_id,
+                message_id,
+                author,
+                reply_to,
+            } => {
+                crate::interaction::entity_id(session_id)?;
+                crate::interaction::entity_id(message_id)?;
+                if let crate::room::RoomAuthor::Session { execution } = author {
+                    crate::interaction::entity_id(&execution.session_id)?;
+                    crate::interaction::entity_id(&execution.turn_id)?;
+                }
+                if let Some(message) = reply_to {
+                    crate::interaction::entity_id(message)?;
+                }
                 Ok(())
             }
             Self::Goal { goal_id, objective } => {
@@ -170,6 +237,22 @@ pub struct EditableMessage {
 }
 
 impl RootSourceMessage {
+    /// Host-only provenance is not part of the visible text used by inline offsets.
+    pub fn into_attributed_input(self, language: crate::language::Language) -> MessageInput {
+        let DeliveredMessage {
+            mut content,
+            origin,
+            ..
+        } = self.message;
+        if let Some(origin) = origin {
+            content
+                .display_text
+                .get_or_insert_with(|| content.text.clone());
+            content.text.insert_str(0, &origin.prompt_header(language));
+        }
+        content
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         self.message.validate()?;
         if !self.unprepared_content.preparation.is_empty() {
@@ -263,34 +346,6 @@ fn append<T: Clone>(target: &mut Option<Vec<T>>, source: Option<&[T]>) {
             .get_or_insert_with(Vec::new)
             .extend_from_slice(source);
     }
-}
-
-// Only the executor-facing copy is labelled; canonical content and digests stay raw.
-pub fn attributed_content(
-    sources: &[RootSourceMessage],
-    language: crate::language::Language,
-) -> MessageInput {
-    let contents = sources
-        .iter()
-        .map(|source| {
-            let mut content = source.message.content.clone();
-            let header = source
-                .message
-                .origin
-                .as_ref()
-                .map_or_else(String::new, |origin| origin.prompt_header(language));
-            let offset = header.encode_utf16().count() as u64;
-            content.text.insert_str(0, &header);
-            if let Some(display) = &mut content.display_text {
-                display.insert_str(0, &header);
-            }
-            for reference in content.inline_references.iter_mut().flatten() {
-                reference.start = reference.start.saturating_add(offset);
-            }
-            content
-        })
-        .collect::<Vec<_>>();
-    aggregate(contents.iter())
 }
 
 #[cfg(test)]

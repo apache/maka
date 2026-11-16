@@ -40,8 +40,14 @@ export default {
       module: 'app/App.js',
       configuration: {
         type: 'object',
-        properties: { navigation: target, session: target, preview: target, settings: target },
-        required: ['navigation', 'session', 'preview', 'settings'],
+        properties: {
+          navigation: target,
+          session: target,
+          preview: target,
+          settings: target,
+          rooms: target,
+        },
+        required: ['navigation', 'session', 'preview', 'settings', 'rooms'],
         additionalProperties: false,
       },
       imports: {},

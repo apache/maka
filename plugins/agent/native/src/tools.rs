@@ -389,8 +389,7 @@ fn catalog_inner(
             // The actual binding owns the title meaning, never a tool alias.
             let title_kind = if binding.contract() == &file_contract {
                 match selection.method.as_str() {
-                    "readText" => Some(title::Kind::Read),
-                    "readImage" => Some(title::Kind::ReadImage),
+                    "read" => Some(title::Kind::Read),
                     "write" => Some(title::Kind::Write),
                     "edit" => Some(title::Kind::Edit),
                     "applyPatch" => Some(title::Kind::Patch),
@@ -494,7 +493,6 @@ fn catalog_inner(
                         || contract == &questions_contract
                         || contract == &computer_contract
                         || contract == &skill_contract
-                        || (contract == &file_contract && selection.method == "readImage")
                         || (contract == &process_contract && selection.method == "health"))
                         .then(|| format!("{}@{}/{}", contract.name, contract.version, selection.method))
                 });
@@ -550,8 +548,16 @@ fn catalog_inner(
             };
             basis.push(selected);
             let mut description = selection.description.clone();
-            if binding.contract() == &file_contract && selection.method == "readText" {
+            if binding.contract() == &file_contract && selection.method == "read" {
                 description.push_str("\n\nReads Session attachment and archived tool-result resources. Pass page.next unchanged to this tool to continue.");
+            }
+            if contract == &process_contract {
+                let guidance = match selection.method.as_str() {
+                    "execute" => "\n\nFor slow or long-running commands, set run_in_background: true to start a background process and return a snapshot with ref for ProcessRead, ProcessInput, BackgroundTaskHealth or ProcessStop, or set timeout_ms to enforce a deadline.",
+                    "stop" => "\n\nPass the ref from a background Shell process snapshot (run_in_background: true).",
+                    _ => "",
+                };
+                description.push_str(guidance);
             }
             Ok(ToolRegistration {
                 definition: ToolDefinition {
@@ -852,11 +858,18 @@ impl Service {
                     computer,
                 )
                 .await?;
-            let floor = if computer {
+            let mut floor = if computer {
                 access.workspace_sandbox_floor().await?
             } else {
                 access.sandbox_floor(&context.call.origin).await?
             };
+            if selection.input == ToolInput::Web
+                && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor
+            {
+                // Host HTTP still requires a destination grant. Its inherited ceiling
+                // is independent of the workspace process sandbox's base network.
+                *network = access.spec().network_approval_ceiling().clone();
+            }
             let request = services
                 .request_with_work_and_context(
                     Identity::Agent {
@@ -871,7 +884,6 @@ impl Service {
                 .with_sandbox_floor(&floor)
                 .map_err(ToolError::Failed)?;
             // Keep original request custody even if a native descriptor panics.
-            let expected_result = selection.result;
             let mut observation = None;
             let result = {
                 let mut business = Box::pin(
@@ -991,10 +1003,9 @@ impl Service {
             }
             // finish() cancels the request itself; only the original
             // Tool token can distinguish a stopped run at publication.
-            if expected_result == ToolResult::Image && result.is_ok() && cancellation.is_cancelled()
-            {
+            if mode == MethodMode::Subscription && result.is_ok() && cancellation.is_cancelled() {
                 return Err(ToolError::Failed(
-                    "Image tool cancelled before publication".into(),
+                    "Tool subscription cancelled before publication".into(),
                 ));
             }
             match (result, observation) {
