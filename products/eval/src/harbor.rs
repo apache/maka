@@ -20,14 +20,13 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::process::Command;
 
-use crate::guest::{GuestRunResult, is_terminal_execution_state};
+use crate::guest::{GuestEvidence, GuestRunResult, is_terminal_execution_state};
 
 #[derive(Debug, Clone, clap::Args)]
-pub struct HarborRunOptions {
+pub(crate) struct HarborRunOptions {
     #[arg(long = "task")]
     pub task_path: PathBuf,
     #[arg(long)]
@@ -40,12 +39,10 @@ pub struct HarborRunOptions {
     pub force_build: bool,
     #[arg(long)]
     pub base_url: Option<String>,
-    #[arg(long, default_value = "OLLAMA_API_KEY")]
+    #[arg(long)]
     pub api_key_env: String,
-    #[arg(long, default_value = "openai-compatible")]
+    #[arg(long)]
     pub provider: String,
-    #[arg(long, default_value = "eval-target")]
-    pub connection_slug: String,
     #[arg(long = "model")]
     pub model_id: String,
     #[arg(long, value_parser = parse_sandbox_mode, default_value = "danger-full-access")]
@@ -61,18 +58,63 @@ fn parse_sandbox_mode(raw: &str) -> Result<maka_sandbox::Mode, String> {
         .map_err(|_| "expected read-only, workspace-write, or danger-full-access".into())
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HarborRunOutcome {
+pub(crate) struct HarborRunOutcome {
     pub reward: Option<f64>,
-    pub verifier_result: Option<Value>,
     pub exception_info: Option<Value>,
     pub guest_result: Option<GuestRunResult>,
+    pub guest_result_path: Option<PathBuf>,
     pub transcript_path: Option<PathBuf>,
     pub harbor_result_path: PathBuf,
 }
 
-pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, String> {
+impl HarborRunOutcome {
+    pub(crate) fn to_summary_json(&self) -> Value {
+        json!({
+            "reward": self.reward,
+            "exceptionInfo": self.exception_info,
+            "guest": self.guest_result.as_ref().map(guest_summary_json),
+            "guestResultPath": self.guest_result_path,
+            "transcriptPath": self.transcript_path,
+            "harborResultPath": self.harbor_result_path,
+        })
+    }
+}
+
+fn guest_summary_json(guest: &GuestRunResult) -> Value {
+    let (status, reason_field, evidence): (&str, Option<(&str, &str)>, Option<&GuestEvidence>) =
+        match guest {
+            GuestRunResult::Completed { evidence } => ("completed", None, Some(evidence.as_ref())),
+            GuestRunResult::SubjectStopped {
+                stop_reason,
+                evidence,
+            } => (
+                "subjectStopped",
+                Some(("stopReason", stop_reason.as_str())),
+                Some(evidence.as_ref()),
+            ),
+            GuestRunResult::InfraFailed {
+                infra_error,
+                evidence,
+            } => (
+                "infraFailed",
+                Some(("infraError", infra_error.as_str())),
+                evidence.as_deref(),
+            ),
+        };
+    let mut map = Map::new();
+    map.insert("status".into(), json!(status));
+    if let Some((key, value)) = reason_field {
+        map.insert(key.into(), json!(value));
+    }
+    if let Some(ev) = evidence {
+        map.insert("stepsObserved".into(), json!(ev.steps_observed));
+        map.insert("execution".into(), json!(ev.execution));
+        map.insert("usage".into(), json!(ev.host_usage.summary));
+    }
+    Value::Object(map)
+}
+
+pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, String> {
     if opts.timeout_ms == 0 || opts.max_steps == 0 {
         return Err("maxSteps and timeoutMs must be > 0".into());
     }
@@ -152,7 +194,6 @@ pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Stri
                     "endpoint_url": opts.base_url,
                     "api_key_env": opts.api_key_env,
                     "provider": opts.provider,
-                    "connection_slug": opts.connection_slug,
                     "model_id": opts.model_id,
                     "sandbox_mode": opts.sandbox_mode,
                     "max_steps": opts.max_steps,
@@ -210,10 +251,6 @@ pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Stri
     })?;
 
     let reward = trial_json["verifier_result"]["rewards"]["reward"].as_f64();
-    let verifier_result = trial_json
-        .get("verifier_result")
-        .filter(|v| !v.is_null())
-        .cloned();
     let exception_info = trial_json
         .get("exception_info")
         .filter(|v| !v.is_null())
@@ -223,20 +260,19 @@ pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Stri
         .parent()
         .ok_or("trial result.json has no parent directory")?;
     let maka_dir = trial_dir.join("agent").join("maka");
-    let guest_result_path = maka_dir.join("guest-result.json");
-    let guest_result = if guest_result_path.is_file() {
-        let raw_guest = std::fs::read_to_string(&guest_result_path)
-            .map_err(|e| format!("failed to read {}: {e}", guest_result_path.display()))?;
-        Some(
-            serde_json::from_str::<GuestRunResult>(&raw_guest).map_err(|e| {
-                format!(
-                    "invalid guest-result.json {}: {e}",
-                    guest_result_path.display()
-                )
-            })?,
-        )
+    let guest_result_candidate = maka_dir.join("guest-result.json");
+    let (guest_result, guest_result_path) = if guest_result_candidate.is_file() {
+        let raw_guest = std::fs::read_to_string(&guest_result_candidate)
+            .map_err(|e| format!("failed to read {}: {e}", guest_result_candidate.display()))?;
+        let parsed = serde_json::from_str::<GuestRunResult>(&raw_guest).map_err(|e| {
+            format!(
+                "invalid guest-result.json {}: {e}",
+                guest_result_candidate.display()
+            )
+        })?;
+        (Some(parsed), Some(guest_result_candidate))
     } else {
-        None
+        (None, None)
     };
 
     let transcript_candidate = maka_dir.join("transcript.json");
@@ -256,15 +292,15 @@ pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Stri
 
     Ok(HarborRunOutcome {
         reward,
-        verifier_result,
         exception_info,
         guest_result,
+        guest_result_path,
         transcript_path,
         harbor_result_path: trial_result_path,
     })
 }
 
-pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String> {
+pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String> {
     if let Some(exc) = &outcome.exception_info {
         return Err(format!("harbor trial recorded exception: {exc}"));
     }
@@ -284,17 +320,10 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
         GuestRunResult::Completed { evidence } => (true, evidence.as_ref()),
         GuestRunResult::SubjectStopped { evidence, .. } => (false, evidence.as_ref()),
     };
-    if !evidence
-        .execution
-        .as_ref()
-        .is_some_and(|exec| is_terminal_execution_state(&exec.state))
-    {
-        let encoded = evidence
-            .execution
-            .as_ref()
-            .and_then(|exec| serde_json::to_string(exec).ok());
+    if !is_terminal_execution_state(&evidence.execution.state) {
+        let encoded = serde_json::to_string(&evidence.execution.state).unwrap_or_default();
         return Err(format!(
-            "guest execution receipt missing terminal state: {encoded:?}"
+            "guest execution receipt missing terminal state: {encoded}"
         ));
     }
     if !outcome
@@ -371,9 +400,9 @@ mod tests {
     ) -> HarborRunOutcome {
         HarborRunOutcome {
             reward: Some(0.0),
-            verifier_result: Some(json!({ "rewards": { "reward": 0.0 } })),
             exception_info: None,
             guest_result: Some(guest_result),
+            guest_result_path: Some(PathBuf::from("/tmp/guest-result.json")),
             transcript_path,
             harbor_result_path: PathBuf::from("/tmp/result.json"),
         }
@@ -402,6 +431,15 @@ mod tests {
             },
         );
         assert!(validate_trial_evidence(&outcome).is_ok());
+
+        let summary = outcome.to_summary_json();
+        assert_eq!(summary["guest"]["status"], json!("completed"));
+        assert_eq!(summary["guest"]["stepsObserved"], json!(2));
+        assert_eq!(summary["guest"]["usage"]["models"]["calls"], json!(1));
+        assert_eq!(summary["guestResultPath"], json!("/tmp/guest-result.json"));
+        assert!(summary.get("verifierResult").is_none());
+        assert!(summary.get("guestResult").is_none());
+        assert!(summary["guest"].get("hostUsageAttempts").is_none());
     }
 
     #[test]

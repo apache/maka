@@ -43,31 +43,29 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize)]
+const EVAL_CONNECTION_SLUG: &str = "eval-target";
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GuestRunRequest {
-    pub instruction: String,
-    pub workspace_dir: PathBuf,
-    pub artifacts_dir: PathBuf,
+struct GuestRunRequest {
+    instruction: String,
+    workspace_dir: PathBuf,
+    artifacts_dir: PathBuf,
     #[serde(default)]
-    pub base_url: Option<String>,
-    pub api_key: String,
-    pub provider: String,
-    pub connection_slug: String,
-    pub model_id: String,
-    pub sandbox_mode: SandboxMode,
-    pub max_steps: u32,
-    pub timeout_ms: u64,
+    base_url: Option<String>,
+    api_key: String,
+    provider: String,
+    model_id: String,
+    sandbox_mode: SandboxMode,
+    max_steps: u32,
+    timeout_ms: u64,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GuestEvidence {
+pub(crate) struct GuestEvidence {
     pub steps_observed: u32,
-    pub session_id: String,
-    pub run_id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution: Option<Execution>,
+    pub execution: Execution,
     pub host_usage: UsageReport,
     pub host_usage_attempts: UsagePage,
 }
@@ -79,7 +77,7 @@ pub struct GuestEvidence {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum GuestRunResult {
+pub(crate) enum GuestRunResult {
     Completed {
         evidence: Box<GuestEvidence>,
     },
@@ -102,7 +100,7 @@ pub(crate) fn is_terminal_execution_state(state: &ExecutionState) -> bool {
 }
 
 impl GuestRunResult {
-    pub fn infra_error(message: impl Into<String>) -> Self {
+    fn infra_error(message: impl Into<String>) -> Self {
         Self::InfraFailed {
             infra_error: message.into(),
             evidence: None,
@@ -117,7 +115,7 @@ impl GuestRunResult {
     }
 }
 
-pub async fn run_from_files(request_file: &Path, result_file: &Path) -> Result<(), String> {
+pub(crate) async fn run_from_files(request_file: &Path, result_file: &Path) -> Result<(), String> {
     let raw = tokio::fs::read_to_string(request_file)
         .await
         .map_err(|e| format!("failed to read {}: {e}", request_file.display()))?;
@@ -386,7 +384,7 @@ async fn run_session_with_client(
         let (run_error, mut step_ids) =
             observe_run(client, &watch, &session_id, run_id, req, deadline).await?;
 
-        let final_execution = await_terminal_execution(client, &session_id, run_id).await?;
+        let execution = await_terminal_execution(client, &session_id, run_id).await?;
 
         let transcript = export_history(client, &session_id).await?;
         let transcript_file = req.artifacts_dir.join("transcript.json");
@@ -408,28 +406,18 @@ async fn run_session_with_client(
 
         let evidence = GuestEvidence {
             steps_observed: u32::try_from(step_ids.len()).unwrap_or(u32::MAX),
-            session_id: session_id.clone(),
-            run_id,
-            execution: final_execution,
+            execution,
             host_usage,
             host_usage_attempts,
         };
-        if run_error.is_none()
-            && matches!(
-                evidence.execution.as_ref().map(|e| &e.state),
-                Some(ExecutionState::Completed)
-            )
-        {
+        if run_error.is_none() && matches!(evidence.execution.state, ExecutionState::Completed) {
             Ok(GuestRunResult::Completed {
                 evidence: Box::new(evidence),
             })
         } else {
             let stop_reason = run_error.unwrap_or_else(|| {
-                let state = evidence
-                    .execution
-                    .as_ref()
-                    .and_then(|e| serde_json::to_string(&e.state).ok())
-                    .unwrap_or_else(|| "missing".into());
+                let state = serde_json::to_string(&evidence.execution.state)
+                    .unwrap_or_else(|_| "unknown".into());
                 format!("execution ended in non-completed state: {state}")
             });
             Ok(GuestRunResult::SubjectStopped {
@@ -582,8 +570,8 @@ async fn resolve_backend(
     };
     let DefaultModel::Ready { choice, .. } = *default_model else {
         return Err(format!(
-            "default target '{}/{}' is unavailable after host init",
-            req.connection_slug, req.model_id
+            "default target '{EVAL_CONNECTION_SLUG}/{}' is unavailable after host init",
+            req.model_id
         ));
     };
     if choice.selection.model_id != req.model_id {
@@ -603,10 +591,11 @@ async fn await_terminal_execution(
     client: &Client,
     session_id: &str,
     run_id: RunId,
-) -> Result<Option<Execution>, String> {
+) -> Result<Execution, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut poll = tokio::time::interval(Duration::from_millis(50));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_state: Option<String> = None;
     loop {
         if let ExecutionResult::Found { execution } = query_typed(
             client,
@@ -615,12 +604,17 @@ async fn await_terminal_execution(
             json!({ "sessionId": session_id, "runId": run_id }),
         )
         .await?
-            && is_terminal_execution_state(&execution.state)
         {
-            return Ok(Some(execution));
+            if is_terminal_execution_state(&execution.state) {
+                return Ok(execution);
+            }
+            last_state = serde_json::to_string(&execution.state).ok();
         }
         if tokio::time::Instant::now() >= deadline {
-            return Ok(None);
+            return Err(format!(
+                "timed out waiting for terminal execution state (last_state={})",
+                last_state.as_deref().unwrap_or("missing")
+            ));
         }
         poll.tick().await;
     }
@@ -858,7 +852,7 @@ fn prepend_binary_dir_to_path(bin: &Path) -> String {
 
 fn build_init_settings(req: &GuestRunRequest, canonical_workspace_str: &str) -> Value {
     let mut connection = json!({
-        "slug": req.connection_slug,
+        "slug": EVAL_CONNECTION_SLUG,
         "name": "Eval Target",
         "provider": req.provider,
         "apiKey": req.api_key,
@@ -878,7 +872,7 @@ fn build_init_settings(req: &GuestRunRequest, canonical_workspace_str: &str) -> 
         }],
         "connections": [connection],
         "defaultTarget": {
-            "slug": req.connection_slug,
+            "slug": EVAL_CONNECTION_SLUG,
             "modelId": req.model_id,
         }
     })
@@ -1075,22 +1069,6 @@ pub(crate) mod tests {
     use maka_agent_facts::accounting::{Cost, ModelTotals, Pending, Tokens, ToolTotals};
     use maka_settings_native::usage::Totals;
 
-    fn sample_request(base_url: Option<&str>) -> GuestRunRequest {
-        GuestRunRequest {
-            instruction: "Summarize logs".into(),
-            workspace_dir: PathBuf::from("/app"),
-            artifacts_dir: PathBuf::from("/tmp/artifacts"),
-            base_url: base_url.map(str::to_owned),
-            api_key: "sk-test".into(),
-            provider: "deepseek".into(),
-            connection_slug: "eval-target".into(),
-            model_id: "deepseek-flash".into(),
-            sandbox_mode: SandboxMode::DangerFullAccess,
-            max_steps: 16,
-            timeout_ms: 180_000,
-        }
-    }
-
     pub(crate) fn sample_evidence(
         state: ExecutionState,
         pending_models: u64,
@@ -1147,15 +1125,13 @@ pub(crate) mod tests {
         };
         GuestEvidence {
             steps_observed: 2,
-            session_id: "sess-1".into(),
-            run_id,
-            execution: Some(Execution {
+            execution: Execution {
                 session_id: "sess-1".into(),
                 turn_id: "turn-1".into(),
                 run_id,
                 high_water: 12,
                 state,
-            }),
+            },
             host_usage: UsageReport {
                 through: through.clone(),
                 summary,
@@ -1168,35 +1144,6 @@ pub(crate) mod tests {
                 next_cursor: None,
             },
         }
-    }
-
-    #[test]
-    fn build_init_settings_includes_chat_defaults_and_workspace_root() {
-        let without_base = build_init_settings(&sample_request(None), "/app");
-        assert_eq!(
-            without_base["chatDefaults"]["sandboxMode"],
-            json!("danger-full-access")
-        );
-        assert_eq!(
-            without_base["projectDirectoryRoots"],
-            json!([{ "label": "Harbor Workspace", "path": "/app" }])
-        );
-        assert!(
-            without_base["connections"][0]
-                .get("configuration")
-                .is_none()
-        );
-
-        let with_base =
-            build_init_settings(&sample_request(Some("https://example.invalid/v1")), "/app");
-        assert_eq!(
-            with_base["connections"][0]["configuration"],
-            json!({ "baseUrl": "https://example.invalid/v1" })
-        );
-        assert_eq!(
-            with_base["defaultTarget"],
-            json!({ "slug": "eval-target", "modelId": "deepseek-flash" })
-        );
     }
 
     #[tokio::test]

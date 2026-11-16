@@ -35,7 +35,6 @@ class MakaHostAgent(BaseAgent):
         self._endpoint_url: str | None = kwargs.pop("endpoint_url", None) or None
         self._api_key_env: str = kwargs.pop("api_key_env")
         self._provider: str = kwargs.pop("provider")
-        self._connection_slug: str = kwargs.pop("connection_slug")
         self._model_id: str = kwargs.pop("model_id", None) or model_name or ""
         self._sandbox_mode: str = kwargs.pop("sandbox_mode")
         self._max_steps: int = int(kwargs.pop("max_steps"))
@@ -122,7 +121,6 @@ class MakaHostAgent(BaseAgent):
             "baseUrl": self._endpoint_url,
             "apiKey": api_key,
             "provider": self._provider,
-            "connectionSlug": self._connection_slug,
             "modelId": self._model_id,
             "sandboxMode": self._sandbox_mode,
             "maxSteps": self._max_steps,
