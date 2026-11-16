@@ -36,6 +36,8 @@ pub(super) fn schema() -> Schema {
             }}],
             ["skill", {"inline":true, "group":"inline", "atom":true,
                 "attrs":{"name":{"validate":"string"},"sourceId":{"default":null},"sourceOffset":{"default":0}}, "renderText":"/skill:{name}"}],
+            ["session", {"inline":true, "group":"inline", "atom":true,
+                "attrs":{"name":{"validate":"string"},"source":{"validate":"string"},"sourceId":{"default":null},"sourceOffset":{"default":0}}, "renderText":"{source}"}],
             ["text", {"group":"inline"}]
         ],
         "marks":[["source", {"attrs":{"id":{"validate":"string"},"offset":{"validate":"number"}}}]]
@@ -43,25 +45,51 @@ pub(super) fn schema() -> Schema {
     .expect("the composer schema is valid")
 }
 
-fn skill(schema: &Schema, name: &str) -> Node {
-    schema
-        .node(
-            "skill",
-            Some([("name".to_owned(), json!(name))].into()),
-            Fragment::empty(),
-            vec![],
+pub(super) fn session_reference(source: &str) -> (&str, &str) {
+    source
+        .strip_prefix("[@")
+        .and_then(|source| source.strip_suffix(')'))
+        .and_then(|source| source.rsplit_once("](maka://session/"))
+        .expect("a session token has a label and URL")
+}
+
+fn token_node(schema: &Schema, source: &str) -> Node {
+    let (kind, attrs) = if let Some(name) = source.strip_prefix("/skill:") {
+        ("skill", [("name".to_owned(), json!(name))].into())
+    } else {
+        let (name, _) = session_reference(source);
+        let mut chars = name.chars();
+        let name: String = std::iter::from_fn(|| match chars.next()? {
+            '\\' => chars.next(),
+            c => Some(c),
+        })
+        .collect();
+        (
+            "session",
+            [
+                ("name".to_owned(), json!(name)),
+                ("source".to_owned(), json!(source)),
+            ]
+            .into(),
         )
-        .expect("a skill node has its required name")
+    };
+    schema
+        .node(kind, Some(attrs), Fragment::empty(), vec![])
+        .expect("a composer token has its required attributes")
+}
+
+pub(super) fn is_token(node: &Node) -> bool {
+    matches!(node.ty().name(), "skill" | "session")
 }
 
 fn token_ranges(text: &str) -> Vec<Range<usize>> {
     static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r"(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)",
+            r"(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+|\[@(?:\\[^\r\n]|[^\]\\\r\n])+\]\(maka://session/[A-Za-z0-9_-]+\))",
         )
-        .expect("the skill invocation token pattern is valid")
+        .expect("the composer token pattern is valid")
     });
-    if !text.contains("/skill:") {
+    if !text.contains("/skill:") && !text.contains("](maka://session/") {
         return Vec::new();
     }
     let boundaries: Vec<_> = text
@@ -72,7 +100,7 @@ fn token_ranges(text: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut at = 0;
     while let Some(found) = PATTERN.captures_at(text, at) {
-        let token = found.name("token").expect("skill token capture");
+        let token = found.name("token").expect("composer token capture");
         let range = token.start()..token.end();
         if boundaries.binary_search(&range.start).is_ok()
             && boundaries.binary_search(&range.end).is_ok()
@@ -91,11 +119,8 @@ fn inline(schema: &Schema, text: &str) -> Vec<Node> {
         if at < range.start {
             out.push(schema.text(&text[at..range.start], vec![]));
         }
-        out.push(skill(
-            schema,
-            &text[range.start + "/skill:".len()..range.end],
-        ));
         at = range.end;
+        out.push(token_node(schema, &text[range]));
     }
     if at < text.len() {
         out.push(schema.text(&text[at..], vec![]));
@@ -152,6 +177,11 @@ pub(super) fn node_source(node: &Node) -> String {
             "/skill:{}",
             node.attrs()["name"].as_str().expect("a skill name is text")
         )
+    } else if node.ty().name() == "session" {
+        node.attrs()["source"]
+            .as_str()
+            .expect("a session reference has a source")
+            .into()
     } else {
         node.content().iter().map(node_source).collect()
     }
@@ -322,7 +352,7 @@ pub(super) fn tokenize(state: &EditorState) -> Option<Transaction> {
         .collect();
     let mut replacements = Vec::new();
     for span in &projection.spans {
-        let Some(node) = span.node.filter(|node| node.ty().name() == "skill") else {
+        let Some(node) = span.node.filter(|node| is_token(node)) else {
             continue;
         };
         let next = tokens.partition_point(|(range, _)| range.end <= span.doc.start);
@@ -340,15 +370,17 @@ pub(super) fn tokenize(state: &EditorState) -> Option<Transaction> {
         let existing = projection
             .spans
             .partition_point(|span| span.doc.end <= range.start);
-        if projection.spans.get(existing).is_some_and(|span| {
-            span.doc == range && span.node.is_some_and(|node| node.ty().name() == "skill")
-        }) {
+        if projection
+            .spans
+            .get(existing)
+            .is_some_and(|span| span.doc == range && span.node.is_some_and(is_token))
+        {
             continue;
         }
         if state.selection().from() >= range.start && state.selection().to() <= range.end {
             continue;
         }
-        replacements.push((range, skill(state.schema(), &raw[7..])));
+        replacements.push((range, token_node(state.schema(), raw)));
     }
     if replacements.is_empty() {
         return None;
@@ -407,7 +439,7 @@ pub(super) fn delete_atom(state: &EditorState, forward: bool) -> Option<Transact
         caret.checked_sub(1)?
     };
     let node = state.doc().node_at(at)?;
-    if node.ty().name() != "skill" {
+    if !is_token(&node) {
         return None;
     }
     let mut tr = state.tr();

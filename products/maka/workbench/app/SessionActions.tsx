@@ -19,36 +19,21 @@
 
 import { errorText, message, renderText, type UiText } from './text';
 import { tr } from './locale';
-import { cleanup, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { cleanup, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { ViewRef } from 'nsh';
-import { Button, Popover } from 'nsh/base';
-import { windowSize } from 'nsh';
+import type { SessionMenuAction } from './SessionMenu';
 import { useHost } from './host';
 import { forkTitle, sessionActionTarget, SessionRevisionConflict } from './sessionLifecycle';
 import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
-import {
-  C,
-  bodyTextStyle,
-  captionTextStyle,
-  controlDisabledStyle,
-  floatingStyle,
-  inputTextStyle,
-  inputBorderRadius,
-  menuRowHoverStyle,
-  menuRowStyle,
-  menuSeparatorStyle,
-} from './ui';
-import { Icon } from './Icon';
+import { C, inputTextStyle, inputBorderRadius } from './ui';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { SettingsButton } from './SettingsPage';
 import { SessionTree } from './SessionTree';
 import { SessionCompactionPrompt } from './SessionCompactionPrompt';
 
-type Page = 'children' | 'actions' | 'rename' | 'fork' | 'remove' | 'compaction_prompt';
 export function SessionActions(props: {
   session: SessionActionTarget;
-  anchor(): ViewRef | null;
+  action: SessionMenuAction;
   current(): boolean;
   close(): void;
   notice(message: UiText): void;
@@ -59,8 +44,11 @@ export function SessionActions(props: {
 }) {
   const host = useHost();
   const session = signal(props.session);
-  const page = signal<Page>('actions');
-  const title = signal('');
+  const action = props.action;
+  const page = () => action;
+  const title = signal(
+    props.action === 'fork' ? forkTitle(props.session.title) : props.session.title,
+  );
   const pending = signal(false);
   const error = signal<UiText>('');
   let alive = true;
@@ -70,46 +58,14 @@ export function SessionActions(props: {
   const active = () => alive && props.current();
   const sameSession = (original: SessionActionTarget) =>
     original.id === session().id && original.revision === session().revision;
-  const back = (from: Page) => {
-    if (!active() || pending() || page() !== from) return;
-    if (page() === 'actions' || !props.anchor()) props.close();
-    else {
-      page.set('actions');
-      error.set('');
-    }
+  const back = (from: SessionMenuAction) => {
+    if (active() && !pending() && page() === from) props.close();
   };
-  const menuChanged = ({ open: next }: { open: boolean }) => {
-    if (!next) back('actions');
-  };
-  effect(() => {
-    if (!active() || page() !== 'actions' || props.anchor() || pending()) return;
-    // A catalog refresh may retire the row before its action settles.
-    // Keep the operation owner until then, and retain any real failure.
-    if (error()) props.notice(error());
-    props.close();
-  });
-  const edit = ({ to, original }: { to: Page; original: SessionActionTarget }) => {
-    if (!active() || pending() || page() !== 'actions' || !sameSession(original)) return;
-    error.set('');
-    title.set(to === 'fork' ? forkTitle(original.title) : original.title);
-    page.set(to);
-  };
-  const openBeside = () => {
-    if (!active() || pending() || page() !== 'actions') return;
-    props.close();
-    props.openBeside?.();
-  };
+  const direct =
+    action === 'pin' || action === 'unpin' || action === 'archive' || action === 'restore';
   const submit = async (action: SessionAction) => {
     if (!active() || pending() || !sameSession(action.session)) return;
-    if (action.kind === 'rename' || action.kind === 'fork' || action.kind === 'remove') {
-      if (page() !== action.kind) return;
-    } else if (
-      page() !== 'actions' ||
-      (action.kind !== 'pin' &&
-        action.kind !== 'unpin' &&
-        action.kind !== (session().archived ? 'restore' : 'archive'))
-    )
-      return;
+    if (action.kind !== page()) return;
     if (
       (action.kind === 'rename' || action.kind === 'fork') &&
       (action.title !== title() || !action.title.trim())
@@ -123,6 +79,11 @@ export function SessionActions(props: {
     } catch (reason) {
       if (!active()) return;
       error.set(errorText(reason, 'Could not update the conversation.'));
+      if (direct) {
+        props.notice(error());
+        props.close();
+        return;
+      }
       if (reason instanceof SessionRevisionConflict) {
         // Keep the typed title. The refreshed snapshot supplies the next
         // explicitly requested action, never an automatic mutation retry.
@@ -157,188 +118,17 @@ export function SessionActions(props: {
       </If>
     </>
   );
+  if (direct)
+    void submit({
+      kind: action,
+      session: props.session,
+    });
+  if (props.action === 'open_beside') {
+    props.close();
+    props.openBeside?.();
+  }
   return (
     <View>
-      <If when={page() === 'actions' && !props.anchor() && pending()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Updating conversation…')}</Text>
-      </If>
-      <If when={page() === 'actions'}>
-        <Popover
-          open={props.anchor() !== null}
-          anchor={props.anchor()}
-          onOpenChange={menuChanged}
-          closeOnEscape={!pending()}
-          closeOnPressOutside={!pending()}
-          placement="bottom"
-          align="end"
-          offset={4}
-          margin={8}
-          popupStyle={{
-            ...floatingStyle(),
-            width: 220,
-            maxHeight: Math.max(0, windowSize().height - 16),
-          }}
-        >
-          <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
-            <View role="menu" accessibilityLabel={tr('Conversation actions')}>
-              <If when={props.openSession}>
-                <Button
-                  disabled={pending()}
-                  accessibilityLabel={tr('Child conversations')}
-                  role="menuitem"
-                  style={menuRowStyle()}
-                  hoverStyle={menuRowHoverStyle()}
-                  focusStyle={menuRowHoverStyle()}
-                  disabledStyle={controlDisabledStyle}
-                  onPress={inputAction(edit, { to: 'children', original: session() })}
-                >
-                  <Icon name="children" color={C.secondary} />
-                  <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
-                    {tr('Child conversations')}
-                  </Text>
-                </Button>
-              </If>
-              <If when={props.openBeside}>
-                <Button
-                  disabled={pending()}
-                  accessibilityLabel={tr('Open to the side')}
-                  role="menuitem"
-                  style={menuRowStyle()}
-                  hoverStyle={menuRowHoverStyle()}
-                  focusStyle={menuRowHoverStyle()}
-                  disabledStyle={controlDisabledStyle}
-                  onPress={inputAction(openBeside, null)}
-                >
-                  <Icon name="split" color={C.secondary} />
-                  <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
-                    {tr('Open to the side')}
-                  </Text>
-                </Button>
-              </If>
-              <If when={props.openSession || props.openBeside}>
-                <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
-              </If>
-              <Button
-                disabled={pending() || session().archived}
-                accessibilityLabel={
-                  session().pinned ? tr('Unpin conversation') : tr('Pin conversation')
-                }
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={menuRowHoverStyle()}
-                focusStyle={menuRowHoverStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(submit, {
-                  kind: session().pinned ? 'unpin' : 'pin',
-                  session: session(),
-                })}
-              >
-                <Icon name="pin" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
-                  {session().pinned ? tr('Unpin') : tr('Pin')}
-                </Text>
-              </Button>
-              <Button
-                disabled={pending() || session().archived}
-                accessibilityLabel={tr('Rename conversation')}
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={menuRowHoverStyle()}
-                focusStyle={menuRowHoverStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(edit, { to: 'rename', original: session() })}
-              >
-                <Icon name="edit" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
-                  {tr('Rename…')}
-                </Text>
-              </Button>
-              <Button
-                disabled={pending()}
-                accessibilityLabel={
-                  session().archived ? tr('Restore conversation') : tr('Archive conversation')
-                }
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={menuRowHoverStyle()}
-                focusStyle={menuRowHoverStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(submit, {
-                  kind: session().archived ? 'restore' : 'archive',
-                  session: session(),
-                })}
-              >
-                <Icon name={session().archived ? 'latest' : 'archive'} color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
-                  {session().archived ? tr('Restore') : tr('Archive')}
-                </Text>
-              </Button>
-              <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
-              <Button
-                disabled={pending()}
-                accessibilityLabel={tr('Fork conversation')}
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={menuRowHoverStyle()}
-                focusStyle={menuRowHoverStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(edit, { to: 'fork', original: session() })}
-              >
-                <Icon name="fork" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
-                  {tr('Fork…')}
-                </Text>
-              </Button>
-              <Button
-                disabled={pending() || session().archived}
-                accessibilityLabel={tr('Edit conversation compaction prompt')}
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={menuRowHoverStyle()}
-                focusStyle={menuRowHoverStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(edit, { to: 'compaction_prompt', original: session() })}
-              >
-                <Icon name="compaction" color={C.secondary} />
-                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.text }}>
-                  {tr('Compaction prompt…')}
-                </Text>
-              </Button>
-              <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
-              <Button
-                disabled={pending()}
-                accessibilityLabel={tr('Delete conversation')}
-                role="menuitem"
-                style={menuRowStyle()}
-                hoverStyle={menuRowHoverStyle()}
-                focusStyle={menuRowHoverStyle()}
-                disabledStyle={controlDisabledStyle}
-                onPress={inputAction(edit, { to: 'remove', original: session() })}
-              >
-                <Icon name="trash" color={C.danger} />
-                <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: C.danger }}>
-                  {tr('Delete…')}
-                </Text>
-              </Button>
-              <If when={renderText(error())}>
-                <Text
-                  style={[
-                    { ...bodyTextStyle, color: C.danger, padding: 8 },
-                    { userSelect: 'text' },
-                  ]}
-                >
-                  {renderText(error())}
-                </Text>
-              </If>
-              <If when={pending()}>
-                <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
-                  {tr('Updating conversation…')}
-                </Text>
-              </If>
-            </View>
-          </Scroll>
-        </Popover>
-      </If>
       <If when={page() === 'children'}>
         <SessionTree
           session={session()}
@@ -347,7 +137,7 @@ export function SessionActions(props: {
           renderActions={(target) => (
             <SessionActions
               session={target.session}
-              anchor={target.anchor}
+              action={target.action}
               current={target.current}
               close={target.close}
               notice={props.notice}

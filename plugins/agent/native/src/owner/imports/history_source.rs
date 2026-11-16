@@ -76,6 +76,7 @@ impl Owner {
                     maka_sandbox::Approval::Never
                 },
             },
+            network_approval_ceiling: None,
             backend: BackendSpec::Historical {},
             collaboration: configuration.collaboration_mode,
             language: self.resolve_language(&settings),

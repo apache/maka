@@ -279,6 +279,7 @@ async fn save_draft(
         return Err("invalid draft revision".into());
     }
     let attachments = serde_json::to_string(&edit.attachments).map_err(error)?;
+    let mentions = serde_json::to_string(&edit.mentions).map_err(error)?;
     if edit
         .attachments
         .iter()
@@ -336,12 +337,12 @@ async fn save_draft(
         return Err("draft attachment differs from its original upload receipt".into());
     }
     let row = if let Some(revision) = expected {
-            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments")
-                .bind(edit.text).bind(attachments).bind(encoded_key).bind(revision as i64)
+            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_key).bind(revision as i64)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         } else {
-            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments) VALUES (?,1,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments")
-                .bind(encoded_key).bind(edit.text).bind(attachments)
+            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to) VALUES (?,1,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(encoded_key).bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         }.ok_or("draft revision conflicts with a newer saved value")?;
     let draft = Draft {
@@ -349,6 +350,8 @@ async fn save_draft(
         text: row.try_get("text").map_err(error)?,
         attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)
             .map_err(error)?,
+        mentions: serde_json::from_str(row.try_get("mentions").map_err(error)?).map_err(error)?,
+        reply_to: row.try_get("reply_to").map_err(error)?,
     };
     Ok(draft)
 }
@@ -380,7 +383,7 @@ async fn reserve_send(
     let owner = serde_json::to_string(&draft.key).map_err(error)?;
     reserve(connection, reservation).await?;
     let consumed = sqlx::query(
-        "UPDATE drafts SET consumed=1,text='',attachments='[]' WHERE owner=? AND revision=? AND consumed=0",
+        "UPDATE drafts SET consumed=1,text='',attachments='[]',mentions='[]',reply_to=NULL WHERE owner=? AND revision=? AND consumed=0",
     )
     .bind(&owner)
     .bind(draft.revision as i64)
@@ -588,7 +591,7 @@ async fn observe(
         .map_err(error)?;
     if let Some(draft) = draft
         && accepted_send(&next, &draft.key.session_id)
-        && matches!(&next, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, .. } if value["kind"] == "started")
+        && matches!(&next, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, .. } if matches!(value["kind"].as_str(), Some("started" | "posted")))
     {
         dismiss_send(connection, id).await?;
     }

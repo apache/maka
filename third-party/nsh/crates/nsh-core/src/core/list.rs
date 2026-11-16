@@ -384,6 +384,8 @@ pub(super) struct ListState {
     /// What this layout's measurements asked to scroll so far (the `kept`
     /// that `anchor_end` gets), not yet in `offset`.
     measured_scroll: f32,
+    /// Corrections made by descendants before their enclosing cells are remeasured.
+    descendant_anchors: Vec<(u32, f32)>,
     /// Scrolls issued to the platform (`ScrollBy` items and `ScrollTo`
     /// commands); platforms count the ones they applied.
     issued: u32,
@@ -482,6 +484,7 @@ impl ListState {
             moved_by_scroll: false,
             anchored_end: f32::NAN,
             measured_scroll: 0.0,
+            descendant_anchors: Vec::new(),
             issued: 0,
             pending: Vec::new(),
             moved: Vec::new(),
@@ -790,6 +793,16 @@ impl ListState {
     pub(super) fn issue_scroll_by(&mut self, delta: f32) {
         self.issued += 1;
         self.pending.push((self.issued, PendingScroll::By(delta)));
+    }
+
+    pub(super) fn retract_scroll_by(&mut self) -> Option<f32> {
+        let (issued, PendingScroll::By(delta)) = self.pending.last().copied()? else {
+            return None;
+        };
+        debug_assert_eq!(self.issued, issued);
+        self.pending.pop();
+        self.issued -= 1;
+        Some(delta)
     }
 
     /// Records a `ScrollTo` sent to the platform.
@@ -1557,7 +1570,14 @@ impl ListState {
         let row = self.row_of(i);
         let before = self.row_size(row);
         let row_start = self.item_at(i);
-        let natural = self.measuring_natural_offset();
+        let forwarded = if self.descendant_anchors.is_empty() {
+            0.0
+        } else {
+            self.by_index.get(&i).copied().map_or(0.0, |slot| {
+                self.take_descendant_anchor(self.slots[slot as usize].cell)
+            })
+        };
+        let natural = self.measuring_natural_offset() - forwarded;
         let above_viewport = row_start < natural && row_start + before <= natural;
         let keep = above_viewport && self.keeps_visible_rows_at(natural);
         self.sizes[idx] = size;
@@ -1587,13 +1607,14 @@ impl ListState {
     /// Records the size of an extra cell; returns the anchoring change as
     /// [`ListState::measured`] does.
     pub(super) fn measured_extra(&mut self, kind: ExtraKind, size: f32) -> f32 {
-        let blocks = self.blocks();
-        let natural = self.measuring_natural_offset();
-        let keeps = self.keeps_visible_rows_at(natural);
-        let extra = &mut self.extras[kind as usize];
-        if extra.size == size {
+        let old = self.extras[kind as usize];
+        if old.size == size {
             return 0.0;
         }
+        let blocks = self.blocks();
+        let natural = self.measuring_natural_offset() - self.take_descendant_anchor(old.cell);
+        let keeps = self.keeps_visible_rows_at(natural);
+        let extra = &mut self.extras[kind as usize];
         let delta = size - extra.size;
         extra.size = size;
         self.rows_changed();
@@ -1610,6 +1631,63 @@ impl ListState {
         let scroll = self.before_viewport_changed(keep, delta, natural);
         self.measured_scroll += scroll;
         scroll
+    }
+
+    /// Whether a placed cell's extent change is anchored by this list.
+    pub(super) fn cell_anchors_scroll(&self, slot: CellSlot, cell: u32) -> Option<bool> {
+        let (start, size) = match slot {
+            CellSlot::Item(slot) => {
+                let slot = self.slots.get(slot as usize).filter(|s| s.cell == cell)?;
+                let index = slot.ready()?;
+                (self.item_at(index), self.row_size(self.row_of(index)))
+            }
+            slot => {
+                let blocks = self.blocks();
+                let (kind, start) = match slot {
+                    CellSlot::Header => (ExtraKind::Header, blocks.header),
+                    CellSlot::Footer => (ExtraKind::Footer, blocks.footer),
+                    CellSlot::Empty if self.count == 0 => (ExtraKind::Empty, blocks.body),
+                    _ => return None,
+                };
+                let extra = self.extras[kind as usize];
+                if extra.cell != cell {
+                    return None;
+                }
+                (start, extra.size)
+            }
+        };
+        let natural = self.natural_offset() - self.descendant_anchor(cell);
+        Some(self.inverted || (start < natural && start + size <= natural))
+    }
+
+    fn descendant_anchor(&self, cell: u32) -> f32 {
+        self.descendant_anchors
+            .iter()
+            .find_map(|&(key, delta)| (key == cell).then_some(delta))
+            .unwrap_or(0.0)
+    }
+
+    fn take_descendant_anchor(&mut self, cell: u32) -> f32 {
+        self.descendant_anchors
+            .iter()
+            .position(|&(key, _)| key == cell)
+            .map_or(0.0, |at| self.descendant_anchors.swap_remove(at).1)
+    }
+
+    pub(super) fn note_descendant_anchor(&mut self, cell: u32, by: f32) {
+        if let Some((_, delta)) = self
+            .descendant_anchors
+            .iter_mut()
+            .find(|(key, _)| *key == cell)
+        {
+            *delta += by;
+        } else {
+            self.descendant_anchors.push((cell, by));
+        }
+    }
+
+    pub(super) fn clear_descendant_anchors(&mut self) {
+        self.descendant_anchors.clear();
     }
 
     /// Predicts the platform's upper clamp before its scroll report arrives.

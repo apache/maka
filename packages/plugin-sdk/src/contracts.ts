@@ -174,6 +174,26 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      messageId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      attachmentIndex: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'attachmentIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'uploaded',
                       },
                       id: {
@@ -363,6 +383,26 @@ export const contracts: {
             $defs: {
               AgentAttachmentImageSource: {
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'room',
+                      },
+                      messageId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      attachmentIndex: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'attachmentIndex'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -645,6 +685,17 @@ export const contracts: {
             title: 'AgentList',
             type: 'object',
             properties: {
+              kind: {
+                description: 'Omission includes both Agent conversations and Rooms.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
@@ -678,6 +729,10 @@ export const contracts: {
             additionalProperties: false,
             required: ['filter', 'position'],
             $defs: {
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
+              },
               AgentSessionFilter: {
                 type: 'string',
                 enum: ['all', 'archived', 'needs_you'],
@@ -846,6 +901,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -946,6 +1004,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -964,6 +1023,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -1906,6 +1969,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -2006,6 +2072,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -2024,6 +2091,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -6188,6 +6259,12 @@ export const contracts: {
             title: 'AgentCreate',
             type: 'object',
             properties: {
+              kind: {
+                description:
+                  'Rooms receive messages without running a model. Their mentions address Agent sessions.',
+                $ref: '#/$defs/AgentSessionKind',
+                default: 'agent',
+              },
               presetId: {
                 description: 'Apply a preset at creation; mutually exclusive with backend.',
                 type: ['string', 'null'],
@@ -6239,6 +6316,10 @@ export const contracts: {
             additionalProperties: false,
             required: ['title', 'labels', 'workspace'],
             $defs: {
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -6445,6 +6526,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -6545,6 +6629,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -6563,6 +6648,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -10288,6 +10377,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -10388,6 +10480,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -10406,6 +10499,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -11075,6 +11172,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -11175,6 +11275,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -11193,6 +11294,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -12287,6 +12392,51 @@ export const contracts: {
                     additionalProperties: false,
                   },
                   {
+                    description: 'A Room message and its following messages.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages preceding this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages following this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
                     description:
                       'Reveal this exact row field from its beginning, including empty tool rows.',
                     type: 'object',
@@ -12517,6 +12667,20 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'room',
+                  },
+                  page: {
+                    $ref: '#/$defs/AgentRoomHistoryPage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'page'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'ready',
                   },
                   through: {
@@ -12556,6 +12720,199 @@ export const contracts: {
               },
             ],
             $defs: {
+              AgentRoomHistoryPage: {
+                type: 'object',
+                properties: {
+                  items: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomMessage',
+                    },
+                  },
+                  through: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  before: {
+                    type: ['string', 'null'],
+                  },
+                  after: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['items', 'through'],
+              },
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/RoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
@@ -12719,10 +13076,6 @@ export const contracts: {
                   'tool',
                 ],
               },
-              RunId: {
-                type: 'string',
-                format: 'uuid',
-              },
               ModelPartIdentity: {
                 type: 'object',
                 properties: {
@@ -12825,6 +13178,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -12869,23 +13245,23 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
-              },
-              ExecutionIdentity: {
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    $ref: '#/$defs/RunId',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId'],
               },
               HistoryCompaction: {
                 description:
@@ -12901,31 +13277,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['durationMs'],
-              },
-              AgentHistoryAttachment: {
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  mimeType: {
-                    type: 'string',
-                  },
-                  bytes: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  kind: {
-                    $ref: '#/$defs/AttachmentKind',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'mimeType', 'bytes', 'kind'],
-              },
-              AttachmentKind: {
-                type: 'string',
-                enum: ['image', 'pdf', 'doc', 'code', 'other'],
               },
               HistoryTurnTiming: {
                 description:
@@ -13448,12 +13799,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
@@ -14434,6 +14784,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -14478,6 +14851,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -14495,6 +14884,35 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'turnId', 'runId'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
             },
           },
@@ -15472,6 +15890,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -15572,6 +15993,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -15590,6 +16012,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -16676,6 +17102,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -16776,6 +17205,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -16794,6 +17224,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -18688,6 +19122,17 @@ export const contracts: {
             title: 'AgentList',
             type: 'object',
             properties: {
+              kind: {
+                description: 'Omission includes both Agent conversations and Rooms.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
@@ -18721,6 +19166,10 @@ export const contracts: {
             additionalProperties: false,
             required: ['filter', 'position'],
             $defs: {
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
+              },
               AgentSessionFilter: {
                 type: 'string',
                 enum: ['all', 'archived', 'needs_you'],
@@ -18889,6 +19338,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -18989,6 +19441,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -19007,6 +19460,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -20428,6 +20885,51 @@ export const contracts: {
                     additionalProperties: false,
                   },
                   {
+                    description: 'A Room message and its following messages.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages preceding this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description: 'Room messages following this message.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after_message',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
                     description:
                       'Reveal this exact row field from its beginning, including empty tool rows.',
                     type: 'object',
@@ -20658,6 +21160,20 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'room',
+                  },
+                  page: {
+                    $ref: '#/$defs/AgentRoomHistoryPage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'page'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'ready',
                   },
                   through: {
@@ -20697,6 +21213,199 @@ export const contracts: {
               },
             ],
             $defs: {
+              AgentRoomHistoryPage: {
+                type: 'object',
+                properties: {
+                  items: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentRoomMessage',
+                    },
+                  },
+                  through: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  before: {
+                    type: ['string', 'null'],
+                  },
+                  after: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['items', 'through'],
+              },
+              AgentRoomMessage: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    $ref: '#/$defs/RoomAuthor',
+                  },
+                  content: {
+                    $ref: '#/$defs/AgentRoomContent',
+                  },
+                  replyTo: {
+                    type: ['string', 'null'],
+                  },
+                  mentions: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'sequence', 'at', 'author', 'content', 'mentions', 'deliveries'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
+              },
+              ExecutionIdentity: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentRoomContent: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  attachments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'attachments'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
@@ -20860,10 +21569,6 @@ export const contracts: {
                   'tool',
                 ],
               },
-              RunId: {
-                type: 'string',
-                format: 'uuid',
-              },
               ModelPartIdentity: {
                 type: 'object',
                 properties: {
@@ -20966,6 +21671,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -21010,23 +21738,23 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
-              },
-              ExecutionIdentity: {
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  runId: {
-                    $ref: '#/$defs/RunId',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'turnId', 'runId'],
               },
               HistoryCompaction: {
                 description:
@@ -21042,31 +21770,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['durationMs'],
-              },
-              AgentHistoryAttachment: {
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  mimeType: {
-                    type: 'string',
-                  },
-                  bytes: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  kind: {
-                    $ref: '#/$defs/AttachmentKind',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'mimeType', 'bytes', 'kind'],
-              },
-              AttachmentKind: {
-                type: 'string',
-                enum: ['image', 'pdf', 'doc', 'code', 'other'],
               },
               HistoryTurnTiming: {
                 description:
@@ -21589,12 +22292,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
@@ -22099,6 +22801,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -22143,6 +22868,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -22164,6 +22905,35 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               HistoryRowAddress: {
                 description:
@@ -22530,12 +23300,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
@@ -23244,6 +24013,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -23344,6 +24116,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -23362,6 +24135,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -24190,6 +24967,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -24290,6 +25070,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -24308,6 +25089,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -25453,6 +26238,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -25553,6 +26341,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -25571,6 +26360,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -27763,6 +28556,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -27807,6 +28623,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -27828,6 +28660,35 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               AgentQueueKind: {
                 type: 'string',
@@ -28550,6 +29411,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -28650,6 +29514,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -28668,6 +29533,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -33569,6 +34438,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -33669,6 +34541,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -33687,6 +34560,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -34324,6 +35201,18 @@ export const contracts: {
             title: 'AgentSend',
             type: 'object',
             properties: {
+              mentions: {
+                description: 'Agent Session IDs explicitly addressed by this Room message.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                default: [],
+              },
+              replyTo: {
+                description: 'Original message ID in the destination Room.',
+                type: ['string', 'null'],
+              },
               onComplete: {
                 description:
                   'Best-effort notification to the caller when this message finishes,\nfails or is cancelled, and once per pending interaction or authority blocker\nthat needs attention. An attention notification keeps the completion watch.\nWhen registration is confirmed, the caller can yield rather than poll.\nThe watch and task admission commit together;\ncheck the completion field of the send receipt.',
@@ -34576,6 +35465,29 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'posted',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  deliveries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/RoomDelivery',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId', 'messageId', 'deliveries'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'rejected',
                   },
                   sessionId: {
@@ -34678,6 +35590,44 @@ export const contracts: {
               },
             ],
             $defs: {
+              RoomDelivery: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'accepted',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'reason'],
+                  },
+                ],
+              },
               AgentSendRejection: {
                 type: 'string',
                 enum: [
@@ -35794,6 +36744,9 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  kind: {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
                   appliedPreset: {
                     anyOf: [
                       {
@@ -35894,6 +36847,7 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: [
+                  'kind',
                   'parentSessionId',
                   'branch',
                   'dataSource',
@@ -35912,6 +36866,10 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentSessionKind: {
+                type: 'string',
+                enum: ['agent', 'room'],
               },
               AppliedPreset: {
                 description:
@@ -37309,6 +38267,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -37353,6 +38334,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -37374,6 +38371,35 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               HistoryRowAddress: {
                 description:
@@ -37740,12 +38766,11 @@ export const contracts: {
                   },
                   image: {
                     description:
-                      'Canonical content is an image; this does not grant artifact reads.',
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
                     type: 'boolean',
                   },
                   images: {
-                    description:
-                      'Images the model received beside non-image content, readable by index.',
+                    description: 'Images in the model projection, readable by index.',
                     type: 'integer',
                     format: 'uint32',
                     minimum: 0,
@@ -38868,6 +39893,22 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'room',
+                  },
+                  through: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'through'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'events',
                   },
                   through: {
@@ -39594,6 +40635,29 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'room',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      author: {
+                        $ref: '#/$defs/RoomAuthor',
+                      },
+                      replyTo: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId', 'messageId', 'author'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'automation',
                       },
                       automationId: {
@@ -39638,6 +40702,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -39655,6 +40735,35 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'turnId', 'runId'],
+              },
+              RoomAuthor: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'human',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      execution: {
+                        $ref: '#/$defs/ExecutionIdentity',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'execution'],
+                  },
+                ],
               },
               AgentQueueKind: {
                 type: 'string',
@@ -46579,7 +47688,7 @@ export const contracts: {
             },
           },
         },
-        readImage: {
+        read: {
           mode: 'subscription',
           input: {
             type: 'object',
@@ -46607,134 +47716,113 @@ export const contracts: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           output: {
-            oneOf: [
+            anyOf: [
               {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'chunk',
-                  },
-                  mimeType: {
-                    type: 'string',
-                    pattern: '^image/(png|jpeg|gif|webp)$',
-                  },
-                  totalBytes: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
-                  offset: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 0,
-                    maximum: 9007199254740991,
-                  },
-                  data: {
-                    type: 'string',
-                    minLength: 1,
-                    maxLength: 43692,
-                  },
-                },
-                required: ['kind', 'mimeType', 'totalBytes', 'offset', 'data'],
+                $ref: '#/$defs/AgentToolImageFrame',
               },
               {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'complete',
-                  },
-                  detail: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/ImageDetail',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                required: ['kind'],
+                $ref: '#/$defs/WorkspaceFileResult',
               },
             ],
-            description:
-              'Bounded image bytes from a selected subscription. Complete is a producer\nreturn value, never an emitted item or an executor-cleanup acknowledgement.',
-            title: 'AgentToolImageFrame',
+            title: 'WorkspaceReadFrame',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
+              AgentToolImageFrame: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'chunk',
+                      },
+                      mimeType: {
+                        type: 'string',
+                        pattern: '^image/(png|jpeg|gif|webp)$',
+                      },
+                      totalBytes: {
+                        type: 'integer',
+                        format: 'uint',
+                        minimum: 1,
+                        maximum: 9007199254740991,
+                      },
+                      offset: {
+                        type: 'integer',
+                        format: 'uint',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                      data: {
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 43692,
+                      },
+                    },
+                    required: ['kind', 'mimeType', 'totalBytes', 'offset', 'data'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'complete',
+                      },
+                      detail: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ImageDetail',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                ],
+                description:
+                  'Bounded image bytes from a selected subscription. Complete is a producer\nreturn value, never an emitted item or an executor-cleanup acknowledgement.',
+              },
               ImageDetail: {
                 type: 'string',
                 enum: ['auto', 'low', 'high', 'original'],
               },
+              WorkspaceFileResult: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'completed',
+                      },
+                      value: true,
+                    },
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      message: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'message'],
+                    description:
+                      'A known completed failure. Uncertain external effects use the original receipt.',
+                  },
+                ],
+              },
             },
-          },
-          resources: {},
-        },
-        readText: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              path: {
-                type: 'string',
-                minLength: 1,
-              },
-              offset: {
-                type: 'integer',
-                format: 'uint',
-                minimum: 0,
-                maximum: 9007199254740991,
-              },
-              limit: {
-                type: 'integer',
-                format: 'uint',
-                minimum: 1,
-                maximum: 9007199254740991,
-              },
-            },
-            required: ['path'],
-            title: 'ReadInput',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           resources: {},
         },
@@ -48377,11 +49465,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -48432,6 +49530,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -49012,11 +50114,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -49067,6 +50179,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -49347,11 +50463,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -49402,6 +50528,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -50416,11 +51546,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -50471,6 +51611,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -50764,11 +51908,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -50819,6 +51973,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -51099,11 +52257,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -51154,6 +52322,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -51464,11 +52636,21 @@ export const contracts: {
                   visibility: {
                     $ref: '#/$defs/ShellVisibility',
                   },
+                  initiator: {
+                    $ref: '#/$defs/ShellInitiator',
+                  },
                   result: {
                     $ref: '#/$defs/ShellSnapshot',
                   },
                 },
-                required: ['sessionId', 'ownership', 'correlation', 'visibility', 'result'],
+                required: [
+                  'sessionId',
+                  'ownership',
+                  'correlation',
+                  'visibility',
+                  'initiator',
+                  'result',
+                ],
               },
               Ownership: {
                 oneOf: [
@@ -51519,6 +52701,10 @@ export const contracts: {
               ShellVisibility: {
                 type: 'string',
                 enum: ['model', 'user'],
+              },
+              ShellInitiator: {
+                type: 'string',
+                enum: ['user', 'agent'],
               },
               ShellSnapshot: {
                 type: 'object',
@@ -52007,6 +53193,16 @@ export const contracts: {
               displayName: {
                 type: 'string',
               },
+              avatar: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ProfileAvatar',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               workspaceInstructions: {
                 type: 'boolean',
               },
@@ -52027,6 +53223,7 @@ export const contracts: {
               'defaultCompactionPrompt',
               'revision',
               'displayName',
+              'avatar',
               'workspaceInstructions',
               'defaultSandboxMode',
               'shell',
@@ -52074,6 +53271,10 @@ export const contracts: {
               Language: {
                 type: 'string',
                 enum: ['en', 'zh-CN', 'zh-TW'],
+              },
+              ProfileAvatar: {
+                type: 'string',
+                enum: ['blue', 'green', 'rose', 'amber'],
               },
               Mode: {
                 description:
@@ -56999,6 +58200,16 @@ export const contracts: {
                       displayName: {
                         type: 'string',
                       },
+                      avatar: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ProfileAvatar',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'displayName'],
@@ -57084,6 +58295,10 @@ export const contracts: {
               LanguagePreference: {
                 type: 'string',
                 enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+              },
+              ProfileAvatar: {
+                type: 'string',
+                enum: ['blue', 'green', 'rose', 'amber'],
               },
               Mode: {
                 description:
@@ -65335,11 +66550,11 @@ export const contracts: {
               source: {
                 $ref: '#/$defs/WebSource',
               },
-              credentialConfigured: {
+              customAvailable: {
                 type: 'boolean',
               },
             },
-            required: ['basis', 'available', 'source', 'credentialConfigured'],
+            required: ['basis', 'available', 'source', 'customAvailable'],
             title: 'WebCapture',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
@@ -65361,7 +66576,7 @@ export const contracts: {
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
               },
             },
           },
@@ -65378,6 +66593,12 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              settingsRevision: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                default: null,
+              },
             },
             title: 'WebKey',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -65422,6 +66643,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -65449,8 +66684,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -65462,12 +66703,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -65498,19 +66918,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -65527,6 +66965,12 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              settingsRevision: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                default: null,
+              },
             },
             title: 'WebKey',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -65571,6 +67015,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -65598,8 +67056,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -65611,12 +67075,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -65647,19 +67290,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -65823,12 +67484,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
             },
           },
@@ -65872,6 +67712,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -65899,8 +67753,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -65912,12 +67772,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -65948,19 +67987,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -65976,6 +68033,12 @@ export const contracts: {
                 type: ['integer', 'null'],
                 format: 'uint64',
                 minimum: 0,
+              },
+              settingsRevision: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                default: null,
               },
             },
             title: 'WebKey',
@@ -66021,6 +68084,20 @@ export const contracts: {
               },
               {
                 type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_settings',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
@@ -66048,8 +68125,14 @@ export const contracts: {
                   credential: {
                     $ref: '#/$defs/WebCredential',
                   },
+                  presets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WebSearchPreset',
+                    },
+                  },
                 },
-                required: ['settings', 'credential'],
+                required: ['settings', 'credential', 'presets'],
               },
               WebSettings: {
                 type: 'object',
@@ -66061,12 +68144,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -66097,19 +68359,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },
@@ -66230,8 +68510,14 @@ export const contracts: {
               credential: {
                 $ref: '#/$defs/WebCredential',
               },
+              presets: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/WebSearchPreset',
+                },
+              },
             },
-            required: ['settings', 'credential'],
+            required: ['settings', 'credential', 'presets'],
             title: 'WebSnapshot',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
@@ -66245,12 +68531,191 @@ export const contracts: {
                   source: {
                     $ref: '#/$defs/WebSource',
                   },
+                  backend: {
+                    $ref: '#/$defs/WebBackend',
+                    default: {
+                      kind: 'tavily',
+                    },
+                  },
                 },
                 required: ['enabled', 'source'],
               },
               WebSource: {
                 type: 'string',
-                enum: ['model', 'tavily'],
+                enum: ['model', 'custom'],
+              },
+              WebBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tavily',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'brave',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'exa',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'serper',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'custom',
+                      },
+                      endpoint: {
+                        $ref: '#/$defs/WebSearchEndpoint',
+                      },
+                    },
+                    required: ['kind', 'endpoint'],
+                  },
+                ],
+              },
+              WebSearchEndpoint: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  url: {
+                    type: 'string',
+                  },
+                  method: {
+                    $ref: '#/$defs/WebSearchMethod',
+                  },
+                  query: {
+                    $ref: '#/$defs/WebParameter',
+                  },
+                  limit: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebParameter',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  urlParameters: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  body: {
+                    type: 'object',
+                    additionalProperties: true,
+                  },
+                  auth: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/WebAuth',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  results: {
+                    $ref: '#/$defs/WebResultMapping',
+                  },
+                },
+                required: ['url', 'method', 'query', 'urlParameters', 'body', 'results'],
+              },
+              WebSearchMethod: {
+                type: 'string',
+                enum: ['get', 'post'],
+              },
+              WebParameter: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebParameterLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name'],
+              },
+              WebParameterLocation: {
+                type: 'string',
+                enum: ['query', 'body'],
+              },
+              WebAuth: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/WebAuthLocation',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  prefix: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'name', 'prefix'],
+              },
+              WebAuthLocation: {
+                type: 'string',
+                enum: ['header', 'query', 'body'],
+              },
+              WebResultMapping: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  list: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: ['string', 'null'],
+                  },
+                  url: {
+                    type: 'string',
+                  },
+                  snippet: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['list', 'url'],
+                description:
+                  'JSON pointers, with an empty list pointer selecting the response root.',
               },
               WebCredential: {
                 type: 'object',
@@ -66281,19 +68746,37 @@ export const contracts: {
                 additionalProperties: false,
                 properties: {
                   credential_revision: {
-                    type: 'integer',
+                    type: ['integer', 'null'],
                     format: 'uint64',
                     minimum: 0,
+                  },
+                  settings_revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                    default: null,
                   },
                   outcome: {
                     $ref: '#/$defs/WebCheckOutcome',
                   },
                 },
-                required: ['credential_revision', 'outcome'],
+                required: ['outcome'],
               },
               WebCheckOutcome: {
                 type: 'string',
                 enum: ['valid', 'invalid_credentials', 'rate_limited', 'network_error', 'timeout'],
+              },
+              WebSearchPreset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  endpoint: {
+                    $ref: '#/$defs/WebSearchEndpoint',
+                  },
+                },
+                required: ['id', 'endpoint'],
               },
             },
           },

@@ -121,25 +121,20 @@ impl Web {
         }))
     }
     async fn capture(&self) -> Result<Capture, String> {
-        let snapshot = self.repository.snapshot().await.map_err(message)?;
+        let current = self.repository.search_settings().await.map_err(message)?;
         Ok(Capture {
             basis: Basis {
-                revision: snapshot.revision,
-                credential_revision: snapshot.credential.revision,
+                revision: current.revision,
+                credential_revision: current.credential_revision(),
             },
-            available: snapshot.settings.enabled,
-            source: snapshot.settings.source,
-            credential_configured: snapshot.credential.configured,
+            available: current.settings.enabled,
+            source: current.settings.source,
+            custom_available: current.available(),
         })
     }
-    async fn current(&self, basis: &Basis, search: bool) -> Result<bool, String> {
-        let capture = self.capture().await?;
-        Ok(capture.available
-            && capture.basis.revision == basis.revision
-            && (!search
-                || (capture.source == maka_web_api::settings::Source::Tavily
-                    && capture.basis.credential_revision == basis.credential_revision
-                    && capture.credential_configured)))
+    async fn fetch_is_current(&self, basis: &Basis) -> Result<bool, String> {
+        let (revision, settings) = self.repository.settings().await.map_err(message)?;
+        Ok(settings.enabled && revision == basis.revision)
     }
 }
 struct Service(Arc<Web>);
@@ -171,6 +166,13 @@ impl Handler for Service {
             match name.as_str() {
                 "save" => {
                     let input: Set = serde_json::from_value(input).map_err(message)?;
+                    if let Err(message) =
+                        crate::search::SearchEndpoint::resolve(&input.settings.backend)
+                    {
+                        return encode(Update::InvalidSettings {
+                            message: message.into(),
+                        });
+                    }
                     match owner.repository.save(input.revision, input.settings).await {
                         Ok(_) => encode(Update::Updated {
                             snapshot: owner.repository.snapshot().await.map_err(message)?,
@@ -211,6 +213,15 @@ impl Handler for Service {
                 }
                 "saveKey" | "deleteKey" => {
                     let input: Key = serde_json::from_value(input).map_err(message)?;
+                    let current = owner.repository.search_settings().await.map_err(message)?;
+                    if current.revision != input.settings_revision
+                        || current.credential_revision() != input.revision
+                    {
+                        return encode(Update::Changed);
+                    }
+                    let Some(key) = current.key else {
+                        return encode(Update::InvalidKey);
+                    };
                     let secret = if name == "saveKey" {
                         let resource = context
                             .attachments()
@@ -235,7 +246,7 @@ impl Handler for Service {
                         .repository
                         .credentials
                         .write(maka_capabilities::credentials::Write {
-                            key: maka_web_api::settings::KEY.into(),
+                            key,
                             expected_revision: input.revision,
                             secret,
                         })
@@ -254,21 +265,47 @@ impl Handler for Service {
                 }
                 "fetch" | "search" => {
                     let call: Call<Value> = serde_json::from_value(input).map_err(message)?;
-                    if !owner.current(&call.basis, name == "search").await? {
-                        return encode(ResultValue::Failed { message: "Web settings changed or access is disabled; request a new model step".into() });
-                    }
-                    let input = call.input;
+                    let (purpose, search) = if name == "search" {
+                        let current = owner.repository.search_settings().await.map_err(message)?;
+                        if !current.matches(&call.basis) {
+                            return encode(ResultValue::Failed { message: "Web settings changed or access is disabled; request a new model step".into() });
+                        }
+                        (
+                            network::Purpose::Search {
+                                basis: call.basis,
+                                key: current.key.clone(),
+                            },
+                            Some(current),
+                        )
+                    } else {
+                        if !owner.fetch_is_current(&call.basis).await? {
+                            return encode(ResultValue::Failed { message: "Web settings changed or access is disabled; request a new model step".into() });
+                        }
+                        (network::Purpose::Fetch { basis: call.basis }, None)
+                    };
                     let authority = network::Access::new(
                         owner.clone(),
                         context.scope(),
                         native.ok_or("web_requires_native_call")?,
-                        call.basis,
-                        name == "search",
+                        purpose,
                         failure.clone(),
                     )?;
                     let client = Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority)));
-                    let result = if name == "fetch" {
-                        let input: Fetch = serde_json::from_value(input).map_err(message)?;
+                    let result = if let Some(current) = search {
+                        let input: maka_web_api::search::Query =
+                            serde_json::from_value(call.input).map_err(message)?;
+                        crate::search::Search::new(client)
+                            .query(context.scope(), &current.endpoint, current.secret(), &input)
+                            .await
+                            .map(|results| {
+                                serde_json::to_value(results).expect("Web search results")
+                            })
+                            .map_err(|error| match error {
+                                crate::search::Error::Settlement(error) => error,
+                                error => maka_agent_facts::tools::ToolError::Failed(message(error)),
+                            })
+                    } else {
+                        let input: Fetch = serde_json::from_value(call.input).map_err(message)?;
                         crate::fetch::Fetcher::new(client)
                             .fetch(context.scope(), &input.url)
                             .await
@@ -280,33 +317,6 @@ impl Handler for Service {
                                 ) => maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
                                     "Web HTTP cleanup unconfirmed".into(),
                                 ),
-                                error => maka_agent_facts::tools::ToolError::Failed(message(error)),
-                            })
-                    } else {
-                        let input: maka_web_api::search::Query =
-                            serde_json::from_value(input).map_err(message)?;
-                        let (_, settings) = owner.repository.settings().await.map_err(message)?;
-                        if settings.source != maka_web_api::settings::Source::Tavily {
-                            return encode(ResultValue::Failed {
-                                message: "Search is supplied by the selected model".into(),
-                            });
-                        }
-                        let key = owner
-                            .repository
-                            .credentials
-                            .read(maka_web_api::settings::KEY.into())
-                            .await
-                            .map_err(message)?
-                            .and_then(|r| r.secret)
-                            .ok_or("web_search_key_missing")?;
-                        crate::search::Search::new(client)
-                            .query(context.scope(), &key, &input)
-                            .await
-                            .map(|results| {
-                                serde_json::to_value(results).expect("Web search results")
-                            })
-                            .map_err(|error| match error {
-                                crate::search::Error::Settlement(error) => error,
                                 error => maka_agent_facts::tools::ToolError::Failed(message(error)),
                             })
                     };

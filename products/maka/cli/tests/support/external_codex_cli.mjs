@@ -19,14 +19,23 @@
 
 import net from 'node:net';
 import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-const invocation = process.argv.slice(2).join(' ');
+const args = process.argv.slice(2);
+const managedAgent = join(process.env.HOME, '.maka', 'external-agents', 'antigravity', 'agent');
 const antigravity =
-  invocation === 'acp --process-per-session --dangerously-skip-permissions --agent maka';
-if (!antigravity && invocation !== 'app-server --listen stdio://')
+  args.length === 7 &&
+  args.slice(0, 6).join(' ') ===
+    'acp --process-per-session --dangerously-skip-permissions --agent maka --add-dir' &&
+  args[6] === managedAgent;
+if (!antigravity && args.join(' ') !== 'app-server --listen stdio://')
   throw Error('Unexpected external agent invocation');
+if (antigravity) {
+  const profile = await readFile(join(managedAgent, '.agents', 'agents', 'maka.md'), 'utf8');
+  if (!profile.startsWith('---\nname: maka\n')) throw Error('Missing Maka agent definition');
+}
 const address = new URL(process.env.FAKE_CONTROL);
 if (address.hostname !== '127.0.0.1') throw Error('Controller must be owned loopback');
 const rootPid = Number(process.env.FAKE_ROOT_PID);
@@ -212,6 +221,7 @@ async function hostEffect() {
     !names.includes('exec') ||
     !names.includes('wait') ||
     !names.includes('cua_repl') ||
+    names.includes('ReadImage') ||
     names.includes('Shell') ||
     names.includes('SendUser') ||
     names.includes('sleep')
@@ -305,11 +315,43 @@ async function acp(id, method, params) {
     if (job) throw Error('Duplicate ACP task prompt');
     job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length));
     const checkpoint = `ACP checkpoint ${job.label}`;
-    await event('session/update', {
-      sessionId: thread,
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: checkpoint } },
-    });
+    if (job.label !== 'ACP-followup') {
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: checkpoint },
+        },
+      });
+    }
     await record('ready', { thread, checkpoint, promptId: id });
+    if (job.label === 'ACP-room') {
+      const [header] = text.split('\n');
+      if (header === text || !header.endsWith(']'))
+        throw Error('Room mention source missing from ACP prompt');
+      const source = JSON.parse(header.slice(header.indexOf('{'), -1));
+      if (source.kind !== 'room' || source.author.kind !== 'human')
+        throw Error('ACP prompt did not identify the Room and human sender');
+      const { sessionId, messageId } = source;
+      const history = await codeResult(
+        `text(await tools.SessionHistory(${JSON.stringify({
+          sessionId,
+          position: { kind: 'before_message', messageId },
+        })}));`,
+      );
+      if (history.kind !== 'room' || history.page.items[0]?.id !== source.replyTo)
+        throw Error('ACP agent did not read the earlier Room post');
+      const posted = await codeResult(
+        `text(await tools.SessionSend(${JSON.stringify({
+          sessionId,
+          replyTo: messageId,
+          message: 'ACP reply in the Room',
+        })}));`,
+      );
+      if (posted.kind !== 'posted') throw Error('ACP agent did not reply in the Room');
+      await record('room_replied');
+      return reply(id, { stopReason: 'end_turn' });
+    }
     if (job.label === 'ACP-schedule') {
       const task = await codeResult(
         'text(await tools.ScheduledTask(' +
@@ -328,7 +370,29 @@ async function acp(id, method, params) {
       await record('scheduled', { thread, taskId: task.taskId, promptId: id });
       return;
     }
-    if (job.label === 'ACP-followup') await readArchivedResult();
+    if (job.label === 'ACP-followup') {
+      await readArchivedResult();
+      const png =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3XcAAAAASUVORK5CYII=';
+      await writeFile('read-fixture.png', Buffer.from(png, 'base64'));
+      const image = await callTool('exec', {
+        code: "image(await tools.Read({ path: 'read-fixture.png' }));",
+        yield_time_ms: 10000,
+      });
+      if (
+        !image.content.some(
+          (part) => part.type === 'image' && part.mimeType === 'image/png' && part.data === png,
+        )
+      )
+        throw Error('Read did not return the original PNG as MCP image content');
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'ACP follow-up final reply' },
+        },
+      });
+    }
     if (job.label === 'ACP-followup' || job.label === 'ACP-wake')
       return reply(id, { stopReason: 'end_turn' });
     return;

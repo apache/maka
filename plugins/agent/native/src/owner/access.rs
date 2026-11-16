@@ -291,7 +291,7 @@ impl RunAccess {
         .await
         .map_err(|error| ToolError::Failed(error.to_string()))?
         .map_err(ToolError::Failed)?;
-        if !protect_external_files {
+        if !protect_external_files || matches!(floor, maka_sandbox::Sandbox::Disabled) {
             return Ok(floor);
         }
         let owner = self.owner().map_err(ToolError::Failed)?;

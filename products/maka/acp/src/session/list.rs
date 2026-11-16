@@ -78,7 +78,11 @@ pub(super) async fn read(
         json!({"kind":"start"})
     };
     let page: SessionPage = client
-        .query("agent", "list", json!({"filter":"all","position":position}))
+        .query(
+            "agent",
+            "list",
+            json!({"kind":"agent","filter":"all","position":position}),
+        )
         .await?;
     let mut results = Vec::new();
     for session in page.sessions {

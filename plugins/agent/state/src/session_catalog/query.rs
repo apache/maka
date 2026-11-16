@@ -24,14 +24,15 @@ use rusqlite::{OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde_json::Value;
 
 const BASE: &str = "WITH base AS (
- SELECT s.id,s.revision,s.created_at,max(s.updated_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0)) AS updated_at,s.archived,s.configuration,
+ SELECT s.id,s.revision,s.created_at,max(s.updated_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0),COALESCE((SELECT MAX(at) FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id),0)) AS updated_at,s.archived,s.configuration,
  b.id AS binding_id,b.workspace_json,b.permission_epoch,b.metadata_epoch,
  COALESCE(k.revision,0) AS control_revision,k.read_message,k.lineage,
- CASE WHEN source.run IS NULL THEN COALESCE(a.terminal_sequence,0)>COALESCE(k.read_through,0)
+ CASE WHEN room.session IS NOT NULL THEN COALESCE(a.last_sequence,0)>COALESCE(k.read_through,0)
+ WHEN source.run IS NULL THEN COALESCE(a.terminal_sequence,0)>COALESCE(k.read_through,0)
  ELSE EXISTS(SELECT 1 FROM agent_catalog_runs unread_run WHERE unread_run.owner=?1 AND unread_run.session=s.id AND unread_run.admission_sequence>source.sequence AND unread_run.terminal_sequence>max(COALESCE(k.read_through,0),source.sequence)) END AS has_unread,
- (SELECT message FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1) AS tail,
- (SELECT at FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1) AS message_at,
- (SELECT preview FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1) AS preview,
+ COALESCE((SELECT message FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id ORDER BY sequence DESC LIMIT 1),(SELECT message FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1)) AS tail,
+ COALESCE((SELECT at FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id ORDER BY sequence DESC LIMIT 1),(SELECT at FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1)) AS message_at,
+ COALESCE((SELECT substr(COALESCE(json_extract(body_json,'$.content.display_text'),json_extract(body_json,'$.content.text')),1,160) FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id ORDER BY sequence DESC LIMIT 1),(SELECT preview FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0) ORDER BY sequence DESC LIMIT 1)) AS preview,
  (SELECT MIN(p.created_at) FROM agent_interaction_pending p JOIN agent_interaction_requests q ON q.request=p.request
   JOIN agent_run_specs spec ON spec.run=q.run JOIN agent_catalog_runs pending_run ON pending_run.run=q.run WHERE p.session=s.id AND spec.owner=?1 AND pending_run.live=1 AND pending_run.admission_sequence>COALESCE(source.sequence,0)) AS pending_since,
  r.run,r.terminal,r.stopped,r.blocked AS run_blocked,r.unknown_effects AS run_unknown,r.cleanup_pending AS run_cleanup,r.late_sequence,
@@ -47,14 +48,16 @@ const BASE: &str = "WITH base AS (
  (SELECT e.schema_version FROM agent_catalog_events e WHERE e.owner=?1 AND e.session=s.id ORDER BY revision DESC LIMIT 1) AS control_schema,
  s.catalog_unpinned AS unpinned,
  source.run AS source_run,COALESCE(source.sequence,0)>COALESCE(k.read_through,0) AS source_unread,
+ room.session IS NOT NULL AS is_room,
  -max(s.created_at,COALESCE((SELECT m.at FROM agent_catalog_runs admitted
   JOIN agent_catalog_messages m ON m.owner=admitted.owner AND m.session=admitted.session AND m.sequence=admitted.admission_sequence
   WHERE admitted.owner=?1 AND admitted.session=s.id AND admitted.admission_sequence>COALESCE(source.sequence,0)
-  ORDER BY admitted.admission_sequence DESC LIMIT 1),0),COALESCE(CAST(json_extract(source_summary.summary_json,'$.summary.updatedAt') AS INTEGER),0)) AS recency
+  ORDER BY admitted.admission_sequence DESC LIMIT 1),0),COALESCE((SELECT m.at FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id ORDER BY m.sequence DESC LIMIT 1),0),COALESCE(CAST(json_extract(source_summary.summary_json,'$.summary.updatedAt') AS INTEGER),0)) AS recency
  FROM session_control s
  JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1
  LEFT JOIN workspace_bindings b ON b.id=json_extract(s.configuration,'$.workspace.id')
  LEFT JOIN agent_catalog_controls k ON k.owner=?1 AND k.session=s.id
+ LEFT JOIN agent_rooms room ON room.owner=?1 AND room.session=s.id
  LEFT JOIN agent_session_history source ON source.sequence=(SELECT marker.sequence FROM agent_session_history marker INDEXED BY agent_session_history_historical WHERE marker.owner=?1 AND marker.session=s.id AND marker.historical=1 ORDER BY marker.sequence DESC LIMIT 1)
  LEFT JOIN agent_history_snapshot_adoptions source_adoption ON source_adoption.run=source.run
  LEFT JOIN agent_history_snapshot_catalog source_summary ON source_summary.snapshot=source_adoption.snapshot
@@ -71,10 +74,11 @@ const BASE: &str = "WITH base AS (
  AND instr(COALESCE(json_extract(s.configuration,'$.title'),''),?9)>0
  AND (?10 IS NULL OR json_extract(s.configuration,'$.parentSessionId')=?10)
  AND (?11=0 OR (?11=1 AND s.archived=0) OR (?11=2 AND s.archived=1))
+ AND (?14 IS NULL OR (room.session IS NOT NULL)=?14)
 ), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
 const FILTER: &str =
     "(?12=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?13=0 OR needs_you=1)";
-const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread";
+const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
 
 #[derive(Clone)]
 struct Key {
@@ -161,6 +165,9 @@ impl Selection {
                 .into(),
                 i64::from(filter.base.roots_only).into(),
                 i64::from(filter.needs_you_only).into(),
+                filter
+                    .room
+                    .map_or(SqlValue::Null, |room| i64::from(room).into()),
             ],
         })
     }
@@ -194,7 +201,7 @@ impl Selection {
         let mut values = self.values.clone();
         values.push(id.to_owned().into());
         let sql =
-            format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?14");
+            format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?15");
         Ok(c.query_row(&sql, params_from_iter(values), |r| {
             Ok(Key {
                 unpinned: r.get(0)?,
@@ -219,7 +226,7 @@ impl Selection {
                 key.recency.into(),
                 key.id.clone().into(),
             ]);
-            format!("AND (unpinned,recency,id){operator}(?14,?15,?16)")
+            format!("AND (unpinned,recency,id){operator}(?15,?16,?17)")
         } else {
             String::new()
         };
@@ -319,6 +326,7 @@ struct Raw {
     control_schema: Option<u32>,
     source_run: Option<String>,
     source_unread: bool,
+    is_room: bool,
 }
 impl Raw {
     fn read(r: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -358,6 +366,7 @@ impl Raw {
             control_schema: r.get(32)?,
             source_run: r.get(33)?,
             source_unread: r.get(34)?,
+            is_room: r.get(35)?,
         })
     }
     fn decode(self) -> Result<Record, StoreError> {
@@ -453,6 +462,7 @@ impl Raw {
             _ => return Err(invalid("catalog message index incomplete")),
         };
         Ok(Record {
+            is_room: self.is_room,
             metadata: SessionRecord {
                 id: self.id,
                 revision,
@@ -570,6 +580,7 @@ pub(crate) fn records_in_snapshot(
                 include_archived: true,
             },
             needs_you_only: false,
+            room: None,
         },
         limit: 128,
     };

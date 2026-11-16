@@ -210,6 +210,7 @@ export interface ComposerCompletionSource {
     query: string;
     backend: AgentBackendPreference;
   }): Promise<ServiceMethods['agent']['skillCandidates']['output']>;
+  sessions(query: string): Promise<AgentSession[]>;
   pathLabel(path: WorkspacePath): string;
 }
 

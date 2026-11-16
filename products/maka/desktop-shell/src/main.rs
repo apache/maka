@@ -46,6 +46,8 @@ use direct2d as backend;
 mod host;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(unix)]
+mod login_path;
 #[cfg(target_os = "linux")]
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -195,6 +197,10 @@ fn launch() -> Result<(), String> {
         .join(if cfg!(windows) { "maka.exe" } else { "maka" });
     let mut command = std::process::Command::new(&launcher);
     command.arg("desktop");
+    #[cfg(unix)]
+    if let Some(path) = login_path::resolve() {
+        command.env("PATH", path);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

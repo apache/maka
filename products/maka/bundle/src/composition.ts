@@ -140,6 +140,7 @@ const defaultUi = {
       navigation: { instance: 'conversations-ui', id: 'navigation' },
       session: { instance: 'conversations-ui', id: 'session' },
       preview: { instance: 'conversations-ui', id: 'preview' },
+      rooms: { instance: 'conversations-ui', id: 'rooms' },
       settings: { instance: 'settings-ui', id: 'Settings' },
     },
   },
@@ -177,6 +178,7 @@ const settingsUiImports = [
   'management',
   'receipts',
   'skills',
+  'web',
 ];
 const workspaceUiImports = ['agent', 'terminal'];
 
@@ -474,7 +476,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         const contract =
           tool.target.kind === 'import' &&
           tool.target.name === 'files' &&
-          ['readText', 'write', 'edit', 'applyPatch'].includes(tool.method)
+          ['read', 'write', 'edit', 'applyPatch'].includes(tool.method)
             ? 'maka.workspace.Files'
             : tool.target.kind === 'import' &&
                 tool.target.name === 'processes' &&
@@ -642,7 +644,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
             ...(configuration.executorProcesses?.setupDirectory ? ['launch'] : []),
           ],
         },
-        { provider: keys['workspace-files'], export: 'files', methods: ['readText', 'write'] },
+        { provider: keys['workspace-files'], export: 'files', methods: ['read', 'write'] },
         { provider: keys.forms, export: 'forms', methods: ['ask'] },
       ].map((grant) => ({
         ...grant,

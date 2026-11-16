@@ -53,6 +53,8 @@ pub(crate) struct ComposerInputProps {
     #[prop(default)]
     pub read_only: Prop<bool>,
     #[prop(default)]
+    pub open_session_references: Prop<bool>,
+    #[prop(default)]
     pub placeholder: Prop<String>,
     #[prop(default)]
     pub accessibility_label: Prop<String>,
@@ -205,6 +207,11 @@ pub(crate) struct ComposerKey {
     pub key: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, JsObject)]
+pub(crate) struct ComposerSessionReference {
+    pub session_id: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Event)]
 pub(crate) enum ComposerInputEvent {
     #[args(event)]
@@ -217,6 +224,8 @@ pub(crate) enum ComposerInputEvent {
     Submit(ComposerSubmit),
     #[args(event)]
     Key(ComposerKey),
+    #[args(event)]
+    OpenSessionReference(ComposerSessionReference),
     Focus,
     Blur,
     #[args(event)]
@@ -281,17 +290,22 @@ impl ComposerInputApi {
     }
 }
 
-const SKILL_LINE_HEIGHT: Points = px(16.0);
+const TOKEN_LINE_HEIGHT: Points = px(16.0);
 
-struct SkillView(ComposerInputProps);
+struct ReferenceView(ComposerInputProps, Scope<ComposerInputEvent>);
 
-impl NodeView for SkillView {
+impl NodeView for ReferenceView {
     fn create(&self, _cx: &NodeViewCx, node: &Node) -> AnyElement {
         let props = self.0;
         let name = node.attrs()["name"]
             .as_str()
-            .expect("a skill node's name is text")
-            .to_owned();
+            .expect("a composer token's name is text");
+        let is_session = node.ty().name() == "session";
+        let label = if is_session {
+            format!("@{name}")
+        } else {
+            name.to_owned()
+        };
         let icon_size = 13.0;
         let icon = if nsh_base::terminal::is_terminal() {
             text("📖").into_element()
@@ -324,9 +338,25 @@ impl NodeView for SkillView {
                 }
             })
             .text_color(move || AdaptiveColor::from(Hsla::from(props.token_color.get())))
-            .pointer_events(PointerEvents::None)
-            .child(icon)
-            .child(text(name).line_height(SKILL_LINE_HEIGHT));
+            .when(!is_session, |chip| chip.child(icon))
+            .child(text(label.clone()).line_height(TOKEN_LINE_HEIGHT));
+        let chip = if is_session && props.read_only.get() && props.open_session_references.get() {
+            let (_, id) = model::session_reference(node.attrs()["source"].as_str().unwrap());
+            let session_id = id.to_owned();
+            let cx = self.1;
+            chip.cursor(Cursor::Pointer)
+                .role(AccessibilityRole::Link)
+                .label(label)
+                .on_press(move |_: &()| {
+                    cx.emit(ComposerInputEvent::OpenSessionReference(
+                        ComposerSessionReference {
+                            session_id: session_id.clone(),
+                        },
+                    ));
+                })
+        } else {
+            chip.pointer_events(PointerEvents::None)
+        };
         message::attachment(node, chip.into_element())
     }
 }
@@ -553,7 +583,9 @@ pub(crate) fn ComposerInput(
     ];
     let session = EditorSession::new(
         state(&schema, &initial, plugins.clone(), &source(props)),
-        NodeViews::new().with("skill", Arc::new(SkillView(props))),
+        NodeViews::new()
+            .with("skill", Arc::new(ReferenceView(props, cx)))
+            .with("session", Arc::new(ReferenceView(props, cx))),
     );
     cx.methods(ComposerInputApi {
         session: session.clone(),

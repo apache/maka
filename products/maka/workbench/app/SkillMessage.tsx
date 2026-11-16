@@ -20,18 +20,22 @@
 import { computed, Text, View } from 'nsh';
 import { SkillInput } from './SkillInput';
 import { SourceText } from './SourceText';
-import { hasSkillToken, skillTextGroups } from './skillTokenText';
+import { hasComposerToken, skillTextGroups } from './skillTokenText';
 import { C, bodyTextStyle } from './ui';
 import type { Row } from './history';
 
 /** Message selection uses the same atom model and source serializer as the composer. */
-export function SkillMessage(props: { row(): Row; sourceId: string }) {
+export function SkillMessage(props: {
+  row(): Row;
+  sourceId: string;
+  openSession?(sessionId: string): void;
+}) {
   const fragments = () => props.row().fragments ?? [{ offset: 0, text: props.row().text }];
   const groups = computed(() => skillTextGroups(fragments()));
-  const hasSkills = computed(() => groups().some(hasSkillToken));
+  const hasTokens = computed(() => groups().some(hasComposerToken));
   return (
     <If
-      when={hasSkills()}
+      when={hasTokens()}
       else={
         <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
           <SourceText row={props.row} sourceId={props.sourceId} />
@@ -45,6 +49,9 @@ export function SkillMessage(props: { row(): Row; sourceId: string }) {
               accessibilityLabel={group().text}
               value={group().text}
               readonly
+              onOpenSessionReference={
+                props.openSession ? ({ sessionId }) => props.openSession?.(sessionId) : undefined
+              }
               autoFocus={false}
               placeholder=""
               sourceId={props.sourceId}

@@ -255,7 +255,7 @@ impl Owner {
         let _cancel = cancellation.clone().drop_guard();
         let operation = async {
             input.validate().map_err(failed)?;
-            let (source, _) = crate::model::Source::select(
+            let source = crate::model::Source::select(
                 self.configuration.clone(),
                 self.catalog.clone(),
                 self.credentials.clone(),

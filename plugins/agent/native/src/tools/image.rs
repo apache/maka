@@ -17,13 +17,14 @@
  * under the License.
  */
 
-//! A selected image subscription produces owned bytes, never a path or bearer.
+//! A streamed tool image produces owned bytes, never a path or bearer.
 use crate::contract::ImageFrame;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_agent_facts::tool_output::{ImageDetail, ToolSuccess};
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call::Attachments;
 use maka_host_runtime::application::{Context, ServiceTarget};
+use maka_workspace_api::files::ReadFrame;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -45,7 +46,7 @@ pub(super) async fn read(
     loop {
         let value = tokio::select! {
             biased;
-            () = cancellation.cancelled() => return Err(failed("Image tool cancelled")),
+            () = cancellation.cancelled() => return Err(failed("Tool subscription cancelled")),
             value = subscription.recv() => value,
         };
         let Some(value) = value else {
@@ -56,10 +57,13 @@ pub(super) async fn read(
     let completion = subscription.completion().await;
     completion.cleanup.map_err(ToolError::CleanupUnconfirmed)?;
     let value = completion.result.map_err(failed)?;
-    let Ok(ImageFrame::Complete { detail }) = serde_json::from_value::<ImageFrame>(value) else {
-        return Err(failed("Image producer did not complete"));
-    };
-    image.finish(detail)
+    match serde_json::from_value::<ReadFrame>(value).map_err(failed)? {
+        ReadFrame::Image(ImageFrame::Complete { detail }) => image.finish(detail),
+        ReadFrame::File(result) if image.descriptor.is_none() => serde_json::to_value(result)
+            .map(ToolSuccess::from)
+            .map_err(failed),
+        _ => Err(failed("Tool subscription returned a mismatched result")),
+    }
 }
 
 #[derive(Default)]

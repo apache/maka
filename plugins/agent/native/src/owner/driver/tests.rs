@@ -452,6 +452,9 @@ impl Rig {
                 "continueRun",
                 "models",
                 "observe",
+                "history",
+                "markRead",
+                "toolImage",
                 "tools",
                 "predictNextMessage",
                 "compact",
@@ -631,7 +634,7 @@ impl Rig {
         else {
             return Err("local model configuration was not committed".into());
         };
-        let (source, _) = crate::model::Source::select(
+        let source = crate::model::Source::select(
             owner.configuration.clone(),
             owner.catalog.clone(),
             owner.credentials.clone(),
@@ -730,6 +733,7 @@ impl Rig {
                 sandbox,
                 approval: maka_sandbox::Approval::Never,
             },
+            network_approval_ceiling: None,
             backend: match &external_backend {
                 Some(external) => BackendSpec::Executor {
                     selection: external.accepted.selection.clone(),
@@ -1515,6 +1519,134 @@ mod bounded_risk {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finished_run_with_undelivered_cell_notification_can_be_forked() -> TestResult<()> {
+        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+        use maka_agent_facts::{
+            cells::{CellVmBinding, SessionPublication},
+            session::ForkPosition,
+        };
+
+        let mut rig = Rig::new()?;
+        let outcome = AssertUnwindSafe(async {
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+            let cell = running_cell_with_returned_parent(&rig, attempt).await?;
+            rig.finish_model_request(attempt, None).await?;
+            let result = ContentBlob::json(&ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts: vec![],
+                body: ReturnedToolResult {
+                    output: ToolOutput::Text("finished".into()),
+                    projection: DurableToolProjection::Text {
+                        text: "finished".into(),
+                    },
+                    is_error: false,
+                    loaded_tools: Default::default(),
+                },
+            })?;
+            let completed =
+                ContentBlob::json(&maka_agent_facts::cells::CellObservation::Completed {
+                    cell_id: cell,
+                    content: vec![],
+                    result: json!("finished"),
+                })?;
+            let operation = Uuid::new_v4();
+            rig.append(
+                vec![
+                    Fact::Cell {
+                        event: CellEvent::VmBound {
+                            cell,
+                            binding: CellVmBinding {
+                                runtime: "fixture".into(),
+                                version: 1,
+                                descriptor: completed.reference().clone(),
+                            },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ChildPrepared {
+                            cell,
+                            operation,
+                            name: "finish".into(),
+                            semantics: ToolSemantics::FinishTurn,
+                            input: result.reference().clone(),
+                            resources: vec![],
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ChildAdmitted { cell, operation },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::LocalChildReturned {
+                            cell,
+                            operation,
+                            result: result.reference().clone(),
+                            is_error: false,
+                            settlement: ToolSettlement::Returned,
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::Completed {
+                            cell,
+                            result: completed.reference().clone(),
+                            publication: SessionPublication {
+                                values: Default::default(),
+                                loaded_tools: None,
+                            },
+                        },
+                    },
+                ],
+                vec![result, completed],
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let engine = Engine::new(driver.state.clone());
+            assert!(matches!(
+                engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?,
+                DriverExit::Terminal {
+                    terminal: Terminal::Completed,
+                    ..
+                }
+            ));
+            driver.state.rebuild(run).await?;
+            let view = driver.state.frontier(run).await?;
+            assert!(!view.cells[&cell].notifications.is_empty());
+            driver
+                .state
+                .session_history(view.spec.owner, session)
+                .fork_cut(ForkPosition::End)
+                .await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        match outcome {
+            Ok(result) => result?,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn parallel_tool_results_stay_together_when_a_cell_callback_returns_late()
     -> TestResult<()> {
         use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
@@ -1550,7 +1682,23 @@ mod bounded_risk {
             let (second, _) = rig
                 .tool(attempt, "exec", "second-exec", json!({"code":"second"}))
                 .await?;
-            rig.finish_model_request(attempt, None).await?;
+            rig.append(
+                vec![
+                    Fact::ModelClosed {
+                        attempt,
+                        outcome: maka_agent_facts::accounting::Outcome::Success,
+                        diagnostic: None,
+                        usage: Default::default(),
+                        protocol: json!({"finishReason": maka_agent_facts::model::ModelFinishReason::ToolCalls}),
+                    },
+                    Fact::ModelCleanupObserved {
+                        attempt,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                ],
+                vec![],
+            )
+            .await?;
 
             let completed = ContentBlob::json(&CellObservation::Completed {
                 cell_id: cell,
@@ -3729,9 +3877,9 @@ mod model_recovery {
             if capture
                 != json!({
                     "basis": {"revision": null, "credentialRevision": null},
-                    "available": false,
+                    "available": true,
                     "source": "model",
-                    "credentialConfigured": false
+                    "customAvailable": false
                 })
             {
                 return Err(format!("unexpected WebStatus result: {capture}").into());

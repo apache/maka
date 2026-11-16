@@ -33,7 +33,15 @@ pub struct ResourceUpdate {
     pub ownership: Ownership,
     pub correlation: serde_json::Value,
     pub visibility: maka_plugin_core::shell_run::ShellVisibility,
+    pub initiator: ShellInitiator,
     pub result: ShellSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellInitiator {
+    User,
+    Agent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

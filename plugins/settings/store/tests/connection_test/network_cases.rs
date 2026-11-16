@@ -33,6 +33,7 @@ async fn native_effects_share_network_policy_snapshot_without_superseding_cosmet
             0,
             Personalization {
                 display_name: "Unrelated edit".into(),
+                ..Personalization::default()
             },
         )
         .await

@@ -192,7 +192,7 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
             ("data", Value(host.json(data)?.0[0] as u32)),
         ])?,
         EventPayload::Json(value) => Value(host.json(value)?.0[0] as u32),
-        EventPayload::TextLayout(lines) => {
+        EventPayload::TextLayout { lines, .. } => {
             let mut values = Vec::new();
             for l in lines {
                 values.push(object([

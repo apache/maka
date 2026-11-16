@@ -778,6 +778,7 @@ impl Owner {
             },
         ];
         let create = Create {
+            kind: SessionKind::Agent,
             preset_id: None,
             backend: None,
             automatic_title: false,

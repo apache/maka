@@ -192,6 +192,7 @@ pub enum ToolInput {
 #[schemars(rename = "AgentToolResult")]
 pub enum ToolResult {
     Json,
+    /// A subscription that streams image data and can return JSON at completion.
     Image,
     /// Session-owned Computer REPL output, retained with its original receipt.
     Computer,
@@ -238,6 +239,8 @@ pub fn configuration_schema() -> Value {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentList")]
 pub struct List {
+    /// Omission includes both Agent conversations and Rooms.
+    pub kind: Option<SessionKind>,
     pub filter: SessionFilter,
     /// Include archived conversations alongside active ones.
     #[serde(default)]
@@ -305,10 +308,22 @@ pub enum SessionPosition {
         cursor: String,
     },
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentSessionKind")]
+pub enum SessionKind {
+    #[default]
+    Agent,
+    Room,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCreate")]
 pub struct Create {
+    /// Rooms receive messages without running a model. Their mentions address Agent sessions.
+    #[serde(default)]
+    pub kind: SessionKind,
     /// Apply a preset at creation; mutually exclusive with backend.
     pub preset_id: Option<crate::preset::PresetId>,
     /// Initial next-turn preference; admission resolves it again.
@@ -674,6 +689,11 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    /// Agent Session IDs explicitly addressed by this Room message.
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    /// Original message ID in the destination Room.
+    pub reply_to: Option<String>,
     /// Best-effort notification to the caller when this message finishes,
     /// fails or is cancelled, and once per pending interaction or authority blocker
     /// that needs attention. An attention notification keeps the completion watch.
@@ -803,6 +823,7 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    pub kind: SessionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_preset: Option<crate::preset::AppliedPreset>,
     /// Session that initiated creation, independent of fork ancestry and task ownership.
@@ -862,6 +883,11 @@ pub struct SessionPage {
 )]
 #[schemars(rename = "AgentSendResult")]
 pub enum SendResult {
+    Posted {
+        session_id: String,
+        message_id: String,
+        deliveries: Vec<maka_agent_facts::room::RoomDelivery>,
+    },
     Rejected {
         session_id: String,
         reason: SendRejection,
@@ -1167,6 +1193,9 @@ pub struct Part {
 )]
 #[schemars(rename = "AgentDeliveryPage")]
 pub enum DeliveryPage {
+    Room {
+        through: u64,
+    },
     Events {
         through: u64,
         next_after: u64,
@@ -1630,6 +1659,9 @@ pub enum HistorySearchPage {
 )]
 #[schemars(rename = "AgentHistoryPage")]
 pub enum HistoryPage {
+    Room {
+        page: RoomHistoryPage,
+    },
     Ready {
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
         through: Option<u64>,
@@ -1639,6 +1671,76 @@ pub enum HistoryPage {
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Cursor>")]
         after: Option<Cursor>,
     },
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomHistoryPage")]
+pub struct RoomHistoryPage {
+    pub items: Vec<RoomMessage>,
+    pub through: u64,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomMessage")]
+pub struct RoomMessage {
+    pub id: String,
+    pub sequence: u64,
+    pub at: u64,
+    pub author: maka_agent_facts::room::RoomAuthor,
+    pub content: RoomContent,
+    pub reply_to: Option<String>,
+    pub mentions: Vec<String>,
+    pub deliveries: Vec<maka_agent_facts::room::RoomDelivery>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomContent")]
+pub struct RoomContent {
+    pub text: String,
+    pub attachments: Vec<HistoryAttachment>,
+}
+
+impl From<maka_agent_facts::room::RoomPage> for RoomHistoryPage {
+    fn from(page: maka_agent_facts::room::RoomPage) -> Self {
+        Self {
+            through: page.through,
+            before: page.before,
+            after: page.after,
+            items: page
+                .items
+                .into_iter()
+                .map(|message| RoomMessage {
+                    id: message.id,
+                    sequence: message.sequence,
+                    at: message.at,
+                    author: message.author,
+                    content: RoomContent {
+                        text: message.content.display_text.unwrap_or(message.content.text),
+                        attachments: message
+                            .content
+                            .attachments
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|attachment| HistoryAttachment {
+                                name: attachment.name,
+                                mime_type: attachment.mime_type,
+                                bytes: attachment.bytes,
+                                kind: attachment.kind,
+                            })
+                            .collect(),
+                    },
+                    reply_to: message.reply_to,
+                    mentions: message.mentions,
+                    deliveries: message.deliveries,
+                })
+                .collect(),
+        }
+    }
 }
 
 impl From<maka_agent_ports::session::history::Page> for HistoryPage {
@@ -1830,6 +1932,11 @@ pub struct AttachmentImageRead {
 )]
 #[schemars(rename = "AgentAttachmentImageSource")]
 pub enum AttachmentImageSource {
+    Room {
+        #[schemars(length(min = 1))]
+        message_id: String,
+        attachment_index: u32,
+    },
     Uploaded {
         #[schemars(length(min = 1))]
         id: String,

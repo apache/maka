@@ -44,6 +44,7 @@ type Services = {
   authentication: ServiceMethods['settingsAuthentication'];
   setup: ServiceMethods['settingsSetup'];
   management: ServiceMethods['deploymentManager'];
+  web: ServiceMethods['workspaceWeb'];
   terminal: ServiceMethods['terminal'];
 };
 type Endpoint = keyof Services;
@@ -252,6 +253,17 @@ export function createHost(application: UiHost) {
 }
 
 export type Host = ReturnType<typeof createHost>;
+export async function searchAgentSessions(host: Host, query: string) {
+  const page = await host.query('agent', 'list', {
+    kind: 'agent',
+    filter: 'all',
+    scope: { kind: 'all' },
+    position: { kind: 'start' },
+    titleQuery: query,
+  });
+  return page.sessions;
+}
+
 const hostContext = context<Host | null>(null);
 export const HostProvider = hostContext.Provider;
 export function useHost(): Host {

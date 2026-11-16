@@ -34,6 +34,8 @@ import type {
   MessageOrigin,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
+export type ConversationHistoryPage = Extract<AgentHistoryPage, { kind: 'ready' }>;
+
 export function historyRowKey(position: HistoryRowAddress, field?: string): string {
   const identity =
     position.kind === 'live'
@@ -86,9 +88,11 @@ export function historyTurnKey(
 
 /** Prepare the latest turn before exposing its first history window. */
 export async function readHistoryTail(
-  page: AgentHistoryPage,
-  readOlder: (cursor: NonNullable<AgentHistoryPage['before']>) => Promise<AgentHistoryPage | null>,
-): Promise<AgentHistoryPage | null> {
+  page: ConversationHistoryPage,
+  readOlder: (
+    cursor: NonNullable<ConversationHistoryPage['before']>,
+  ) => Promise<ConversationHistoryPage | null>,
+): Promise<ConversationHistoryPage | null> {
   const chunks = [...page.chunks];
   const turnKey = historyTurnKey(chunks.at(-1));
   let before = page.before;
@@ -182,8 +186,10 @@ export function activityMessage(origin: MessageOrigin | null | undefined): boole
 
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
-  // A Bot Turn started because a worker finished names that worker.
-  return origin?.kind === 'bot_worker' || origin?.kind === 'session_completion'
+  if (origin?.kind === 'room') return origin.sessionId;
+  return origin?.kind === 'bot_worker' ||
+    origin?.kind === 'discovery_report' ||
+    origin?.kind === 'session_completion'
     ? origin.sessionId
     : null;
 }
@@ -219,7 +225,7 @@ export function historyFollowPosition(
 export function openingUserMessage(
   rows: readonly Row[],
   turnKey: string | undefined,
-  before: AgentHistoryPage['before'] | undefined,
+  before: ConversationHistoryPage['before'] | undefined,
 ): Row | null {
   if (turnKey === undefined) return null;
   let precedingTurnLoaded = before === null;

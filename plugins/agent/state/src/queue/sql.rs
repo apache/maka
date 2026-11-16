@@ -388,7 +388,7 @@ pub(crate) fn retract_interactive(
         if !is_interactive(&entry.request, &source)
             || matches!(
                 source.message.origin,
-                Some(maka_agent_facts::message::MessageOrigin::BotWorker { .. })
+                Some(maka_agent_facts::message::MessageOrigin::DiscoveryReport { .. })
             )
         {
             continue;

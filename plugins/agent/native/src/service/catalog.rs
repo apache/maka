@@ -54,6 +54,7 @@ pub(super) fn catalog_filter(input: &List) -> Filter {
                 || matches!(input.filter, SessionFilter::Archived),
         },
         needs_you_only: matches!(input.filter, SessionFilter::NeedsYou),
+        room: input.kind.map(|kind| kind == SessionKind::Room),
     }
 }
 
@@ -165,6 +166,11 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
             position: origin.position.clone(),
         });
     Ok(Session {
+        kind: if record.is_room {
+            SessionKind::Room
+        } else {
+            SessionKind::Agent
+        },
         parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,

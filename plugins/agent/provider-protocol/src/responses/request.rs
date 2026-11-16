@@ -106,6 +106,7 @@ pub enum Tool {
 pub enum SearchKind {
     Search,
     Preview,
+    Deepseek,
 }
 
 impl Content {
@@ -154,7 +155,12 @@ impl Tool {
                 json!({"type":"custom", "name":name, "description":description, "format":format})
             }
             Self::WebSearch { kind, args } => {
-                let mut value = json!({"type": match kind { SearchKind::Search => "web_search", SearchKind::Preview => "web_search_preview" }});
+                let tool_type = match kind {
+                    SearchKind::Search => "web_search",
+                    SearchKind::Preview => "web_search_preview",
+                    SearchKind::Deepseek => "deepseek_web_search",
+                };
+                let mut value = json!({"type": tool_type});
                 let args = args.as_object().ok_or_else(|| {
                     Error::Invalid("provider tool arguments must be an object".into())
                 })?;
@@ -262,7 +268,7 @@ fn encode_items(input: &[Input], reasoning: ReasoningMode, options: &Value) -> R
             }
             Input::ToolOutput { id, custom, output } => items.push(json!({"type": if *custom && reasoning == ReasoningMode::Encrypted { "custom_tool_call_output" } else { "function_call_output" }, "call_id":id, "output":output.encode()})),
             Input::ProviderResult { replay, action } => {
-                if reasoning == ReasoningMode::Encrypted && options["store"] == false && let Some(replay) = replay {
+                if (reasoning.is_plaintext() || options["store"] == false) && let Some(replay) = replay {
                     items.push(replay.provider(action)?);
                 }
             }

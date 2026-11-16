@@ -48,7 +48,7 @@ pub struct Capture {
     pub basis: Basis,
     pub available: bool,
     pub source: crate::settings::Source,
-    pub credential_configured: bool,
+    pub custom_available: bool,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +76,8 @@ pub struct Set {
 #[schemars(rename = "WebKey")]
 pub struct Key {
     pub revision: Option<u64>,
+    #[serde(default, rename = "settingsRevision")]
+    pub settings_revision: Option<u64>,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -84,6 +86,7 @@ pub enum Update {
     Updated { snapshot: crate::settings::Snapshot },
     Changed,
     InvalidKey,
+    InvalidSettings { message: String },
     CheckUnavailable,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
