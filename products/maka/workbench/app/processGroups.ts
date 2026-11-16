@@ -341,11 +341,13 @@ export function projectProcessGroups(input: {
     // retains that owner's state only in the piece containing its first source.
     return JSON.stringify(['process', turnKey, ids[0]]);
   };
-  let current: { turnKey: string; members: MemberRef[]; workRowId?: string } | undefined;
+  let current:
+    | { turnKey: string; members: MemberRef[]; workRowId?: string; first?: string }
+    | undefined;
   const flush = (closed: boolean) => {
     if (!current) return;
     const presentation = turn(current.turnKey);
-    const { turnKey, members, workRowId } = current;
+    const { turnKey, members, workRowId, first } = current;
     // A script is shown as the tools it ran, and as itself only when it fails.
     const callers = new Set(
       members.flatMap((member) => {
@@ -361,7 +363,12 @@ export function projectProcessGroups(input: {
     );
     entries.push({
       kind: 'process',
-      key: workRowId ?? groupKey(turnKey, members),
+      key: groupKey(
+        turnKey,
+        first && !members.some((member) => memberId(member) === first)
+          ? [{ kind: 'row', rowId: first }, ...members]
+          : members,
+      ),
       turnKey,
       members,
       workRowId,
@@ -421,7 +428,12 @@ export function projectProcessGroups(input: {
     if (current && current.turnKey !== rowTurn) flush(true);
     if (row.work && rowTurn) {
       flush(true);
-      current = { turnKey: rowTurn, members: [], workRowId: position.rowId };
+      current = {
+        turnKey: rowTurn,
+        members: [],
+        workRowId: position.rowId,
+        first: stableRowId({ ...row, work: undefined }),
+      };
       progressed.add(rowTurn);
       const presentation = turn(rowTurn);
       presentation.worked = true;
