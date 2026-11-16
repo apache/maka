@@ -44,7 +44,6 @@ fn requested(input: CheckpointPublish) -> (Capture, Option<CheckpointWorkspaceCo
     let mut capture = capture(input);
     capture.workspace = mode.map(|mode| storage::WorkspaceCapture {
         root: Default::default(),
-        identity: String::new(),
         consistency: consistency(mode),
     });
     (capture, mode)
@@ -88,7 +87,6 @@ impl Owner {
                         if let Some(workspace_mode) = mode {
                             capture.workspace = Some(storage::WorkspaceCapture {
                                 root: session.configuration.workspace.path.into(),
-                                identity: session.configuration.workspace.identity.into(),
                                 consistency: consistency(workspace_mode),
                             });
                         }

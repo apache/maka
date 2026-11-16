@@ -25,8 +25,6 @@ pub use lock::{FileLease, private_directory};
 #[cfg(windows)]
 pub mod windows;
 
-use cap_std::fs::Dir;
-use maka_sandbox::workspace::DirectoryIdentity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -36,10 +34,7 @@ use std::{
 };
 
 pub const ROOT_MARKER: &str = ".maka-storage-root.json";
-pub const RUST_ROOT_MARKER: &str = ".maka-rust-runtime.json";
 pub const ROOT_DATABASE: &str = "runtime-rust.sqlite";
-const PROTOTYPE: &[u8] = b"{\"schemaVersion\":1,\"runtime\":\"rust-prototype\"}\n";
-const ROOT_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,10 +67,7 @@ impl RootNamespaces {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Marker {
-    schema_version: u8,
-    kind: String,
     root_id: String,
-    root_identity: DirectoryIdentity,
 }
 
 type MountedIdentity = (u64, u64);
@@ -124,10 +116,7 @@ fn inspect(path: &Path) -> io::Result<(PathBuf, Marker, MountedIdentity)> {
     let identity = directory_identity(&canonical_path)?;
     check_layout(&canonical_path)?;
     let marker = read_marker(&canonical_path)?;
-    if !marker
-        .root_identity
-        .matches(&open_directory(&canonical_path, identity)?)?
-        || directory_identity(&canonical_path)? != identity
+    if directory_identity(&canonical_path)? != identity
         || canonical_path.canonicalize()? != canonical_path
     {
         return Err(io::Error::other("root identity collision"));
@@ -173,19 +162,14 @@ impl RootOwner {
             ));
         }
         lock::private_directory(&path)?;
-        let identity = directory_identity(&path)?;
         let marker = Marker {
-            schema_version: ROOT_SCHEMA_VERSION,
-            kind: "interactive".into(),
             root_id: hex::encode(Sha256::digest(uuid::Uuid::new_v4().as_bytes())),
-            root_identity: DirectoryIdentity::capture(&open_directory(&path, identity)?)?,
         };
         publish(&path, ROOT_MARKER, &serde_json::to_vec(&marker)?)?;
-        publish(&path, RUST_ROOT_MARKER, PROTOTYPE)?;
         Self::open(&path, namespaces)
     }
 
-    /// Open only a marked Rust prototype root, rejecting legacy layouts before database access.
+    /// Open only a marked State Root, rejecting unmarked directories before database access.
     pub fn open(path: &Path, namespaces: &RootNamespaces) -> io::Result<Self> {
         let (canonical_path, marker, identity) = inspect(path)?;
         let owner = Self::acquire(canonical_path, marker, identity, namespaces, false)?;
@@ -248,9 +232,6 @@ impl RootOwner {
     pub fn root_id(&self) -> &str {
         &self.marker.root_id
     }
-    pub fn kind(&self) -> &str {
-        &self.marker.kind
-    }
     pub fn control_directory(&self) -> &Path {
         &self.control_directory
     }
@@ -306,24 +287,6 @@ impl RootOwner {
     }
 }
 
-fn open_directory(path: &Path, mounted: MountedIdentity) -> io::Result<Dir> {
-    #[cfg(unix)]
-    let directory = {
-        use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-            .open(path)?
-    };
-    #[cfg(windows)]
-    let directory = windows::open_nofollow(path, false)?;
-    let metadata = directory.metadata()?;
-    if !metadata.is_dir() || file_identity(&directory, &metadata)? != mounted {
-        return Err(io::Error::other("root directory identity changed"));
-    }
-    Ok(Dir::from_std_file(directory))
-}
-
 fn file_identity(_file: &File, _metadata: &fs::Metadata) -> io::Result<MountedIdentity> {
     #[cfg(unix)]
     return lock::identity(_metadata);
@@ -364,9 +327,7 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
 
 fn read_marker(path: &Path) -> io::Result<Marker> {
     let marker: Marker = serde_json::from_slice(&read_bounded(&path.join(ROOT_MARKER))?)?;
-    if marker.schema_version != ROOT_SCHEMA_VERSION
-        || marker.kind != "interactive"
-        || marker.root_id.len() != 64
+    if marker.root_id.len() != 64
         || !marker
             .root_id
             .bytes()
@@ -378,11 +339,6 @@ fn read_marker(path: &Path) -> io::Result<Marker> {
 }
 
 fn check_layout(path: &Path) -> io::Result<()> {
-    if read_bounded(&path.join(RUST_ROOT_MARKER))? != PROTOTYPE {
-        return Err(io::Error::other(
-            "not a Rust prototype root; legacy state is unsupported",
-        ));
-    }
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -390,7 +346,6 @@ fn check_layout(path: &Path) -> io::Result<()> {
             name.to_str(),
             Some(
                 ROOT_MARKER
-                    | RUST_ROOT_MARKER
                     | ROOT_DATABASE
                     | "runtime-rust.sqlite-wal"
                     | "runtime-rust.sqlite-shm"

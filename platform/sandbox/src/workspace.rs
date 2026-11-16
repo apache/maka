@@ -108,12 +108,7 @@ fn effective_revision(local: u64, current: u64, attached: u64) -> Result<u64, &'
         .ok_or("workspace revision is invalid or exhausted")
 }
 
-/// Intrinsic workspace identity is distinct from its current filesystem location.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct WorkspaceIdentity(String);
-
-/// Filesystem-object observation for directory consent, not an execution workspace marker.
+/// Physical directory proof for crash recovery and provider execution equivalence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct DirectoryIdentity(String);
@@ -134,43 +129,6 @@ impl TryFrom<String> for DirectoryIdentity {
 }
 impl From<DirectoryIdentity> for String {
     fn from(identity: DirectoryIdentity) -> Self {
-        identity.0
-    }
-}
-
-impl WorkspaceIdentity {
-    pub fn from_marker_id(id: &str) -> Result<Self, &'static str> {
-        let uuid = uuid::Uuid::parse_str(id).map_err(|_| "invalid workspace UUID")?;
-        if id.len() != 36
-            || !uuid.hyphenated().to_string().eq_ignore_ascii_case(id)
-            || !(1..=8).contains(&uuid.get_version_num())
-            || uuid.get_variant() != uuid::Variant::RFC4122
-        {
-            return Err("invalid workspace UUID");
-        }
-        // Preserve an existing marker's exact spelling, including uppercase UUIDs.
-        Ok(Self(format!("workspace:v1:{id}")))
-    }
-
-    pub fn marker_id(&self) -> &str {
-        &self.0["workspace:v1:".len()..]
-    }
-}
-
-impl TryFrom<String> for WorkspaceIdentity {
-    type Error = &'static str;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::from_marker_id(
-            value
-                .strip_prefix("workspace:v1:")
-                .ok_or("invalid workspace identity")?,
-        )
-    }
-}
-
-impl From<WorkspaceIdentity> for String {
-    fn from(identity: WorkspaceIdentity) -> Self {
         identity.0
     }
 }

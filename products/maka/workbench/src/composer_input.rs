@@ -17,9 +17,10 @@
  * under the License.
  */
 
-//! The message composer owns plain source text; inline skill nodes only
-//! determine its presentation and native editing boundaries.
+//! The composer edits Markdown source. Formatting changes what the editor
+//! draws; references also define native editing boundaries.
 
+mod markdown;
 mod message;
 mod model;
 
@@ -301,11 +302,7 @@ impl NodeView for ReferenceView {
             .as_str()
             .expect("a composer token's name is text");
         let is_session = node.ty().name() == "session";
-        let label = if is_session {
-            format!("@{name}")
-        } else {
-            name.to_owned()
-        };
+        let label = name.to_owned();
         let icon_size = 13.0;
         let icon = if nsh_base::terminal::is_terminal() {
             text("📖").into_element()
@@ -579,6 +576,10 @@ pub(crate) fn ComposerInput(
             props,
             events: events.clone(),
         }),
+        Arc::new(markdown::Formatting::new(
+            props.read_only,
+            props.token_color,
+        )),
         history(Default::default()),
     ];
     let session = EditorSession::new(

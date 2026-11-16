@@ -37,6 +37,7 @@ const hooks = registerHooks({
 });
 const {
   sameRoute,
+  selectionForChoice,
   sameBackend,
   routeKey,
   withThinkingLevel,
@@ -114,4 +115,61 @@ test('selection captions expose source and preserve unavailable selections', () 
   const removedEffort = withThinkingLevel(executor, 'removed');
   assert.equal(effortCaption(removedEffort, { kind: 'ready', choice }), 'removed · Unavailable');
   assert.equal(thinkingLevel(removedEffort), 'removed');
+});
+
+test('catalog aliases preserve saved variant strength and explicit overrides without merging sources', () => {
+  const base = {
+    kind: 'executor',
+    selection: { executor: 'external', settings: { runtime: 'antigravity', model: 'opus' } },
+  };
+  const legacy = {
+    kind: 'executor',
+    selection: { executor: 'external', settings: { runtime: 'antigravity', model: 'opus-high' } },
+  };
+  const grouped = {
+    selection: base,
+    label: 'Opus',
+    sourceName: 'Native CLI · antigravity',
+    thinkingLevels: ['low', 'high'],
+    defaultThinkingLevel: null,
+    aliases: [withThinkingLevel(legacy, 'high')],
+  };
+  const selected = selectionForChoice(legacy, grouped);
+  assert.deepEqual(selected, withThinkingLevel(base, 'high'));
+  assert.deepEqual(
+    selectionForChoice(withThinkingLevel(legacy, 'low'), grouped),
+    withThinkingLevel(base, 'low'),
+  );
+  assert.equal(effectiveThinkingLevel(legacy, grouped), 'high');
+  assert.equal(effortCaption(legacy, { kind: 'ready', choice: grouped }), 'high');
+  assert.equal(
+    modelCaption(legacy, { kind: 'ready', choice: grouped }),
+    'Opus · Native CLI · antigravity',
+  );
+  assert.equal(
+    selectionForChoice(
+      {
+        ...legacy,
+        selection: {
+          ...legacy.selection,
+          settings: { ...legacy.selection.settings, runtime: 'codex' },
+        },
+      },
+      grouped,
+    ),
+    null,
+  );
+  assert.equal(
+    selectionForChoice(
+      {
+        ...legacy,
+        selection: {
+          ...legacy.selection,
+          settings: { ...legacy.selection.settings, model: 'opus-ultra' },
+        },
+      },
+      grouped,
+    ),
+    null,
+  );
 });

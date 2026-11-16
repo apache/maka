@@ -33,7 +33,7 @@ use std::{
 fn excluded(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | ".DS_Store" | "__pycache__" | ".cache" | ".maka-workspace.json"
+        ".git" | "node_modules" | ".DS_Store" | "__pycache__" | ".cache"
     )
 }
 
@@ -178,7 +178,7 @@ pub(super) fn capture(
     source: &WorkspaceCapture,
     dir: &Dir,
 ) -> Result<WorkspaceSnapshot, StoreError> {
-    if !source.root.is_absolute() || source.identity.is_empty() {
+    if !source.root.is_absolute() {
         return Err(invalid("invalid checkpoint workspace binding"));
     }
     let source_path = std::fs::canonicalize(&source.root)?;
@@ -323,7 +323,6 @@ pub(super) fn capture(
     file.sync_all()?;
     drop(file);
     Ok(WorkspaceSnapshot {
-        identity: source.identity.clone(),
         consistency: source.consistency,
         inventory: objects.publish(&objects.staging(request, "workspace")?)?,
     })

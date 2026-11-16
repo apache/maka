@@ -30,7 +30,7 @@ import { hasTextPrefix, messageBytes, messageKey, senderSession, type Row } from
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
-import { SkillMessage } from './SkillMessage';
+import { SkillMessage, userMessagePresentation } from './SkillMessage';
 import {
   C,
   bodyTextStyle,
@@ -242,6 +242,7 @@ export function MessageRow({
         // only the final reply (or one already showing its source) has a row.
         const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${rowKey(row())}`;
+        const userPresentation = computed(() => userMessagePresentation(row()));
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
         const automation = () => {
           const origin = row().origin;
@@ -656,6 +657,7 @@ export function MessageRow({
                       style={{
                         alignSelf: 'flex-end',
                         maxWidth: '78%',
+                        width: userPresentation().kind === 'markdown' ? '78%' : undefined,
                         paddingHorizontal: 16,
                         paddingVertical: 16,
                         borderRadius: 20,
@@ -663,7 +665,15 @@ export function MessageRow({
                         gap: 8,
                       }}
                     >
-                      <SkillMessage row={row} sourceId={sourceId()} openSession={openSession} />
+                      <SkillMessage
+                        row={row}
+                        presentation={userPresentation}
+                        sourceId={sourceId()}
+                        sessionId={sessionId}
+                        openSession={openSession}
+                        openLink={openLink}
+                        userScroll={userScroll}
+                      />
                       <If when={(row().attachments?.length ?? 0) > 0}>
                         <HistoryAttachments
                           userScroll={userScroll}

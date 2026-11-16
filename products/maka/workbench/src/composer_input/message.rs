@@ -116,17 +116,42 @@ struct SourceMark;
 
 impl MarkView for SourceMark {
     fn create(&self, mark: &Mark, value: &str) -> AnyElement {
+        self.create_piece(mark, value, 0..value.len(), &[])
+    }
+
+    fn create_piece(
+        &self,
+        mark: &Mark,
+        value: &str,
+        source_bytes: std::ops::Range<usize>,
+        classes: &[String],
+    ) -> AnyElement {
+        let id = Arc::from(
+            mark.attrs()["id"]
+                .as_str()
+                .expect("a source mark has an id"),
+        );
+        let base = mark.attrs()["offset"]
+            .as_u64()
+            .expect("a source mark has a byte offset");
+        let offset = base + source_bytes.start as u64;
+        let source = if value.len() == source_bytes.len() {
+            TextSource::Literal { id, offset }
+        } else {
+            TextSource::Mapped {
+                id,
+                segments: vec![TextSourceSegment {
+                    start: 0,
+                    end: value.encode_utf16().count() as u32,
+                    source_start: offset,
+                    source_end: base + source_bytes.end as u64,
+                    kind: TextSourceKind::Replacement,
+                }],
+            }
+        };
         text(value.to_owned())
-            .text_source(Some(Arc::new(TextSource::Literal {
-                id: Arc::from(
-                    mark.attrs()["id"]
-                        .as_str()
-                        .expect("a source mark has an id"),
-                ),
-                offset: mark.attrs()["offset"]
-                    .as_u64()
-                    .expect("a source mark has a byte offset"),
-            })))
+            .app_class(classes.join(" "))
+            .text_source(Some(Arc::new(source)))
             .into_element()
     }
 }

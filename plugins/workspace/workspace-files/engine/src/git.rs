@@ -18,10 +18,10 @@
  */
 
 //! Read-only Git comparisons within the Session's original workspace.
+use crate::directory::Observation;
 pub use crate::path::WorkspacePath;
 use crate::worktree::Binding;
 use gix::bstr::ByteSlice;
-use maka_sandbox::workspace::DirectoryIdentity;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -84,7 +84,7 @@ pub enum GitDiff {
 /// Blocking work: the caller retains its resource ticket and joins on cancellation.
 pub fn status(
     workspace: &Path,
-    identity: &DirectoryIdentity,
+    identity: &Observation,
     private_root: &Path,
     binding: Option<&Binding>,
     cancel: Arc<AtomicBool>,
@@ -102,7 +102,7 @@ pub fn status(
 }
 pub fn diff(
     workspace: &Path,
-    identity: &DirectoryIdentity,
+    identity: &Observation,
     private_root: &Path,
     binding: Option<&Binding>,
     area: GitArea,

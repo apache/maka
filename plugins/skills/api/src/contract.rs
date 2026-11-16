@@ -60,8 +60,6 @@ pub struct Configuration {
 pub struct CandidateDirectory {
     #[schemars(length(min = 1))]
     pub path: String,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    pub directory_identity: maka_sandbox::workspace::DirectoryIdentity,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

@@ -47,7 +47,7 @@ pub(super) fn schema() -> Schema {
 
 pub(super) fn session_reference(source: &str) -> (&str, &str) {
     source
-        .strip_prefix("[@")
+        .strip_prefix('[')
         .and_then(|source| source.strip_suffix(')'))
         .and_then(|source| source.rsplit_once("](maka://session/"))
         .expect("a session token has a label and URL")
@@ -85,7 +85,7 @@ pub(super) fn is_token(node: &Node) -> bool {
 fn token_ranges(text: &str) -> Vec<Range<usize>> {
     static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r"(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+|\[@(?:\\[^\r\n]|[^\]\\\r\n])+\]\(maka://session/[A-Za-z0-9_-]+\))",
+            r"(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+|\[[@#](?:\\[^\r\n]|[^\]\\\r\n])+\]\(maka://session/[A-Za-z0-9_-]+\))",
         )
         .expect("the composer token pattern is valid")
     });

@@ -56,7 +56,6 @@ fn members(workspace: Option<&[u8]>) -> Vec<(&'static str, Vec<u8>)> {
         },
         workspace: workspace.map(|bytes| WorkspaceSnapshot {
             inventory: reference(bytes),
-            identity: "capture".into(),
             consistency: WorkspaceConsistency::Unverified,
         }),
     };

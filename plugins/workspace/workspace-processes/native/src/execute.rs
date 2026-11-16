@@ -46,18 +46,8 @@ pub(super) fn capture(
     if workspace.worktree.is_some() && !settings.isolated_workspaces {
         return Err(failed("Isolated workspace execution is not installed"));
     }
-    let path = PathBuf::from(&workspace.path);
-    let directory =
-        maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
-    if maka_fs_tools::workspace::read_directory_identity(
-        path.clone(),
-        directory.try_clone().map_err(failed)?,
-    )
-    .map_err(failed)?
-        != workspace.identity
-    {
-        return Err(failed("Workspace marker identity changed"));
-    }
+    let (path, directory, identity) =
+        maka_workspace_support::capture_selected(workspace).map_err(failed)?;
     let workspace_directory = directory.try_clone().map_err(failed)?.into_std_file();
     if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
         let sandbox = Sandbox::Disabled.intersect(floor).map_err(failed)?;
@@ -91,7 +81,7 @@ pub(super) fn capture(
         .intersect(floor)
         .map_err(failed)?;
     let base = base.intersect(&ceiling).map_err(failed)?;
-    maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
+    maka_fs_tools::directory::open(&path, &identity).map_err(failed)?;
     let executor =
         maka_process::ShellExecutor::from_directory(path, directory.into_std_file(), base)?;
     let executor = select_shell(platform(executor, settings, state_root), shell)?;

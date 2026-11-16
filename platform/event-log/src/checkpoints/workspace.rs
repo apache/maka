@@ -32,14 +32,12 @@ pub enum WorkspaceConsistency {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceCapture {
     pub root: PathBuf,
-    pub identity: String,
     pub consistency: WorkspaceConsistency,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceSnapshot {
-    pub identity: String,
     pub consistency: WorkspaceConsistency,
     /// Path inventory; file bodies are separately verified immutable objects.
     pub inventory: ObjectRef,

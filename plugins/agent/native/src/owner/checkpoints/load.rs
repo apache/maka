@@ -429,7 +429,6 @@ fn loaded(value: storage::LoadedCheckpoint, inspection: CheckpointInspection) ->
             storage::LoadState::Ready { workspace, .. } => CheckpointLoadState::Ready {
                 session_ids: vec![inspection.source_session_id.clone()],
                 workspace: workspace.map(|w| CheckpointWorkspaceSnapshot {
-                    identity: w.identity,
                     inventory: object(w.inventory),
                     consistency: match w.consistency {
                         storage::WorkspaceConsistency::CallerConfirmedQuiescent => {

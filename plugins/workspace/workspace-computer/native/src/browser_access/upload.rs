@@ -351,21 +351,19 @@ async fn capture_reader(
 ) -> Result<ReadExecutor, ToolError> {
     let workspace = configuration.workspace.clone();
     tokio::task::spawn_blocking(move || {
-        let path = PathBuf::from(&workspace.path);
-        let directory =
-            maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
-        if maka_fs_tools::workspace::read_directory_identity(
-            path.clone(),
-            directory.try_clone().map_err(failed)?,
-        )
-        .map_err(failed)?
-            != workspace.identity
-        {
-            return Err(failed("Browser upload workspace marker identity changed"));
+        let requested = PathBuf::from(&workspace.path);
+        let (path, directory, identity) =
+            maka_fs_tools::directory::capture_directory(&requested).map_err(failed)?;
+        if maka_fs_tools::workspace::project::host_path(&path).map_err(failed)? != workspace.path {
+            return Err(failed("Browser upload workspace path changed"));
         }
-        // Same directory identity, private state rules and compiled filesystem
+        if let Some(binding) = &workspace.worktree
+            && binding.directory() != requested.as_path()
+        {
+            return Err(failed("Browser upload workspace binding mismatch"));
+        }
+        // Same directory observation, private state rules and compiled filesystem
         // policy as the existing workspace Files service; no ambient fs::read.
-        maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
         let policy = match sandbox {
             Sandbox::Managed { filesystem, .. } => {
                 Some(Arc::new(filesystem.compile().map_err(failed)?))
@@ -377,6 +375,7 @@ async fn capture_reader(
                 ));
             }
         };
+        maka_fs_tools::directory::open(&path, &identity).map_err(failed)?;
         match policy {
             Some(policy) => ReadExecutor::from_directory(path, directory, Some(policy)),
             None => ReadExecutor::new(path, ReadScope::Unrestricted),

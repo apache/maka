@@ -64,6 +64,130 @@ async fn reply_at(desktop: &Desktop, position: nsh_terminal::Point<nsh_terminal:
     desktop.press_at(menu.center());
 }
 
+pub(super) async fn desktop_composer_references_a_room_without_posting() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |config, root| {
+            config["agent"]["toolDiscovery"] = json!(false);
+            std::fs::write(root.join("workspace/Windows-CI.md"), "Runner checklist").unwrap();
+        },
+    )
+    .await;
+    let client = fixture.client().await;
+    let workspace = json!({"kind":"session","sessionId":fixture.session});
+    let room = mutate(
+        &client,
+        "create",
+        json!({"kind":"room","title":"环境信息共享群","labels":[],"workspace":workspace}),
+    )
+    .await;
+    let room = room["session"]["id"].as_str().unwrap();
+    let context = "Windows CI uses a dedicated VM.";
+    let post = mutate(&client, "send", json!({"sessionId":room,"message":context})).await;
+    assert_eq!(post["kind"], "posted", "{post}");
+    let backend = json!({
+        "kind":"model",
+        "connectionId":fixture.selection["connectionId"],
+        "modelId":fixture.selection["modelId"]
+    });
+    let conversation = mutate(
+        &client,
+        "create",
+        json!({"title":"review json-render","labels":[],"workspace":workspace,"backend":backend}),
+    )
+    .await;
+    let conversation = conversation["session"]["id"].as_str().unwrap();
+    let other = mutate(
+        &client,
+        "create",
+        json!({"title":"Windows CI 验证","labels":[],"workspace":workspace,"backend":backend}),
+    )
+    .await;
+    assert_eq!(other["kind"], "created", "{other}");
+    client.close().await.unwrap();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let before = room_messages(&desktop, room, 1).await;
+    assert_eq!(before.len(), 1);
+    desktop.press("Open conversation review json-render").await;
+    desktop.press("Focus message composer").await;
+    desktop.paste("Read context from @").await;
+    let room_row = desktop.control("环境信息共享群").await;
+    let agent_row = desktop.control("Windows CI 验证").await;
+    let file_row = desktop.control("Windows-CI.md").await;
+    assert!(room_row.top() < agent_row.top() && agent_row.top() < file_row.top());
+    desktop.artifact("room-reference-picker");
+    desktop.press("环境信息共享群").await;
+    let reference = format!("Read context from [#环境信息共享群](maka://session/{room}) ");
+    desktop.expect_text(&reference).await;
+    desktop.key("right", false);
+    desktop.paste("and @Windows-CI").await;
+    desktop.press("Windows-CI.md").await;
+    let body = format!("{reference}and @Windows-CI.md");
+    desktop.expect_text(&format!("{body} ")).await;
+    desktop.key("right", false);
+    desktop.artifact("room-reference-draft");
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    desktop.press("Send message").await;
+    let request = desktop.request(&mut fixture).await;
+    let message = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(message["role"], "user");
+    assert_eq!(message["content"].as_str().unwrap().trim_end(), body);
+    let history_tool = request.body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["function"]["name"] == "SessionHistory")
+        .expect("the agent can use SessionHistory for this reference");
+    assert!(
+        history_tool["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("[#Room](maka://session/<id>)")
+    );
+    request
+        .tool_call(
+            "SessionHistory",
+            json!({"sessionId":room,"position":{"kind":"tail"}}),
+        )
+        .await;
+    let mut request = desktop.request(&mut fixture).await;
+    let result = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(result["role"], "tool");
+    let result: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    assert_eq!(result["kind"], "room", "{result}");
+    assert_eq!(result["page"]["items"][0]["id"], before[0]["id"]);
+    assert_eq!(result["page"]["items"][0]["content"]["text"], context);
+    request.delta(context).await;
+    desktop
+        .wait("the reply did not finish", request.finish())
+        .await;
+    desktop
+        .wait(
+            "the conversation did not settle",
+            fixture.idle(&desktop.client, conversation),
+        )
+        .await;
+    assert_eq!(room_messages(&desktop, room, 1).await, before);
+    desktop.press("#环境信息共享群").await;
+    desktop.control("Close side pane").await;
+    desktop.control("Mention a session").await;
+    desktop.artifact("room-reference-context-beside");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     let mut fixture = Fixture::open_with_configuration(
         Options {

@@ -254,7 +254,6 @@ async fn local_workspace_capture_baseline() {
         let mut publication = request();
         publication.workspace = Some(WorkspaceCapture {
             root: source,
-            identity: "workspace".into(),
             consistency: WorkspaceConsistency::CallerConfirmedQuiescent,
         });
         let started = std::time::Instant::now();
@@ -673,7 +672,6 @@ async fn workspace_closure_survives_source_removal_and_missing_objects_are_rejec
     let mut publication = request();
     publication.workspace = Some(WorkspaceCapture {
         root: source.clone(),
-        identity: "workspace".into(),
         consistency: WorkspaceConsistency::CallerConfirmedQuiescent,
     });
     let saved = head(

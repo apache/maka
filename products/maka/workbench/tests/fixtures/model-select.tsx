@@ -17,13 +17,14 @@
  * under the License.
  */
 
-import { cleanup, keymap, mount, signal, Text, View } from 'nsh';
+import { cleanup, host as events, keymap, mount, signal, Text, View } from 'nsh';
 import { currentLocale } from '../../app/locale';
 import { HostProvider, type Host } from '../../app/host';
 import { ModelSelect } from '../../app/ModelSelect';
 
 import {
-  sameRoute,
+  backendName,
+  selectionForChoice,
   type ModelBackend,
   type ModelChoice,
   type ModelDetails,
@@ -71,6 +72,19 @@ mount(() => {
   const instance = signal<number | null>(null);
   const managed = signal(0);
   let serial = 0;
+  let catalog = CHOICES;
+  let publication = 0;
+  let refreshing = true;
+  const readers = new Set<() => void>();
+  cleanup(
+    events.on('fixture.publish', (value: any) => {
+      if (value.choices) catalog = value.choices;
+      refreshing = value.refreshing ?? false;
+      publication += 1;
+      for (const notify of readers) notify();
+    }),
+  );
+  cleanup(events.on('fixture.backend', (value: ModelBackend) => backend.set(value)));
   let holdSaves = false;
   let releaseSave: (() => void) | null = null;
 
@@ -94,7 +108,7 @@ mount(() => {
   const details = (): ModelDetails => {
     const current = backend();
     if (!current) return { kind: 'unavailable', message: message('Choose model') };
-    const found = CHOICES.find((item) => sameRoute(current, item.selection));
+    const found = catalog.find((item) => selectionForChoice(current, item));
     return found
       ? { kind: 'ready', choice: found }
       : {
@@ -104,16 +118,51 @@ mount(() => {
   };
 
   const host = {
+    subscribe: async () => {
+      let read = -1;
+      let closed = false;
+      let notify: (() => void) | null = null;
+      return {
+        next: async () => {
+          if (read === publication && !closed)
+            await new Promise<void>((resolve) => {
+              notify = resolve;
+              readers.add(resolve);
+            });
+          if (notify) readers.delete(notify);
+          notify = null;
+          if (closed) return null;
+          read = publication;
+          return {
+            kind: 'ready',
+            revision: `r${publication}`,
+            choices: catalog,
+            next: null,
+            refreshing,
+          };
+        },
+        close: async () => {
+          closed = true;
+          notify?.();
+        },
+      };
+    },
     query: async (_endpoint: string, method: string, input: any) => {
       if (method === 'models') {
         const q = String(input?.query ?? '')
           .trim()
           .toLowerCase();
-        const filtered = CHOICES.filter(
+        const filtered = catalog.filter(
           (item) =>
             !q || item.label.toLowerCase().includes(q) || item.sourceName.toLowerCase().includes(q),
         );
-        return { kind: 'ready', revision: 'r1', next: null, choices: filtered };
+        return {
+          kind: 'ready',
+          revision: `r${publication}`,
+          next: null,
+          choices: filtered,
+          refreshing,
+        };
       }
       throw new Error(method);
     },
@@ -123,6 +172,7 @@ mount(() => {
     <HostProvider value={host}>
       <View style={{ flex: 1, justifyContent: 'flex-end', padding: 16, gap: 8 }}>
         <Text>{managed() > 0 ? `Managed:${managed()}` : 'Idle'}</Text>
+        <Text>{backend() ? `Selected:${backendName(backend()!)}` : 'No selection'}</Text>
         <ModelSelect
           owner={{
             sessionId: 's1',
@@ -145,6 +195,7 @@ mount(() => {
               });
             }
             backend.set(next);
+            if (events.available()) await events.call('fixture.outcome', { backend: next });
           }}
           manage={({ instance: expected }) => {
             if (instance() !== expected) return;

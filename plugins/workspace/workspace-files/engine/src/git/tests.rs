@@ -24,7 +24,7 @@ struct Fixture {
     _temp: tempfile::TempDir,
     root: PathBuf,
     private: PathBuf,
-    identity: DirectoryIdentity,
+    identity: Observation,
 }
 impl Fixture {
     fn new() -> Self {

@@ -38,15 +38,6 @@ pub(super) fn supported(repo: &gix::Repository) -> io::Result<()> {
     if index
         .entries()
         .iter()
-        .any(|entry| entry.path(&index) == crate::workspace::MARKER_FILE.as_bytes())
-    {
-        return Err(invalid(
-            "isolated worktrees require an untracked workspace identity",
-        ));
-    }
-    if index
-        .entries()
-        .iter()
         .any(|e| e.mode == gix::index::entry::Mode::COMMIT)
     {
         return Err(invalid("isolated worktrees do not yet support submodules"));

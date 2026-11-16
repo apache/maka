@@ -33,7 +33,7 @@ struct Allocation {
     fingerprint: String,
     /// The source directory as the Host captured it when allocating.
     path: String,
-    identity: maka_sandbox::workspace::DirectoryIdentity,
+    identity: maka_fs_tools::directory::Observation,
     binding: Binding,
 }
 
@@ -132,7 +132,7 @@ impl Owner {
                     return Ok(None);
                 };
                 if std::path::Path::new(&observed.path) != binding.source()
-                    || binding.source_identity() != &observed.identity
+                    || observed.identity != source.identity
                 {
                     return Ok(None);
                 }
@@ -191,9 +191,7 @@ impl Owner {
         {
             return Err("agent_worktree_allocation_conflict".into());
         }
-        if std::path::Path::new(&source.path) != allocation.binding.source()
-            || allocation.binding.source_identity() != &allocation.identity
-        {
+        if std::path::Path::new(&source.path) != allocation.binding.source() {
             return Ok(None);
         }
         let managed = self.managed_worktrees.clone();
@@ -207,28 +205,13 @@ impl Owner {
         let path = allocation.binding.directory().to_owned();
         let (path, directory_identity) =
             maka_fs_tools::directory::capture(&path).map_err(|_| "agent_worktree_unavailable")?;
-        let root = self
-            .store
-            .owned_root()
-            .map_err(|_| "agent_root_unavailable")?;
-        let directory = maka_fs_tools::directory::open(&path, &directory_identity)
+        maka_fs_tools::directory::open(&path, &directory_identity)
             .map_err(|_| "agent_worktree_unavailable")?;
-        let identity = maka_fs_tools::workspace::ensure_directory_identity(
-            path.clone(),
-            directory,
-            root.canonical_path().to_owned(),
-            root.control_directory().to_owned(),
-            Some(allocation.binding.clone()),
-        )
-        .await
-        .map_err(|_| "agent_worktree_initialization_unknown")?;
         let selected = Workspace {
             project_id: None,
             path: maka_fs_tools::workspace::project::host_path(&path)
                 .map_err(|_| "agent_worktree_unavailable")?
                 .to_owned(),
-            directory_identity,
-            identity,
             worktree: Some(Box::new(allocation.binding)),
         };
         workspace::validate(&self.workspace_roots, &selected, &self.managed_worktrees).await?;
