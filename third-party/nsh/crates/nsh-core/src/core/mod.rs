@@ -1460,6 +1460,9 @@ impl<M: TextEngine + 'static> Core<M> {
         let engine = core.text_engine.clone();
         core.components
             .runtime
+            .set_text_layout_queries(engine.clone());
+        core.components
+            .runtime
             .set_measure(Rc::new(move |font, text| {
                 crate::canvas::line_metrics(&*engine, font, text)
             }));
@@ -10100,7 +10103,10 @@ fn text_lines<M: TextEngine>(
             line.text = String::from_utf16_lossy(&units[start..end]);
         }
     }
-    EventPayload::TextLayout(lines)
+    EventPayload::TextLayout {
+        lines,
+        layout: layout.clone(),
+    }
 }
 
 /// `text` with its fonts scaled down (to at least `min`) until it fits
