@@ -216,11 +216,15 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     let result: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
     assert_eq!(result["kind"], "room", "{result}");
     assert_eq!(result["page"]["items"][0]["id"], first["id"], "{result}");
+    let room_reply = format!(
+        "[@Reviewer](maka://session/{}) reviewed in the room.",
+        fixture.session
+    );
     request
         .tool_call(
             "SessionSend",
             json!({
-                "sessionId":room,"replyTo":posts[1]["id"],"message":"Reviewed in the room."
+                "sessionId":room,"replyTo":posts[1]["id"],"message":room_reply
             }),
         )
         .await;
@@ -248,9 +252,10 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
             desktop.platform.take_clipboard_write()
         })
         .await;
-    assert_eq!(copied, "Reviewed in the room.");
-    desktop.press("Conversations").await;
-    desktop.press("Open conversation Room reviewer").await;
+    assert_eq!(copied, room_reply);
+    let quote = *desktop.controls("View replied message").last().unwrap();
+    desktop.press_at(point(quote.left() + px(20.), quote.bottom() + px(15.)));
+    desktop.press("Focus message composer").await;
     let summary = "From Release review · Please review";
     desktop.open_group(summary).await;
     desktop.press_until(summary, "From Release review").await;

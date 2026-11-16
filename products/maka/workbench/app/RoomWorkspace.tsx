@@ -67,6 +67,7 @@ import { WorkspacePicker } from './WorkspacePicker';
 import { ModalDialog, DialogHeader, DialogFooter } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
 import { MarkdownBody } from './MarkdownBody';
+import { sessionIdFromLink } from './skillTokenText';
 import { HistoryAttachments } from './Attachments';
 import { ImageViewer } from './ImageViewer';
 import type { ImagePreview } from './ImageThumbnail';
@@ -626,6 +627,11 @@ export function RoomTimeline(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   attach(handle: RoomComposerHandle | null): void;
 }) {
+  const openLink: typeof props.openLink = async (target, restoreFocus) => {
+    const id = sessionIdFromLink(target);
+    if (id !== undefined) props.openAgent(id);
+    else await props.openLink(target, restoreFocus);
+  };
   const messages = signal<AgentRoomMessage[]>([]);
   const before = signal<string | null>(null);
   const after = signal<string | null>(null);
@@ -969,11 +975,12 @@ export function RoomTimeline(props: {
                             field: 'body',
                             role: message().author.kind === 'human' ? 'user' : 'assistant',
                             text: message().content.text,
+                            prefix: true,
                             closedAt: message().at,
                           })}
                           sourceId={message().id}
                           sessionId={props.sessionId}
-                          openLink={props.openLink}
+                          openLink={openLink}
                           userScroll={() => {}}
                         />
                       </If>
