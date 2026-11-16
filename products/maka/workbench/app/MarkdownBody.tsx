@@ -34,6 +34,8 @@ export function MarkdownBody(props: {
   sourceId: string;
   sessionId: string;
   compact?: boolean;
+  /** Signed-in users can send Markdown code without instantiating a generated view. */
+  interactiveBlocks?: boolean;
   /** False when the surrounding message owns text selection. */
   selectable?: boolean;
   /** Compact size in the full text color, for a message another agent sent. */
@@ -80,7 +82,12 @@ export function MarkdownBody(props: {
   };
 
   const rawMarkdown = () => (props.text ? props.text() : props.row().text);
-  const segments = computed(() => splitSpecMarkdown(rawMarkdown()));
+  const segments = computed(() => {
+    const text = rawMarkdown();
+    return props.interactiveBlocks === false
+      ? [{ kind: 'markdown' as const, key: 'markdown', text, atStart: true }]
+      : splitSpecMarkdown(text);
+  });
   const ownerIdentity = () => {
     const r = props.row();
     return `${props.sourceId}\0${r.messageId}\0${r.field}`;
@@ -114,7 +121,7 @@ export function MarkdownBody(props: {
                       const s = seg();
                       return s.kind === 'markdown' ? s.text : '';
                     })()}
-                    extensions={markdownExtensions}
+                    extensions={props.interactiveBlocks === false ? undefined : markdownExtensions}
                     renderCustom={(node) =>
                       node.name === 'spec' ? (
                         <SpecView
@@ -132,7 +139,10 @@ export function MarkdownBody(props: {
                       return s.kind === 'markdown' && s.atStart ? props.sourceId : undefined;
                     })()}
                     contentStyle={{ rowGap: blockGap }}
-                    options={{ streaming: true, preserveLineBreaks: true }}
+                    options={{
+                      streaming: props.interactiveBlocks !== false,
+                      preserveLineBreaks: true,
+                    }}
                     labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
                     onScrollIntent={props.userScroll}
                     onParseError={({ reason }) => failure.set(reason)}

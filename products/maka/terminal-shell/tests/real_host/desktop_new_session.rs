@@ -938,7 +938,7 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
     let mention = format!("[@删过度设计](maka://session/{referenced}) ");
     desktop.expect_text(&mention).await;
     desktop.key("right", false);
-    let before_ah = "它刚刚提了个 PR，你来 review 一下，你可以用";
+    let before_ah = "**它刚刚提了个 PR**，你来 review 一下，你可以用";
     let prefix = format!("{mention}{before_ah}");
     desktop.paste(before_ah).await;
     desktop.expect_text(&prefix).await;
@@ -997,6 +997,90 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
         .await;
     desktop.artifact("composer-ime-committed");
     assert_eq!(desktop.copy_input().await, format!("{prefix}阿{suffix}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_composer_previews_markdown_and_sends_its_source() {
+    let mut fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let conversation = mutate(
+        &client,
+        "create",
+        json!({
+            "title":"Markdown preview", "labels":[],
+            "workspace":{"kind":"session", "sessionId":fixture.session},
+            "backend":{
+                "kind":"model",
+                "connectionId":fixture.selection["connectionId"],
+                "modelId":fixture.selection["modelId"],
+            },
+        }),
+    )
+    .await;
+    assert_eq!(conversation["kind"], "created", "{conversation}");
+    client.close().await.unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.press("Open conversation Markdown preview").await;
+    let source = "# 发布说明\n\n这是**重点：**先看[文档](https://example.org/docs)，再看 https://example.org/status。\n\n- 检查构建\n- 提交结果";
+    desktop.press("Focus message composer").await;
+    desktop.paste(source).await;
+    desktop.expect_text(source).await;
+    desktop.key("right", false);
+    desktop.artifact("composer-markdown-draft");
+
+    let tail = desktop.platform.input_caret_bounds().unwrap();
+    desktop.key("home", false);
+    let marker = desktop
+        .until("the caret did not reach the list marker", || {
+            desktop.platform.input_caret_bounds().filter(|bounds| {
+                bounds.left() < tail.left() - px(24.) && bounds.top() == tail.top()
+            })
+        })
+        .await;
+    desktop.key("end", false);
+    desktop
+        .until("the caret did not leave the list marker", || {
+            desktop
+                .platform
+                .input_caret_bounds()
+                .filter(|bounds| bounds.left() > marker.left() + px(24.))
+        })
+        .await;
+    desktop.press_at(point(marker.left() + px(1.), marker.center().y));
+    desktop.artifact("composer-markdown-edit-list-marker");
+    desktop.key_with("right", native!(Modifiers { shift: true }));
+    desktop.paste("+").await;
+    assert_eq!(
+        desktop.copy_input().await,
+        source.replace("- 提交结果", "+ 提交结果")
+    );
+    desktop.key("z", true);
+    desktop.expect_text(source).await;
+
+    desktop.press("Send message").await;
+    let request = desktop.request(&mut fixture).await;
+    let message = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(message["role"], "user");
+    assert_eq!(message["content"].as_str(), Some(source));
+    desktop
+        .wait("the response did not finish", request.finish())
+        .await;
+    let copy = desktop.control("Copy user message").await;
+    desktop.artifact("composer-markdown-sent");
+    desktop.hover_at(copy.center());
+    desktop
+        .until("the copy action did not appear", || {
+            desktop.draws_in(copy).then_some(())
+        })
+        .await;
+    desktop.press_at(copy.center());
+    let copied = desktop
+        .until("the sent message was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(copied, source);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -3744,6 +3828,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_new_conversation_preserves_an_owned_worktree",
     "desktop_recovers_an_unavailable_remembered_folder",
     "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
+    "desktop_composer_previews_markdown_and_sends_its_source",
     "desktop_composer_references_a_conversation_without_waking_it",
     "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
@@ -3799,6 +3884,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_composer_click_and_ime_follow_the_text_after_a_mention" => {
             runtime.block_on(desktop_composer_click_and_ime_follow_the_text_after_a_mention())
+        }
+        "desktop_composer_previews_markdown_and_sends_its_source" => {
+            runtime.block_on(desktop_composer_previews_markdown_and_sends_its_source())
         }
         "desktop_composer_references_a_conversation_without_waking_it" => {
             runtime.block_on(desktop_composer_references_a_conversation_without_waking_it())

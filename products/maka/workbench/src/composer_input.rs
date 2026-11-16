@@ -17,9 +17,10 @@
  * under the License.
  */
 
-//! The message composer owns plain source text; inline skill nodes only
-//! determine its presentation and native editing boundaries.
+//! The composer edits Markdown source. Formatting changes what the editor
+//! draws; references also define native editing boundaries.
 
+mod markdown;
 mod message;
 mod model;
 
@@ -579,6 +580,10 @@ pub(crate) fn ComposerInput(
             props,
             events: events.clone(),
         }),
+        Arc::new(markdown::Formatting::new(
+            props.read_only,
+            props.token_color,
+        )),
         history(Default::default()),
     ];
     let session = EditorSession::new(

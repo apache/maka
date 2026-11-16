@@ -790,6 +790,7 @@ enum Piece {
     /// Text with its marks and its inline decorations' classes.
     Text {
         text: String,
+        source_bytes: std::ops::Range<usize>,
         marks: Vec<Mark>,
         classes: Vec<String>,
     },
@@ -831,6 +832,7 @@ fn inline_of(
     // Where inline decorations start and end, and widgets sit.
     let mut cuts: Vec<usize> = Vec::new();
     let mut inline: Vec<(usize, usize, Option<String>)> = Vec::new();
+    let mut replacements = Vec::new();
     // A widget's class, or the composition's text.
     let mut widgets: Vec<(usize, i32, Result<Option<String>, String>)> = Vec::new();
     for d in decorations {
@@ -841,6 +843,11 @@ fn inline_of(
                 let (a, b) = (d.from.max(start) - start, d.to.min(end) - start);
                 cuts.extend([a, b]);
                 inline.push((a, b, class_of(attrs)));
+            }
+            DecorationKind::Replacement(glyph) if d.from < end && d.to > start && d.from < d.to => {
+                let (a, b) = (d.from.max(start) - start, d.to.min(end) - start);
+                cuts.extend([a, b]);
+                replacements.push((a, b, *glyph));
             }
             DecorationKind::Widget { side, .. } if d.from >= start && d.from <= end => {
                 let at = d.from - start;
@@ -909,28 +916,42 @@ fn inline_of(
                 points.sort_unstable();
                 points.dedup();
                 let mut from = offset;
+                let mut byte_offset = 0;
+                let units: Vec<u16> = text.encode_utf16().collect();
                 for to in points.into_iter().chain([offset + len]) {
                     emit_widgets(&mut out, &mut text_at, from, true);
-                    let piece = utf16_slice(text, from - offset, to - offset);
+                    let source = String::from_utf16_lossy(&units[from - offset..to - offset]);
+                    let piece_offset = byte_offset;
+                    byte_offset += source.len();
+                    let replacement = replacements.iter().find(|(a, b, _)| *a <= from && *b >= to);
+                    let (piece, rendered_len) = match replacement {
+                        Some((_, _, Some(glyph))) => {
+                            (Some(glyph.to_string()), glyph.len_utf16() as u32)
+                        }
+                        Some((_, _, None)) => (None, 0),
+                        None => (Some(source), (to - from) as u32),
+                    };
                     let classes = inline
                         .iter()
                         .filter(|(a, b, _)| *a <= from && *b >= to)
                         .filter_map(|(_, _, c)| c.clone())
                         .collect();
-                    let n = (to - from) as u32;
                     out.map.runs.push(Run {
                         doc: from,
                         doc_len: to - from,
                         text: text_at,
-                        text_len: n,
+                        text_len: rendered_len,
                         side: 0,
                     });
-                    text_at += n;
-                    out.pieces.push(Piece::Text {
-                        text: piece,
-                        marks: child.marks().to_vec(),
-                        classes,
-                    });
+                    text_at += rendered_len;
+                    if let Some(piece) = piece {
+                        out.pieces.push(Piece::Text {
+                            text: piece,
+                            source_bytes: piece_offset..byte_offset,
+                            marks: child.marks().to_vec(),
+                            classes,
+                        });
+                    }
                     from = to;
                 }
             }
@@ -970,12 +991,6 @@ fn inline_of(
     out.map.size = size;
     out.map.len = text_at;
     out
-}
-
-/// Code units `from..to` of `text`.
-fn utf16_slice(text: &str, from: usize, to: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    String::from_utf16_lossy(&units[from.min(units.len())..to.min(units.len())])
 }
 
 /// A textblock's text, its lines and frame reported to the geometry
@@ -1100,6 +1115,7 @@ fn spans(rv: &Rv, pieces: Vec<Piece>, start: usize) -> Vec<AnyElement> {
         .map(|piece| match piece {
             Piece::Text {
                 text: t,
+                source_bytes,
                 marks,
                 classes,
             } => {
@@ -1107,7 +1123,7 @@ fn spans(rv: &Rv, pieces: Vec<Piece>, start: usize) -> Vec<AnyElement> {
                     .iter()
                     .find_map(|m| rv.mark_view(m.ty().name()).map(|v| (m, v)))
                 {
-                    return view.create(mark, &t);
+                    return view.create_piece(mark, &t, source_bytes, &classes);
                 }
                 let style_marks = marks.clone();
                 // The built-in link mark's destination, shown while the
@@ -1729,6 +1745,34 @@ mod tests {
         // Position 4 (offset 3) is after the widget that sticks before it.
         assert_eq!(inline.map.to_text(3), 4);
         assert_eq!(inline.map.len, 6);
+    }
+
+    #[test]
+    fn replaced_syntax_keeps_the_click_position_in_source_units() {
+        let schema = starter::schema();
+        let block = schema
+            .node_from_json(&json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "- 👋 **字**啊"}
+            ]}))
+            .unwrap();
+        let inline = inline_of(
+            &block,
+            1,
+            &[
+                Decoration::replace_char(1, '•'),
+                Decoration::conceal(6, 8),
+                Decoration::conceal(9, 11),
+            ],
+            None,
+            |_| None,
+        );
+        assert!(
+            matches!(&inline.pieces[0], Piece::Text { text, source_bytes, .. } if text == "•" && *source_bytes == (0..1))
+        );
+        assert_eq!(inline.map.len, 7);
+        assert_eq!(inline.map.to_doc(1), 1);
+        assert_eq!(inline.map.to_text(9), 6);
+        assert_eq!(inline.map.to_doc(6), 10);
     }
 
     #[test]
