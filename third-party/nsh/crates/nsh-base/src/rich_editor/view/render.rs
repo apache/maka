@@ -1013,8 +1013,8 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
     text("")
         .on_layout(move |b: &Bounds<Points>| frame_rv.set_text_frame(id, owner, *b))
         .on(EventKind::TextLayout, move |p: &EventPayload| {
-            if let EventPayload::TextLayout(lines) = p {
-                lines_rv.set_lines(id, lines.clone());
+            if let EventPayload::TextLayout { lines, layout } = p {
+                lines_rv.set_text_layout(id, lines.clone(), layout.clone());
             }
         })
         .child(dynamic(move || {
@@ -1664,10 +1664,16 @@ impl Rv {
         None
     }
 
-    /// Textblock `id`'s lines.
-    fn set_lines(&self, id: u64, lines: Vec<nsh_core::TextLine>) {
+    /// Textblock `id`'s laid-out text.
+    fn set_text_layout(
+        &self,
+        id: u64,
+        lines: Vec<nsh_core::TextLine>,
+        layout: nsh_core::TextLayout,
+    ) {
         if let Some(text) = self.geo.borrow_mut().texts.get_mut(&id) {
             text.lines = lines;
+            text.layout = Some(layout);
             text.laid_len = Some(text.map.len);
         }
         self.layout_rev.update(|r| *r += 1);

@@ -1396,7 +1396,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             obj.set("data", json_value(cx, data)?)?;
         }
         EventPayload::Json(value) => return json_value(cx, value),
-        EventPayload::TextLayout(lines) => {
+        EventPayload::TextLayout { lines, .. } => {
             let list = rquickjs::Array::new(cx.clone())?;
             for (i, l) in lines.iter().enumerate() {
                 let line = rquickjs::Object::new(cx.clone())?;

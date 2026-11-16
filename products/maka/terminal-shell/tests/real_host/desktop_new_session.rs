@@ -915,6 +915,92 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
     assert_eq!(images, vec![bytes.to_vec()], "{}", request.body);
 }
 
+async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
+    let fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let referenced = mutate(
+        &client,
+        "create",
+        json!({
+            "title":"删过度设计", "labels":[],
+            "workspace":{"kind":"session", "sessionId":fixture.session},
+        }),
+    )
+    .await;
+    assert_eq!(referenced["kind"], "created", "{referenced}");
+    let referenced = referenced["session"]["id"].as_str().unwrap();
+    client.close().await.unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let composer = desktop.control("Focus message composer").await;
+    desktop.press_at(composer.center());
+    desktop.paste("@删过度").await;
+    desktop.press("删过度设计").await;
+    let mention = format!("[@删过度设计](maka://session/{referenced}) ");
+    desktop.expect_text(&mention).await;
+    desktop.key("right", false);
+    let before_ah = "它刚刚提了个 PR，你来 review 一下，你可以用";
+    let prefix = format!("{mention}{before_ah}");
+    desktop.paste(before_ah).await;
+    desktop.expect_text(&prefix).await;
+    desktop.key("right", false);
+    let insertion = desktop
+        .until("the caret did not reach the end of the first part", || {
+            desktop
+                .platform
+                .input_caret_bounds()
+                .filter(|bounds| bounds.left() > composer.left() + px(200.))
+        })
+        .await;
+    let suffix = "啊，看看实现干不干净，优不优雅，测试是不是有很多低信心、低价值的测试";
+    desktop.paste(suffix).await;
+    desktop.expect_text(&format!("{prefix}{suffix}")).await;
+    desktop.press_at(point(insertion.left(), insertion.center().y));
+    let composition_bounds = Bounds::new(
+        point(insertion.left() + px(3.), insertion.top()),
+        size(px(9.), insertion.size.height),
+    );
+    let before = desktop.pixels(composition_bounds).unwrap();
+    desktop.artifact("composer-ime-click");
+    let target = desktop.platform.text_input_target().unwrap();
+    assert!(
+        desktop
+            .platform
+            .apply_composition(&target, "", "a", Some(1..1), true)
+            .unwrap()
+    );
+    let preedit = desktop
+        .until(
+            "the input method's preedit did not appear at the clicked position",
+            || {
+                desktop
+                    .pixels(composition_bounds)
+                    .filter(|pixels| *pixels != before)
+            },
+        )
+        .await;
+    desktop.artifact("composer-ime-preedit");
+    assert!(
+        desktop
+            .platform
+            .apply_composition(&target, "阿", "", None, false)
+            .unwrap()
+    );
+    desktop
+        .until(
+            "the committed character did not replace the preedit",
+            || {
+                desktop
+                    .pixels(composition_bounds)
+                    .filter(|pixels| *pixels != preedit)
+            },
+        )
+        .await;
+    desktop.artifact("composer-ime-committed");
+    assert_eq!(desktop.copy_input().await, format!("{prefix}阿{suffix}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_composer_references_a_conversation_without_waking_it() {
     let mut fixture = Fixture::open_with_configuration(Options::default(), |_, root| {
         std::fs::write(root.join("workspace/Release-notes.md"), "Reference").unwrap();
@@ -3643,6 +3729,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_new_conversation_preserves_an_owned_worktree",
     "desktop_recovers_an_unavailable_remembered_folder",
+    "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
     "desktop_composer_references_a_conversation_without_waking_it",
     "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
@@ -3695,6 +3782,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_recovers_an_unavailable_remembered_folder" => {
             runtime.block_on(desktop_recovers_an_unavailable_remembered_folder())
+        }
+        "desktop_composer_click_and_ime_follow_the_text_after_a_mention" => {
+            runtime.block_on(desktop_composer_click_and_ime_follow_the_text_after_a_mention())
         }
         "desktop_composer_references_a_conversation_without_waking_it" => {
             runtime.block_on(desktop_composer_references_a_conversation_without_waking_it())
