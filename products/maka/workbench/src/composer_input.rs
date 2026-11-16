@@ -281,17 +281,22 @@ impl ComposerInputApi {
     }
 }
 
-const SKILL_LINE_HEIGHT: Points = px(16.0);
+const TOKEN_LINE_HEIGHT: Points = px(16.0);
 
-struct SkillView(ComposerInputProps);
+struct ReferenceView(ComposerInputProps);
 
-impl NodeView for SkillView {
+impl NodeView for ReferenceView {
     fn create(&self, _cx: &NodeViewCx, node: &Node) -> AnyElement {
         let props = self.0;
         let name = node.attrs()["name"]
             .as_str()
-            .expect("a skill node's name is text")
-            .to_owned();
+            .expect("a composer token's name is text");
+        let is_session = node.ty().name() == "session";
+        let label = if is_session {
+            format!("@{name}")
+        } else {
+            name.to_owned()
+        };
         let icon_size = 13.0;
         let icon = if nsh_base::terminal::is_terminal() {
             text("📖").into_element()
@@ -325,8 +330,8 @@ impl NodeView for SkillView {
             })
             .text_color(move || AdaptiveColor::from(Hsla::from(props.token_color.get())))
             .pointer_events(PointerEvents::None)
-            .child(icon)
-            .child(text(name).line_height(SKILL_LINE_HEIGHT));
+            .when(!is_session, |chip| chip.child(icon))
+            .child(text(label).line_height(TOKEN_LINE_HEIGHT));
         message::attachment(node, chip.into_element())
     }
 }
@@ -553,7 +558,9 @@ pub(crate) fn ComposerInput(
     ];
     let session = EditorSession::new(
         state(&schema, &initial, plugins.clone(), &source(props)),
-        NodeViews::new().with("skill", Arc::new(SkillView(props))),
+        NodeViews::new()
+            .with("skill", Arc::new(ReferenceView(props)))
+            .with("session", Arc::new(ReferenceView(props))),
     );
     cx.methods(ComposerInputApi {
         session: session.clone(),

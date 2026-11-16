@@ -125,6 +125,7 @@ function PendingComposer() {
     submit: (text: string) => submitted.set(text),
     completion: {
       files: null,
+      sessions: async () => [],
       pathLabel: unused,
       skills: async ({ query }) => ({
         skills: skills
