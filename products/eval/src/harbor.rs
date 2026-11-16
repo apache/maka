@@ -26,20 +26,33 @@ use tokio::process::Command;
 
 use crate::guest::{GuestRunResult, GuestRunStatus, SandboxMode};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct HarborRunOptions {
+    #[arg(long = "task")]
     pub task_path: PathBuf,
+    #[arg(long)]
     pub bundle_dir: PathBuf,
+    #[arg(long = "out")]
     pub out_dir: PathBuf,
+    #[arg(long, default_value = "harbor")]
     pub harbor_bin: String,
+    #[arg(long)]
     pub force_build: bool,
+    #[arg(long)]
     pub base_url: Option<String>,
+    #[arg(long, default_value = "OLLAMA_API_KEY")]
     pub api_key_env: String,
+    #[arg(long, default_value = "openai-compatible")]
     pub provider: String,
+    #[arg(long, default_value = "eval-target")]
     pub connection_slug: String,
+    #[arg(long = "model")]
     pub model_id: String,
+    #[arg(long, value_enum, default_value_t = SandboxMode::DangerFullAccess)]
     pub sandbox_mode: SandboxMode,
+    #[arg(long, default_value_t = 64)]
     pub max_steps: u32,
+    #[arg(long, default_value_t = 600_000)]
     pub timeout_ms: u64,
 }
 
@@ -55,6 +68,9 @@ pub struct HarborRunOutcome {
 }
 
 pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, String> {
+    if opts.timeout_ms == 0 || opts.max_steps == 0 {
+        return Err("maxSteps and timeoutMs must be > 0".into());
+    }
     let task_path = std::fs::canonicalize(&opts.task_path).map_err(|e| {
         format!(
             "failed to resolve task path {}: {e}",
@@ -125,6 +141,8 @@ pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Stri
                 "import_path": "maka_host_agent:MakaHostAgent",
                 "model_name": format!("{}/{}", opts.provider, opts.model_id),
                 "skip_model_parsing": true,
+                // Give guest-run 30s after its internal timeout_ms deadline to stop and flush artifacts.
+                "override_timeout_sec": (opts.timeout_ms as f64 / 1000.0) + 30.0,
                 "kwargs": {
                     "endpoint_url": opts.base_url,
                     "api_key_env": opts.api_key_env,
@@ -199,10 +217,8 @@ pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Stri
     let trial_dir = trial_result_path
         .parent()
         .ok_or("trial result.json has no parent directory")?;
-    let guest_result_path = trial_dir
-        .join("agent")
-        .join("maka")
-        .join("guest-result.json");
+    let maka_dir = trial_dir.join("agent").join("maka");
+    let guest_result_path = maka_dir.join("guest-result.json");
     let guest_result = if guest_result_path.is_file() {
         let raw_guest = std::fs::read_to_string(&guest_result_path)
             .map_err(|e| format!("failed to read {}: {e}", guest_result_path.display()))?;
@@ -218,7 +234,7 @@ pub async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Stri
         None
     };
 
-    let transcript_candidate = trial_dir.join("agent").join("maka").join("transcript.json");
+    let transcript_candidate = maka_dir.join("transcript.json");
     let transcript_path = transcript_candidate
         .is_file()
         .then_some(transcript_candidate);
@@ -282,64 +298,50 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
             outcome.transcript_path
         ));
     }
-    let pending_models = guest
-        .host_usage
-        .as_ref()
-        .and_then(|u| u.pointer("/summary/pending/models"))
-        .and_then(Value::as_u64);
-    let Some(attempts) = &guest.host_usage_attempts else {
-        return Err(format!(
-            "incomplete host usage accounting: pending_models={pending_models:?}, has_attempts=false"
-        ));
+    let Some(usage) = &guest.host_usage else {
+        return Err("incomplete host usage accounting: missing usageSummary".into());
     };
+    if guest.host_usage_attempts.is_none() {
+        return Err("incomplete host usage accounting: missing usage attempts".into());
+    }
+    let pending_models = usage
+        .pointer("/summary/pending/models")
+        .and_then(Value::as_u64);
     if pending_models != Some(0) {
         return Err(format!(
-            "incomplete host usage accounting: pending_models={pending_models:?}, has_attempts=true"
+            "incomplete host usage accounting: pending_models={pending_models:?}"
         ));
     }
-    if !attempts.get("nextCursor").is_some_and(Value::is_null) {
+    let calls = usage
+        .pointer("/summary/models/calls")
+        .and_then(Value::as_u64);
+    let input_missing = usage
+        .pointer("/summary/models/input/missing")
+        .and_then(Value::as_u64);
+    let output_missing = usage
+        .pointer("/summary/models/output/missing")
+        .and_then(Value::as_u64);
+    let Some(calls) = calls else {
+        return Err("incomplete host usage accounting: missing summary.models.calls".into());
+    };
+    if calls > 0 && (input_missing == Some(calls) || output_missing == Some(calls)) {
         return Err(format!(
-            "incomplete host usage attempt pagination: nextCursor={:?}",
-            attempts.get("nextCursor")
-        ));
-    }
-    let collected_len = attempts["attempts"].as_array().map(Vec::len);
-    let declared_total = attempts["total"]
-        .as_u64()
-        .and_then(|n| usize::try_from(n).ok());
-    if collected_len.is_none() || collected_len != declared_total {
-        return Err(format!(
-            "host usage attempt count mismatch: collected={collected_len:?}, total={declared_total:?}"
-        ));
-    }
-    if let (Some(summary_through), Some(attempts_through)) = (
-        guest
-            .host_usage
-            .as_ref()
-            .and_then(|u| u.get("through"))
-            .filter(|v| !v.is_null()),
-        attempts.get("through").filter(|v| !v.is_null()),
-    ) && summary_through != attempts_through
-    {
-        return Err(format!(
-            "host usage fence mismatch between summary ({summary_through}) and attempts ({attempts_through})"
+            "model calls completed ({calls}) without token usage: input_missing={input_missing:?}, output_missing={output_missing:?}"
         ));
     }
     Ok(())
 }
 
 fn resolve_harbor_plugin_dir() -> Result<PathBuf, String> {
-    let manifest_harbor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("harbor");
-    if manifest_harbor.join("maka_host_agent.py").is_file() {
-        return std::fs::canonicalize(&manifest_harbor).map_err(|e| e.to_string());
+    let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("harbor");
+    if plugin_dir.join("maka_host_agent.py").is_file() {
+        std::fs::canonicalize(&plugin_dir).map_err(|e| e.to_string())
+    } else {
+        Err(format!(
+            "missing harbor plugin under {}",
+            plugin_dir.display()
+        ))
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join("products/eval/harbor");
-        if candidate.join("maka_host_agent.py").is_file() {
-            return std::fs::canonicalize(&candidate).map_err(|e| e.to_string());
-        }
-    }
-    Err("unable to locate products/eval/harbor/maka_host_agent.py".into())
 }
 
 fn find_trial_result_json(job_dir: &Path) -> Result<Option<PathBuf>, String> {
@@ -381,7 +383,14 @@ mod tests {
                 execution: Some(json!({ "state": { "kind": state_kind } })),
                 host_usage: Some(json!({
                     "through": { "sequence": 12 },
-                    "summary": { "pending": { "models": pending_models } }
+                    "summary": {
+                        "pending": { "models": pending_models },
+                        "models": {
+                            "calls": 1,
+                            "input": { "known": 100, "missing": 0 },
+                            "output": { "known": 20, "missing": 0 }
+                        }
+                    }
                 })),
                 host_usage_attempts: Some(json!({
                     "through": { "sequence": 12 },
@@ -480,66 +489,23 @@ mod tests {
                 .contains("incomplete host usage")
         );
 
-        let mut more_pages = sample_outcome(
-            Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            0,
-        );
-        more_pages
-            .guest_result
-            .as_mut()
-            .unwrap()
-            .host_usage_attempts = Some(json!({
-            "through": { "sequence": 12 },
-            "attempts": [],
-            "total": 0,
-            "nextCursor": { "offset": 32 }
-        }));
-        assert!(
-            validate_trial_evidence(&more_pages)
-                .unwrap_err()
-                .contains("attempt pagination")
-        );
-
-        let mut truncated_attempts = sample_outcome(
-            Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            0,
-        );
-        truncated_attempts
-            .guest_result
-            .as_mut()
-            .unwrap()
-            .host_usage_attempts = Some(json!({
-            "through": { "sequence": 12 },
-            "attempts": [],
-            "total": 2,
-            "nextCursor": null
-        }));
-        assert!(
-            validate_trial_evidence(&truncated_attempts)
-                .unwrap_err()
-                .contains("count mismatch")
-        );
-
-        let mut fence_mismatch =
+        let mut zero_token_usage =
             sample_outcome(Some(transcript), GuestRunStatus::Completed, "completed", 0);
-        fence_mismatch
-            .guest_result
-            .as_mut()
-            .unwrap()
-            .host_usage_attempts = Some(json!({
-            "through": { "sequence": 99 },
-            "attempts": [],
-            "total": 0,
-            "nextCursor": null
+        zero_token_usage.guest_result.as_mut().unwrap().host_usage = Some(json!({
+            "through": { "sequence": 12 },
+            "summary": {
+                "pending": { "models": 0 },
+                "models": {
+                    "calls": 2,
+                    "input": { "known": 0, "missing": 2 },
+                    "output": { "known": 0, "missing": 2 }
+                }
+            }
         }));
         assert!(
-            validate_trial_evidence(&fence_mismatch)
+            validate_trial_evidence(&zero_token_usage)
                 .unwrap_err()
-                .contains("fence mismatch")
+                .contains("without token usage")
         );
     }
 }

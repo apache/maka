@@ -31,15 +31,14 @@ class MakaHostAgent(BaseAgent):
     """Harbor adapter that drives native maka host via `/opt/maka-agent/maka-eval guest-run`."""
 
     def __init__(self, logs_dir: Path, model_name: str | None = None, **kwargs):
-        endpoint_url = kwargs.pop("endpoint_url", None)
-        self._endpoint_url: str | None = endpoint_url or None
+        self._endpoint_url: str | None = kwargs.pop("endpoint_url", None) or None
         self._api_key_env: str = kwargs.pop("api_key_env")
-        self._provider: str = kwargs.pop("provider", "openai-compatible")
-        self._connection_slug: str = kwargs.pop("connection_slug", "eval-target")
-        self._model_id: str | None = kwargs.pop("model_id", None) or model_name
-        self._sandbox_mode: str = kwargs.pop("sandbox_mode", "danger-full-access")
-        self._max_steps: int = int(kwargs.pop("max_steps", 64))
-        self._timeout_ms: int = int(kwargs.pop("timeout_ms", 600000))
+        self._provider: str = kwargs.pop("provider")
+        self._connection_slug: str = kwargs.pop("connection_slug")
+        self._model_id: str = kwargs.pop("model_id", None) or model_name or ""
+        self._sandbox_mode: str = kwargs.pop("sandbox_mode")
+        self._max_steps: int = int(kwargs.pop("max_steps"))
+        self._timeout_ms: int = int(kwargs.pop("timeout_ms"))
         if not self._model_id:
             raise ValueError("MakaHostAgent requires model_id or model_name")
         super().__init__(logs_dir, model_name=model_name, **kwargs)
@@ -82,6 +81,7 @@ class MakaHostAgent(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
+        del context
         api_key = os.environ.get(self._api_key_env, "")
         if not api_key:
             raise RuntimeError(
@@ -91,14 +91,18 @@ class MakaHostAgent(BaseAgent):
         pwd_res = await environment.exec("pwd")
         workspace_dir = (pwd_res.stdout or "").strip() or "/app"
 
-        artifacts_remote = "/tmp/maka-eval-artifacts"
-        request_remote = "/tmp/maka-eval-request.json"
-        result_remote = "/tmp/maka-eval-result.json"
+        maka_logs = self.logs_dir / "maka"
+        maka_logs.mkdir(parents=True, exist_ok=True)
+        maka_logs.chmod(0o777)
+
+        remote_maka_logs = f"{self.environment_logs_dir.as_posix()}/maka"
+        request_remote = f"/tmp/maka-eval-request-{os.getpid()}.json"
+        result_remote = f"{remote_maka_logs}/guest-result.json"
 
         request_payload = {
             "instruction": instruction,
             "workspaceDir": workspace_dir,
-            "artifactsDir": artifacts_remote,
+            "artifactsDir": remote_maka_logs,
             "baseUrl": self._endpoint_url,
             "apiKey": api_key,
             "provider": self._provider,
@@ -110,54 +114,31 @@ class MakaHostAgent(BaseAgent):
         }
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
+            os.chmod(tmp.name, 0o600)
             json.dump(request_payload, tmp)
             tmp_path = Path(tmp.name)
 
         try:
             await environment.upload_file(tmp_path, request_remote)
+            await environment.exec(f"chmod 600 {request_remote}")
         finally:
             tmp_path.unlink(missing_ok=True)
 
-        maka_logs = self.logs_dir / "maka"
-        maka_logs.mkdir(parents=True, exist_ok=True)
+        exec_res = await environment.exec(
+            f"/opt/maka-agent/maka-eval guest-run "
+            f"--request-file {request_remote} "
+            f"--result-file {result_remote}",
+            env={
+                "NO_PROXY": "localhost,127.0.0.1,::1,host.docker.internal",
+                "no_proxy": "localhost,127.0.0.1,::1,host.docker.internal",
+            },
+        )
+        if exec_res.stdout:
+            (maka_logs / "guest-run.stdout.log").write_text(exec_res.stdout)
+        if exec_res.stderr:
+            (maka_logs / "guest-run.stderr.log").write_text(exec_res.stderr)
 
-        exec_res = None
-        try:
-            exec_res = await environment.exec(
-                f"/opt/maka-agent/maka-eval guest-run "
-                f"--request-file {request_remote} "
-                f"--result-file {result_remote}",
-                env={
-                    "NO_PROXY": "localhost,127.0.0.1,::1,host.docker.internal",
-                    "no_proxy": "localhost,127.0.0.1,::1,host.docker.internal",
-                    "PATH": "/opt/maka-agent:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                },
-            )
-            if exec_res.stdout:
-                (maka_logs / "guest-run.stdout.log").write_text(exec_res.stdout)
-            if exec_res.stderr:
-                (maka_logs / "guest-run.stderr.log").write_text(exec_res.stderr)
-        finally:
-            try:
-                await environment.download_file(result_remote, maka_logs / "guest-result.json")
-            except Exception:
-                pass
-            try:
-                await environment.download_file(
-                    f"{artifacts_remote}/transcript.json",
-                    maka_logs / "transcript.json",
-                )
-            except Exception:
-                pass
-
-        guest_result_path = maka_logs / "guest-result.json"
-        if guest_result_path.is_file():
-            context.metadata = {
-                **(context.metadata or {}),
-                "maka": json.loads(guest_result_path.read_text()),
-            }
-
-        if exec_res is not None and exec_res.return_code != 0:
+        if exec_res.return_code != 0:
             raise RuntimeError(
                 f"maka-eval guest-run exited with {exec_res.return_code}: "
                 f"{exec_res.stderr or exec_res.stdout}"

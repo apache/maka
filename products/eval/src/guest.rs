@@ -20,10 +20,10 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use maka_app_client::{Client, Journal, Mutation, SubscriptionEvent};
+use maka_app_client::{Client, Journal, Mutation, Subscription, SubscriptionEvent};
+use maka_capabilities::call::Attachments;
 use maka_host_runtime::application::host::Client as HostClient;
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt};
 use serde::{Deserialize, Serialize};
@@ -105,12 +105,17 @@ pub async fn run_from_files(request_file: &Path, result_file: &Path) -> Result<(
     let raw = tokio::fs::read_to_string(request_file)
         .await
         .map_err(|e| format!("failed to read {}: {e}", request_file.display()))?;
-    let request: GuestRunRequest = serde_json::from_str(&raw)
-        .map_err(|e| format!("invalid guest request JSON {}: {e}", request_file.display()))?;
+    // Delete the request file immediately so the container workspace cannot inspect the API key.
+    let _ = tokio::fs::remove_file(request_file).await;
 
-    let result = match execute(request).await {
-        Ok(res) => res,
-        Err(err) => GuestRunResult::infra_error(err),
+    let result = match serde_json::from_str::<GuestRunRequest>(&raw) {
+        Ok(request) => execute(request)
+            .await
+            .unwrap_or_else(GuestRunResult::infra_error),
+        Err(e) => GuestRunResult::infra_error(format!(
+            "invalid guest request JSON {}: {e}",
+            request_file.display()
+        )),
     };
 
     if let Some(parent) = result_file.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -155,42 +160,57 @@ async fn execute(req: GuestRunRequest) -> Result<GuestRunResult, String> {
         })?;
 
     let run_dir = std::env::temp_dir().join(format!("maka-eval-host-{}", Uuid::new_v4()));
+    tokio::fs::create_dir_all(&run_dir)
+        .await
+        .map_err(|e| format!("failed to create temp run dir: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700))
+            .await
+            .map_err(|e| format!("failed to chmod temp run dir: {e}"))?;
+    }
     let state_root = run_dir.join("root");
     let journal_path = run_dir.join("journal.sqlite");
     tokio::fs::create_dir_all(&state_root)
         .await
         .map_err(|e| format!("failed to create state root dir: {e}"))?;
 
-    let maka_bin = resolve_maka_binary()?;
+    let maka_bin = resolve_maka_binary();
     let command_path = prepend_binary_dir_to_path(&maka_bin);
 
-    init_host(
-        &maka_bin,
-        &command_path,
-        &state_root,
-        &canonical_workspace_str,
-        &req,
-    )
-    .await?;
-    let mut host_proc = spawn_host_serve(&maka_bin, &command_path, &state_root).await?;
+    let result = async {
+        init_host(
+            &maka_bin,
+            &command_path,
+            &state_root,
+            &canonical_workspace_str,
+            &req,
+        )
+        .await?;
+        let mut host_proc = spawn_host_serve(&maka_bin, &command_path, &state_root).await?;
 
-    let inner = run_session(&req, &canonical_workspace_str, &journal_path, &host_proc).await;
-    let shutdown = host_proc.shutdown().await;
+        let inner = run_session(&req, &canonical_workspace_str, &journal_path, &host_proc).await;
+        let shutdown = host_proc.shutdown().await;
 
-    let (mut result, session_err) = match inner {
-        Ok(res) => (res, None),
-        Err(err) => (GuestRunResult::infra_error(err.clone()), Some(err)),
-    };
-    if let Err(err) = shutdown {
-        let combined = match session_err.or_else(|| result.infra_error.take()) {
-            Some(existing) => format!("{existing}; host shutdown failed: {err}"),
-            None => format!("host shutdown failed: {err}"),
+        let (mut result, session_err) = match inner {
+            Ok(res) => (res, None),
+            Err(err) => (GuestRunResult::infra_error(err.clone()), Some(err)),
         };
-        result.status = GuestRunStatus::InfraFailed;
-        result.infra_error = Some(combined);
+        if let Err(err) = shutdown {
+            let combined = match session_err.or_else(|| result.infra_error.take()) {
+                Some(existing) => format!("{existing}; host shutdown failed: {err}"),
+                None => format!("host shutdown failed: {err}"),
+            };
+            result.status = GuestRunStatus::InfraFailed;
+            result.infra_error = Some(combined);
+        }
+        Ok::<GuestRunResult, String>(result)
     }
+    .await;
 
-    Ok(result)
+    let _ = tokio::fs::remove_dir_all(&run_dir).await;
+    result
 }
 
 async fn run_session(
@@ -199,22 +219,18 @@ async fn run_session(
     journal_path: &Path,
     host_proc: &HostServerProcess,
 ) -> Result<GuestRunResult, String> {
-    let socket_path = Path::new(&host_proc.socket_path);
-    let mut host_client = HostClient::connect(socket_path, Some(host_proc.host_epoch))
-        .await
-        .map_err(|e| {
-            format!(
-                "failed to connect to maka host socket {}: {e} (stderr: {})",
-                host_proc.socket_path,
-                host_proc.stderr_summary()
-            )
-        })?;
-    let status = HostClient::status(socket_path, Some(host_proc.host_epoch))
-        .await
-        .map_err(|e| format!("Host status failed: {e}"))?;
-    if Some(status.pid.get()) != host_proc.child.id() {
-        return Err("ready endpoint does not belong to the held Host child".into());
-    }
+    let mut host_client = HostClient::connect(
+        Path::new(&host_proc.socket_path),
+        Some(host_proc.host_epoch),
+    )
+    .await
+    .map_err(|e| {
+        format!(
+            "failed to connect to maka host socket {}: {e}",
+            host_proc.socket_path
+        )
+    })?;
+
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(error) = host_client.catalogue().startup_error() {
@@ -240,12 +256,8 @@ async fn run_session(
         }
     })
     .await
-    .map_err(|_| {
-        format!(
-            "timed out waiting for Host readiness (stderr: {})",
-            host_proc.stderr_summary()
-        )
-    })??;
+    .map_err(|_| "timed out waiting for Host readiness".to_owned())??;
+
     let journal = Journal::open(journal_path)
         .await
         .map_err(|e| format!("failed to open client journal: {e}"))?;
@@ -303,17 +315,6 @@ async fn run_session_with_client(
         .ok_or_else(|| format!("created session missing id: {created}"))?
         .to_owned();
 
-    let draft = client
-        .save_draft(
-            "agent",
-            &session_id,
-            "composer",
-            None,
-            req.instruction.clone().into(),
-        )
-        .await
-        .map_err(|e| format!("save_draft failed: {e}"))?;
-
     let watch = client
         .subscribe(
             "agent",
@@ -324,22 +325,26 @@ async fn run_session_with_client(
         .map_err(|e| format!("subscribe watch failed: {e}"))?;
 
     let run_outcome = async {
-        let mutation = client
-            .reserve_send_draft(
+        let send = client
+            .mutation(
                 Uuid::new_v4(),
                 "agent",
-                &session_id,
-                "composer",
-                draft.revision,
-                json!({ "backend": backend }),
+                "send",
+                json!({
+                    "sessionId": session_id,
+                    "delivery": "steer",
+                    "message": req.instruction,
+                    "attachments": [],
+                    "backend": backend,
+                }),
+                Attachments::new(),
+                Some(session_id.clone()),
+                Value::Null,
             )
             .await
-            .map_err(|e| format!("reserve_send_draft failed: {e}"))?
-            .open()
-            .await
-            .map_err(|e| format!("reserve_send_draft open failed: {e}"))?;
+            .map_err(|e| format!("agent.send open failed: {e}"))?;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(req.timeout_ms);
-        let accepted = commit(mutation).await?;
+        let accepted = commit(send).await?;
         let run_id = match accepted["kind"].as_str() {
             Some("started") => accepted["runId"]
                 .as_str()
@@ -352,120 +357,15 @@ async fn run_session_with_client(
                 resolve_queued_run_id(client, &session_id, message_id, deadline, req.timeout_ms)
                     .await?
             }
-            _ => return Err(format!("send did not start or queue run: {accepted}")),
+            _ => return Err(format!("agent.send did not start or queue run: {accepted}")),
         };
 
-        let mut poll = tokio::time::interval(Duration::from_millis(200));
-        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut step_ids = BTreeSet::<String>::new();
-        let mut final_execution: Option<Value> = None;
-        let mut run_error: Option<String> = None;
+        let (run_error, mut step_ids) =
+            observe_run(client, &watch, &session_id, &run_id, req, deadline).await?;
 
-        'observe: loop {
-            let next = watch.next();
-            tokio::pin!(next);
-            let next_ev = loop {
-                if tokio::time::Instant::now() >= deadline {
-                    run_error = Some(
-                        stop_with_reason(
-                            client,
-                            &session_id,
-                            &run_id,
-                            format!("execution timed out after {} ms", req.timeout_ms),
-                        )
-                        .await,
-                    );
-                    break 'observe;
-                }
-                tokio::select! {
-                    biased;
-                    _ = tokio::time::sleep_until(deadline) => {
-                        run_error = Some(
-                            stop_with_reason(
-                                client,
-                                &session_id,
-                                &run_id,
-                                format!("execution timed out after {} ms", req.timeout_ms),
-                            )
-                            .await,
-                        );
-                        break 'observe;
-                    }
-                    res = &mut next => break res,
-                    _ = poll.tick() => {
-                        if let Some(pending_err) = check_pending_interactions(client, &session_id).await? {
-                            run_error = Some(
-                                stop_with_reason(client, &session_id, &run_id, pending_err).await,
-                            );
-                            break 'observe;
-                        }
-                        if let Some(exec) = poll_terminal_execution(client, &session_id, &run_id).await? {
-                            final_execution = Some(exec);
-                            break 'observe;
-                        }
-                    }
-                }
-            };
-            match next_ev {
-                Ok(Some(SubscriptionEvent::Item(page))) => {
-                    let mut ended_seen = false;
-                    if let Some(events) = page["events"].as_array() {
-                        for ev in events {
-                            if ev["runId"].as_str() != Some(run_id.as_str()) {
-                                continue;
-                            }
-                            if let Some(step_id) = ev["fact"]["stepId"].as_str() {
-                                step_ids.insert(step_id.to_owned());
-                                if step_ids.len() > req.max_steps as usize {
-                                    run_error = Some(
-                                        stop_with_reason(
-                                            client,
-                                            &session_id,
-                                            &run_id,
-                                            format!("exceeded maxSteps ({})", req.max_steps),
-                                        )
-                                        .await,
-                                    );
-                                    break;
-                                }
-                            }
-                            if ev["fact"]["kind"].as_str() == Some("ended") {
-                                ended_seen = true;
-                            }
-                        }
-                    }
-                    if run_error.is_some() {
-                        break 'observe;
-                    }
-                    if ended_seen
-                        && let Some(exec) =
-                            poll_terminal_execution(client, &session_id, &run_id).await?
-                    {
-                        final_execution = Some(exec);
-                        break 'observe;
-                    }
-                }
-                Ok(Some(_)) | Ok(None) => {
-                    if let Some(exec) = poll_terminal_execution(client, &session_id, &run_id).await? {
-                        final_execution = Some(exec);
-                        break 'observe;
-                    }
-                    return Err("watch stream closed before run settled".into());
-                }
-                Err(e) => {
-                    return Err(format!("watch stream error: {e}"));
-                }
-            }
-        }
+        let final_execution = await_terminal_execution(client, &session_id, &run_id).await?;
 
-        if final_execution.is_none() {
-            final_execution = wait_for_terminal_execution(client, &session_id, &run_id).await?;
-        }
-        if final_execution.is_none() {
-            final_execution = query_execution(client, &session_id, &run_id).await?;
-        }
-
-        let transcript = export_history(client, &session_id).await?;
+        let transcript = export_history(client, &session_id, &run_id, &mut step_ids).await?;
         let transcript_file = req.artifacts_dir.join("transcript.json");
         let transcript_json = serde_json::to_string_pretty(&transcript)
             .map_err(|e| format!("failed to serialize transcript: {e}"))?;
@@ -474,14 +374,14 @@ async fn run_session_with_client(
             .map_err(|e| format!("failed to write transcript: {e}"))?;
 
         let host_usage = query_settled_usage_summary(client, &session_id).await?;
-
         let through_fence = host_usage
             .as_ref()
             .and_then(|u| u.get("through"))
             .cloned()
             .unwrap_or(Value::Null);
         let host_usage_attempts = Some(
-            query_all_usage_attempts(client, &session_id, through_fence).await?,
+            query_all_usage_attempts(client, &session_id, &run_id, through_fence, &mut step_ids)
+                .await?,
         );
 
         let state_kind = final_execution
@@ -526,38 +426,79 @@ async fn run_session_with_client(
     }
 }
 
-async fn find_connection_id(client: &Client, slug: &str) -> Result<String, String> {
-    let mut input = json!({ "kind": "start" });
+async fn observe_run(
+    client: &Client,
+    watch: &Subscription,
+    session_id: &str,
+    run_id: &str,
+    req: &GuestRunRequest,
+    deadline: tokio::time::Instant,
+) -> Result<(Option<String>, BTreeSet<String>), String> {
+    let mut step_ids = BTreeSet::<String>::new();
     loop {
-        let page = client
-            .query("settings", "connections", input)
-            .await
-            .map_err(|e| format!("settings.connections query failed: {e}"))?;
-        match page["kind"].as_str() {
-            Some("ready") => {
-                if let Some(connections) = page["connections"].as_array()
-                    && let Some(row) = connections
-                        .iter()
-                        .find(|c| c["slug"].as_str() == Some(slug))
-                    && let Some(id) = row["basis"]["connectionId"].as_str()
-                {
-                    return Ok(id.to_owned());
+        let next_ev = tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => {
+                let reason = stop_with_reason(
+                    client,
+                    session_id,
+                    run_id,
+                    format!("execution timed out after {} ms", req.timeout_ms),
+                )
+                .await;
+                return Ok((Some(reason), step_ids));
+            }
+            res = watch.next() => res,
+        };
+        match next_ev {
+            Ok(Some(SubscriptionEvent::Item(page))) => match page["kind"].as_str() {
+                Some("interactions") => {
+                    if page["pending"]["entries"]
+                        .as_array()
+                        .is_some_and(|entries| !entries.is_empty())
+                    {
+                        let reason = stop_with_reason(
+                            client,
+                            session_id,
+                            run_id,
+                            format!(
+                                "execution blocked by pending interaction: {}",
+                                page["pending"]["entries"]
+                            ),
+                        )
+                        .await;
+                        return Ok((Some(reason), step_ids));
+                    }
                 }
-                if page["next"].is_null() {
-                    return Err(format!("connection '{slug}' not found after host init"));
+                Some("events") => {
+                    if let Some(events) = page["events"].as_array() {
+                        for ev in events {
+                            if ev["runId"].as_str() != Some(run_id) {
+                                continue;
+                            }
+                            if let Some(step_id) = ev["fact"]["stepId"].as_str() {
+                                step_ids.insert(step_id.to_owned());
+                                if step_ids.len() > req.max_steps as usize {
+                                    let reason = stop_with_reason(
+                                        client,
+                                        session_id,
+                                        run_id,
+                                        format!("exceeded maxSteps ({})", req.max_steps),
+                                    )
+                                    .await;
+                                    return Ok((Some(reason), step_ids));
+                                }
+                            }
+                            if ev["fact"]["kind"].as_str() == Some("ended") {
+                                return Ok((None, step_ids));
+                            }
+                        }
+                    }
                 }
-                input = json!({
-                    "kind": "continue",
-                    "revision": page["revision"],
-                    "offset": page["next"],
-                });
-            }
-            Some("changed") => {
-                input = json!({ "kind": "start" });
-            }
-            _ => {
-                return Err(format!("unexpected settings.connections response: {page}"));
-            }
+                _ => {}
+            },
+            Ok(Some(_)) | Ok(None) => return Err("watch stream closed before run settled".into()),
+            Err(e) => return Err(format!("watch stream error: {e}")),
         }
     }
 }
@@ -569,18 +510,16 @@ async fn resolve_queued_run_id(
     deadline: tokio::time::Instant,
     timeout_ms: u64,
 ) -> Result<String, String> {
-    let target = json!({
-        "kind": "message",
-        "messageId": message_id,
+    let input = json!({
+        "sessionId": session_id,
+        "target": { "kind": "message", "messageId": message_id },
+        "cursor": Value::Null,
     });
-    let mut poll = tokio::time::interval(Duration::from_millis(50));
+    let mut poll = tokio::time::interval(Duration::from_millis(25));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "queued message '{message_id}' did not start execution before timeout ({timeout_ms} ms)"
-            ));
-        }
         tokio::select! {
+            biased;
             _ = tokio::time::sleep_until(deadline) => {
                 return Err(format!(
                     "queued message '{message_id}' did not start execution before timeout ({timeout_ms} ms)"
@@ -588,15 +527,7 @@ async fn resolve_queued_run_id(
             }
             _ = poll.tick() => {
                 let work = client
-                    .query(
-                        "agent",
-                        "work",
-                        json!({
-                            "sessionId": session_id,
-                            "target": target,
-                            "cursor": Value::Null,
-                        }),
-                    )
+                    .query("agent", "work", input.clone())
                     .await
                     .map_err(|e| format!("agent.work query failed: {e}"))?;
                 match work["kind"].as_str() {
@@ -607,80 +538,33 @@ async fn resolve_queued_run_id(
                             .ok_or_else(|| format!("agent.work delivered missing runId: {work}"));
                     }
                     Some("pending") => {}
-                    Some("cancelled" | "missing" | "changed") => {
-                        return Err(format!("queued send ended before execution: {work}"));
-                    }
-                    _ => {
-                        return Err(format!("unexpected agent.work response: {work}"));
-                    }
+                    _ => return Err(format!("queued send ended before execution: {work}")),
                 }
             }
         }
     }
 }
 
-async fn check_pending_interactions(
-    client: &Client,
-    session_id: &str,
-) -> Result<Option<String>, String> {
-    let pending = client
-        .query(
-            "agent",
-            "pendingInteractions",
-            json!({ "sessionId": session_id }),
-        )
+async fn find_connection_id(client: &Client, slug: &str) -> Result<String, String> {
+    let page = client
+        .query("settings", "connections", json!({ "kind": "start" }))
         .await
-        .map_err(|e| format!("pendingInteractions query failed: {e}"))?;
-    if pending["entries"]
+        .map_err(|e| format!("settings.connections query failed: {e}"))?;
+    if page["kind"].as_str() != Some("ready") {
+        return Err(format!("unexpected settings.connections response: {page}"));
+    }
+    page["connections"]
         .as_array()
-        .is_some_and(|entries| !entries.is_empty())
-    {
-        return Ok(Some(format!(
-            "execution blocked by pending interaction: {}",
-            pending["entries"]
-        )));
-    }
-    Ok(None)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|c| c["slug"].as_str() == Some(slug))
+                .and_then(|c| c["basis"]["connectionId"].as_str())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| format!("connection '{slug}' not found after host init"))
 }
 
-async fn query_execution(
-    client: &Client,
-    session_id: &str,
-    run_id: &str,
-) -> Result<Option<Value>, String> {
-    let resp = client
-        .query(
-            "agent",
-            "execution",
-            json!({ "sessionId": session_id, "runId": run_id }),
-        )
-        .await
-        .map_err(|e| format!("agent.execution query failed: {e}"))?;
-    if resp["kind"].as_str() == Some("found") {
-        Ok(Some(resp["execution"].clone()))
-    } else {
-        Ok(None)
-    }
-}
-
-async fn poll_terminal_execution(
-    client: &Client,
-    session_id: &str,
-    run_id: &str,
-) -> Result<Option<Value>, String> {
-    let Some(exec) = query_execution(client, session_id, run_id).await? else {
-        return Ok(None);
-    };
-    if matches!(
-        exec["state"]["kind"].as_str(),
-        Some("completed" | "failed" | "cancelled")
-    ) {
-        return Ok(Some(exec));
-    }
-    Ok(None)
-}
-
-async fn wait_for_terminal_execution(
+async fn await_terminal_execution(
     client: &Client,
     session_id: &str,
     run_id: &str,
@@ -689,8 +573,22 @@ async fn wait_for_terminal_execution(
     let mut poll = tokio::time::interval(Duration::from_millis(50));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        if let Some(exec) = poll_terminal_execution(client, session_id, run_id).await? {
-            return Ok(Some(exec));
+        let resp = client
+            .query(
+                "agent",
+                "execution",
+                json!({ "sessionId": session_id, "runId": run_id }),
+            )
+            .await
+            .map_err(|e| format!("agent.execution query failed: {e}"))?;
+        if resp["kind"].as_str() == Some("found") {
+            let exec = &resp["execution"];
+            if matches!(
+                exec["state"]["kind"].as_str(),
+                Some("completed" | "failed" | "cancelled")
+            ) {
+                return Ok(Some(exec.clone()));
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             return Ok(None);
@@ -724,8 +622,9 @@ async fn query_settled_usage_summary(
             )
             .await
             .map_err(|e| format!("settings.usageSummary query failed: {e}"))?;
-        let pending_models = usage["summary"]["pending"]["models"].as_u64();
-        if pending_models == Some(0) || tokio::time::Instant::now() >= deadline {
+        if usage["summary"]["pending"]["models"].as_u64() == Some(0)
+            || tokio::time::Instant::now() >= deadline
+        {
             return Ok(Some(usage));
         }
         poll.tick().await;
@@ -735,10 +634,16 @@ async fn query_settled_usage_summary(
 async fn query_all_usage_attempts(
     client: &Client,
     session_id: &str,
+    run_id: &str,
     through_fence: Value,
+    step_ids: &mut BTreeSet<String>,
 ) -> Result<Value, String> {
-    collect_usage_attempt_pages(through_fence, |fence, cursor| async move {
-        client
+    let mut expected_fence = through_fence;
+    let mut cursor = Value::Null;
+    let mut attempts = Vec::<Value>::new();
+    let total;
+    loop {
+        let page = client
             .query(
                 "settings",
                 "usage",
@@ -747,7 +652,7 @@ async fn query_all_usage_attempts(
                         "from": 0.0,
                         "to": 9_007_199_254_740_991.0,
                         "sessionId": session_id,
-                        "through": fence,
+                        "through": expected_fence,
                     },
                     "selection": {
                         "kind": "model",
@@ -758,64 +663,37 @@ async fn query_all_usage_attempts(
                 }),
             )
             .await
-            .map_err(|e| format!("settings.usage query failed: {e}"))
-    })
-    .await
-}
-
-async fn collect_usage_attempt_pages<F, Fut>(
-    through_fence: Value,
-    mut fetch_page: F,
-) -> Result<Value, String>
-where
-    F: FnMut(Value, Value) -> Fut,
-    Fut: std::future::Future<Output = Result<Value, String>>,
-{
-    let mut expected_fence = through_fence;
-    let mut cursor = Value::Null;
-    let mut seen_cursors = BTreeSet::<String>::new();
-    let mut attempts = Vec::<Value>::new();
-    loop {
-        let page = fetch_page(expected_fence.clone(), cursor).await?;
-        let fence = page
+            .map_err(|e| format!("settings.usage query failed: {e}"))?;
+        expected_fence = page
             .get("through")
             .ok_or("usage page missing through fence")?
             .clone();
-        if !expected_fence.is_null() && expected_fence != fence {
-            return Err("usage fence changed during attempt pagination".into());
+        if let Some(page_attempts) = page["attempts"].as_array() {
+            for item in page_attempts {
+                if item["attempt"]["origin"]["execution"]["runId"].as_str() == Some(run_id)
+                    && let Some(step) = item["attempt"]["origin"]["link"]["step"].as_str()
+                {
+                    step_ids.insert(step.to_owned());
+                }
+            }
+            attempts.extend(page_attempts.iter().cloned());
         }
-        expected_fence = fence;
-        let page_attempts = page["attempts"]
-            .as_array()
-            .ok_or("usage page missing attempts array")?;
-        attempts.extend(page_attempts.iter().cloned());
-        let total = page["total"]
-            .as_u64()
-            .ok_or("usage page missing numeric total")?;
         let next = page
             .get("nextCursor")
             .ok_or("usage page missing nextCursor")?
             .clone();
         if next.is_null() {
-            if usize::try_from(total).ok() != Some(attempts.len()) {
-                return Err(format!(
-                    "usage attempt count mismatch: collected {}, total {total}",
-                    attempts.len()
-                ));
-            }
-            return Ok(json!({
-                "through": expected_fence,
-                "attempts": attempts,
-                "total": total,
-                "nextCursor": Value::Null,
-            }));
-        }
-        let next_key = serde_json::to_string(&next).map_err(|e| e.to_string())?;
-        if !seen_cursors.insert(next_key) {
-            return Err("usage pagination cursor repeated".into());
+            total = page["total"].as_u64().unwrap_or(attempts.len() as u64);
+            break;
         }
         cursor = next;
     }
+    Ok(json!({
+        "through": expected_fence,
+        "attempts": attempts,
+        "total": total,
+        "nextCursor": Value::Null,
+    }))
 }
 
 async fn stop_with_reason(
@@ -824,29 +702,30 @@ async fn stop_with_reason(
     run_id: &str,
     reason: String,
 ) -> String {
-    match stop_run(client, session_id, run_id).await {
-        Ok(()) => reason,
-        Err(err) => format!("{reason}; stop failed: {err}"),
-    }
-}
-
-async fn stop_run(client: &Client, session_id: &str, run_id: &str) -> Result<(), String> {
-    let mutation = client
+    match client
         .control(
             Uuid::new_v4(),
             "stop",
             json!({ "sessionId": session_id, "runId": run_id }),
         )
         .await
-        .map_err(|e| format!("stop control open failed: {e}"))?;
-    let _ = commit(mutation).await?;
-    Ok(())
+    {
+        Ok(mutation) => match commit(mutation).await {
+            Ok(_) => reason,
+            Err(err) => format!("{reason}; stop failed: {err}"),
+        },
+        Err(err) => format!("{reason}; stop control open failed: {err}"),
+    }
 }
 
-async fn export_history(client: &Client, session_id: &str) -> Result<Value, String> {
+async fn export_history(
+    client: &Client,
+    session_id: &str,
+    run_id: &str,
+    step_ids: &mut BTreeSet<String>,
+) -> Result<Value, String> {
     let mut through = Value::Null;
     let mut position = json!({ "kind": "start" });
-    let mut seen_cursors = BTreeSet::<String>::new();
     let mut pages = Vec::new();
     loop {
         let page = client
@@ -862,14 +741,19 @@ async fn export_history(client: &Client, session_id: &str) -> Result<Value, Stri
             )
             .await
             .map_err(|e| format!("agent.history query failed: {e}"))?;
-        let fence = page
+        through = page
             .get("through")
             .ok_or("history page missing through fence")?
             .clone();
-        if !through.is_null() && through != fence {
-            return Err("history fence changed during export".into());
+        if let Some(chunks) = page["chunks"].as_array() {
+            for chunk in chunks {
+                if chunk["runId"].as_str() == Some(run_id)
+                    && let Some(step) = chunk["modelPart"]["stepId"].as_str()
+                {
+                    step_ids.insert(step.to_owned());
+                }
+            }
         }
-        through = fence;
         let after = page
             .get("after")
             .ok_or("history page missing after cursor")?
@@ -881,9 +765,6 @@ async fn export_history(client: &Client, session_id: &str) -> Result<Value, Stri
                 "through": through,
                 "pages": pages,
             }));
-        }
-        if !seen_cursors.insert(after.to_string()) {
-            return Err("history pagination cursor repeated".into());
         }
         position = json!({ "kind": "after", "cursor": after });
     }
@@ -928,16 +809,16 @@ fn returned(reply: OperationReply) -> Result<Value, String> {
     }
 }
 
-fn resolve_maka_binary() -> Result<PathBuf, String> {
+fn resolve_maka_binary() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
         let sibling = dir.join("maka");
         if sibling.is_file() {
-            return Ok(sibling);
+            return sibling;
         }
     }
-    Ok(PathBuf::from("maka"))
+    PathBuf::from("maka")
 }
 
 fn prepend_binary_dir_to_path(bin: &Path) -> String {
@@ -1038,36 +919,31 @@ struct HostServerProcess {
     child: Child,
     socket_path: String,
     host_epoch: Uuid,
-    stderr_lines: Arc<Mutex<Vec<String>>>,
 }
 
 impl HostServerProcess {
-    fn stderr_summary(&self) -> String {
-        self.stderr_lines
-            .lock()
-            .map(|lines| lines.join(" | "))
-            .unwrap_or_default()
-    }
-
     async fn shutdown(&mut self) -> Result<(), String> {
-        #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
-            // SAFETY: self.child has not been waited yet, so its OS PID is live and owned by this Child handle.
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGTERM);
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self.child.start_kill();
-        }
+        let retire_res = HostClient::retire_with_options(
+            Path::new(&self.socket_path),
+            self.host_epoch,
+            true,
+            true,
+        )
+        .await;
         match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(_)) => match retire_res {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("maka host serve declined retirement".into()),
+                Err(e) => Err(format!("maka host retire failed: {e}")),
+            },
             Ok(Err(e)) => Err(format!("wait failed: {e}")),
             Err(_) => {
                 let _ = self.child.kill().await;
                 let _ = self.child.wait().await;
-                Err("maka host serve ignored SIGTERM and was killed".into())
+                match retire_res {
+                    Err(e) => Err(format!("maka host retire failed ({e}); process killed")),
+                    Ok(_) => Err("maka host serve ignored retire and was killed".into()),
+                }
             }
         }
     }
@@ -1086,27 +962,11 @@ async fn spawn_host_serve(
         .env("no_proxy", "localhost,127.0.0.1,::1,host.docker.internal")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("failed to spawn maka host serve: {e}"))?;
 
     let stdout = child.stdout.take().ok_or("missing host stdout pipe")?;
-    let stderr = child.stderr.take().ok_or("missing host stderr pipe")?;
-
-    let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
-    let stderr_buf = Arc::clone(&stderr_lines);
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(mut guard) = stderr_buf.lock() {
-                if guard.len() >= 64 {
-                    guard.remove(0);
-                }
-                guard.push(line);
-            }
-        }
-    });
-
     let mut stdout_lines = BufReader::new(stdout).lines();
     let ready_line = tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(line) = stdout_lines
@@ -1142,7 +1002,6 @@ async fn spawn_host_serve(
         child,
         socket_path,
         host_epoch,
-        stderr_lines,
     })
 }
 
@@ -1210,90 +1069,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn collect_usage_attempt_pages_merges_multi_page_and_guards_invariants() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+    #[tokio::test]
+    async fn run_from_files_removes_request_file_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let req_path = dir.path().join("request.json");
+        let res_path = dir.path().join("result.json");
+        tokio::fs::write(&req_path, r#"{"apiKey":"sk-secret-value","bad":true}"#)
+            .await
             .unwrap();
 
-        let mut seen_cursors = Vec::new();
-        let merged = rt
-            .block_on(collect_usage_attempt_pages(
-                json!({ "sequence": 10 }),
-                |fence, cursor| {
-                    assert_eq!(fence, json!({ "sequence": 10 }));
-                    seen_cursors.push(cursor.clone());
-                    let page = if cursor.is_null() {
-                        json!({
-                            "through": fence,
-                            "attempts": (0..32).map(|i| json!({ "id": i })).collect::<Vec<_>>(),
-                            "total": 37,
-                            "nextCursor": { "offset": 32 },
-                        })
-                    } else {
-                        assert_eq!(cursor, json!({ "offset": 32 }));
-                        json!({
-                            "through": fence,
-                            "attempts": (32..37).map(|i| json!({ "id": i })).collect::<Vec<_>>(),
-                            "total": 37,
-                            "nextCursor": Value::Null,
-                        })
-                    };
-                    std::future::ready(Ok(page))
-                },
-            ))
-            .unwrap();
-        assert_eq!(seen_cursors, vec![Value::Null, json!({ "offset": 32 })]);
-        assert_eq!(merged["total"], json!(37));
-        assert_eq!(merged["attempts"].as_array().unwrap().len(), 37);
-        assert_eq!(merged["attempts"][0]["id"], json!(0));
-        assert_eq!(merged["attempts"][36]["id"], json!(36));
-        assert!(merged["nextCursor"].is_null());
-
-        let fence_drift = rt
-            .block_on(collect_usage_attempt_pages(
-                json!({ "sequence": 10 }),
-                |_fence, _cursor| {
-                    std::future::ready(Ok(json!({
-                        "through": { "sequence": 11 },
-                        "attempts": [],
-                        "total": 0,
-                        "nextCursor": Value::Null,
-                    })))
-                },
-            ))
-            .unwrap_err();
-        assert!(fence_drift.contains("fence changed"));
-
-        let count_mismatch = rt
-            .block_on(collect_usage_attempt_pages(
-                json!({ "sequence": 10 }),
-                |fence, _cursor| {
-                    std::future::ready(Ok(json!({
-                        "through": fence,
-                        "attempts": [{ "id": 0 }],
-                        "total": 2,
-                        "nextCursor": Value::Null,
-                    })))
-                },
-            ))
-            .unwrap_err();
-        assert!(count_mismatch.contains("count mismatch"));
-
-        let repeated_cursor = rt
-            .block_on(collect_usage_attempt_pages(
-                json!({ "sequence": 10 }),
-                |fence, _cursor| {
-                    std::future::ready(Ok(json!({
-                        "through": fence,
-                        "attempts": [{ "id": 0 }],
-                        "total": 2,
-                        "nextCursor": { "offset": 1 },
-                    })))
-                },
-            ))
-            .unwrap_err();
-        assert!(repeated_cursor.contains("cursor repeated"));
+        let err = run_from_files(&req_path, &res_path).await.unwrap_err();
+        assert!(err.contains("invalid guest request JSON"));
+        assert!(!req_path.exists());
+        let saved: GuestRunResult =
+            serde_json::from_str(&tokio::fs::read_to_string(&res_path).await.unwrap()).unwrap();
+        assert_eq!(saved.status, GuestRunStatus::InfraFailed);
     }
 }
