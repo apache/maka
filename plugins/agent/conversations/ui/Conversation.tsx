@@ -1495,6 +1495,7 @@ export function Conversation(props: ConversationProps) {
   let historyIdentity: object = {};
   let measuredHistory: object | null = null;
   let historyScrolled = false;
+  let deferOlderUntilScroll = false;
   let windowTask: Promise<boolean> | null = null;
   let historyDestination: {
     position: HistoryPosition;
@@ -1621,6 +1622,7 @@ export function Conversation(props: ConversationProps) {
     if (!current()) return Promise.resolve(false);
     const identity = {};
     const destination = historyDestination;
+    const jumpToTail = position.kind === 'tail' && navigation()?.kind === 'tail';
     const canPublish = () => {
       if (!ownsWindow(identity)) return false;
       // Focus can cancel navigation before the reader has its first page.
@@ -1658,7 +1660,7 @@ export function Conversation(props: ConversationProps) {
         location = reverse ? { kind: 'before', cursor } : { kind: 'after', cursor };
       }
       if (!canPublish()) return false;
-      if (position.kind === 'tail') {
+      if (position.kind === 'tail' && !jumpToTail) {
         const tail = await readHistoryTail(page, async (cursor) => {
           const older = await history(through, { kind: 'before', cursor }, view);
           return canPublish() ? older : null;
@@ -1667,6 +1669,8 @@ export function Conversation(props: ConversationProps) {
         page = { ...tail, through };
       }
       batch(() => {
+        deferOlderUntilScroll = jumpToTail;
+        if (jumpToTail) historyScrollInput = 'idle';
         historyRows.set(new HistoryRows());
         workPages.clear();
         historyWindow.set({
@@ -2291,7 +2295,7 @@ export function Conversation(props: ConversationProps) {
   const loadNewer = () => extendHistory('after');
   const pagingOwner = (edge: 'before' | 'after') => {
     const owner = historyWindow();
-    return (edge === 'before' || historyScrolled) &&
+    return (edge === 'before' ? !deferOlderUntilScroll : historyScrolled) &&
       owner?.[edge] &&
       ownsWindow(owner.identity) &&
       props.visible() &&
@@ -4543,6 +4547,7 @@ export function Conversation(props: ConversationProps) {
                   if (event.intent === 'scroll') {
                     if (historyScrollInput !== 'dragging') historyScrollInput = 'pending';
                     historyScrolled = true;
+                    if (event.delta === undefined || event.delta < 0) deferOlderUntilScroll = false;
                     if (nearHistoryStart()) prefetchOlder();
                     if (nearHistoryEnd()) prefetchNewer();
                     // At the edge, further downward input may leave the offset unchanged.
@@ -4602,9 +4607,10 @@ export function Conversation(props: ConversationProps) {
                 historyOffset = offset;
                 historyMaxOffset = end;
                 if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
-                if (scrolled && movement < 0 && distance > historyEndTolerance)
-                  historyFollowPaused.set(true);
-                else if (scrolled && movement > 0) resumeHistoryAtEnd(offset);
+                if (scrolled && movement < 0) {
+                  deferOlderUntilScroll = false;
+                  if (distance > historyEndTolerance) historyFollowPaused.set(true);
+                } else if (scrolled && movement > 0) resumeHistoryAtEnd(offset);
                 const owner = pagingOwner('before');
                 if (owner !== null) {
                   // An underfilled initial viewport needs history before the first gesture.
