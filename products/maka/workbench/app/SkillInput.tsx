@@ -40,6 +40,7 @@ type Props = {
   onSelectionChange?(event: Selection): void;
   onCaretMove?(event: CaretEvent): void;
   onSubmit?(event: { text: string }): void;
+  onOpenSessionReference?(event: { sessionId: string }): void;
   onPaste?(event: { text: string; uris: string[]; files: unknown[] }): void;
   onFocus?(): void;
   onBlur?(): void;
@@ -186,6 +187,8 @@ export function SkillInput(props: Props) {
         sourceOffset={props.sourceOffset ?? 0}
         valueCount={valueCount()}
         readOnly={props.readonly}
+        openSessionReferences={props.onOpenSessionReference !== undefined}
+        onOpenSessionReference={props.onOpenSessionReference}
         placeholder={props.placeholder}
         tokenColor={C.accent}
         tokenBackgroundColor={`${C.accent}20`}

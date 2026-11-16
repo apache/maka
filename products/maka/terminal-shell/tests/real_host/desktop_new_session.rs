@@ -938,9 +938,28 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     assert_eq!(referenced["kind"], "created", "{referenced}");
     let current = current["session"]["id"].as_str().unwrap();
     let referenced = referenced["session"]["id"].as_str().unwrap();
+    client
+        .save_draft(
+            "agent",
+            referenced,
+            super::support::EDITOR,
+            None,
+            "Notes for the release checklist".into(),
+        )
+        .await
+        .unwrap();
     client.close().await.unwrap();
 
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
     desktop
         .press("Open conversation Current conversation")
         .await;
@@ -959,6 +978,7 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     desktop.expect_text(&text).await;
     desktop.key("right", false);
     desktop.artifact("composer-session-reference-draft");
+    assert!(desktop.controls("@Release checklist").is_empty());
     desktop.press("Send message").await;
 
     let request = desktop.request(&mut fixture).await;
@@ -985,7 +1005,27 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     assert!(target["session"]["tailMessageId"].is_null(), "{target}");
     assert_eq!(target["session"]["activity"], "idle");
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
-    desktop.artifact("composer-session-reference-sent");
+    desktop.press("@Release checklist").await;
+    desktop.control("Close side pane").await;
+    let reference = desktop.control("@Release checklist").await;
+    let side = desktop
+        .until(
+            "the referenced conversation did not open beside the message",
+            || {
+                desktop
+                    .controls("Focus message composer")
+                    .into_iter()
+                    .find(|bounds| bounds.left() > reference.right())
+            },
+        )
+        .await;
+    desktop.press_at(side.center());
+    desktop.expect_text("Notes for the release checklist").await;
+    desktop.key("right", false);
+    desktop.artifact("composer-session-reference-beside");
+    desktop.press("Close side pane").await;
+    desktop.control("@Release checklist").await;
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
     desktop.close().await;
     fixture.finish().await;
 }

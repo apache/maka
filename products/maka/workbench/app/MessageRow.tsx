@@ -158,6 +158,7 @@ export function MessageRow({
   previewImage,
   previewTerminal,
   openLink,
+  openSession,
   senders,
   userScroll,
   onExpand,
@@ -181,6 +182,7 @@ export function MessageRow({
   previewImage(image: ImagePreview): void;
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  openSession?(sessionId: string): void;
   senders?: MessageSenders;
   userScroll(): void;
   onExpand?(key: string): void;
@@ -661,7 +663,7 @@ export function MessageRow({
                         gap: 8,
                       }}
                     >
-                      <SkillMessage row={row} sourceId={sourceId()} />
+                      <SkillMessage row={row} sourceId={sourceId()} openSession={openSession} />
                       <If when={(row().attachments?.length ?? 0) > 0}>
                         <HistoryAttachments
                           userScroll={userScroll}

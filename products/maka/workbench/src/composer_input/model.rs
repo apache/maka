@@ -45,13 +45,19 @@ pub(super) fn schema() -> Schema {
     .expect("the composer schema is valid")
 }
 
+pub(super) fn session_reference(source: &str) -> (&str, &str) {
+    source
+        .strip_prefix("[@")
+        .and_then(|source| source.strip_suffix(')'))
+        .and_then(|source| source.rsplit_once("](maka://session/"))
+        .expect("a session token has a label and URL")
+}
+
 fn token_node(schema: &Schema, source: &str) -> Node {
     let (kind, attrs) = if let Some(name) = source.strip_prefix("/skill:") {
         ("skill", [("name".to_owned(), json!(name))].into())
     } else {
-        let (name, _) = source[2..]
-            .rsplit_once("](maka://session/")
-            .expect("a session token has a label and URL");
+        let (name, _) = session_reference(source);
         let mut chars = name.chars();
         let name: String = std::iter::from_fn(|| match chars.next()? {
             '\\' => chars.next(),
