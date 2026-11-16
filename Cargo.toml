@@ -79,6 +79,7 @@ members = [
     "platform/ui-support",
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
+    "products/eval",
     "tools/ui-build",
 ]
 resolver = "3"
