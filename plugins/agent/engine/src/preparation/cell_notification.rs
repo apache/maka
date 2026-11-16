@@ -37,8 +37,9 @@ use maka_model::{
     ModelPreparationResources,
     prompt::{ContentPart, FileData, Message},
 };
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::json;
+use std::io::BufReader;
 use tokio_util::sync::CancellationToken;
 
 pub async fn project_cell_notification(
@@ -79,12 +80,11 @@ pub async fn project_cell_notification_from(
     check(cancellation)?;
     check_source(&source, scope, notification.cell).await?;
     let mut remaining = resources.policy().staging_bytes;
-    let notice: CellNotification = read(
+    let notice: CellNotification = read_scoped(
         &source,
         scope,
-        notification.cell,
         &notification.content,
-        &mut remaining,
+        resources,
         cancellation,
     )
     .await?;
@@ -103,7 +103,7 @@ pub async fn project_cell_notification_from(
                 scope,
                 notification.cell,
                 &CellFinalEvidence::Completed { result },
-                &mut remaining,
+                resources,
                 cancellation,
             )
             .await?
@@ -114,7 +114,7 @@ pub async fn project_cell_notification_from(
                 scope,
                 notification.cell,
                 &CellFinalEvidence::Interrupted { report },
-                &mut remaining,
+                resources,
                 cancellation,
             )
             .await?
@@ -152,8 +152,7 @@ pub async fn project_cell_final(
     check(cancellation)?;
     check_source(&source, scope, cell).await?;
     let mut remaining = resources.policy().staging_bytes;
-    let observation =
-        read_final(&source, scope, cell, evidence, &mut remaining, cancellation).await?;
+    let observation = read_final(&source, scope, cell, evidence, resources, cancellation).await?;
     render(
         &source,
         scope,
@@ -195,13 +194,13 @@ async fn read_final(
     scope: &ArtifactScope,
     cell: CellId,
     evidence: &CellFinalEvidence,
-    remaining: &mut usize,
+    resources: &ModelPreparationResources,
     cancellation: &CancellationToken,
 ) -> Result<CellReport, RunError> {
     match evidence {
         CellFinalEvidence::Completed { result } => {
             let observation: CellObservation =
-                read(source, scope, cell, result, remaining, cancellation).await?;
+                read_scoped(source, scope, result, resources, cancellation).await?;
             let CellObservation::Completed {
                 cell_id,
                 content,
@@ -222,18 +221,36 @@ async fn read_final(
             })
         }
         CellFinalEvidence::Interrupted { report } => {
-            let interruption: CellInterruption =
-                read(source, scope, cell, report, remaining, cancellation).await?;
-            if interruption.cell != cell {
+            let (reported_cell, diagnostic, output) =
+                if report.bytes <= super::cell_knowledge::INLINE_BYTES as u64 {
+                    let report: CellInterruption =
+                        read_scoped(source, scope, report, resources, cancellation).await?;
+                    (
+                        report.cell,
+                        report.diagnostic,
+                        report
+                            .prior_output
+                            .map_or_else(Vec::new, |output| output.content),
+                    )
+                } else {
+                    // Deserialize diagnostics without allocating the optional console/media output.
+                    #[derive(Deserialize)]
+                    struct Interruption {
+                        cell: CellId,
+                        diagnostic: String,
+                    }
+                    let report: Interruption =
+                        read_scoped(source, scope, report, resources, cancellation).await?;
+                    (report.cell, report.diagnostic, Vec::new())
+                };
+            if reported_cell != cell {
                 return Err(invalid(
                     "Cell interruption evidence belongs to another Cell",
                 ));
             }
             Ok(CellReport {
-                report: json!({"cell":interruption.cell,"state":"interrupted","diagnostic":interruption.diagnostic}),
-                output: interruption
-                    .prior_output
-                    .map_or_else(Vec::new, |output| output.content),
+                report: json!({"cell":cell,"state":"interrupted","diagnostic":diagnostic}),
+                output,
                 dependencies: vec![report.clone()],
             })
         }
@@ -308,47 +325,33 @@ async fn render(
     ))
 }
 
-async fn read<T: DeserializeOwned + Send + 'static>(
-    source: &NotificationSource<'_>,
-    scope: &ArtifactScope,
-    cell: CellId,
-    reference: &ContentRef,
-    remaining: &mut usize,
-    cancellation: &CancellationToken,
-) -> Result<T, RunError> {
-    check(cancellation)?;
-    let bytes = usize::try_from(reference.bytes)
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(3))
-        .ok_or_else(|| invalid("Cell observation size overflows"))?;
-    *remaining = remaining
-        .checked_sub(bytes)
-        .ok_or_else(|| invalid("Cell observation exceeds preparation staging limit"))?;
-    read_scoped(source, scope, cell, reference, cancellation).await
-}
-
 pub(super) async fn read_scoped<T: DeserializeOwned + Send + 'static>(
     source: &NotificationSource<'_>,
     scope: &ArtifactScope,
-    cell: CellId,
     reference: &ContentRef,
+    resources: &ModelPreparationResources,
     cancellation: &CancellationToken,
 ) -> Result<T, RunError> {
-    check(cancellation)?;
+    // Both sources stream the original blob through one fixed reader buffer.
+    let work = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(RunError::Cancelled),
+        work = resources.acquire_work() => work?,
+    };
+    let capacity = resources.policy().work_bytes.min(8 * 1024);
     let token = cancellation.clone();
     let decode = move |reader: &mut dyn std::io::Read| -> Result<T, RunError> {
+        let _work = work;
         check(&token)?;
-        serde_json::from_reader(reader).map_err(|error| invalid(error.to_string()))
+        serde_json::from_reader(BufReader::with_capacity(capacity, reader)).map_err(RunError::Json)
     };
     let decoded = match source {
         NotificationSource::Live(store) => {
-            let bytes = store
-                .cells()
-                .content(&scope.session, cell, reference.clone())
-                .await?;
-            tokio::task::spawn_blocking(move || decode(&mut std::io::Cursor::new(bytes)))
-                .await
-                .map_err(|error| invalid(error.to_string()))?
+            let history = store.session_history(scope.owner.clone(), scope.session.clone());
+            let cut = history.capture().await?;
+            history
+                .with_content(&cut, scope.run, reference, move |reader| Ok(decode(reader)))
+                .await?
         }
         NotificationSource::Snapshot(snapshot) => {
             snapshot

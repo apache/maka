@@ -327,6 +327,7 @@ impl Owner {
                         } else { source };
                         let model = driver_model::DriverModel {
                         state: state.clone(),
+                        history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
                         log: Arc::new(lease.store()),
                         source: Arc::new(source),
                         executor: self.credentials.executor.clone(),

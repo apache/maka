@@ -605,6 +605,8 @@ impl Engine {
             }
             let mut action = if retiring {
                 Action::Idle
+            } else if !fenced && live.preparation_failure.is_some() {
+                Action::Terminate(Terminal::Failed)
             } else if view.recovery_failure().is_some() && !view.cancelled_by_risk {
                 if view.waiting_for_authority() {
                     Action::Idle
@@ -663,9 +665,12 @@ impl Engine {
                 let terminating = matches!(action, Action::Terminate(_));
                 if open && !active && (summary.admission.is_some() || terminating) {
                     action = Action::Interrupt(attempt, "Background summary did not finish".into());
-                } else if terminating && open && active && !live.models_cancelled.contains(&attempt)
-                {
-                    action = Action::CancelModel(attempt);
+                } else if terminating && open && active {
+                    action = if live.models_cancelled.contains(&attempt) {
+                        Action::Idle
+                    } else {
+                        Action::CancelModel(attempt)
+                    };
                 } else if matches!(action, Action::Terminate(Terminal::Completed))
                     && summary.admission.is_some()
                     && summary.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
@@ -1120,7 +1125,14 @@ impl Engine {
                         .filter(|closed| {
                             terminal == Terminal::Failed && closed.outcome == Terminal::Failed
                         })
-                        .and_then(|closed| closed.diagnostic.clone());
+                        .and_then(|closed| closed.diagnostic.clone())
+                        .or_else(|| {
+                            if terminal == Terminal::Failed {
+                                live.preparation_failure.clone()
+                            } else {
+                                None
+                            }
+                        });
                     let checkpoint =
                         if matches!(terminal, Terminal::Completed | Terminal::Cancelled) {
                             self.checkpoint_for_next_run(&view).await?
@@ -1275,26 +1287,22 @@ impl Engine {
                             .extend(compaction.and_then(|commit| commit.candidate));
                         return Ok(());
                     }
-                    Err(error @ (RunError::CompactionMismatch | RunError::InvalidImage(_))) => {
-                        self.publish(
-                            Some(claim),
-                            &view,
-                            termination_facts(&view, Terminal::Failed, Some(error.to_string())),
-                            vec![],
-                            now,
-                        )
-                        .await?;
+                    Err(RunError::CompactionFailed(diagnostic)) => {
+                        live.preparation_failure = Some(diagnostic);
                         return Ok(());
                     }
-                    Err(RunError::CompactionFailed(diagnostic)) => {
-                        self.publish(
-                            Some(claim),
-                            &view,
-                            termination_facts(&view, Terminal::Failed, Some(diagnostic)),
-                            vec![],
-                            now,
-                        )
-                        .await?;
+                    Err(
+                        error @ (RunError::CompactionMismatch
+                        | RunError::InvalidImage(_)
+                        | RunError::InvalidInput(_)
+                        | RunError::Json(_)
+                        | RunError::ModelUnavailable
+                        | RunError::Preparation(_)
+                        | RunError::Store(
+                            StoreError::InvalidTransition(_) | StoreError::Json(_),
+                        )),
+                    ) => {
+                        live.preparation_failure = Some(error.to_string());
                         return Ok(());
                     }
                     Err(error) => return self.port_failure(claim, &view, error, now).await,

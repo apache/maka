@@ -770,6 +770,7 @@ impl Rig {
         self.cells = Some(cells.clone());
         let model = DriverModel {
             state: state.clone(),
+            history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
             log: Arc::new(lease.store()),
             source: Arc::new(source),
             executor: owner.credentials.executor.clone(),
@@ -1644,7 +1645,7 @@ mod bounded_risk {
     -> TestResult<()> {
         use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
         use maka_agent_facts::{
-            cells::{CellObservation, CellVmBinding, SessionPublication},
+            cells::{CellObservation, CellReturnedResult, CellVmBinding, SessionPublication},
             tool_output::CellFinalEvidence,
         };
 
@@ -1718,6 +1719,18 @@ mod bounded_risk {
             };
             let late = returned("internal callback copy")?;
             let normal = returned("second result")?;
+            let child = Uuid::new_v4();
+            let child_body = "Oversized original child result. ".repeat(350_000);
+            let child_input = ContentBlob::json(&json!({"query":"fixture"}))?;
+            let child_result = ContentBlob::json(&ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts: vec![],
+                body: CellReturnedResult {
+                    output: ToolOutput::Text(child_body.clone()),
+                    projection: None,
+                    is_error: false,
+                },
+            })?;
             rig.append(
                 vec![
                     Fact::Cell {
@@ -1728,6 +1741,28 @@ mod bounded_risk {
                                 version: 1,
                                 descriptor: completed.reference().clone(),
                             },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ChildPrepared {
+                            cell,
+                            operation: child,
+                            name: "Recall".into(),
+                            semantics: ToolSemantics::Parallel,
+                            input: child_input.reference().clone(),
+                            resources: vec![],
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ChildAdmitted { cell, operation: child },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::LocalChildReturned {
+                            cell,
+                            operation: child,
+                            result: child_result.reference().clone(),
+                            is_error: false,
+                            settlement: ToolSettlement::Returned,
                         },
                     },
                     Fact::Cell {
@@ -1763,7 +1798,7 @@ mod bounded_risk {
                         cell_observation: None,
                     },
                 ],
-                vec![completed, recovered, late, normal],
+                vec![completed, recovered, late, normal, child_input, child_result],
             )
             .await?;
 
@@ -1835,7 +1870,28 @@ mod bounded_risk {
                     ("tool", Some("second-exec"))
                 ]
             );
+            let first_result: Vec<Value> = serde_json::from_str(
+                messages[index + 1]["content"]
+                    .as_str()
+                    .ok_or("missing first tool result text")?,
+            )?;
+            let original = first_result
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .find_map(|text| text.split_once(": SessionHistory("))
+                .and_then(|(_, request)| request.strip_suffix(')'))
+                .ok_or("missing original child result position")?;
+            let mut history_input: Value = serde_json::from_str(original)?;
+            history_input["view"] = json!("text");
+            let page = model_recovery::call(
+                rig.client.as_ref().unwrap(), "agent", "history", history_input,
+            ).await?;
+            assert!(page["chunks"].as_array().unwrap().iter().any(|row| {
+                row["text"].as_str().is_some_and(|text| text.contains("Oversized original child result."))
+                    && row["totalBytes"].as_u64() == Some(child_body.len() as u64)
+            }));
             let wire = wire.to_string();
+            assert!(!wire.contains("Oversized original child result."));
             assert_eq!(wire.matches("first result").count(), 1);
             assert_eq!(wire.matches("second result").count(), 1);
             assert!(!wire.contains("internal callback copy"));
