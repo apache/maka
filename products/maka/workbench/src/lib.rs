@@ -1440,6 +1440,24 @@ mod tests {
             streams(&mut app, 0, 0);
             assert_eq!(app.screen().count("label:Computer").unwrap(), 0);
             assert!(!app.shows("Live view unavailable"));
+
+            send(&mut app, json!({"kind":"source", "sessionId":"session-3"}));
+            stage(&mut app, "session-3", "binding-3", 1, &["a"], Some("a"), 1);
+            streams(&mut app, 1, 1);
+            load(&mut app, "a", 2, 800, 600);
+            decode(&mut app, "a", true);
+            app.wait_for("text:Frame a presented true image-a").unwrap();
+            send(
+                &mut app,
+                json!({"kind":"failure", "method":"presentTarget", "reason":"Window presentation refused"}),
+            );
+            app.press("label:Target a").unwrap();
+            app.wait_for("text:Window presentation refused").unwrap();
+            stage(&mut app, "session-3", "binding-3", 2, &[], None, 1);
+            streams(&mut app, 1, 0);
+            assert_eq!(app.screen().count("label:Computer").unwrap(), 0);
+            assert!(!app.shows("Live view unavailable"));
+            assert!(!app.shows("Window presentation refused"));
         }
     }
 

@@ -116,6 +116,7 @@ export function createComputerStage(props: {
         if (next === null) {
           snapshot.set(null);
           slots.set([]);
+          fault.set(null);
           close();
           return;
         }
@@ -132,6 +133,7 @@ export function createComputerStage(props: {
             chosen.set(null);
             pinned.set(false);
             slots.set([]);
+            fault.set(null);
           }
           lastBinding = next.bindingId;
           if (!next.targets.some((target) => target.id === chosen())) {
@@ -141,6 +143,7 @@ export function createComputerStage(props: {
           if (!pinned() && previous?.activeTargetId !== next.activeTargetId)
             chosen.set(next.activeTargetId);
           snapshot.set(next);
+          if (next.targets.length === 0) fault.set(null);
           const available = new Set(next.targets.map((target) => target.id));
           const stable = [...slots().filter((id) => available.has(id))];
           for (const target of next.targets)

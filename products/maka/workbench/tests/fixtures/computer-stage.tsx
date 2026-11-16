@@ -95,7 +95,7 @@ type Command =
   | { kind: 'select'; targetId: string }
   | { kind: 'measure' }
   | { kind: 'pane'; left: number; top: number; width: number; height: number }
-  | { kind: 'failure'; method: 'watchStage' | 'watchFrames'; reason: string }
+  | { kind: 'failure'; method: 'watchStage' | 'watchFrames' | 'presentTarget'; reason: string }
   | { kind: 'end'; method: 'watchStage' | 'watchFrames' }
   | { kind: 'unavailable'; index: number; reason: string }
   | { kind: 'source'; sessionId: string }
@@ -120,6 +120,7 @@ mount(() => {
   const streams: Stream[] = [];
   const reads: Read[] = [];
   const presentations = signal<ComputerPresentTarget[]>([]);
+  let presentationFailure: string | null = null;
   let hold: string | null = null;
   let maxBusy = 0;
   const active = (method: string) =>
@@ -177,6 +178,7 @@ mount(() => {
       if (method !== 'presentTarget') throw new Error(`Unexpected Stage mutation ${method}`);
       presentations.set([...presentations(), input as ComputerPresentTarget]);
       changed();
+      if (presentationFailure !== null) throw new Error(presentationFailure);
       const operationId = `presentation-${presentations().length}`;
       return {
         operationId,
@@ -264,7 +266,8 @@ mount(() => {
         select(command.targetId);
         break;
       case 'failure':
-        latest(command.method).push(new Error(command.reason));
+        if (command.method === 'presentTarget') presentationFailure = command.reason;
+        else latest(command.method).push(new Error(command.reason));
         break;
       case 'end':
         void latest(command.method).close();
@@ -408,7 +411,10 @@ mount(() => {
                 width: area.width - 48,
                 height: area.height - 48,
               })
-              .catch((reason) => fault.set(String(reason)));
+              .catch((reason) => {
+                stage.fault.set(reason);
+                fault.set(String(reason));
+              });
           }}
           renderFrame={(target, presented) => {
             const id = target().id;

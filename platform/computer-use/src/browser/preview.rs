@@ -122,6 +122,14 @@ impl Capture for BrowserCapture {
                 check_input(&stop)
             };
             checkpoint().await?;
+            #[derive(serde::Deserialize, PartialEq)]
+            #[serde(rename_all = "lowercase")]
+            enum WindowState {
+                Normal,
+                Minimized,
+                Maximized,
+                Fullscreen,
+            }
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct Bounds {
@@ -129,7 +137,7 @@ impl Capture for BrowserCapture {
                 top: i32,
                 width: i32,
                 height: i32,
-                window_state: String,
+                window_state: WindowState,
             }
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase")]
@@ -143,13 +151,8 @@ impl Capture for BrowserCapture {
                     .await?,
             )
             .map_err(failed)?;
-            if window.bounds.window_state != "normal"
-                || window.bounds.width <= 0
-                || window.bounds.height <= 0
-            {
-                return Err(failed(
-                    "Browser presentation requires a normal, non-minimized bound window",
-                ));
+            if window.bounds.width <= 0 || window.bounds.height <= 0 {
+                return Err(failed("Browser bound window has invalid dimensions"));
             }
             let width = f64::from(window.bounds.width).min(area.width).round();
             let height = f64::from(window.bounds.height).min(area.height).round();
@@ -178,13 +181,64 @@ impl Capture for BrowserCapture {
                 Ok(())
             };
             same_window().await?;
-            socket
+            let mut details = json!({"windowId":window.window_id});
+            let normalizing = window.bounds.window_state != WindowState::Normal;
+            if normalizing {
+                let requested = json!({"windowState":"normal"});
+                socket
+                    .request(
+                        "Browser.setWindowBounds",
+                        json!({"windowId":window.window_id,"bounds":requested}),
+                    )
+                    .await?;
+                details["normalizationRequested"] = requested;
+                if let Err(error) = same_window().await {
+                    return crate::preview::presentation_failure(error, details);
+                }
+                let observed = match socket
+                    .request(
+                        "Browser.getWindowBounds",
+                        json!({"windowId":window.window_id}),
+                    )
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(error) => return crate::preview::presentation_failure(error, details),
+                };
+                details["normalizationObserved"] = observed.clone();
+                let observed: Bounds = match serde_json::from_value(observed["bounds"].clone()) {
+                    Ok(bounds) => bounds,
+                    Err(error) => {
+                        return crate::preview::presentation_failure(failed(error), details);
+                    }
+                };
+                if observed.window_state != WindowState::Normal
+                    || observed.width <= 0
+                    || observed.height <= 0
+                {
+                    return Ok(PresentationResult::Partial {
+                        message: "Browser window normalization was not verified".into(),
+                        details,
+                    });
+                }
+                if let Err(error) = same_window().await {
+                    return crate::preview::presentation_failure(error, details);
+                }
+            }
+            if let Err(error) = socket
                 .request(
                     "Browser.setWindowBounds",
                     json!({"windowId":window.window_id,"bounds":requested}),
                 )
-                .await?;
-            let mut details = json!({"windowId":window.window_id,"placementRequested":requested});
+                .await
+            {
+                return if normalizing {
+                    crate::preview::presentation_failure(error, details)
+                } else {
+                    Err(error)
+                };
+            }
+            details["placementRequested"] = requested;
             if let Err(error) = same_window().await {
                 return crate::preview::presentation_failure(error, details);
             }
@@ -206,13 +260,15 @@ impl Capture for BrowserCapture {
                 }
             };
             details["placementObserved"] = observed.clone();
-            let observed: Bounds =
-                serde_json::from_value(observed["bounds"].clone()).map_err(failed)?;
+            let observed: Bounds = match serde_json::from_value(observed["bounds"].clone()) {
+                Ok(bounds) => bounds,
+                Err(error) => return crate::preview::presentation_failure(failed(error), details),
+            };
             if observed.left != left as i32
                 || observed.top != top as i32
                 || observed.width != width as i32
                 || observed.height != height as i32
-                || observed.window_state != "normal"
+                || observed.window_state != WindowState::Normal
             {
                 return Ok(PresentationResult::Partial {
                     message: "Browser window placement was not verified".into(),

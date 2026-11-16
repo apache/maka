@@ -178,6 +178,11 @@ nodeRepl.write(JSON.stringify({{marker:{marker},ax,pixels}}));"#,
             "Browser.setWindowBounds" => {
                 assert!(self.created);
                 assert_eq!(p["windowId"], 7);
+                if self.window_bounds["windowState"] != "normal" {
+                    assert_eq!(p["bounds"], json!({"windowState":"normal"}));
+                    self.window_bounds["windowState"] = json!("normal");
+                    return Ok((json!({}), None));
+                }
                 assert_eq!(
                     p["bounds"],
                     json!({"left":200,"top":100,"width":800,"height":600})
@@ -762,6 +767,7 @@ async fn scenario(
         assert_eq!((image.width(), image.height()), (2, 2));
     }
     progress["phase"] = json!("new client foreground operation after original tool settlement");
+    let normalizing = peer.lock().unwrap().window_bounds["windowState"] != "normal";
     let foreground_id = Uuid::new_v4();
     let foreground = client.mutation(
         foreground_id, "computer", "presentTarget",
@@ -774,6 +780,18 @@ async fn scenario(
     let presented = success(&foreground_reply);
     assert_eq!(presented["kind"], "requested");
     assert_eq!(presented["details"]["windowId"], 7);
+    if normalizing {
+        assert_eq!(
+            presented["details"]["normalizationRequested"],
+            json!({"windowState":"normal"})
+        );
+        assert_eq!(
+            presented["details"]["normalizationObserved"]["bounds"],
+            json!({"left":20,"top":30,"width":800,"height":600,"windowState":"normal"})
+        );
+    } else {
+        assert!(presented["details"].get("normalizationRequested").is_none());
+    }
     assert_eq!(
         presented["details"]["placementRequested"],
         json!({"left":200,"top":100,"width":800,"height":600})
@@ -820,16 +838,33 @@ async fn scenario(
             .collect();
         assert_eq!(
             window_methods,
-            vec![
-                "Browser.getWindowForTarget",
-                "Browser.getWindowForTarget",
-                "Browser.setWindowBounds",
-                "Browser.getWindowForTarget",
-                "Browser.getWindowBounds",
-                "Browser.getWindowForTarget",
-                "Page.bringToFront",
-                "Browser.getWindowForTarget",
-            ]
+            if normalizing {
+                vec![
+                    "Browser.getWindowForTarget",
+                    "Browser.getWindowForTarget",
+                    "Browser.setWindowBounds",
+                    "Browser.getWindowForTarget",
+                    "Browser.getWindowBounds",
+                    "Browser.getWindowForTarget",
+                    "Browser.setWindowBounds",
+                    "Browser.getWindowForTarget",
+                    "Browser.getWindowBounds",
+                    "Browser.getWindowForTarget",
+                    "Page.bringToFront",
+                    "Browser.getWindowForTarget",
+                ]
+            } else {
+                vec![
+                    "Browser.getWindowForTarget",
+                    "Browser.getWindowForTarget",
+                    "Browser.setWindowBounds",
+                    "Browser.getWindowForTarget",
+                    "Browser.getWindowBounds",
+                    "Browser.getWindowForTarget",
+                    "Page.bringToFront",
+                    "Browser.getWindowForTarget",
+                ]
+            }
         );
     }
     progress["foreground"] =
@@ -1093,6 +1128,15 @@ async fn scenario(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn browser_root_bridge_completes_on_normal_worker_stack() {
+    browser_presentation("normal").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_stage_presents_the_same_minimized_window_after_tool_settlement() {
+    browser_presentation("minimized").await;
+}
+
+async fn browser_presentation(window_state: &str) {
     let sandbox = Sandbox::new().await.unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut jpeg = std::io::Cursor::new(Vec::new());
@@ -1109,7 +1153,7 @@ async fn browser_root_bridge_completes_on_normal_worker_stack() {
         created: false,
         methods: Vec::new(),
         preview_screenshots: 0,
-        window_bounds: json!({"left":20,"top":30,"width":800,"height":600,"windowState":"normal"}),
+        window_bounds: json!({"left":20,"top":30,"width":800,"height":600,"windowState":window_state}),
         canonical_sent: Some(canonical_sent),
         canonical_ready: Some(canonical_ready),
         presentation_done: Some(presentation_done),
