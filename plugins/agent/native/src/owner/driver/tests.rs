@@ -465,6 +465,8 @@ impl Rig {
                 "work",
                 "workReadiness",
                 "queue",
+                "queueMessage",
+                "editQueue",
                 "openBot",
                 "botOutbox",
                 "schedule",

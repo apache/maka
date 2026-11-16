@@ -105,7 +105,7 @@ impl Fixture {
             .await
             .unwrap();
             assert_eq!(registered["kind"], "committed", "{registered}");
-            json!({"kind":"project","project":registered["project"]["reference"],"path":path})
+            json!({"kind":"project","projectId":registered["project"]["reference"]["id"],"path":path})
         } else {
             json!({"kind":"directory","path":path})
         };
