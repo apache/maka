@@ -24,7 +24,7 @@ import {
   shouldProjectPendingSend,
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
-import { quietWaits, retrying } from './runWaits';
+import { quietWaits, retrying, waitActivity } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
@@ -610,8 +610,8 @@ export function Conversation(props: ConversationProps) {
   );
   const activity = computed<LiveActivity>(
     () => {
-      if (run() === 'waiting_for_user' || run() === 'waiting')
-        return { kind: 'waiting', detail: '' };
+      const wait = waitActivity(run(), execution());
+      if (wait) return { kind: wait, detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
         if (part.runId !== runId()) continue;

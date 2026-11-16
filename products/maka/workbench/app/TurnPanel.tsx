@@ -61,7 +61,7 @@ const activityFollowThreshold = captionTextStyle.lineHeight;
 const activityEdgeFadeHeight = 14;
 
 export type LiveActivity = {
-  kind: 'working' | 'thinking' | 'response' | 'waiting';
+  kind: 'working' | 'thinking' | 'response' | 'waiting_for_user' | 'retrying';
   detail: string;
   rowId?: string;
 };
@@ -689,7 +689,8 @@ function GroupHeader(props: TurnPanelProps) {
   const desiredTitle = computed(() => {
     if (!active()) return counts();
     const activity = props.activity();
-    if (activity.kind === 'waiting') return tr('Waiting for your response');
+    if (activity.kind === 'waiting_for_user') return tr('Waiting for your response');
+    if (activity.kind === 'retrying') return tr('Waiting to retry');
     const tool = props.toolActivity();
     if (tool)
       return toolActivitySummary(

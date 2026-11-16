@@ -18,11 +18,18 @@
  */
 
 import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
+import type { ConversationStatus } from '../../../../products/maka/workbench/app/sessionStatus';
 
-export type RunWait = Extract<
-  AgentExecution['state'],
-  { kind: 'waiting' }
->['waits'][number]['kind'];
+type WaitingState = Extract<AgentExecution['state'], { kind: 'waiting' }>;
+
+export type RunWait = WaitingState['waits'][number]['kind'];
+
+function needsUserAction(state: WaitingState): boolean {
+  return (
+    state.authorityUnavailable ||
+    state.waits.some(({ kind }) => kind === 'approval' || kind === 'blocker')
+  );
+}
 
 /**
  * What a waiting run waits for while nobody has to act: a provider retry, a
@@ -31,11 +38,22 @@ export type RunWait = Extract<
  */
 export function quietWaits(execution: AgentExecution | null): RunWait[] {
   const state = execution?.state;
-  if (state?.kind !== 'waiting') return [];
-  const kinds = state.waits.map((wait) => wait.kind);
-  return kinds.includes('approval') || kinds.includes('blocker') ? [] : kinds;
+  if (state?.kind !== 'waiting' || needsUserAction(state)) return [];
+  return state.waits.map(({ kind }) => kind);
 }
 
 /** The run waits to send a model request again. */
 export const retrying = (waits: readonly RunWait[]) =>
   waits.includes('provider_backoff') || waits.includes('retry');
+
+export function waitActivity(
+  status: ConversationStatus,
+  execution: AgentExecution | null,
+): 'waiting_for_user' | 'retrying' | undefined {
+  if (status === 'waiting_for_user') return 'waiting_for_user';
+  if (status !== 'waiting') return;
+  const state = execution?.state;
+  if (state?.kind !== 'waiting') return;
+  if (needsUserAction(state)) return 'waiting_for_user';
+  if (retrying(state.waits.map(({ kind }) => kind))) return 'retrying';
+}
