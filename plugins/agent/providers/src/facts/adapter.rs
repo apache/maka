@@ -19,28 +19,21 @@
 
 use maka_agent_facts::configuration::ApiProtocol;
 use maka_agent_facts::model::PlaintextResponses;
-use serde::{Deserialize, Serialize};
+use maka_agent_ports::provider::Error;
+use serde::Deserialize;
 
-/// Bundled provider execution contracts.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeAdapter {
-    #[serde(flatten)]
-    pub kind: AdapterKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub apply_patch_protocol: Option<ApplyPatchProtocol>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
+/// Bundled provider execution contracts. Each executable adapter speaks one wire protocol.
+// Empty struct variants (`{}`) rather than unit variants keep `deny_unknown_fields` active under `#[serde(tag = "kind")]`.
+#[derive(Debug, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
-    rename_all_fields = "camelCase"
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
 )]
-pub enum AdapterKind {
-    Openai {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        api_protocol: Option<ApiProtocol>,
+pub enum RuntimeAdapter {
+    OpenaiChat {},
+    OpenaiResponses {
         responses: ResponsesContract,
     },
     OpenaiCodex {
@@ -48,63 +41,60 @@ pub enum AdapterKind {
     },
     OpenaiCompatible {
         name: AdapterName,
-        #[serde(skip_serializing_if = "Option::is_none")]
         include_usage: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        require_base_url: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         replay_assistant_reasoning_as: Option<ReasoningField>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         replay_assistant_reasoning_details: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         normalize_usage: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         normalize_base_url: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        responses: Option<ResponsesContract>,
     },
     Anthropic {
         auth: AnthropicAuth,
         normalize_base_url: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
         include_beta_headers: Option<bool>,
     },
-    Google {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        normalize_base_url: Option<bool>,
-    },
-    Cohere,
-    Unavailable,
+    Google {},
+    Cohere {},
+    Unavailable {},
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+impl RuntimeAdapter {
+    pub(crate) fn wire(&self) -> Result<ApiProtocol, Error> {
+        match self {
+            Self::OpenaiChat {} | Self::OpenaiCompatible { .. } => {
+                Ok(ApiProtocol::OpenaiChatCompletions)
+            }
+            Self::OpenaiResponses { .. } | Self::OpenaiCodex { .. } => {
+                Ok(ApiProtocol::OpenaiResponses)
+            }
+            Self::Anthropic { .. } => Ok(ApiProtocol::AnthropicMessages),
+            Self::Google {} | Self::Cohere {} | Self::Unavailable {} => {
+                Err(Error::UnsupportedProtocol)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AdapterName {
     Provider,
     Connection,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AnthropicAuth {
     ApiKey,
     Bearer,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApplyPatchProtocol {
-    OpenaiStructured,
-    CodexV4aFreeform,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReasoningField {
     Reasoning,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(
     tag = "adapter",
     rename_all = "kebab-case",
@@ -120,17 +110,16 @@ pub enum ResponsesContract {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OpenaiReasoningReplay {
     EncryptedContent,
     None,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRuntimeOverride {
     pub adapter: RuntimeAdapter,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
 }
