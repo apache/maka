@@ -2406,6 +2406,13 @@ export interface ServiceMethods {
       input: Runtime.AgentGoalRead;
       output: Runtime.AgentGoalView;
     };
+    watchModels: {
+      mode: 'subscription';
+      input: {
+        query?: string;
+      };
+      output: Runtime.AgentModelsPage;
+    };
     watchSchedules: {
       mode: 'subscription';
       input: Runtime.AgentScheduleRead;

@@ -2978,6 +2978,133 @@ async fn desktop_subagent_settings_preserves_conflict_and_session_snapshot() {
     fixture.finish().await;
 }
 
+async fn desktop_model_catalog_preserves_search_and_selection_during_refresh() {
+    let fixture = Fixture::open().await;
+    let client = fixture.client_at(&fixture.address).await;
+    let observation = client
+        .subscribe("agent", "watchModels", json!({}))
+        .await
+        .unwrap();
+    let initial = observation.next().await.unwrap().unwrap();
+    assert!(
+        matches!(initial, maka_app_client::SubscriptionEvent::Item(ref page) if !page["choices"].as_array().unwrap().is_empty())
+    );
+    let configuration =
+        maka_config::ConfigurationStore::for_root(fixture.store.owned_root().unwrap())
+            .await
+            .unwrap();
+    let catalog = configuration.catalog().await.unwrap();
+    let connection = catalog
+        .connections
+        .iter()
+        .find(|row| row.connection_id == fixture.selection["connectionId"].as_str().unwrap())
+        .unwrap();
+    let updated = configuration.update_connection(serde_json::from_value(json!({
+        "expected":{"connectionId":connection.connection_id,"revision":connection.revision},"changes":{"enabled":false}
+    })).unwrap()).await.unwrap();
+    assert!(matches!(
+        updated,
+        maka_agent_facts::configuration::CatalogMutationResult::Committed { .. }
+    ));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let event = observation.next().await.unwrap().unwrap();
+            if let maka_app_client::SubscriptionEvent::Item(page) = event
+                && page["choices"].as_array().unwrap().is_empty()
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("an open model catalog did not observe the connection being disabled");
+    observation.close().await.unwrap();
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../workbench/tests/fixtures/model-select.tsx");
+    let output = fixture.directory.path().join("model-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
+        appearance,
+        Some((source, "en", "Choose model and effort")),
+    )
+    .await;
+    desktop.press("Choose model and effort").await;
+    desktop.control("Use Claude Sonnet · Claude Code").await;
+    desktop.artifact(&format!("models-refreshing-{theme}-{layout}"));
+    desktop.paste("Claude").await;
+    desktop
+        .until("search did not filter models during discovery", || {
+            desktop
+                .controls("Use Reasoning model · OpenAI")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let legacy = json!({"kind":"executor","selection":{"executor":"external","settings":{"runtime":"antigravity","model":"opus-high"}}});
+    let grouped = json!({"selection":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"antigravity","model":"opus"}}},
+        "aliases":[{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"antigravity","model":"opus-high","thinkingLevel":"high"}}}],
+        "sourceName":"Antigravity","label":"Claude Opus","thinkingLevels":["low","high"],"defaultThinkingLevel":null});
+    let sonnet = json!({"selection":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"claude-code","model":"sonnet"}}},
+        "sourceName":"Claude Code","label":"Claude Sonnet","thinkingLevels":["low","high"],"defaultThinkingLevel":null});
+    desktop.event("fixture.publish", json!({"choices":[grouped, sonnet]}));
+    desktop.control("Use Claude Opus · Antigravity").await;
+    desktop.key("enter", false);
+    desktop
+        .until(
+            "refresh moved the keyboard selection to another model",
+            || {
+                (desktop.outcome.lock().unwrap()["backend"]["selection"]["settings"]["model"]
+                    == "sonnet")
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.key("escape", false);
+    desktop.event("fixture.backend", legacy);
+    desktop.press("Choose model and effort").await;
+    desktop.control("Use Claude Sonnet · Claude Code").await;
+    desktop.press("Choose reasoning effort").await;
+    desktop.control("Use effort high").await;
+    desktop.artifact(&format!("models-normalized-{theme}-{layout}"));
+    desktop.press("Use effort low").await;
+    desktop
+        .until(
+            "changing effort did not canonicalize the saved variant",
+            || {
+                let outcome = desktop.outcome.lock().unwrap();
+                (outcome["backend"]["selection"]["settings"]["model"] == "opus"
+                    && outcome["backend"]["selection"]["settings"]["thinkingLevel"] == "low")
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.artifact(&format!("models-low-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3849,6 +3976,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image",
     "desktop_connection_failure_has_one_status_below_the_workspace",
+    "desktop_model_catalog_preserves_search_and_selection_during_refresh",
     "desktop_model_settings_keeps_successful_sign_in_and_retries_models",
     "desktop_subagent_settings_preserves_conflict_and_session_snapshot",
     "desktop_provider_picker_searches_real_catalog_and_preserves_selection",
@@ -3950,6 +4078,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_subagent_settings_preserves_conflict_and_session_snapshot" => {
             runtime.block_on(desktop_subagent_settings_preserves_conflict_and_session_snapshot())
+        }
+        "desktop_model_catalog_preserves_search_and_selection_during_refresh" => {
+            runtime.block_on(desktop_model_catalog_preserves_search_and_selection_during_refresh());
         }
         "desktop_model_settings_keeps_successful_sign_in_and_retries_models" => {
             runtime.block_on(desktop_model_settings_keeps_successful_sign_in_and_retries_models())

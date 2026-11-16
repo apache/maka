@@ -148,7 +148,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
 import {
-  sameRoute,
+  selectionForChoice,
   sameBackend,
   routeKey,
   backendName,
@@ -2642,7 +2642,7 @@ export function Conversation(props: ConversationProps) {
         modelProjection.set({
           route,
           details:
-            result.kind === 'ready' && sameRoute(captured, result.choice.selection)
+            result.kind === 'ready' && selectionForChoice(captured, result.choice)
               ? { kind: 'ready', choice: result.choice }
               : {
                   kind: 'unavailable',

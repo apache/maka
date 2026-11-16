@@ -574,6 +574,9 @@ pub use maka_agent_facts::executor::BackendPreference;
 #[schemars(rename = "AgentModelChoice")]
 pub struct ModelChoice {
     pub selection: BackendPreference,
+    /// Previously published selections, including their implied thinking level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<BackendPreference>,
     pub source_name: String,
     pub label: String,
     pub thinking_levels: Vec<String>,
@@ -607,10 +610,18 @@ pub enum ModelsPage {
     Ready {
         revision: String,
         choices: Vec<ModelChoice>,
+        refreshing: bool,
         complete: bool,
         next: Option<ModelsCursor>,
     },
     Changed,
+}
+#[derive(Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentModelsWatch")]
+pub struct ModelsWatch {
+    #[serde(default)]
+    pub query: String,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -2270,6 +2281,7 @@ pub fn contract() -> Contract {
                     method::<Send, SendResult>(MethodMode::Mutation),
                 ),
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
+                ("watchModels".into(), method::<ModelsWatch, ModelsPage>(MethodMode::Subscription)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
                 ("externalAgents".into(),method::<crate::external::ExternalAgentsRead, crate::external::ExternalAgents>(MethodMode::Query)),
                 ("externalUsageLimits".into(),method::<crate::external::ExternalUsageLimitsRead, crate::external::ExternalUsageLimits>(MethodMode::Query)),

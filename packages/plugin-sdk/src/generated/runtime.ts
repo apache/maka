@@ -869,6 +869,7 @@ export type AgentModelsPage =
       kind: 'ready';
       revision: string;
       choices: AgentModelChoice[];
+      refreshing: boolean;
       complete: boolean;
       next?: AgentModelsCursor | null;
     }
@@ -5919,6 +5920,10 @@ export interface AgentModelsCursor {
 }
 export interface AgentModelChoice {
   selection: AgentBackendPreference;
+  /**
+   * Previously published selections, including their implied thinking level.
+   */
+  aliases?: AgentBackendPreference[];
   sourceName: string;
   label: string;
   thinkingLevels: string[];
