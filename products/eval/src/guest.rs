@@ -193,16 +193,27 @@ async fn execute(req: GuestRunRequest) -> Result<GuestRunResult, String> {
             &req,
         )
         .await?;
-        let mut host_proc = spawn_host_serve(&maka_bin, &command_path, &state_root).await?;
+        let mut host_proc =
+            spawn_host_serve(&maka_bin, &command_path, &state_root, &req.artifacts_dir).await?;
 
         let inner = run_session(&req, &canonical_workspace_str, &journal_path, &host_proc).await;
+        if !needs_immediate_cleanup(&inner) {
+            host_proc.detach();
+            return inner;
+        }
         let shutdown = host_proc.shutdown().await;
         Ok::<GuestRunResult, String>(finalize_run_result(inner, shutdown))
     }
     .await;
 
-    let _ = tokio::fs::remove_dir_all(&run_dir).await;
+    if needs_immediate_cleanup(&result) {
+        let _ = tokio::fs::remove_dir_all(&run_dir).await;
+    }
     result
+}
+
+fn needs_immediate_cleanup(outcome: &Result<GuestRunResult, String>) -> bool {
+    !matches!(outcome, Ok(GuestRunResult::Completed { .. }))
 }
 
 fn finalize_run_result(
@@ -909,9 +920,14 @@ struct HostServerProcess {
     child: Child,
     socket_path: String,
     host_epoch: Uuid,
+    stdout_drain: tokio::task::JoinHandle<()>,
 }
 
 impl HostServerProcess {
+    fn detach(self) {
+        self.stdout_drain.abort();
+    }
+
     async fn shutdown(&mut self) -> Result<(), String> {
         let retire_res = HostClient::retire_with_options(
             Path::new(&self.socket_path),
@@ -920,7 +936,7 @@ impl HostServerProcess {
             true,
         )
         .await;
-        match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
+        let outcome = match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
             Ok(Ok(_)) => match retire_res {
                 Ok(true) => Ok(()),
                 Ok(false) => Err("maka host serve declined retirement".into()),
@@ -935,7 +951,9 @@ impl HostServerProcess {
                     Ok(_) => Err("maka host serve ignored retire and was killed".into()),
                 }
             }
-        }
+        };
+        self.stdout_drain.abort();
+        outcome
     }
 }
 
@@ -943,56 +961,90 @@ async fn spawn_host_serve(
     maka_bin: &Path,
     command_path: &str,
     state_root: &Path,
+    artifacts_dir: &Path,
 ) -> Result<HostServerProcess, String> {
-    let mut child = Command::new(maka_bin)
-        .args(["host", "serve", "--root"])
+    let stderr_path = artifacts_dir.join("host-serve.stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path)
+        .map_err(|e| format!("failed creating {}: {e}", stderr_path.display()))?;
+
+    let mut cmd = Command::new(maka_bin);
+    cmd.args(["host", "serve", "--root"])
         .arg(state_root)
         .env("PATH", command_path)
         .env("NO_PROXY", "localhost,127.0.0.1,::1,host.docker.internal")
         .env("no_proxy", "localhost,127.0.0.1,::1,host.docker.internal")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::from(stderr_file))
+        .kill_on_drop(false);
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn maka host serve: {e}"))?;
 
     let stdout = child.stdout.take().ok_or("missing host stdout pipe")?;
-    let mut stdout_lines = BufReader::new(stdout).lines();
-    let ready_line = tokio::time::timeout(Duration::from_secs(30), async {
-        while let Some(line) = stdout_lines
-            .next_line()
-            .await
-            .map_err(|e| format!("failed reading host stdout: {e}"))?
-        {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&line)
-                && parsed["kind"].as_str() == Some("ready")
+    let handshake: Result<(tokio::task::JoinHandle<()>, String, Uuid), String> = async {
+        let mut stdout_lines = BufReader::new(stdout).lines();
+        let ready_line = tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(line) = stdout_lines
+                .next_line()
+                .await
+                .map_err(|e| format!("failed reading host stdout: {e}"))?
             {
-                return Ok::<Value, String>(parsed);
+                if let Ok(parsed) = serde_json::from_str::<Value>(&line)
+                    && parsed["kind"].as_str() == Some("ready")
+                {
+                    return Ok::<Value, String>(parsed);
+                }
             }
+            let stderr_text = tokio::fs::read_to_string(&stderr_path)
+                .await
+                .unwrap_or_default();
+            let trimmed = stderr_text.trim();
+            if trimmed.is_empty() {
+                Err("maka host serve exited before printing ready line".into())
+            } else {
+                Err(format!(
+                    "maka host serve exited before printing ready line: {trimmed}"
+                ))
+            }
+        })
+        .await
+        .map_err(|_| "timed out waiting for maka host serve ready line".to_owned())??;
+
+        let socket_path = ready_line["socketPath"]
+            .as_str()
+            .ok_or_else(|| format!("ready line missing socketPath: {ready_line}"))?
+            .to_owned();
+        let epoch_str = ready_line["hostEpoch"]
+            .as_str()
+            .ok_or_else(|| format!("ready line missing hostEpoch: {ready_line}"))?;
+        let host_epoch = Uuid::parse_str(epoch_str)
+            .map_err(|e| format!("invalid hostEpoch '{epoch_str}': {e}"))?;
+
+        // Keep draining remaining stdout lines so pipe never fills.
+        let stdout_drain =
+            tokio::spawn(async move { while let Ok(Some(_)) = stdout_lines.next_line().await {} });
+
+        Ok((stdout_drain, socket_path, host_epoch))
+    }
+    .await;
+
+    match handshake {
+        Ok((stdout_drain, socket_path, host_epoch)) => Ok(HostServerProcess {
+            child,
+            socket_path,
+            host_epoch,
+            stdout_drain,
+        }),
+        Err(err) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err(err)
         }
-        Err("maka host serve exited before printing ready line".into())
-    })
-    .await
-    .map_err(|_| "timed out waiting for maka host serve ready line".to_owned())??;
-
-    // Keep draining remaining stdout lines so pipe never fills.
-    tokio::spawn(async move { while let Ok(Some(_)) = stdout_lines.next_line().await {} });
-
-    let socket_path = ready_line["socketPath"]
-        .as_str()
-        .ok_or_else(|| format!("ready line missing socketPath: {ready_line}"))?
-        .to_owned();
-    let epoch_str = ready_line["hostEpoch"]
-        .as_str()
-        .ok_or_else(|| format!("ready line missing hostEpoch: {ready_line}"))?;
-    let host_epoch =
-        Uuid::parse_str(epoch_str).map_err(|e| format!("invalid hostEpoch '{epoch_str}': {e}"))?;
-
-    Ok(HostServerProcess {
-        child,
-        socket_path,
-        host_epoch,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -1132,8 +1184,35 @@ mod tests {
             ok_session_err_shutdown,
             GuestRunResult::InfraFailed {
                 infra_error: "host shutdown failed: cleanup broke".into(),
-                evidence: Some(evidence),
+                evidence: Some(evidence.clone()),
             }
         );
+    }
+
+    #[test]
+    fn needs_immediate_cleanup_distinguishes_completed_from_stop_and_errors() {
+        let evidence = GuestEvidence {
+            steps_observed: 1,
+            session_id: "sess-1".into(),
+            run_id: "run-1".into(),
+            execution: Some(json!({ "state": { "kind": "completed" } })),
+            host_usage: json!({}),
+            host_usage_attempts: json!({}),
+        };
+
+        assert!(!needs_immediate_cleanup(&Ok(GuestRunResult::Completed {
+            evidence: evidence.clone(),
+        })));
+        assert!(needs_immediate_cleanup(&Ok(
+            GuestRunResult::SubjectStopped {
+                stop_reason: "exceeded maxSteps".into(),
+                evidence: evidence.clone(),
+            }
+        )));
+        assert!(needs_immediate_cleanup(&Ok(GuestRunResult::InfraFailed {
+            infra_error: "host shutdown failed".into(),
+            evidence: Some(evidence),
+        })));
+        assert!(needs_immediate_cleanup(&Err("boom".into())));
     }
 }

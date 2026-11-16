@@ -32,4 +32,4 @@
 
 ## 被测停止与 Verifier 判分边界
 
-`GuestRunResult` 将基础设施故障（`infraFailed`）与被测智能体自身停止（`subjectStopped`）及正常完成（`completed`）明确区分。非基础设施异常均继续交由 Harbor Verifier 判分（`ctrf.json` / `reward`）；`validate_trial_evidence` 在零异常、转录完整且 Host 账本已结清的前提下接受任意有限数值型 `reward`。
+`GuestRunResult` 将基础设施故障（`infraFailed`）与被测智能体自身停止（`subjectStopped`）及正常完成（`completed`）明确区分。非基础设施异常均继续交由 Harbor Verifier 判分（`ctrf.json` / `reward`）；`validate_trial_evidence` 在零异常、转录完整且 Host 账本已结清的前提下接受任意有限数值型 `reward`。其中 `completed` 会在 Verifier 判分期间保留运行中的 Host 与 State Root，确保后台服务持续存活直至 Harbor 收尾销毁试验环境；而 `subjectStopped` 与 `infraFailed` 会立即停机 Host 并清理 State Root。
