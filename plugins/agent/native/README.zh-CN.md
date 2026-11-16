@@ -158,8 +158,8 @@ Bot 可在 `SendUser` 或 `sleep` 中附带 `discovery: {record, reason}`，同�
 或资源清理已经结算，仍沿用 Agent 的原执行核对与风险裁决规则。`DiscoveryMemory` 也支持
 单独记录决策和修正。`feedback` 将 Bot 的理解关联到本轮真实用户输入，不能把 worker 通知当作
 用户反馈。原文和引用保留在原消息，通过分页 `feedback_source` 按需读取。`send` 支持可选的
-不可变 `quotes`，包括只有引用没有正文的消息，并沿普通发送及 steering 链路保留。原生 Bot
-使用这条链路；外部执行器仍遵守原有富输入限制。引用不会授予原会话访问权。
+不可变 `quotes`，包括只有引用没有正文的消息，并沿普通发送及 steering 链路保留。排队时可
+编辑正文并保留引用。原生、外部和 ACP 执行器都会收到这些引用文本。引用不会授予原会话访问权。
 
 本阶段不导入 TS 主动发现数据，也不接入外部事件监听。
 [调查测试](src/owner/driver/tests/model_recovery/discovery.rs) 使用真实 Host 和本地模型夹具验证。

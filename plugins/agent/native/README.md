@@ -180,8 +180,9 @@ links a Bot interpretation to an actual human input in the current Turn; it cann
 worker notifications as user feedback. Exact text and quotes stay in the original
 message and are readable through paginated `feedback_source`. `send` accepts optional
 immutable `quotes`, including a quote-only message, through ordinary and steering
-admission. The native Bot uses this path; external executors retain their existing
-rich-input restrictions. No quote grants access to the referenced Session.
+admission. Queued text can be edited while retaining its excerpts. Native, external and
+ACP executors receive those excerpts as quoted prompt text. A quote grants no access
+to the referenced Session.
 
 This slice does not import TS discovery data or observe external events. The [discovery tests](src/owner/driver/tests/model_recovery/discovery.rs)
 exercise the real Host with local model fixtures.

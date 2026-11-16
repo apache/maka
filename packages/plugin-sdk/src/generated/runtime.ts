@@ -4477,6 +4477,7 @@ export type AgentQueueMessageResult =
       revision: number;
       hasAttachments: boolean;
       message: string;
+      quotes: QuoteRef[];
     }
   | {
       kind: 'revision_conflict';

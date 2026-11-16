@@ -44,13 +44,24 @@ type RowAction = {
   messageId: string;
   kind: 'edit' | 'retract' | 'promote';
 };
+type Review = Extract<AgentQueueMessageResult, { kind: 'ready' }>;
 type Editing = {
   messageId: string;
   revision: number;
   text: string;
   hasAttachments: boolean;
+  quotes: Review['quotes'];
 };
-type Review = Extract<AgentQueueMessageResult, { kind: 'ready' }>;
+
+function hasContent(edit: Editing): boolean {
+  return !!edit.text.trim() || edit.hasAttachments || edit.quotes.length > 0;
+}
+
+function quotePreview(quotes: Review['quotes']): string {
+  return quotes
+    .map(({ text }) => (text.length > 240 ? text.slice(0, 240) + '…' : text))
+    .join('\n\n');
+}
 const actionStyle = {
   ...controlStyle,
   width: 32,
@@ -199,6 +210,7 @@ export function createMessagesDock(
           revision: result.revision,
           text: result.message,
           hasAttachments: result.hasAttachments,
+          quotes: result.quotes,
         });
       }
     } else if (request.kind !== 'promote' || queue.running()) {
@@ -207,7 +219,7 @@ export function createMessagesDock(
   };
   const save = async () => {
     const edit = editing();
-    if (composing() || !edit || (!edit.text.trim() && !edit.hasAttachments)) return;
+    if (composing() || !edit || !hasContent(edit)) return;
     if (
       await change(edit.revision, { kind: 'update', messageId: edit.messageId, message: edit.text })
     ) {
@@ -243,6 +255,7 @@ export function createMessagesDock(
       revision: latest.revision,
       text: useLatest ? latest.message : edit.text,
       hasAttachments: latest.hasAttachments,
+      quotes: latest.quotes,
     });
     review.set(null);
     error.set('');
@@ -432,6 +445,11 @@ export function createMessagesDock(
                       : tr('Message no longer queued · your edit is kept')}
                     {edit().hasAttachments ? ' · attachments kept' : ''}
                   </Text>
+                  <If when={edit().quotes.length > 0}>
+                    <Text style={{ ...captionTextStyle, color: C.secondary, marginLeft: 6 }}>
+                      {quotePreview(edit().quotes)}
+                    </Text>
+                  </If>
                   <Input
                     accessibilityLabel={tr('Queued message editor')}
                     autoFocus
@@ -462,6 +480,7 @@ export function createMessagesDock(
                         style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}
                       >
                         {review()!.message}
+                        {review()!.quotes.length > 0 ? '\n\n' + quotePreview(review()!.quotes) : ''}
                       </Text>
                     </Scroll>
                     <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -492,7 +511,7 @@ export function createMessagesDock(
                         composing() ||
                         !entry(edit().messageId) ||
                         edit().revision !== revision() ||
-                        (!edit().text.trim() && !edit().hasAttachments)
+                        !hasContent(edit())
                       }
                       onPress={inputAction(save, null)}
                       style={controlStyle}

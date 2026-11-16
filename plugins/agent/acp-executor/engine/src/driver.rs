@@ -325,12 +325,7 @@ fn prompt(
             Language::ZhTw => format!("來自 Maka 的指令：\n{instructions}"),
         });
     }
-    let mut text = content.text.clone();
-    for quote in content.quotes.iter().flatten() {
-        text.push_str("\n\n<quoted_context>\n");
-        text.push_str(&quote.text);
-        text.push_str("\n</quoted_context>");
-    }
+    let mut text = content.text_with_quotes(language)?;
     for directory in content.directory_references.iter().flatten() {
         text.push_str(match language {
             Language::En => "\n\nDirectory: ",

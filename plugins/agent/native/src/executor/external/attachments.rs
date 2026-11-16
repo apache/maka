@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::{artifact::ArtifactSource, attachment::StorageRef};
+use maka_agent_facts::{artifact::ArtifactSource, attachment::StorageRef, language::Language};
 use maka_agent_state::artifacts::{ArtifactStore, SessionScope};
 use std::{collections::BTreeSet, io::Write};
 
@@ -82,11 +82,14 @@ pub(super) async fn prepare(
     store: &ArtifactStore,
     scope: &SessionScope,
     content: &maka_agent_facts::input::MessageInput,
+    language: Language,
     cancellation: &CancellationToken,
     material_root: &std::path::Path,
 ) -> Result<Materials, PreparationError> {
     let mut materials = Materials {
-        message: content.text.clone(),
+        message: content
+            .text_with_quotes(language)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
         images: Vec::new(),
         directory: None,
     };

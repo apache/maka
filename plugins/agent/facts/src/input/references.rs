@@ -17,6 +17,8 @@
  * under the License.
  */
 
+use super::MessageInput;
+use crate::language::Language;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,4 +88,46 @@ pub struct InlineReference {
 pub enum InlineReferenceKind {
     Skill,
     WorkspaceFile,
+}
+
+impl MessageInput {
+    /// Provider-facing text. Stored quotes retain their original structured provenance.
+    pub fn text_with_quotes(&self, language: Language) -> Result<String, serde_json::Error> {
+        let mut text = self.text.clone();
+        if let Some(quotes) = &self.quotes
+            && !quotes.is_empty()
+        {
+            text.push_str("\n\n");
+            for (index, quote) in quotes.iter().enumerate() {
+                if index != 0 {
+                    text.push('\n');
+                }
+                text.push_str("<quoted_excerpt");
+                if let Some(label) = &quote.label {
+                    text.push_str(" label=\"");
+                    text.push_str(&label.replace('"', "'"));
+                    text.push('"');
+                }
+                text.push_str(">\n");
+                if let Some(source) = &quote.source {
+                    let provenance = serde_json::to_string(source)?;
+                    text.push_str(match language {
+                        Language::En => "Session snapshot provenance (display-only): ",
+                        Language::ZhCn => "会话快照来源（仅供展示）：",
+                        Language::ZhTw => "工作階段快照來源（僅供顯示）：",
+                    });
+                    text.push_str(
+                        &provenance
+                            .replace('<', "\\u003c")
+                            .replace('>', "\\u003e")
+                            .replace('&', "\\u0026"),
+                    );
+                    text.push('\n');
+                }
+                text.push_str(&quote.text);
+                text.push_str("\n</quoted_excerpt>");
+            }
+        }
+        Ok(text)
+    }
 }

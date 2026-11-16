@@ -376,10 +376,7 @@ impl Owner {
             mentions: _,
             reply_to: _,
         } = input;
-        if unprepared.text.trim().is_empty()
-            && unprepared.attachments.as_ref().is_none_or(Vec::is_empty)
-            && unprepared.quotes.as_ref().is_none_or(Vec::is_empty)
-        {
+        if !unprepared.has_content() {
             return Err("agent_message_invalid".into());
         }
         let admission = self.runs.session(&id).await;

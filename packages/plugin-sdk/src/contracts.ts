@@ -28745,9 +28745,15 @@ export const contracts: {
                   message: {
                     type: 'string',
                   },
+                  quotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/QuoteRef',
+                    },
+                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'revision', 'hasAttachments', 'message'],
+                required: ['kind', 'revision', 'hasAttachments', 'message', 'quotes'],
               },
               {
                 type: 'object',
@@ -28786,6 +28792,59 @@ export const contracts: {
               },
             ],
             $defs: {
+              QuoteRef: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  sourceTurnId: {
+                    type: ['string', 'null'],
+                  },
+                  source: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SessionQuoteSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['text'],
+              },
+              SessionQuoteSource: {
+                description:
+                  'Display provenance of an immutable excerpt, never authority to read its source.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sessionName: {
+                    type: 'string',
+                  },
+                  capturedAt: {
+                    $ref: '#/$defs/CaptureTime',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'sessionName', 'capturedAt', 'truncated'],
+              },
+              CaptureTime: {
+                description:
+                  "JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.",
+                type: 'number',
+                format: 'double',
+              },
               AgentQueueMessageMissingReason: {
                 type: 'string',
                 enum: ['delivered', 'cancelled', 'unknown'],

@@ -927,7 +927,19 @@ async fn discovery_preserves_quote_only_and_steered_feedback_and_sleep_decisions
     .await;
     f.settled(&task, 1).await;
     let quote = "Do not repeat this recommendation.";
-    f.send("", json!([{"text":quote}])).await;
+    f.send("Hold the conversation while I queue a quote", json!([]))
+        .await;
+    let (mut held, _) = next(&listener).await;
+    let sent = f.send("", json!([{"text":quote}])).await;
+    let queue = f.query("queue", json!({"sessionId":f.bot})).await;
+    assert_eq!(queue["entries"][0]["preview"], quote);
+    let read = f.query("queueMessage", json!({"sessionId":f.bot,"expectedRevision":queue["revision"],"messageId":sent["messageId"]})).await;
+    assert_eq!(read["kind"], "ready");
+    assert_eq!(read["message"], "");
+    assert_eq!(read["quotes"][0]["text"], quote);
+    let edit = f.query("editQueue", json!({"sessionId":f.bot,"expectedRevision":read["revision"],"edit":{"kind":"update","messageId":sent["messageId"],"message":""}})).await;
+    assert_eq!(edit["kind"], "committed", "{edit}");
+    finish_text(&mut held, "Ready for the next message.").await;
     let (mut socket, body) = next(&listener).await;
     assert!(body.to_string().contains(quote));
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;

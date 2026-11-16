@@ -111,6 +111,19 @@ pub struct MessageInput {
 }
 
 impl MessageInput {
+    pub fn has_content(&self) -> bool {
+        !self.text.trim().is_empty()
+            || self
+                .attachments
+                .as_ref()
+                .is_some_and(|files| !files.is_empty())
+            || self
+                .quotes
+                .iter()
+                .flatten()
+                .any(|quote| !quote.text.trim().is_empty())
+    }
+
     /// Opaque Rust-host admission identity; never derived from a UI projection.
     pub fn content_digest(&self) -> Result<String, serde_json::Error> {
         use sha2::{Digest, Sha256};

@@ -1336,8 +1336,8 @@ pub enum QueueMessageResult {
     Ready {
         revision: u64,
         has_attachments: bool,
-
         message: String,
+        quotes: Vec<maka_agent_facts::input::QuoteRef>,
     },
     RevisionConflict {
         expected: u64,
