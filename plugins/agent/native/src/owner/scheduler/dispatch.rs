@@ -194,7 +194,7 @@ impl Owner {
             if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
                 Approval::Discovery {
                     approval,
-                    recall: self.settings.recall && self.tools.contains("Recall"),
+                    recall: self.discovery_recall_enabled(),
                 }
             } else {
                 Approval::Execution {

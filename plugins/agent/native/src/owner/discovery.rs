@@ -295,11 +295,15 @@ impl Owner {
         tools.dedup();
         tools
     }
+    pub(super) fn discovery_recall_enabled(&self) -> bool {
+        self.settings.recall && self.tools.contains("Recall")
+    }
+
     async fn discovery_authorized(&self, job: &Job) -> Result<(), String> {
         if !self.settings.bot
             || !self.settings.scheduled_tasks
             || !self.bot.is(&job.bot)
-            || (job.recall && !self.settings.recall)
+            || job.recall != self.discovery_recall_enabled()
         {
             return Err("discovery_cancelled".into());
         }

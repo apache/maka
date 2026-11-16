@@ -1074,6 +1074,41 @@ async fn discovery_recall_revocation_blocks_old_approval_and_hides_old_memory() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_enabling_recall_requires_a_new_approval_before_writing_memory() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    f.setting("recall", json!(false)).await;
+    let task = f.create("Originally approved without Recall").await;
+    f.setting("recall", json!(true)).await;
+    f.change(&task, "trigger_now").await;
+    let done = f.settled(&task, 1).await;
+    assert_eq!(done["task"]["runs"][0]["outcome"], "blocked");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+
+    f.change(&task, "pause").await;
+    f.change(&task, "resume").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"New Recall boundary"}),
+    )
+    .await;
+    f.settled(&task, 2).await;
+    f.send("Read the latest discovery record", json!([])).await;
+    let (mut bot, _) = next(&listener).await;
+    let (mut bot, page) = memory(&listener, &mut bot, json!({"action":"list"})).await;
+    assert_eq!(page["records"][0]["preview"], "New Recall boundary");
+    quiet(&f, &listener, &mut bot).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_plain_completion_fails_but_preserves_its_checkpoint() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -1116,7 +1151,7 @@ async fn discovery_plain_completion_fails_but_preserves_its_checkpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_memory_search_fills_pages_across_older_records() {
+async fn discovery_memory_search_paginates_and_matches_record_text() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     let task = f.create("Older useful record").await;
@@ -1132,7 +1167,9 @@ async fn discovery_memory_search_fills_pages_across_older_records() {
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     let record = page["records"][0]["id"].clone();
     for index in 0..38 {
-        let text = if index < 4 || index == 37 {
+        let text = if index == 37 {
+            "Migration observation: He said \"stop\"\nCheck the next line".into()
+        } else if index < 4 {
             format!("Migration observation {index}")
         } else {
             format!("Unrelated observation {index}")
@@ -1160,15 +1197,23 @@ async fn discovery_memory_search_fills_pages_across_older_records() {
         json!({"action":"list","query":"migration"}),
     )
     .await;
-    assert_eq!(sequences(&first), [39, 5, 4, 3]);
+    assert_eq!(sequences(&first), [39]);
+    assert_eq!(first["next_before"], 8);
     let (mut socket, second) = memory(
         &listener,
         &mut socket,
         json!({"action":"list","query":"migration","before":first["next_before"]}),
     )
     .await;
-    assert_eq!(sequences(&second), [2, 1]);
-    assert_eq!(second["next_before"], Value::Null);
+    assert_eq!(sequences(&second), [5, 4, 3, 2]);
+    let (mut socket, third) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"list","query":"migration","before":second["next_before"]}),
+    )
+    .await;
+    assert_eq!(sequences(&third), [1]);
+    assert_eq!(third["next_before"], Value::Null);
 
     let (mut socket, page) = memory(
         &listener,
@@ -1176,9 +1221,31 @@ async fn discovery_memory_search_fills_pages_across_older_records() {
         json!({"action":"list","query":"original-search-marker"}),
     )
     .await;
+    assert!(sequences(&page).is_empty());
+    assert_eq!(page["next_before"], 8);
+    let (mut socket, page) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"list","query":"original-search-marker","before":page["next_before"]}),
+    )
+    .await;
     assert_eq!(sequences(&page), [1]);
     assert_eq!(page["records"][0]["id"], record);
     assert_eq!(page["next_before"], Value::Null);
+    let (mut socket, page) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"list","query":"He said \"stop\"\nCheck"}),
+    )
+    .await;
+    assert_eq!(sequences(&page), [39]);
+    let (mut socket, page) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"list","query":"kind"}),
+    )
+    .await;
+    assert!(sequences(&page).is_empty());
     quiet(&f, &listener, &mut socket).await;
     f.close().await;
 }
