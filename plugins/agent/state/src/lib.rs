@@ -226,4 +226,9 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "session rooms and messages",
         sql: include_str!("../migrations/0040_rooms.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 41,
+        description: "index history tool result metadata",
+        sql: include_str!("../migrations/0041_history_tool_metadata.sql"),
+    },
 ];

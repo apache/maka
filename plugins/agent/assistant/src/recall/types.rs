@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_agent_ports::session::history::Role;
+use maka_agent_ports::session::history::{HistoryField, Position, Read, Role, RowPosition};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
@@ -129,7 +129,8 @@ pub struct Passage {
     pub session_id: String,
     pub session_title: String,
     pub anchor_message_id: String,
-    pub anchor_position: maka_agent_ports::session::history::RowPosition,
+    pub anchor_position: RowPosition,
+    pub through: u64,
     pub turn_id: String,
     pub messages: Vec<PassageMessage>,
     pub matched_terms: Vec<String>,
@@ -181,11 +182,21 @@ impl ResultSet {
             }
         }
         for passage in &self.passages {
+            let original = Read {
+                session_id: passage.session_id.clone(),
+                through: Some(passage.through),
+                position: Position::Row {
+                    position: passage.anchor_position.clone(),
+                    field: HistoryField::Body,
+                },
+                include_thinking: false,
+            };
             text.push_str(&format!(
-                "\nSession: {} ({})\nAnchor: {}\nMore before: {}; more after: {}\n",
+                "\nSession: {} ({})\nAnchor: {}\nOriginal: SessionHistory({})\nMore before: {}; more after: {}\n",
                 passage.session_title,
                 passage.session_id,
                 passage.anchor_message_id,
+                serde_json::to_string(&original).expect("history read is serializable"),
                 passage.has_more_before,
                 passage.has_more_after
             ));
