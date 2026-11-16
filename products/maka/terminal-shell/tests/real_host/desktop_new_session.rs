@@ -1080,7 +1080,9 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
         text.trim_end()
     );
     request
-        .delta("I’ll compare the release notes with the checklist.")
+        .delta(&format!(
+            "[@Checklist](maka://session/{referenced}) has the details for this release."
+        ))
         .await;
     desktop
         .wait("the current conversation did not finish", request.finish())
@@ -1098,36 +1100,48 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
         .unwrap();
     assert_eq!(target["session"]["activity"], "idle");
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
-    desktop.press("@Release checklist").await;
-    desktop.control("Close side pane").await;
-    let reference = desktop.control("@Release checklist").await;
-    let copy = desktop
-        .until(
-            "the referenced conversation's earlier reply did not appear in the side pane",
-            || {
-                desktop
-                    .controls("Copy message")
-                    .into_iter()
-                    .find(|bounds| bounds.left() > reference.right())
-            },
-        )
-        .await;
-    desktop.artifact("composer-session-reference-beside");
-    desktop.hover_at(copy.center());
-    desktop
-        .until("the reply's copy action did not appear", || {
-            desktop.draws_in(copy).then_some(())
-        })
-        .await;
-    desktop.press_at(copy.center());
-    let copied = desktop
-        .until("the earlier reply was not copied", || {
-            desktop.platform.take_clipboard_write()
-        })
-        .await;
-    assert_eq!(copied, history);
-    desktop.press("Close side pane").await;
-    desktop.control("@Release checklist").await;
+    for from_reply in [false, true] {
+        if from_reply {
+            // The Markdown link starts the line above the reply's actions.
+            let copy = desktop.control("Copy message").await;
+            desktop.press_at(point(copy.center().x + px(16.), copy.top() - px(16.)));
+        } else {
+            desktop.press("@Release checklist").await;
+        }
+        desktop.control("Close side pane").await;
+        let reference = desktop.control("@Release checklist").await;
+        let copy = desktop
+            .until(
+                "the referenced conversation's earlier reply did not appear in the side pane",
+                || {
+                    desktop
+                        .controls("Copy message")
+                        .into_iter()
+                        .find(|bounds| bounds.left() > reference.right())
+                },
+            )
+            .await;
+        desktop.artifact(if from_reply {
+            "agent-reply-session-link-beside"
+        } else {
+            "composer-session-reference-beside"
+        });
+        desktop.hover_at(copy.center());
+        desktop
+            .until("the reply's copy action did not appear", || {
+                desktop.draws_in(copy).then_some(())
+            })
+            .await;
+        desktop.press_at(copy.center());
+        let copied = desktop
+            .until("the earlier reply was not copied", || {
+                desktop.platform.take_clipboard_write()
+            })
+            .await;
+        assert_eq!(copied, history);
+        desktop.press("Close side pane").await;
+        desktop.control("@Release checklist").await;
+    }
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
     desktop.close().await;
     fixture.finish().await;

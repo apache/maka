@@ -19,8 +19,16 @@
 
 import { messageBytes } from './history.ts';
 
+const sessionLinkPrefix = 'maka://session/';
+
 // Keep the whitespace boundary identical to the host's skill invocation grammar.
-export const COMPOSER_TOKEN_PATTERN = String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+|\[@(?:\\[^\r\n]|[^\]\\\r\n])+\]\(maka://session/[A-Za-z0-9_-]+\))`;
+export const COMPOSER_TOKEN_PATTERN = String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+|\[@(?:\\[^\r\n]|[^\]\\\r\n])+\]\(${sessionLinkPrefix}[A-Za-z0-9_-]+\))`;
+
+export function sessionIdFromLink(target: string): string | undefined {
+  if (!target.startsWith(sessionLinkPrefix)) return;
+  const id = target.slice(sessionLinkPrefix.length);
+  if (id && !/[^A-Za-z0-9_-]/.test(id)) return id;
+}
 
 /** Loaded gaps remain separate source regions. */
 export function skillTextGroups(fragments: readonly { offset: number; text: string }[]) {

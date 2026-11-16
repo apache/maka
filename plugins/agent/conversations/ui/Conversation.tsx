@@ -109,6 +109,7 @@ import {
   replaceHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
+import { sessionIdFromLink } from '../../../../products/maka/workbench/app/skillTokenText';
 import {
   TranscriptOverlay,
   type LivePart,
@@ -857,6 +858,11 @@ export function Conversation(props: ConversationProps) {
   // this pane (the Bot stays pinned in the sidebar to switch back).
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  const openLink: ConversationProps['openLink'] = async (target, restoreFocus) => {
+    const id = sessionIdFromLink(target);
+    if (id !== undefined) openWorker(id);
+    else await props.openLink(target, restoreFocus);
+  };
   const senders = createMessageSenders(
     host,
     senderIds,
@@ -4051,7 +4057,7 @@ export function Conversation(props: ConversationProps) {
                 through={() => latestKnown}
                 previewImage={props.previewImage}
                 previewTerminal={props.previewTerminal}
-                openLink={props.openLink}
+                openLink={openLink}
                 senders={senders}
                 userScroll={() => cancelNavigation()}
                 reveal={reveal}
@@ -4123,7 +4129,7 @@ export function Conversation(props: ConversationProps) {
                 }
                 messages={() => bot.forTurn(initial.turnId)}
                 sessionId={sessionId}
-                openLink={props.openLink}
+                openLink={openLink}
                 userScroll={() => cancelNavigation()}
               />
             );
@@ -4148,7 +4154,7 @@ export function Conversation(props: ConversationProps) {
               through={() => latestKnown}
               previewImage={props.previewImage}
               previewTerminal={props.previewTerminal}
-              openLink={props.openLink}
+              openLink={openLink}
               openSession={canOpenWorker() ? openWorker : undefined}
               senders={senders}
               userScroll={() => cancelNavigation()}
@@ -4645,7 +4651,7 @@ export function Conversation(props: ConversationProps) {
                   through={() => latestKnown}
                   previewImage={props.previewImage}
                   previewTerminal={props.previewTerminal}
-                  openLink={props.openLink}
+                  openLink={openLink}
                   toolProgress={toolProgress}
                   maxHeight={() => Math.max(32, readingSize().height - 80)}
                   close={closeTrajectoryInspector}
