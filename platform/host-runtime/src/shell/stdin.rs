@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::request::parse_ref;
+use super::request::require_ref;
 use crate::shell::ControlInput;
 use maka_agent_facts::tools::ToolError;
 use maka_plugin_core::terminal::TerminalSize;
@@ -98,9 +98,7 @@ impl Input {
             }
         }
         let fields: Fields = serde_json::from_value(value).map_err(failed)?;
-        if parse_ref(&fields.reference).is_none() {
-            return Err(failed("Invalid background task ref"));
-        }
+        require_ref(&fields.reference)?;
         let (data, bytes) = match (fields.input, fields.actions) {
             (Some(_), Some(_)) => {
                 return Err(failed(

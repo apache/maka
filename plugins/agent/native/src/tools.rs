@@ -542,6 +542,14 @@ fn catalog_inner(
             if binding.contract() == &file_contract && selection.method == "read" {
                 description.push_str("\n\nReads Session attachment and archived tool-result resources. Pass page.next unchanged to this tool to continue.");
             }
+            if contract == &process_contract {
+                let guidance = match selection.method.as_str() {
+                    "execute" => "\n\nFor slow or long-running commands, set run_in_background: true to start a background process and return a snapshot with ref for ProcessRead, ProcessInput, BackgroundTaskHealth or ProcessStop, or set timeout_ms to enforce a deadline.",
+                    "stop" => "\n\nPass the ref from a background Shell process snapshot (run_in_background: true).",
+                    _ => "",
+                };
+                description.push_str(guidance);
+            }
             Ok(ToolRegistration {
                 definition: ToolDefinition {
                     provider: None,

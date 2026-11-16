@@ -198,7 +198,7 @@ Helpers:
 - exit(): end the script successfully.
 - setTimeout(callback, delayMs=0), clearTimeout(id): timers alone do not keep a finished cell alive.
 - ALL_TOOLS: frozen name/description metadata for all authorized nested tools, including deferred tools omitted from this description. Find a tool here and call it in the same cell.
-Use wait only after exec returns a running cell_id. Tool permissions and schemas stay frozen for the cell. Calls to other advertised tools must be made directly. Do not invoke exec in parallel with other model tools.
+Use wait only after exec returns a running cell_id; pass terminate: true to wait to cancel a running cell and its pending calls (ProcessStop only stops background Shell refs, not cell_id). Tool permissions and schemas stay frozen for the cell. Calls to other advertised tools must be made directly. Do not invoke exec in parallel with other model tools.
 Host execution: 64 MiB V8 heap and 30 seconds cumulative synchronous execution (async waits excluded). Tool work remains owned until cleanup; use wait to collect running cells."#.into(),
         input_schema: schemars::schema_for!(CodeInput).into(),
     }
@@ -243,7 +243,7 @@ pub(super) struct WaitInput {
 pub(super) fn wait_definition() -> ToolDefinition {
     ToolDefinition {
         freeform: None, output_schema: None, provider: None, name: "wait".into(),
-        description: "Observe a cell_id returned by running exec/wait. Returns new output and running/completed/terminated state. terminate requests cancellation; state stays running through cleanup. Completed/interrupted results remain readable after Host restart. Old interpreter heaps and handles are never restored.".into(),
+        description: "Observe a cell_id returned by running exec/wait. To cancel the cell and its pending calls, pass the same cell_id with terminate: true. State stays running through cleanup. Returns new output and running/completed/interrupted state. Completed/interrupted results remain readable after Host restart. Old interpreter heaps and handles are never restored.".into(),
         input_schema: schemars::schema_for!(WaitInput).into(),
     }
 }
