@@ -18,7 +18,11 @@
  */
 
 use super::*;
-use maka_host_runtime::shell::{ControlErrorKind, request::parse_ref, stdin};
+use maka_host_runtime::shell::{
+    ControlErrorKind,
+    request::{parse_ref, require_ref},
+    stdin,
+};
 use maka_plugin_core::shell_run::ShellPatch;
 use maka_plugin_core::shell_run::ShellState;
 use maka_plugin_core::shell_run::ShellVisibility;
@@ -112,11 +116,7 @@ impl Processes {
                 .await;
         }
         let input: Reference = serde_json::from_value(value).map_err(failed)?;
-        let id = parse_ref(&input.reference).ok_or_else(|| {
-            failed(
-                "Invalid process resource ref. Use the ref returned by background Shell. To cancel a Code Mode cell, call wait directly with cell_id and terminate: true.",
-            )
-        })?;
+        let id = require_ref(&input.reference)?;
         let mut record = self.read_model(tool, id).await?;
         cancelled(cancellation)?;
         if name == "read" {

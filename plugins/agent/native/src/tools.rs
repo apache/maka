@@ -544,8 +544,8 @@ fn catalog_inner(
             }
             if contract == &process_contract {
                 let guidance = match selection.method.as_str() {
-                    "execute" => "\n\nFor slow commands such as broad file searches, use run_in_background: true so other tools can run while the command works. Print the returned process snapshot (value.ref) so you can use that ref with ProcessRead or ProcessStop. Use timeout_ms when the command should have a deadline.",
-                    "stop" => "\n\nPass the ref from the background Shell process snapshot. For a running Code Mode cell, call wait directly with its cell_id and terminate: true.",
+                    "execute" => "\n\nFor slow or long-running commands, set run_in_background: true to start a background process and return a snapshot with ref for ProcessRead, ProcessInput, BackgroundTaskHealth or ProcessStop, or set timeout_ms to enforce a deadline.",
+                    "stop" => "\n\nPass the ref from a background Shell process snapshot (run_in_background: true).",
                     _ => "",
                 };
                 description.push_str(guidance);

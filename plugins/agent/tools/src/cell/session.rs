@@ -1055,14 +1055,9 @@ impl CodeCells {
         let is_error = matches!(state, CellReplyState::Interrupted { .. });
         let raw = serde_json::to_value(&observation).expect("typed Cell observation");
         let (content, summary) = match observation {
-            CellObservation::Running { cell_id, content } => (
-                content,
-                json!({
-                    "state": "running",
-                    "cell_id": cell_id,
-                    "cancel_with": {"cell_id": cell_id, "terminate": true},
-                }),
-            ),
+            CellObservation::Running { cell_id, content } => {
+                (content, json!({"state":"running","cell_id":cell_id}))
+            }
             CellObservation::Completed {
                 cell_id,
                 content,
