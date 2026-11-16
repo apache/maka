@@ -58,7 +58,14 @@ import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workb
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
-import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import {
+  bodyTextStyle,
+  C,
+  controlStyle,
+  controlHoverStyle,
+  controlFocusStyle,
+  sidebarDisclosureStyle,
+} from './ui';
 import { Icon } from './Icon';
 
 type Configuration = {
@@ -365,7 +372,7 @@ function App(
         accessibilityLabel={moreNavigation() ? tr('Less navigation') : tr('More navigation')}
         accessibilityState={{ expanded: moreNavigation() }}
         onPress={() => moreNavigation.set(!moreNavigation())}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderRadius: 8 }}
+        style={{ ...sidebarDisclosureStyle, gap: 6 }}
         hoverStyle={controlHoverStyle()}
         focusStyle={controlFocusStyle()}
       >
