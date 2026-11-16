@@ -415,8 +415,7 @@ impl scheduler::Scheduler {
     ) -> Result<Vec<Mutation>, String> {
         let result = match &job.phase {
             Phase::Investigating { result } => result.clone(),
-            Phase::Delivering { text, .. } => Some(Report::Report { text: text.clone() }),
-            Phase::Stopping => return Ok(vec![]),
+            Phase::Delivering | Phase::Stopping => return Ok(vec![]),
         };
         if result.is_none() && job.checkpoint.is_none() {
             return Ok(vec![]);
@@ -435,6 +434,17 @@ impl scheduler::Scheduler {
         )
         .await
         .map(|(_, writes)| writes)
+    }
+
+    pub(super) async fn report_for_delivery(&self, job: &Job) -> Result<(String, String), String> {
+        let id = outcome_id(job)?;
+        match self.memory_entry(&job_scope(job)?, &id).await?.content {
+            Content::Investigation {
+                result: Some(Report::Report { text, .. }),
+                ..
+            } => Ok((id, text)),
+            _ => Err("discovery_report_record_invalid".into()),
+        }
     }
 }
 

@@ -155,14 +155,16 @@ Plans, the active job and completed receipts use the existing scheduler KV names
 no separate database or lease is introduced. `DiscoveryMemory` shares investigation
 results, progress, corrections, notification decisions and user feedback across fresh
 workers with the same Bot source boundary. A changed Bot, workspace, permission revision
-or Recall grant has a different record scope; references never grant source access.
+or Recall grant requires renewed approval and uses a different record scope. References
+never grant source access.
 
 Each worker receives at most three 350-character previews, with record IDs and explicit
 truncation. `get` returns a complete record. `list` returns at most four short previews,
 examines at most 32 positions per call, and supplies `next_before` even for an empty
 filtered page. Queries can filter by text or the original investigation ID. Correction
-records append to that original record instead of overwriting it. The outcome, completed
-receipt, ordered record index and released investigation slot commit atomically.
+records append to that original record instead of overwriting it. A finding and its
+ordered record index commit before the report can enter the Bot queue. The completion
+receipt and release of the investigation slot commit together.
 `checkpoint` stages one bounded progress note; it survives Host recovery and publishes
 on successful or failed settlement, while cancelled work discards it. Records describe
 observations and execution outcomes, not verified task completion.

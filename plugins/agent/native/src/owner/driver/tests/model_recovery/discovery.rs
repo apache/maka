@@ -475,7 +475,7 @@ async fn discovery_committed_outcome_recovers_after_lost_acknowledgement() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_recovery_rechecks_notification_authority() {
-    for (setting, after_commit) in [
+    for (setting, report_queued) in [
         ("recall", true),
         ("bot", true),
         ("scheduledTasks", true),
@@ -491,8 +491,8 @@ async fn discovery_recovery_rechecks_notification_authority() {
         let task = f.create("Recovered report authorization").await;
         f.change(&task, "trigger_now").await;
         let (mut worker, _) = next(&listener).await;
-        let committed = if after_commit {
-            f.owner().scheduler.storage.unknown_after("delivering")
+        let committed = if report_queued {
+            f.owner().scheduler.storage.unknown_before("settlement")
         } else {
             f.owner().scheduler.storage.unknown_before("delivering")
         };
@@ -507,8 +507,11 @@ async fn discovery_recovery_rechecks_notification_authority() {
             .unwrap()
             .unwrap();
         let pending = f.owner().durable.queue().read(f.bot.clone()).await.unwrap();
-        assert_eq!(pending.entries.len(), 1);
-        let report = pending.entries[0].request.clone();
+        assert_eq!(pending.entries.len(), usize::from(report_queued));
+        let message = pending
+            .entries
+            .first()
+            .map(|entry| entry.request.message_id.clone());
         match setting {
             "permissions" => {
                 f.change_source(|config| {
@@ -522,30 +525,34 @@ async fn discovery_recovery_rechecks_notification_authority() {
             }
             _ => f.setting(setting, json!(false)).await,
         }
-        assert_eq!(
-            f.owner()
-                .durable
-                .queue()
-                .resolve_message(f.bot.clone(), report.message_id.clone())
-                .await
-                .unwrap(),
-            maka_agent_state::queue::MessageResolution::Cancelled,
-            "revoked {setting} report survived recovery"
-        );
+        if let Some(message) = &message {
+            assert_eq!(
+                f.owner()
+                    .durable
+                    .queue()
+                    .resolve_message(f.bot.clone(), message.clone())
+                    .await
+                    .unwrap(),
+                maka_agent_state::queue::MessageResolution::Cancelled,
+                "revoked {setting} report survived recovery"
+            );
+        }
         assert_eq!(
             f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
             "blocked"
         );
         f.reopen().await;
-        assert_eq!(
-            f.owner()
-                .durable
-                .queue()
-                .resolve_message(f.bot.clone(), report.message_id)
-                .await
-                .unwrap(),
-            maka_agent_state::queue::MessageResolution::Cancelled
-        );
+        if let Some(message) = message {
+            assert_eq!(
+                f.owner()
+                    .durable
+                    .queue()
+                    .resolve_message(f.bot.clone(), message)
+                    .await
+                    .unwrap(),
+                maka_agent_state::queue::MessageResolution::Cancelled
+            );
+        }
         f.close().await;
     }
 }
@@ -567,7 +574,7 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
     let task = f.create("Authorized recovered report").await;
     f.change(&task, "trigger_now").await;
     let (mut worker, _) = next(&listener).await;
-    let committed = f.owner().scheduler.storage.unknown_after("delivering");
+    let committed = f.owner().scheduler.storage.unknown_before("settlement");
     tool(
         &mut worker,
         "DiscoveryComplete",
@@ -646,6 +653,91 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
             .await
             .is_err()
     );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_persists_the_investigation_before_enqueuing_the_report() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Record before handoff").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    let staged = f.owner().scheduler.storage.unknown_after("delivering");
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"report","text":"Durable finding"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(45), staged)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        f.owner()
+            .durable
+            .queue()
+            .read(f.bot.clone())
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    f.reopen().await;
+    let (mut bot, body) = next(&listener).await;
+    assert!(body.to_string().contains("Durable finding"));
+    let (mut bot, page) = memory(&listener, &mut bot, json!({"action":"list"})).await;
+    assert_eq!(page["records"].as_array().unwrap().len(), 1);
+    assert_eq!(page["records"][0]["preview"], "Durable finding");
+    quiet(&f, &listener, &mut bot).await;
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_pause_preserves_a_report_the_bot_has_already_consumed() {
+    use maka_plugin_core::storage::StoreError;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Pause after report consumption").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    let (entered, release) = f.owner().scheduler.storage.hold_before("settlement");
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"report","text":"Already received finding"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(45), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut bot, body) = next(&listener).await;
+    assert!(body.to_string().contains("Already received finding"));
+    release
+        .send(Err(StoreError::Unavailable(
+            "interrupted report settlement".into(),
+        )))
+        .unwrap();
+    f.change(&task, "pause").await;
+    let (mut bot, page) = memory(&listener, &mut bot, json!({"action":"list"})).await;
+    assert_eq!(page["records"].as_array().unwrap().len(), 1);
+    assert_eq!(page["records"][0]["preview"], "Already received finding");
+    quiet(&f, &listener, &mut bot).await;
+    let done = f.settled(&task, 1).await;
+    assert_eq!(done["task"]["status"], "paused");
+    assert_eq!(done["task"]["runs"][0]["outcome"], "ok");
     f.close().await;
 }
 
@@ -801,7 +893,7 @@ async fn discovery_memory_serializes_bot_append_with_settlement() {
     .await
     .unwrap();
     let premature = tokio::time::timeout(Duration::from_millis(150), listener.accept()).await;
-    release.send(()).unwrap();
+    release.send(Ok(())).unwrap();
     assert!(premature.is_err());
     let (mut socket, body) = next(&listener).await;
     assert_eq!(output(&body)["recorded"], true);

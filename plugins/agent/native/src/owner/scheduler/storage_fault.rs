@@ -24,7 +24,10 @@ use tokio::sync::oneshot;
 
 enum Fault {
     Unknown(oneshot::Sender<()>, bool),
-    Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
+    Hold(
+        oneshot::Sender<()>,
+        oneshot::Receiver<Result<(), StoreError>>,
+    ),
 }
 
 /// Keep real atomic writes and retirement semantics; only alter their acknowledgement.
@@ -70,7 +73,10 @@ impl Storage {
     pub(in crate::owner) fn hold_before(
         &self,
         kind: &'static str,
-    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    ) -> (
+        oneshot::Receiver<()>,
+        oneshot::Sender<Result<(), StoreError>>,
+    ) {
         let (entered, observed) = oneshot::channel();
         let (release, wait) = oneshot::channel();
         assert!(
@@ -90,9 +96,10 @@ impl Storage {
             let mut armed = self.fault.lock().unwrap();
             if armed.as_ref().is_some_and(|(kind, _)| {
                 writes.iter().any(|write| {
-                    write.data.value().is_some_and(|v| {
-                        v["content"]["kind"] == *kind || v["phase"]["kind"] == *kind
-                    })
+                    (*kind == "settlement" && write.key.starts_with("discovery/completed/"))
+                        || write.data.value().is_some_and(|v| {
+                            v["content"]["kind"] == *kind || v["phase"]["kind"] == *kind
+                        })
                 })
             }) {
                 armed.take().map(|(_, fault)| fault)
@@ -103,7 +110,7 @@ impl Storage {
         let unknown = match fault {
             Some(Fault::Hold(entered, release)) => {
                 entered.send(()).unwrap();
-                release.await.unwrap();
+                release.await.unwrap()?;
                 None
             }
             Some(Fault::Unknown(observed, after_commit)) => Some((observed, after_commit)),
