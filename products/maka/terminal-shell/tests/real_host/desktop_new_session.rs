@@ -3950,6 +3950,7 @@ async fn desktop_composer_sandbox_choice_becomes_the_default() {
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
+    "desktop_composer_references_a_room_without_posting",
     "desktop_context_menus_follow_the_pointer_and_manage_rooms",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_new_conversation_preserves_an_owned_worktree",
@@ -3997,6 +3998,9 @@ pub(crate) fn run(name: &str) {
     match name {
         "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
             runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
+        }
+        "desktop_composer_references_a_room_without_posting" => {
+            runtime.block_on(rooms::desktop_composer_references_a_room_without_posting())
         }
         "desktop_context_menus_follow_the_pointer_and_manage_rooms" => {
             runtime.block_on(rooms::desktop_context_menus_follow_the_pointer_and_manage_rooms())

@@ -82,11 +82,7 @@ import {
   tr,
   type MessageKey,
 } from '../../../../products/maka/workbench/app/locale';
-import {
-  loadDraft,
-  searchAgentSessions,
-  type Host,
-} from '../../../../products/maka/workbench/app/host';
+import { loadDraft, searchSessions, type Host } from '../../../../products/maka/workbench/app/host';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   bodyTextStyle,
@@ -2976,7 +2972,13 @@ function projectComposerCompletion(
               query,
               ...(directory ? { directory } : {}),
             }),
-    sessions: (query) => searchAgentSessions(host, query),
+    async sessions(query) {
+      const [rooms, conversations] = await Promise.all([
+        searchSessions(host, 'room', query),
+        searchSessions(host, 'agent', query),
+      ]);
+      return [...rooms, ...conversations];
+    },
     skills: ({ query, backend }) =>
       host.query('agent', 'skillCandidates', { target, backend, query }),
     pathLabel: host.pathLabel,

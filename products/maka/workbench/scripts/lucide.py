@@ -62,6 +62,7 @@ ICONS = [
     'loader-circle',
     'lock',
     'maximize',
+    'message-square',
     'minus',
     'move-right',
     'move-up-right',

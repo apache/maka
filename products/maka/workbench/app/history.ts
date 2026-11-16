@@ -385,8 +385,12 @@ export function mergeHistoryPage(
   for (const chunk of chunks) {
     const key = historyChunkKey(chunk);
     const previous = changed.get(key) ?? lookup(key);
+    const previousThrough = previous?.metadataThrough;
     const newerMetadata =
-      previous?.metadataThrough != null && through !== null && previous.metadataThrough > through;
+      previous !== undefined &&
+      previousThrough != null &&
+      through !== null &&
+      previousThrough > through;
     const fresh = { offset: chunk.offset, text: chunk.text };
     const fragments = (
       (older || newerMetadata) && previous
@@ -403,7 +407,7 @@ export function mergeHistoryPage(
       timestamp: chunk.timestamp ?? undefined,
       ...(newerMetadata
         ? {
-            ...historyMetadata(previous, previous.metadataThrough, previous),
+            ...historyMetadata(previous, previousThrough, previous),
             ...(chunk.offset === 0 && previous.attachments === undefined
               ? { attachments: chunk.attachments ?? [] }
               : {}),

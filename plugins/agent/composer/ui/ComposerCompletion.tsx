@@ -93,7 +93,16 @@ type Row = {
   heading?: string;
   /** A separator above the row, between unnamed groups. */
   divider?: boolean;
-  icon: 'paperclip' | 'file' | 'folder' | 'book' | 'code' | 'command' | 'goal' | 'bot';
+  icon:
+    | 'paperclip'
+    | 'file'
+    | 'folder'
+    | 'book'
+    | 'code'
+    | 'command'
+    | 'goal'
+    | 'symbol'
+    | 'conversation';
   disabled?: boolean;
   action: { read: number; id: string };
 } & (
@@ -399,25 +408,35 @@ export function createComposerCompletion(options: Options) {
     }
   };
   const lookupSessions = async (read: Read) => {
-    const sessions = await read.owner.completion.sessions(read.inputQuery);
+    const sessions = (await read.owner.completion.sessions(read.inputQuery)).filter(
+      (session) => session.id !== sessionId(read.owner),
+    );
+    const rooms = sessions.filter((session) => session.kind === 'room').slice(0, 8);
+    const conversations = sessions.filter((session) => session.kind === 'agent').slice(0, 8);
     appendRows(
       read,
-      sessions
-        .filter((session) => session.id !== sessionId(read.owner))
-        .slice(0, 8)
-        .map((session) =>
-          row(read, {
+      [rooms, conversations].flatMap((group) =>
+        group.map((session, index) => {
+          const room = session.kind === 'room';
+          const duplicate = group.some(
+            (other) => other !== session && other.title === session.title,
+          );
+          return row(read, {
             id: `session:${session.id}`,
             kind: 'insert',
             insert: sessionInvocation(session),
             title: session.title,
-            detail: session.workspace.path.split(/[\\/]/).filter(Boolean).at(-1),
+            detail: duplicate
+              ? session.workspace.path.split(/[\\/]/).filter(Boolean).at(-1)
+              : undefined,
             get heading() {
-              return tr('Conversations');
+              return tr(room ? 'Rooms' : 'Conversations');
             },
-            icon: 'bot',
-          }),
-        ),
+            divider: !room && index === 0 && rooms.length > 0,
+            icon: room ? 'symbol' : 'conversation',
+          });
+        }),
+      ),
       true,
     );
   };
@@ -926,7 +945,7 @@ export function createComposerCompletion(options: Options) {
               : tr('Skills'),
     empty: () =>
       opened()?.source === 'references'
-        ? tr('No matching files or conversations')
+        ? tr('No matching references')
         : opened()?.source === 'files'
           ? tr('No matching files.')
           : opened()?.source === 'commands'
@@ -1045,11 +1064,11 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
           >
             {(row, index) => (
               <View>
-                <If when={opensSection(state.rows(), index())}>
-                  <Text style={menuLabelStyle()}>{row().heading}</Text>
-                </If>
                 <If when={row().divider && index() > 0}>
                   <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+                </If>
+                <If when={opensSection(state.rows(), index())}>
+                  <Text style={menuLabelStyle()}>{row().heading}</Text>
                 </If>
                 <Button
                   accessibilityLabel={row().title}
@@ -1087,6 +1106,9 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
                   </View>
                   <If when={row().shortcut}>
                     <Text style={{ ...menuDetailTextStyle, color: C.muted }}>{row().shortcut}</Text>
+                  </If>
+                  <If when={state.opened()?.source === 'references' && state.index() === index()}>
+                    <Text style={{ ...menuDetailTextStyle, color: C.muted }}>↵</Text>
                   </If>
                 </Button>
               </View>

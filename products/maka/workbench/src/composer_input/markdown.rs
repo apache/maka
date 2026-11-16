@@ -252,7 +252,7 @@ impl<'tree> Reader<'_, '_, 'tree> {
     fn link(&mut self, owner: Range<usize>, text: Range<usize>, destination: &str) {
         // Session references already draw and navigate as native composer tokens.
         if destination.starts_with("maka://session/")
-            && self.source.source[text.clone()].starts_with('@')
+            && self.source.source[text.clone()].starts_with(['@', '#'])
         {
             return;
         }
