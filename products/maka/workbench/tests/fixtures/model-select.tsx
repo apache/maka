@@ -195,7 +195,7 @@ mount(() => {
               });
             }
             backend.set(next);
-            await events.call('fixture.outcome', { backend: next });
+            if (events.available()) await events.call('fixture.outcome', { backend: next });
           }}
           manage={({ instance: expected }) => {
             if (instance() !== expected) return;
