@@ -81,6 +81,16 @@ pub trait NativeCallAccess: Access {
         &'a self,
         context: &'a Context,
     ) -> BoxFuture<'a, Result<RecoveryRef, ToolError>>;
+    fn authorize_session_read<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), ToolError>>;
+    fn render_session_resource<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, ToolError>>;
 }
 
 /// Callback bound to one real native producer and its captured accepted SQL ingress.

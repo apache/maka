@@ -47,6 +47,7 @@ mod driver_executor_publication;
 mod driver_external_effects;
 mod rooms;
 mod send;
+pub(crate) mod session_tools;
 use send::NativeMutation;
 mod bot;
 mod cleanup_driver;

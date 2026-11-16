@@ -38,36 +38,10 @@ pub(super) fn text(
         && !quotes.is_empty()
     {
         text.push_str("\n\n");
-        for (index, quote) in quotes.iter().enumerate() {
-            if index != 0 {
-                text.push('\n');
-            }
-            text.push_str("<quoted_excerpt");
-            if let Some(label) = &quote.label {
-                text.push_str(" label=\"");
-                text.push_str(&label.replace('"', "'"));
-                text.push('"');
-            }
-            text.push_str(">\n");
-            if let Some(source) = &quote.source {
-                let provenance = serde_json::to_string(source)
-                    .map_err(|error| RunError::Internal(error.to_string()))?;
-                text.push_str(match language {
-                    Language::En => "Session snapshot provenance (display-only): ",
-                    Language::ZhCn => "会话快照来源（仅供展示）：",
-                    Language::ZhTw => "工作階段快照來源（僅供顯示）：",
-                });
-                text.push_str(
-                    &provenance
-                        .replace('<', "\\u003c")
-                        .replace('>', "\\u003e")
-                        .replace('&', "\\u0026"),
-                );
-                text.push('\n');
-            }
-            text.push_str(&quote.text);
-            text.push_str("\n</quoted_excerpt>");
-        }
+        text.push_str(
+            &maka_agent_facts::input::render_quotes(quotes, language)
+                .map_err(RunError::Internal)?,
+        );
     }
     if let Some(attachments) = &content.attachments
         && !attachments.is_empty()
@@ -87,19 +61,17 @@ pub(super) fn text(
     if let Some(references) = &content.directory_references
         && !references.is_empty()
     {
-        let json = serde_json::to_string(references)
-            .map_err(|error| RunError::Internal(error.to_string()))?;
-        text.push_str("\n\n<directory_references>\n");
-        text.push_str(match language { Language::En => "Live directory paths on the originating Runtime Host, available to Shell and Read according to workspace permissions. The project and working directory are unchanged.\n", Language::ZhCn => "原始运行时主机上的实时目录路径，Shell 和 Read 可按工作区权限访问。项目与工作目录不变。\n", Language::ZhTw => "原始執行階段主機上的即時目錄路徑，Shell 和 Read 可依工作區權限存取。專案與工作目錄不變。\n" });
-        for character in json.chars() {
-            match character {
-                '<' => text.push_str("\\u003c"),
-                '>' => text.push_str("\\u003e"),
-                '&' => text.push_str("\\u0026"),
-                _ => text.push(character),
-            }
-        }
-        text.push_str("\n</directory_references>");
+        text.push_str("\n\n");
+        text.push_str(
+            &maka_agent_facts::input::render_directory_references(references, language)
+                .map_err(RunError::Internal)?,
+        );
+    }
+    if let Some(session_refs) =
+        maka_agent_facts::input::render_session_references(&content.text, language)
+    {
+        text.push_str("\n\n");
+        text.push_str(&session_refs);
     }
     Ok(text)
 }

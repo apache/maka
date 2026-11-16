@@ -24,6 +24,7 @@ use maka_agent_state::artifacts::{ArtifactStore, SessionScope};
 pub(super) struct Steering {
     artifacts: ArtifactStore,
     scope: SessionScope,
+    language: maka_agent_facts::language::Language,
     inputs: Arc<dyn Inputs>,
     task: maka_agent_facts::durable::ExternalTaskId,
     cancellation: CancellationToken,
@@ -33,6 +34,7 @@ impl Steering {
     pub fn new(
         artifacts: ArtifactStore,
         scope: SessionScope,
+        language: maka_agent_facts::language::Language,
         cancellation: CancellationToken,
         inputs: Arc<dyn Inputs>,
         task: maka_agent_facts::durable::ExternalTaskId,
@@ -41,6 +43,7 @@ impl Steering {
         Self {
             artifacts,
             scope,
+            language,
             inputs,
             task,
             cancellation,
@@ -65,6 +68,7 @@ impl Steering {
             &self.artifacts,
             &self.scope,
             &content,
+            self.language,
             &self.cancellation,
             &self.material_root,
         )

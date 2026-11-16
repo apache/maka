@@ -25,6 +25,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use maka_plugin_core::shell_result::RESOURCE_REF_PREFIX;
 
 const IMPORTED_TOOL_RESULT_PREFIX: &str = "maka://history/tool-result/";
+pub const SESSION_RESOURCE_PREFIX: &str = "maka://session/";
+const SESSION_TOOL_RESULT_SEGMENT: &str = "/tool-results/";
 
 /// Only an address within a caller's actual source tree, never read authority.
 pub fn imported_tool_result_path(address: &HistoryRowAddress) -> Result<String, &'static str> {
@@ -73,6 +75,11 @@ pub enum ResourceAddress {
     Attachment(String),
     Task(String),
     ToolResult(String),
+    Session(String),
+    SessionToolResult {
+        session_id: String,
+        event_id: String,
+    },
 }
 
 impl ResourceAddress {
@@ -81,6 +88,23 @@ impl ResourceAddress {
         if path.starts_with("archive:") || path.starts_with("maka://runtime/tool-results/") {
             return ToolResultAddress::parse(path)
                 .map(|address| Some(Self::ToolResult(address.event_id().to_owned())));
+        }
+        if let Some(rest) = path.strip_prefix(SESSION_RESOURCE_PREFIX) {
+            let rest = rest.strip_suffix('/').unwrap_or(rest);
+            if let Some((session_id, event_id)) = rest.split_once(SESSION_TOOL_RESULT_SEGMENT) {
+                entity_id(session_id)?;
+                entity_id(event_id)?;
+                return Ok(Some(Self::SessionToolResult {
+                    session_id: session_id.into(),
+                    event_id: event_id.into(),
+                }));
+            }
+            entity_id(rest)?;
+            return Ok(Some(Self::Session(rest.into())));
+        }
+        if let Some(id) = path.strip_prefix("session:") {
+            entity_id(id)?;
+            return Ok(Some(Self::Session(id.into())));
         }
         for (short, full, attachment) in [
             ("attachment:", ATTACHMENT_RESOURCE_PREFIX, true),
@@ -95,21 +119,30 @@ impl ResourceAddress {
                 }));
             }
         }
+        if path.starts_with("http://") || path.starts_with("https://") {
+            return Err("HTTP(S) URLs cannot be read with Read; use WebFetch instead");
+        }
         if path.contains("://") {
-            return Err("Unsupported Maka address; use a path returned by a tool");
+            return Err(
+                "Unsupported URI in Read; supported Maka resources are maka://session/<id> (or session:<id>), attachment:<id>, archive:<id>, and maka://read/... continuations",
+            );
         }
         Ok(None)
     }
 
     pub fn id(&self) -> &str {
         match self {
-            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) => id,
+            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) | Self::Session(id) => id,
+            Self::SessionToolResult { event_id, .. } => event_id,
         }
     }
 
     pub fn with_id(mut self, resolved: String) -> Self {
         match &mut self {
-            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) => *id = resolved,
+            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) | Self::Session(id) => {
+                *id = resolved
+            }
+            Self::SessionToolResult { event_id, .. } => *event_id = resolved,
         }
         self
     }
@@ -125,6 +158,48 @@ impl ResourceAddress {
                 Ok(format!("{RESOURCE_REF_PREFIX}{id}"))
             }
             Self::ToolResult(id) => ToolResultAddress::event_path(id),
+            Self::Session(id) => {
+                entity_id(id)?;
+                Ok(format!("{SESSION_RESOURCE_PREFIX}{id}"))
+            }
+            Self::SessionToolResult {
+                session_id,
+                event_id,
+            } => {
+                entity_id(session_id)?;
+                entity_id(event_id)?;
+                Ok(format!(
+                    "{SESSION_RESOURCE_PREFIX}{session_id}{SESSION_TOOL_RESULT_SEGMENT}{event_id}"
+                ))
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_session_and_actionable_uri_diagnostics() {
+        assert_eq!(
+            ResourceAddress::parse("maka://session/ma_123").unwrap(),
+            Some(ResourceAddress::Session("ma_123".into()))
+        );
+        assert_eq!(
+            ResourceAddress::parse("session:ma_123").unwrap(),
+            Some(ResourceAddress::Session("ma_123".into()))
+        );
+        assert_eq!(
+            ResourceAddress::parse("maka://session/ma_123/tool-results/evt_456").unwrap(),
+            Some(ResourceAddress::SessionToolResult {
+                session_id: "ma_123".into(),
+                event_id: "evt_456".into(),
+            })
+        );
+        let http_err = ResourceAddress::parse("https://github.com/apache/maka").unwrap_err();
+        assert!(http_err.contains("WebFetch"), "{http_err}");
+        let uri_err = ResourceAddress::parse("maka://unknown/thing").unwrap_err();
+        assert!(uri_err.contains("maka://session/<id>"), "{uri_err}");
     }
 }

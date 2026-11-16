@@ -347,6 +347,13 @@ async fn learning_a_nested_tool_preserves_the_code_mode_definitions() {
     );
     let available = Availability::new(catalog, loaded);
     let initial = fixture.cells.definitions(&available);
+    assert!(
+        initial[0].description.contains(
+            "Deferred tools callable via tools.<name>(input) (inspect schemas in ALL_TOOLS): Lookup"
+        ),
+        "{}",
+        initial[0].description
+    );
     assert_eq!(
         available.snapshot().await.unwrap().names(),
         Vec::<String>::new()

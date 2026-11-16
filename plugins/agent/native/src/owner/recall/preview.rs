@@ -267,20 +267,18 @@ mod tests {
         let rendered = result.render();
         let original = rendered
             .lines()
-            .find_map(|line| line.strip_prefix("Original: SessionHistory("))
+            .find_map(|line| line.strip_prefix("Original: SessionRead("))
             .unwrap()
             .strip_suffix(')')
             .unwrap();
-        let read: maka_agent_ports::session::history::Read =
+        let read: maka_agent_api::contract::SessionReadInput =
             serde_json::from_str(original).unwrap();
-        read.validate().unwrap();
-        assert_eq!(read.through, Some(45));
+        let row = read.row.expect("exact row lookup");
+        assert_eq!(row.through, Some(45));
+        assert_eq!(row.position, anchor_position);
         assert_eq!(
-            read.position,
-            maka_agent_ports::session::history::Position::Row {
-                position: anchor_position,
-                field: maka_agent_ports::session::history::HistoryField::Body,
-            }
+            row.field,
+            maka_agent_ports::session::history::HistoryField::Body
         );
     }
 }

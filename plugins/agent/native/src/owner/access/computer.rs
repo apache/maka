@@ -402,6 +402,37 @@ impl NativeCallAccess for BoundCall {
             Ok(reference)
         })
     }
+    fn authorize_session_read<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), ToolError>> {
+        Box::pin(async move {
+            self.current().await?;
+            let owner = self.access.owner().map_err(ToolError::Failed)?;
+            owner
+                .scoped_session(context.scope(), session_id)
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    ToolError::Failed(crate::owner::session_tools::humanize_agent_error(e))
+                })
+        })
+    }
+    fn render_session_resource<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<String, ToolError>> {
+        Box::pin(async move {
+            self.current().await?;
+            let owner = self.access.owner().map_err(ToolError::Failed)?;
+            owner
+                .render_session_markdown(session_id, context.scope())
+                .await
+                .map_err(ToolError::Failed)
+        })
+    }
 }
 struct RetainedAudioPolicy {
     session: maka_event_log::root_store::SessionStore,

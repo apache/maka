@@ -886,6 +886,14 @@ impl ExternalPorts for DriverExecutor {
                     .await?,
             )
             .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+            let mut skill_prompt = None;
+            super::driver_model::merge_input_skills(&mut skill_prompt, &input)?;
+            let instructions = match (&self.instructions, skill_prompt) {
+                (Some(base), Some(skill)) => Some(format!("{base}\n\n{}", skill.text)),
+                (Some(base), None) => Some(base.clone()),
+                (None, Some(skill)) => Some(skill.text),
+                (None, None) => None,
+            };
             let RunInput::Message {
                 content,
                 source_messages,
@@ -916,7 +924,7 @@ impl ExternalPorts for DriverExecutor {
                 conversation_key: view.spec.session_id.clone(),
                 content,
                 cwd: view.spec.workspace.clone(),
-                instructions: self.instructions.clone(),
+                instructions,
                 settings: selection.settings.clone(),
             };
             let actual = self.fresh_authority(&request, &self.cancellation).await?;

@@ -18,6 +18,7 @@
  */
 
 use super::*;
+mod ax_session_tools;
 mod rooms;
 enum ModelReply {
     Stream(String),
@@ -1113,11 +1114,8 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
             let id = session["id"].as_str().unwrap();
             let sent = call(client,"agent","send",json!({"sessionId":id,"message":"Hello"})).await?;
             let (request,reply) = provider.next().await?;
-            let system = request["messages"].as_array().unwrap().iter()
-                .filter(|m| m["role"] == "system" || m["role"] == "developer")
-                .filter_map(|m|m["content"].as_str()).collect::<Vec<_>>().join("\n");
-            assert_eq!(system.contains("SubagentPresetCreate"), !restricted, "{system}");
-            if !restricted { assert!(system.contains("ALL_TOOLS")); }
+            let advertised = serde_json::to_string(&request["tools"]).unwrap();
+            assert_eq!(advertised.contains("SubagentPresetCreate"), !restricted, "{advertised}");
             reply.send(completion(json!({"role":"assistant","content":"Hello"}),"stop")).map_err(|_|"reply lost")?;
             quiescent_message(client,id,&sent["messageId"]).await?;
         }
@@ -1168,7 +1166,7 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
         let child = listed["sessions"][0]["id"].as_str().ok_or_else(||format!("child missing: {listed}"))?;
         let sent = call(client,"agent","send",json!({"sessionId":parent_id,"message":"Delegate this one-off task"})).await?;
         let (_,reply) = provider.next().await?;
-        let input = json!({"sessionId":child,"message":"one-off product task"});
+        let input = json!({"sessionId":child,"message":"one-off product task","onComplete":"none"});
         reply.send(if code {tool_response("exec",json!({"code":format!("text(await tools.SessionSend({input}));")}))} else {tool_response("SessionSend",input)}).map_err(|_|"send response lost")?;
         let mut saw_child = false;
         let mut saw_parent = false;

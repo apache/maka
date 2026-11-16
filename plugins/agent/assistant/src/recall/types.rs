@@ -182,7 +182,7 @@ impl ResultSet {
             }
         }
         for passage in &self.passages {
-            let original = Read {
+            let _ = Read {
                 session_id: passage.session_id.clone(),
                 through: Some(passage.through),
                 position: Position::Row {
@@ -191,12 +191,20 @@ impl ResultSet {
                 },
                 include_thinking: false,
             };
+            let pointer = serde_json::json!({
+                "sessionId": passage.session_id,
+                "row": {
+                    "through": passage.through,
+                    "position": passage.anchor_position,
+                    "field": "body",
+                }
+            });
             text.push_str(&format!(
-                "\nSession: {} ({})\nAnchor: {}\nOriginal: SessionHistory({})\nMore before: {}; more after: {}\n",
+                "\nSession: {} ({})\nAnchor: {}\nOriginal: SessionRead({})\nMore before: {}; more after: {}\n",
                 passage.session_title,
                 passage.session_id,
                 passage.anchor_message_id,
-                serde_json::to_string(&original).expect("history read is serializable"),
+                serde_json::to_string(&pointer).expect("SessionRead pointer is serializable"),
                 passage.has_more_before,
                 passage.has_more_after
             ));

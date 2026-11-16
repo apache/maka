@@ -458,7 +458,7 @@ async fn handle_http(
                     const cid = created.session.id;
                     await tools.SessionSend({{ sessionId: cid, message: "DELEGATED_CHILD_PROMPT" }});
                     for (let i = 0; i < 100; i++) {{
-                      const h = await tools.SessionHistory({{ sessionId: cid, position: {{ kind: "start" }} }});
+                      const h = await tools.SessionRead({{ sessionId: cid, position: "start" }});
                       if (JSON.stringify(h).includes("CHILD_DONE_TOKEN")) break;
                       await new Promise(r => setTimeout(r, 40));
                     }}

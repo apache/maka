@@ -1594,64 +1594,112 @@ async fn antigravity_executor_change_releases_only_undelivered_steering() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn antigravity_resumes_from_a_room_mention_and_replies_in_the_room() {
     let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
-    let outcome = AssertUnwindSafe(async {
-        let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
-        phase(
-            "enable Antigravity",
-            rig.configure(&mut anchor, &bootstrap, "antigravity"),
-        )
-        .await?;
-        bootstrap.close().await?;
-        rig.clients.pop();
-        let sdk = connect_sdk(&mut rig, &anchor).await?;
-        let (session, run) = phase(
-            "open an ACP conversation",
-            launch(&sdk, &rig.sandbox.workspace, "ACP-wake", "Room reviewer", true, "antigravity"),
-        )
-        .await?;
-        phase("finish the initial turn", terminal_state(&sdk, &session, &run, "completed")).await?;
-        let original = phase("find the original ACP thread", rig.controller.event("ACP-wake", "ready")).await?;
-        let room = mutate(&sdk, "agent", "create", json!({
+    let outcome =
+        AssertUnwindSafe(async {
+            let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
+            phase(
+                "enable Antigravity",
+                rig.configure(&mut anchor, &bootstrap, "antigravity"),
+            )
+            .await?;
+            bootstrap.close().await?;
+            rig.clients.pop();
+            let sdk = connect_sdk(&mut rig, &anchor).await?;
+            let (session, run) = phase(
+                "open an ACP conversation",
+                launch(
+                    &sdk,
+                    &rig.sandbox.workspace,
+                    "ACP-wake",
+                    "Room reviewer",
+                    true,
+                    "antigravity",
+                ),
+            )
+            .await?;
+            phase(
+                "finish the initial turn",
+                terminal_state(&sdk, &session, &run, "completed"),
+            )
+            .await?;
+            let original = phase(
+                "find the original ACP thread",
+                rig.controller.event("ACP-wake", "ready"),
+            )
+            .await?;
+            let room = mutate(&sdk, "agent", "create", json!({
             "kind":"room", "title":"Release discussion", "automaticTitle":false, "labels":[],
             "workspace":{"kind":"directory","path":rig.sandbox.workspace}
         })).await?;
-        assert_eq!(room["kind"], "created", "{room}");
-        let room = &room["session"]["id"];
-        let first = mutate(&sdk, "agent", "send", json!({
-            "sessionId":room,"message":"The patch is ready."
-        })).await?;
-        assert_eq!(first["kind"], "posted", "{first}");
-        let message = format!("MAKA_EXTERNAL_CASE {}", json!({"label":"ACP-room"}));
-        let mention = mutate(&sdk, "agent", "send", json!({
+            assert_eq!(room["kind"], "created", "{room}");
+            let room = &room["session"]["id"];
+            let first = mutate(
+                &sdk,
+                "agent",
+                "send",
+                json!({
+                    "sessionId":room,"message":"The patch is ready."
+                }),
+            )
+            .await?;
+            assert_eq!(first["kind"], "posted", "{first}");
+            let message = format!("MAKA_EXTERNAL_CASE {}", json!({"label":"ACP-room"}));
+            let mention = mutate(&sdk, "agent", "send", json!({
             "sessionId":room, "message":message, "mentions":[session], "replyTo":first["messageId"]
         })).await?;
-        assert_eq!(mention["deliveries"][0]["kind"], "accepted", "{mention}");
-        phase("ACP reads the earlier Room post and replies", rig.controller.event("ACP-room", "room_replied")).await?;
-        let resumed = phase("find the resumed ACP prompt", rig.controller.event("ACP-room", "ready")).await?;
-        assert_eq!(resumed["thread"], original["thread"]);
-        let transcript = phase("read the sealed ACP request", rig.transcript(resumed["pid"].as_u64().unwrap())).await?;
-        let prompt = transcript.input.iter()
-            .find(|row| row["method"] == "session/prompt" && row["id"] == resumed["promptId"])
-            .and_then(|row| row["params"]["prompt"][0]["text"].as_str())
-            .ok_or("ACP mention prompt missing")?;
-        let read = json!({"sessionId":room,"position":{"kind":"before_message","messageId":mention["messageId"]}});
-        let reply = json!({"sessionId":room,"replyTo":mention["messageId"]});
-        assert!(prompt.contains(&format!("SessionHistory({read})")), "{prompt}");
-        assert!(prompt.contains(&reply.to_string()), "{prompt}");
-        assert!(prompt.ends_with(&message), "{prompt}");
-        let history = query(&sdk, "agent", "history", json!({
-            "sessionId":room,"position":{"kind":"tail"}
-        })).await?;
-        let posts = history["page"]["items"].as_array().ok_or("missing Room history")?;
-        let posted = posts.iter().find(|post| post["content"]["text"] == "ACP reply in the Room")
-            .ok_or("ACP reply was not posted in the Room")?;
-        assert_eq!(posted["replyTo"], mention["messageId"]);
-        assert_eq!(posted["author"]["execution"]["sessionId"], session);
-        sdk.close().await?;
-        rig.clients.pop();
-        phase("quit Host", rig.hosts[0].quit(&mut anchor)).await?;
-        Ok::<_, String>(())
-    }).catch_unwind().await;
+            assert_eq!(mention["deliveries"][0]["kind"], "accepted", "{mention}");
+            phase(
+                "ACP reads the earlier Room post and replies",
+                rig.controller.event("ACP-room", "room_replied"),
+            )
+            .await?;
+            let resumed = phase(
+                "find the resumed ACP prompt",
+                rig.controller.event("ACP-room", "ready"),
+            )
+            .await?;
+            assert_eq!(resumed["thread"], original["thread"]);
+            let transcript = phase(
+                "read the sealed ACP request",
+                rig.transcript(resumed["pid"].as_u64().unwrap()),
+            )
+            .await?;
+            let prompt = transcript
+                .input
+                .iter()
+                .find(|row| row["method"] == "session/prompt" && row["id"] == resumed["promptId"])
+                .and_then(|row| row["params"]["prompt"][0]["text"].as_str())
+                .ok_or("ACP mention prompt missing")?;
+            let read = json!({"sessionId":room,"messageId":mention["messageId"],"anchor":"before"});
+            let reply = json!({"sessionId":room,"replyTo":mention["messageId"]});
+            assert!(prompt.contains(&format!("SessionRead({read})")), "{prompt}");
+            assert!(prompt.contains(&reply.to_string()), "{prompt}");
+            assert!(prompt.contains(&message), "{prompt}");
+            let history = query(
+                &sdk,
+                "agent",
+                "history",
+                json!({
+                    "sessionId":room,"position":{"kind":"tail"}
+                }),
+            )
+            .await?;
+            let posts = history["page"]["items"]
+                .as_array()
+                .ok_or("missing Room history")?;
+            let posted = posts
+                .iter()
+                .find(|post| post["content"]["text"] == "ACP reply in the Room")
+                .ok_or("ACP reply was not posted in the Room")?;
+            assert_eq!(posted["replyTo"], mention["messageId"]);
+            assert_eq!(posted["author"]["execution"]["sessionId"], session);
+            sdk.close().await?;
+            rig.clients.pop();
+            phase("quit Host", rig.hosts[0].quit(&mut anchor)).await?;
+            Ok::<_, String>(())
+        })
+        .catch_unwind()
+        .await;
     let cleanup = rig.cleanup().await;
     match outcome {
         Err(panic) => std::panic::resume_unwind(panic),

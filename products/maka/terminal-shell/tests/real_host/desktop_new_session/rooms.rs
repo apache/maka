@@ -143,13 +143,18 @@ pub(super) async fn desktop_composer_references_a_room_without_posting() {
     let request = desktop.request(&mut fixture).await;
     let message = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(message["role"], "user");
-    assert_eq!(message["content"].as_str().unwrap().trim_end(), body);
+    let user_content = message["content"].as_str().unwrap();
+    assert!(user_content.starts_with(&body), "{user_content}");
+    assert!(
+        user_content.contains("<session_references>"),
+        "{user_content}"
+    );
     let history_tool = request.body["tools"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|tool| tool["function"]["name"] == "SessionHistory")
-        .expect("the agent can use SessionHistory for this reference");
+        .find(|tool| tool["function"]["name"] == "SessionRead")
+        .expect("the agent can use SessionRead for this reference");
     assert!(
         history_tool["function"]["description"]
             .as_str()
@@ -157,18 +162,15 @@ pub(super) async fn desktop_composer_references_a_room_without_posting() {
             .contains("[#Room](maka://session/<id>)")
     );
     request
-        .tool_call(
-            "SessionHistory",
-            json!({"sessionId":room,"position":{"kind":"tail"}}),
-        )
+        .tool_call("SessionRead", json!({"sessionId":room,"position":"tail"}))
         .await;
     let mut request = desktop.request(&mut fixture).await;
     let result = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(result["role"], "tool");
     let result: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
-    assert_eq!(result["kind"], "room", "{result}");
-    assert_eq!(result["page"]["items"][0]["id"], before[0]["id"]);
-    assert_eq!(result["page"]["items"][0]["content"]["text"], context);
+    assert_eq!(result["transcript"]["kind"], "room", "{result}");
+    assert_eq!(result["transcript"]["items"][0]["id"], before[0]["id"]);
+    assert_eq!(result["transcript"]["items"][0]["text"], context);
     request.delta(context).await;
     desktop
         .wait("the reply did not finish", request.finish())
@@ -320,8 +322,7 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
         !input.contains("PRIVATE_AGENT_DRAFT"),
         "unsubmitted draft leaked: {input}"
     );
-    let read =
-        json!({"sessionId":room,"position":{"kind":"before_message","messageId":posts[1]["id"]}});
+    let read = json!({"sessionId":room,"messageId":posts[1]["id"],"anchor":"before"});
     let message = request.body["messages"].as_array().unwrap().last().unwrap()["content"]
         .as_str()
         .unwrap();
@@ -330,16 +331,19 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
         "{message}"
     );
     assert!(
-        message.contains(&format!("SessionHistory({read})")),
+        message.contains(&format!("SessionRead({read})")),
         "{message}"
     );
-    request.tool_call("SessionHistory", read).await;
+    request.tool_call("SessionRead", read).await;
     let request = desktop.request(&mut fixture).await;
     let result = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(result["role"], "tool");
     let result: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
-    assert_eq!(result["kind"], "room", "{result}");
-    assert_eq!(result["page"]["items"][0]["id"], first["id"], "{result}");
+    assert_eq!(result["transcript"]["kind"], "room", "{result}");
+    assert_eq!(
+        result["transcript"]["items"][0]["id"], first["id"],
+        "{result}"
+    );
     let room_reply = format!(
         "[@Reviewer](maka://session/{}) reviewed in the room.",
         fixture.session

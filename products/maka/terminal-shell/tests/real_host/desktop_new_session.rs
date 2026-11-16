@@ -2014,28 +2014,28 @@ async fn desktop_presents_session_tools_in_chat_and_trajectory() {
         .unwrap();
     answer
         .tool_call(
-            "SessionWork",
+            "SessionRead",
             json!({
-                "sessionId": session["id"],
-                "target": {"kind": "run", "runId": observed["run"]["runId"]}
+                "sessionId": session["id"]
             }),
         )
         .await;
     let final_answer = desktop.request(&mut fixture).await;
     assert!(
-        final_answer.body.to_string().contains("delivered"),
+        final_answer
+            .body
+            .to_string()
+            .contains(observed["run"]["runId"].as_str().unwrap()),
         "{}",
         final_answer.body
     );
-    desktop
-        .press("Toggle tool Check conversation progress")
-        .await;
+    desktop.press("Toggle tool Inspect conversation").await;
     desktop.control("Toggle original tool details").await;
     desktop.artifact("session-work-expanded");
 
     desktop.press("Trajectory").await;
     desktop.control(&format!("Inspect {title}")).await;
-    desktop.control("Inspect Check conversation progress").await;
+    desktop.control("Inspect Inspect conversation").await;
     final_answer.finish().await;
     desktop.close().await;
     fixture.finish().await;

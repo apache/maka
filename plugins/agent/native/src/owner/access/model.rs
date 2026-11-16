@@ -73,7 +73,7 @@ impl RunAccess {
             .run_content(view.run, &view.spec.tool_selection)
             .await?;
         let (mcp, mode) = self.current_model_tools(&current.workspace)?;
-        let catalog = owner.run_catalog(self.clone(), &mcp, &selection)?;
+        let catalog = owner.run_catalog(self.clone(), &mcp, &selection).await?;
         let catalog = Self::select_live_tools(&catalog, &current, view.spec.tool_discovery);
         let availability = maka_tools::availability::Availability::new(
             catalog.clone(),

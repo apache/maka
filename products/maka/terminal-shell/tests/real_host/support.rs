@@ -206,11 +206,13 @@ impl Fixture {
                     && matches!(
                         tool["name"].as_str(),
                         Some(
-                            "SessionCreate"
+                            "SessionList"
+                                | "SessionRead"
+                                | "SessionCreate"
                                 | "SessionSend"
                                 | "SessionRespond"
-                                | "SessionWork"
-                                | "SessionHistory"
+                                | "SessionStop"
+                                | "SessionManage"
                         )
                     ))
                 .collect::<Vec<_>>()

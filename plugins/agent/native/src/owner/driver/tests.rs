@@ -467,6 +467,12 @@ impl Rig {
                 "queue",
                 "openBot",
                 "botOutbox",
+                "sessionList",
+                "sessionRead",
+                "sessionCreate",
+                "sessionSend",
+                "sessionStop",
+                "sessionManage",
             ]
         } else {
             &[
@@ -483,6 +489,12 @@ impl Rig {
                 "stop",
                 "goal",
                 "changeGoal",
+                "sessionList",
+                "sessionRead",
+                "sessionCreate",
+                "sessionSend",
+                "sessionStop",
+                "sessionManage",
                 "metadata",
                 "listFiles",
             ]
@@ -1879,15 +1891,14 @@ mod bounded_risk {
             let original = first_result
                 .iter()
                 .filter_map(|part| part["text"].as_str())
-                .find_map(|text| text.split_once(": SessionHistory("))
+                .find_map(|text| text.split_once(": SessionRead("))
                 .and_then(|(_, request)| request.strip_suffix(')'))
                 .ok_or("missing original child result position")?;
-            let mut history_input: Value = serde_json::from_str(original)?;
-            history_input["view"] = json!("text");
+            let read_input: Value = serde_json::from_str(original)?;
             let page = model_recovery::call(
-                rig.client.as_ref().unwrap(), "agent", "history", history_input,
+                rig.client.as_ref().unwrap(), "agent", "sessionRead", read_input,
             ).await?;
-            assert!(page["chunks"].as_array().unwrap().iter().any(|row| {
+            assert!(page["transcript"]["items"].as_array().unwrap().iter().any(|row| {
                 row["text"].as_str().is_some_and(|text| text.contains("Oversized original child result."))
                     && row["totalBytes"].as_u64() == Some(child_body.len() as u64)
             }));

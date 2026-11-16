@@ -63,6 +63,8 @@ mod execution;
 pub use execution::*;
 mod compaction;
 pub use compaction::*;
+mod session_tools;
+pub use session_tools::*;
 
 mod interaction;
 pub use interaction::*;
@@ -1358,7 +1360,7 @@ pub struct QueueMutation {
     pub expected_revision: u64,
     pub edit: QueueAction,
 }
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -2384,6 +2386,30 @@ pub fn contract() -> Contract {
                 (
                     "respond".into(),
                     method::<InteractionRespond, InteractionResult>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionList".into(),
+                    method::<SessionListInput, SessionListOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionRead".into(),
+                    method::<SessionReadInput, SessionReadOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionCreate".into(),
+                    method::<SessionCreateInput, SessionCreateOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionSend".into(),
+                    method::<SessionSendInput, SendResult>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionStop".into(),
+                    method::<SessionStopInput, SessionStopOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionManage".into(),
+                    method::<SessionManageInput, SessionManageOutput>(MethodMode::Mutation),
                 ),
                 (
                     "watch".into(),

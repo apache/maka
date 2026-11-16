@@ -185,7 +185,7 @@ async function codeResult(code) {
 async function readArchivedResult() {
   const tail = 'end of archived output';
   const result = await callTool('exec', {
-    code: `text('x'.repeat(10000) + ${JSON.stringify(tail)});`,
+    code: `text('x'.repeat(30000) + ${JSON.stringify(tail)});`,
     yield_time_ms: 10000,
   });
   const archived = JSON.parse(result.content[0].text);
@@ -334,12 +334,13 @@ async function acp(id, method, params) {
         throw Error('ACP prompt did not identify the Room and human sender');
       const { sessionId, messageId } = source;
       const history = await codeResult(
-        `text(await tools.SessionHistory(${JSON.stringify({
+        `text(await tools.SessionRead(${JSON.stringify({
           sessionId,
-          position: { kind: 'before_message', messageId },
+          messageId,
+          anchor: 'before',
         })}));`,
       );
-      if (history.kind !== 'room' || history.page.items[0]?.id !== source.replyTo)
+      if (history.transcript?.kind !== 'room' || history.transcript.items[0]?.id !== source.replyTo)
         throw Error('ACP agent did not read the earlier Room post');
       const posted = await codeResult(
         `text(await tools.SessionSend(${JSON.stringify({

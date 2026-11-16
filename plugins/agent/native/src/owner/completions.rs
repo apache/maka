@@ -33,7 +33,10 @@ pub(super) struct CompletionRequest {
     binding: maka_sandbox::workspace::BindingStamp,
 }
 enum Notice<'a> {
-    Finished(Terminal),
+    Finished {
+        terminal: Terminal,
+        snippet: Option<String>,
+    },
     Unavailable,
     Attention {
         run: RunId,
@@ -54,48 +57,76 @@ impl Notice<'_> {
     }
 
     fn message(&self, task: &Completion, language: Language) -> String {
-        let work = format!(
-            "SessionWork({})",
-            serde_json::json!({
-                "sessionId": task.session_id,
-                "target": {"kind": "message", "messageId": task.message_id}
-            })
+        let session_read = format!(
+            "SessionRead({})",
+            serde_json::json!({"sessionId": task.session_id})
         );
-        let status = match self {
-            Self::Finished(Terminal::Completed) => "completed",
-            Self::Finished(Terminal::Failed) => "failed",
-            Self::Finished(Terminal::Cancelled) => "cancelled",
-            Self::Unavailable => "unavailable",
+        let read_uri = format!(
+            "Read({})",
+            serde_json::json!({"path": format!("maka://session/{}", task.session_id)})
+        );
+        let (status, snippet) = match self {
+            Self::Finished {
+                terminal: Terminal::Completed,
+                snippet,
+            } => ("completed", snippet.as_deref()),
+            Self::Finished {
+                terminal: Terminal::Failed,
+                snippet,
+            } => ("failed", snippet.as_deref()),
+            Self::Finished {
+                terminal: Terminal::Cancelled,
+                snippet,
+            } => ("cancelled", snippet.as_deref()),
+            Self::Unavailable => ("unavailable", None),
             Self::Attention { reason, .. } => {
+                let status_only = format!(
+                    "SessionRead({})",
+                    serde_json::json!({"sessionId": task.session_id, "view": "status_only"})
+                );
                 let instruction = match reason {
-                    NotificationAttention::Interaction { request } => format!(
-                        "SessionInteraction({})",
-                        serde_json::json!({"sessionId": task.session_id, "requestId": request})
-                    ),
-                    NotificationAttention::Authority { .. } => work,
+                    NotificationAttention::Interaction { request } => {
+                        let respond = format!(
+                            "SessionRespond({})",
+                            serde_json::json!({"sessionId": task.session_id, "requestId": request})
+                        );
+                        format!("{status_only} / {respond}")
+                    }
+                    NotificationAttention::Authority { blocker } => {
+                        format!("{status_only} (blocker: {blocker})")
+                    }
                 };
                 return match language {
                     Language::ZhCn => format!(
-                        "你派发的任务需要介入，尚未结束。使用 {instruction} 查看原因，在现有权限内处理，需要人工操作时转告用户；不要重复派发任务。任务结束后仍会通知你。"
+                        "你派发的任务（messageId: {}）需要介入，尚未结束。用 {instruction} 查看待处理的提问或审批并在权限内处理，需要人工决策时转告用户；不要重复派发。任务结束后仍会通知你。",
+                        task.message_id
                     ),
                     Language::ZhTw => format!(
-                        "你派發的任務需要介入，尚未結束。使用 {instruction} 查看原因，在現有權限內處理，需要人工操作時轉告使用者；不要重複派發任務。任務結束後仍會通知你。"
+                        "你派發的任務（messageId: {}）需要介入，尚未結束。用 {instruction} 查看待處理的提問或審批並在權限內處理，需要人工決策時轉告使用者；不要重複派發。任務結束後仍會通知你。",
+                        task.message_id
                     ),
                     _ => format!(
-                        "Your delegated task needs attention and has not finished. Inspect {instruction} and handle it within your existing authority; ask the user if human action is required. Do not redispatch the task. You will still be notified when it ends."
+                        "Your delegated task (messageId: {}) needs attention and has not finished. Inspect {instruction} within your existing authority; ask the user if human action is required. Do not redispatch the task. You will still be notified when it ends.",
+                        task.message_id
                     ),
                 };
             }
         };
+        let inline_result = snippet
+            .map(|body| format!("\n\n<worker_result>\n{body}\n</worker_result>"))
+            .unwrap_or_default();
         match language {
             Language::ZhCn => format!(
-                "你派发的任务已结束，状态：{status}。使用 {work} 读取实际结果，再继续处理。"
+                "你派发的任务（messageId: {}）已结束，状态：{status}。如需完整记录可调用 {read_uri} 或 {session_read}。{inline_result}",
+                task.message_id
             ),
             Language::ZhTw => format!(
-                "你派發的任務已結束，狀態：{status}。使用 {work} 讀取實際結果，再繼續處理。"
+                "你派發的任務（messageId: {}）已結束，狀態：{status}。如需完整記錄可呼叫 {read_uri} 或 {session_read}。{inline_result}",
+                task.message_id
             ),
             _ => format!(
-                "Your delegated task ended with status {status}. Read the actual result using {work}, then continue."
+                "Your delegated task (messageId: {}) ended with status {status}. For full context or tool outputs, call {read_uri} or {session_read}.{inline_result}",
+                task.message_id
             ),
         }
     }
@@ -270,91 +301,119 @@ impl Owner {
         if source.stopped {
             return self.retire_completion(&entry).await;
         }
-        let notification: maka_agent_state::queue::PreparedRequest =
-            if let Some(notification) = entry.notification {
-                serde_json::from_value(notification).map_err(|e| e.to_string())?
+        let notification: maka_agent_state::queue::PreparedRequest = if let Some(notification) =
+            entry.notification
+        {
+            serde_json::from_value(notification).map_err(|e| e.to_string())?
+        } else {
+            let notice = if self
+                .store
+                .get_session::<StoredSessionConfiguration>(&entry.session_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                Notice::Unavailable
             } else {
-                let notice = if self
-                    .store
-                    .get_session::<StoredSessionConfiguration>(&entry.session_id)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .is_none()
-                {
-                    Notice::Unavailable
-                } else {
-                    match resolution {
-                        MessageResolution::Cancelled => Notice::Finished(Terminal::Cancelled),
-                        MessageResolution::Delivered { run, .. } => {
-                            let state = states
-                                .get(&run)
-                                .filter(|state| state.session_id == entry.session_id)
-                                .ok_or("agent_completion_run_missing")?;
-                            match (&state.terminal, &state.attention) {
-                                (Some(terminal), _) => Notice::Finished(terminal.clone()),
-                                (None, Some(reason)) if !state.stopped => {
-                                    Notice::Attention { run, reason }
+                match resolution {
+                    MessageResolution::Cancelled => Notice::Finished {
+                        terminal: Terminal::Cancelled,
+                        snippet: None,
+                    },
+                    MessageResolution::Delivered { run, .. } => {
+                        let state = states
+                            .get(&run)
+                            .filter(|state| state.session_id == entry.session_id)
+                            .ok_or("agent_completion_run_missing")?;
+                        match (&state.terminal, &state.attention) {
+                            (Some(terminal), _) => {
+                                let snippet = self
+                                    .durable
+                                    .work(run, 0, 4096)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .filter(|w| {
+                                        w.view.spec.session_id == entry.session_id
+                                            && !w.answer.text.trim().is_empty()
+                                    })
+                                    .map(|w| {
+                                        let trimmed = w.answer.text.trim();
+                                        let mut out: String = trimmed.chars().take(1600).collect();
+                                        if w.answer.next.is_some() || trimmed.chars().count() > 1600
+                                        {
+                                            out.push_str("\n… [truncated]");
+                                        }
+                                        out
+                                    });
+                                Notice::Finished {
+                                    terminal: terminal.clone(),
+                                    snippet,
                                 }
-                                _ => return Ok(()),
                             }
+                            (None, Some(reason)) if !state.stopped => {
+                                Notice::Attention { run, reason }
+                            }
+                            _ => return Ok(()),
                         }
-                        _ => return Ok(()),
                     }
-                };
-                let identity = notice.identity(&entry);
-                let attention = matches!(notice, Notice::Attention { .. });
-                if attention
-                    && self
-                        .durable
-                        .queue()
-                        .entry(
-                            entry.recipient.clone(),
-                            maka_agent_state::queue::RequestId(identity.clone()),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .is_some()
-                {
-                    return Ok(());
+                    _ => return Ok(()),
                 }
-                let route = self
-                    .resolve_notification_route(
-                        request.backend,
-                        &request.source.session_id,
-                        request.workspace,
-                        request.binding,
-                    )
-                    .await?;
-                let Some(notification) = self
-                    .prepare_notification(
-                        &request.source,
-                        &route,
-                        &identity,
-                        |language| notice.message(&entry, language),
-                        MessageOrigin::SessionCompletion {
-                            session_id: entry.session_id.clone(),
-                            message_id: entry.message_id.clone(),
-                        },
-                    )
-                    .await?
-                else {
-                    return Ok(());
-                };
-                if attention {
-                    // Admission identity is the durable deduplication record; keep the completion watch.
-                    self.admit_notification(&notification).await?;
-                    return Ok(());
-                }
-                self.store
-                    .settle_message_completion(
-                        &self.prefix,
-                        &entry.key,
-                        Some(serde_json::to_value(&notification).map_err(|e| e.to_string())?),
+            };
+            let identity = notice.identity(&entry);
+            let attention = matches!(notice, Notice::Attention { .. });
+            if attention
+                && self
+                    .durable
+                    .queue()
+                    .entry(
+                        entry.recipient.clone(),
+                        maka_agent_state::queue::RequestId(identity.clone()),
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
-                notification
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+            {
+                return Ok(());
+            }
+            let route = self
+                .resolve_notification_route(
+                    request.backend,
+                    &request.source.session_id,
+                    request.workspace,
+                    request.binding,
+                )
+                .await?;
+            let Some(notification) = self
+                .prepare_notification(
+                    &request.source,
+                    &route,
+                    &identity,
+                    |language| notice.message(&entry, language),
+                    MessageOrigin::SessionCompletion {
+                        session_id: entry.session_id.clone(),
+                        message_id: entry.message_id.clone(),
+                    },
+                )
+                .await?
+            else {
+                return Ok(());
             };
+            if attention {
+                // Admission identity is the durable deduplication record; keep the completion watch.
+                self.admit_notification(&notification).await?;
+                return Ok(());
+            }
+            self.store
+                .settle_message_completion(
+                    &self.prefix,
+                    &entry.key,
+                    Some(serde_json::to_value(&notification).map_err(|e| e.to_string())?),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            notification
+        };
         if self.admit_notification(&notification).await? {
             self.mark_bot_completion(&entry.session_id, &entry.message_id, &entry.recipient)
                 .await?;

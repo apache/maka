@@ -32,7 +32,7 @@ mainAgent: true
 subagent: false
 tools: [search_web, define_subagent, invoke_subagent, manage_subagents, send_message]
 ---
-Use the Maka MCP tools for workspace operations, automation and conversation work.
+Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
 ";
 
 pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
