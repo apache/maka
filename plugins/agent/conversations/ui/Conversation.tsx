@@ -99,10 +99,10 @@ import {
   readHistoryTail,
   rootEventSequence,
   historyFollowPosition,
+  historyFollowTail,
   compareRows,
   HistoryRows,
   mergeHistoryPage,
-  messageBytes,
   type ConversationHistoryPage,
   openingUserMessage,
   replayStartCursor,
@@ -1739,7 +1739,7 @@ export function Conversation(props: ConversationProps) {
           state.after = last.work?.end ?? {
             position: last.position,
             field: last.field,
-            offset: last.offset + messageBytes(last.text),
+            offset: last.offset,
           };
         if (page.after === null) break;
         cursor = { kind: 'after', cursor: page.after };
@@ -1779,9 +1779,14 @@ export function Conversation(props: ConversationProps) {
     const owner = historyWindow();
     const row = historyRows().byId.get(rowId);
     if (!owner || !row?.work || !row.position) return;
+    const existing = workPages.get(rowId);
+    const through =
+      !existing || existing.task
+        ? Math.max(row.metadataThrough ?? 0, owner.through)
+        : (row.metadataThrough ?? owner.through);
     loadPages(
       rowId,
-      owner.through,
+      through,
       { kind: 'row', position: row.position, field: row.field as 'body' | 'thinking' },
       'steps',
     );
@@ -1932,7 +1937,7 @@ export function Conversation(props: ConversationProps) {
         refreshFrom = null;
         const currentWindow = historyWindow();
         if (currentWindow?.after === null) {
-          const tail = rows().at(-1);
+          const tail = historyFollowTail(rows(), owner.view);
           const changedRows = [...executorTextChanges].flatMap((id) => {
             const row = historyRows().byMessage.get(id);
             return row && row !== tail && row.position?.kind === 'live' ? [row] : [];

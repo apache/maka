@@ -186,6 +186,24 @@ export function activityMessage(origin: MessageOrigin | null | undefined): boole
   return origin?.kind === 'automation' || senderSession(origin) !== null;
 }
 
+export function historyFollowTail(
+  rows: readonly Row[],
+  view: 'chat' | 'conversation' = 'chat',
+): Row | undefined {
+  if (view === 'conversation') return rows.at(-1);
+  return rows.findLast(
+    (row) =>
+      Boolean(row.work) ||
+      historyTurnKey(row) === undefined ||
+      (!row.tool &&
+        row.field !== 'thinking' &&
+        (row.role === 'assistant' ||
+          row.role === 'failure' ||
+          row.role === 'compaction' ||
+          (row.role === 'user' && !activityMessage(row.origin)))),
+  );
+}
+
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   if (origin?.kind === 'room') return origin.sessionId;
@@ -367,9 +385,11 @@ export function mergeHistoryPage(
   for (const chunk of chunks) {
     const key = historyChunkKey(chunk);
     const previous = changed.get(key) ?? lookup(key);
+    const newerMetadata =
+      previous?.metadataThrough != null && through !== null && previous.metadataThrough > through;
     const fresh = { offset: chunk.offset, text: chunk.text };
     const fragments = (
-      older && previous
+      (older || newerMetadata) && previous
         ? [
             ...previous.fragments!,
             ...(previous.fragments!.some((part) => part.offset === chunk.offset) ? [] : [fresh]),
@@ -381,9 +401,7 @@ export function mergeHistoryPage(
       messageId: chunk.messageId ?? undefined,
       turnId: chunk.turnId ?? undefined,
       timestamp: chunk.timestamp ?? undefined,
-      ...(previous?.metadataThrough != null &&
-      through !== null &&
-      previous.metadataThrough > through
+      ...(newerMetadata
         ? {
             ...historyMetadata(previous, previous.metadataThrough, previous),
             ...(chunk.offset === 0 && previous.attachments === undefined

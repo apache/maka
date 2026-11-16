@@ -104,8 +104,8 @@ export function activityCounts(
   const counts = { thoughts: 0, tools: 0, messages: 0 };
   for (const group of groups) {
     const work = groupWork(group, row);
-    // A summary covers every recorded step; only live previews are newer.
-    const ids = work ? group.rowIds.filter((id) => row(id)?.preview) : group.rowIds;
+    // A summary covers every recorded step; only unpersisted live rows are newer.
+    const ids = work ? group.rowIds.filter((id) => liveStepRow(row(id))) : group.rowIds;
     if (work) {
       counts.thoughts += work.thoughts;
       counts.tools += work.tools + ids.filter((id) => row(id)?.tool).length;
@@ -126,8 +126,12 @@ export function groupWork(group: ProcessGroup, row: (id: string) => Row | undefi
   return group.workRowId ? row(group.workRowId)?.work : undefined;
 }
 
+function liveStepRow(value: Row | undefined): boolean {
+  return value !== undefined && value.position === undefined;
+}
+
 function latestWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
-  return row(group.rowIds.at(-1) ?? '')?.preview ? undefined : groupWork(group, row);
+  return liveStepRow(row(group.rowIds.at(-1) ?? '')) ? undefined : groupWork(group, row);
 }
 
 function stepKind(value: Row | undefined): StepKind | undefined {
@@ -683,12 +687,15 @@ function stepVerb(kind: StepKind): string {
 
 /** What a finished group did, one phrase per kind of step in the order they first came. */
 function activityVerbs(group: ProcessGroup, row: (id: string) => Row | undefined): string {
-  const kinds =
-    groupWork(group, row)?.kinds ??
-    group.rowIds.flatMap((id) => {
+  const work = groupWork(group, row);
+  const ids = work ? group.rowIds.filter((id) => liveStepRow(row(id))) : group.rowIds;
+  const kinds = [
+    ...(work?.kinds ?? []),
+    ...ids.flatMap((id) => {
       const kind = stepKind(row(id));
       return kind ? [kind] : [];
-    });
+    }),
+  ];
   return [...new Set(kinds.map(stepVerb))].join(tr(', '));
 }
 
