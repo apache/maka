@@ -13245,6 +13245,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               HistoryCompaction: {
@@ -14827,6 +14843,22 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
                       },
                       sessionId: {
                         type: 'string',
@@ -21706,6 +21738,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               HistoryCompaction: {
@@ -22812,6 +22860,22 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
                       },
                       sessionId: {
                         type: 'string',
@@ -28551,6 +28615,22 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
                       },
                       sessionId: {
                         type: 'string',
@@ -38191,6 +38271,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -40535,6 +40631,22 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
                       },
                       sessionId: {
                         type: 'string',

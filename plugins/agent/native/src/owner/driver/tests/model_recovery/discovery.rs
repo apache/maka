@@ -644,7 +644,7 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
         .unwrap();
     let source: maka_agent_facts::message::RootSourceMessage =
         serde_json::from_slice(&bytes).unwrap();
-    let Some(maka_agent_facts::message::MessageOrigin::BotWorker {
+    let Some(maka_agent_facts::message::MessageOrigin::DiscoveryReport {
         session_id: worker_id,
     }) = source.message.origin
     else {

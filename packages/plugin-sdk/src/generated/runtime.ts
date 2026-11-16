@@ -4393,6 +4393,10 @@ export type MessageOrigin =
   | {
       kind: 'bot_worker';
       sessionId: string;
+    }
+  | {
+      kind: 'discovery_report';
+      sessionId: string;
     };
 export type RoomAuthor =
   | {

@@ -187,8 +187,9 @@ export function activityMessage(origin: MessageOrigin | null | undefined): boole
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   if (origin?.kind === 'room') return origin.sessionId;
-  // A Bot Turn started because a worker finished names that worker.
-  return origin?.kind === 'bot_worker' || origin?.kind === 'session_completion'
+  return origin?.kind === 'bot_worker' ||
+    origin?.kind === 'discovery_report' ||
+    origin?.kind === 'session_completion'
     ? origin.sessionId
     : null;
 }

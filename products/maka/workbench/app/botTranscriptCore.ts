@@ -248,7 +248,9 @@ export function reportedWorker(
   for (const row of rows)
     if (
       row.turnId === turnId &&
-      (row.origin?.kind === 'bot_worker' || row.origin?.kind === 'session_completion')
+      (row.origin?.kind === 'bot_worker' ||
+        row.origin?.kind === 'discovery_report' ||
+        row.origin?.kind === 'session_completion')
     )
       return row.origin.sessionId;
   return undefined;
