@@ -622,7 +622,8 @@ async fn query_settled_usage_summary(
             )
             .await
             .map_err(|e| format!("settings.usageSummary query failed: {e}"))?;
-        if usage["summary"]["pending"]["models"].as_u64() == Some(0)
+        if (usage["summary"]["pending"]["models"].as_u64() == Some(0)
+            && usage["summary"]["pending"]["tools"].as_u64() == Some(0))
             || tokio::time::Instant::now() >= deadline
         {
             return Ok(Some(usage));

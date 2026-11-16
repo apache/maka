@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import tempfile
 from pathlib import Path
 
@@ -50,6 +51,15 @@ class MakaHostAgent(BaseAgent):
     def version(self) -> str:
         return "0.2.0"
 
+    async def _resolve_uid_gid(self, environment: BaseEnvironment) -> tuple[str, str]:
+        uid_res = await environment.exec("id -u && id -g")
+        if uid_res.return_code != 0 or not uid_res.stdout:
+            raise RuntimeError(f"failed to resolve container uid/gid: {uid_res.stderr}")
+        parts = [line.strip() for line in uid_res.stdout.strip().splitlines() if line.strip()]
+        if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            raise RuntimeError(f"unexpected uid/gid output: {uid_res.stdout!r}")
+        return parts[0], parts[1]
+
     async def setup(self, environment: BaseEnvironment) -> None:
         check = await environment.exec(
             "test -x /opt/maka-agent/maka "
@@ -62,14 +72,19 @@ class MakaHostAgent(BaseAgent):
                 f"{check.stderr or check.stdout}"
             )
 
-        uid_res = await environment.exec("id -u && id -g")
-        if uid_res.return_code != 0 or not uid_res.stdout:
-            raise RuntimeError(f"failed to resolve container uid/gid: {uid_res.stderr}")
-        parts = uid_res.stdout.strip().splitlines()
-        uid, gid = parts[0].strip(), parts[1].strip()
+        uid, gid = await self._resolve_uid_gid(environment)
         prep_home = await environment.exec(
             f'pw_dir="$(awk -F: -v u={uid} \'$3==u{{print $6; exit}}\' /etc/passwd)"; '
-            f'if [ -n "$pw_dir" ]; then mkdir -p "$pw_dir" && chown {uid}:{gid} "$pw_dir"; fi',
+            f'if [ -z "$pw_dir" ]; then '
+            f'  pw_dir="/tmp/maka-home-{uid}"; '
+            f'  mkdir -p "$pw_dir" && chown {uid}:{gid} "$pw_dir"; '
+            f'  printf "maka-eval-%s:x:%s:%s::%s:/bin/sh\\n" "{uid}" "{uid}" "{gid}" "$pw_dir" >> /etc/passwd; '
+            f'elif [ "$pw_dir" = "/" ]; then '
+            f'  mkdir -p /.local/share/Maka /.cache/maka '
+            f'  && chown -R {uid}:{gid} /.local/share/Maka /.cache/maka; '
+            f'else '
+            f'  mkdir -p "$pw_dir" && chown {uid}:{gid} "$pw_dir"; '
+            f'fi',
             user="root",
         )
         if prep_home.return_code != 0:
@@ -88,6 +103,7 @@ class MakaHostAgent(BaseAgent):
                 f"environment variable '{self._api_key_env}' is unset or empty"
             )
 
+        uid, gid = await self._resolve_uid_gid(environment)
         pwd_res = await environment.exec("pwd")
         workspace_dir = (pwd_res.stdout or "").strip() or "/app"
 
@@ -118,16 +134,28 @@ class MakaHostAgent(BaseAgent):
             json.dump(request_payload, tmp)
             tmp_path = Path(tmp.name)
 
+        q_req = shlex.quote(request_remote)
+        q_logs = shlex.quote(remote_maka_logs)
         try:
             await environment.upload_file(tmp_path, request_remote)
-            await environment.exec(f"chmod 600 {request_remote}")
+            prep_req = await environment.exec(
+                f"chown {uid}:{gid} {q_req} && chmod 600 {q_req} "
+                f"&& mkdir -p {q_logs} && chmod 777 {q_logs}",
+                user="root",
+            )
+            if prep_req.return_code != 0:
+                await environment.exec(f"rm -f {q_req}", user="root")
+                raise RuntimeError(
+                    f"failed preparing guest request/log permissions: "
+                    f"{prep_req.stderr or prep_req.stdout}"
+                )
         finally:
             tmp_path.unlink(missing_ok=True)
 
         exec_res = await environment.exec(
             f"/opt/maka-agent/maka-eval guest-run "
-            f"--request-file {request_remote} "
-            f"--result-file {result_remote}",
+            f"--request-file {q_req} "
+            f"--result-file {shlex.quote(result_remote)}",
             env={
                 "NO_PROXY": "localhost,127.0.0.1,::1,host.docker.internal",
                 "no_proxy": "localhost,127.0.0.1,::1,host.docker.internal",
@@ -139,6 +167,10 @@ class MakaHostAgent(BaseAgent):
             (maka_logs / "guest-run.stderr.log").write_text(exec_res.stderr)
 
         if exec_res.return_code != 0:
+            try:
+                await environment.exec(f"rm -f {q_req}", user="root")
+            except Exception:
+                pass
             raise RuntimeError(
                 f"maka-eval guest-run exited with {exec_res.return_code}: "
                 f"{exec_res.stderr or exec_res.stdout}"

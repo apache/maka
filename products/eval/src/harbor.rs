@@ -307,26 +307,34 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
     let pending_models = usage
         .pointer("/summary/pending/models")
         .and_then(Value::as_u64);
-    if pending_models != Some(0) {
+    let pending_tools = usage
+        .pointer("/summary/pending/tools")
+        .and_then(Value::as_u64);
+    if pending_models != Some(0) || pending_tools != Some(0) {
         return Err(format!(
-            "incomplete host usage accounting: pending_models={pending_models:?}"
+            "incomplete host usage accounting: pending_models={pending_models:?}, pending_tools={pending_tools:?}"
         ));
     }
-    let calls = usage
+    let Some(calls) = usage
         .pointer("/summary/models/calls")
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)
+    else {
+        return Err("incomplete host usage accounting: missing summary.models.calls".into());
+    };
+    if guest.status == GuestRunStatus::Completed && calls == 0 {
+        return Err(
+            "incomplete host usage accounting: completed run recorded 0 model calls".into(),
+        );
+    }
     let input_missing = usage
         .pointer("/summary/models/input/missing")
         .and_then(Value::as_u64);
     let output_missing = usage
         .pointer("/summary/models/output/missing")
         .and_then(Value::as_u64);
-    let Some(calls) = calls else {
-        return Err("incomplete host usage accounting: missing summary.models.calls".into());
-    };
-    if calls > 0 && (input_missing == Some(calls) || output_missing == Some(calls)) {
+    if input_missing != Some(0) || output_missing != Some(0) {
         return Err(format!(
-            "model calls completed ({calls}) without token usage: input_missing={input_missing:?}, output_missing={output_missing:?}"
+            "incomplete token usage across {calls} model call(s): input_missing={input_missing:?}, output_missing={output_missing:?}"
         ));
     }
     Ok(())
@@ -384,7 +392,7 @@ mod tests {
                 host_usage: Some(json!({
                     "through": { "sequence": 12 },
                     "summary": {
-                        "pending": { "models": pending_models },
+                        "pending": { "models": pending_models, "tools": 0 },
                         "models": {
                             "calls": 1,
                             "input": { "known": 100, "missing": 0 },
@@ -489,12 +497,16 @@ mod tests {
                 .contains("incomplete host usage")
         );
 
-        let mut zero_token_usage =
-            sample_outcome(Some(transcript), GuestRunStatus::Completed, "completed", 0);
+        let mut zero_token_usage = sample_outcome(
+            Some(transcript.clone()),
+            GuestRunStatus::Completed,
+            "completed",
+            0,
+        );
         zero_token_usage.guest_result.as_mut().unwrap().host_usage = Some(json!({
             "through": { "sequence": 12 },
             "summary": {
-                "pending": { "models": 0 },
+                "pending": { "models": 0, "tools": 0 },
                 "models": {
                     "calls": 2,
                     "input": { "known": 0, "missing": 2 },
@@ -505,7 +517,94 @@ mod tests {
         assert!(
             validate_trial_evidence(&zero_token_usage)
                 .unwrap_err()
-                .contains("without token usage")
+                .contains("incomplete token usage")
         );
+
+        let mut pending_tool_usage = sample_outcome(
+            Some(transcript.clone()),
+            GuestRunStatus::Completed,
+            "completed",
+            0,
+        );
+        pending_tool_usage.guest_result.as_mut().unwrap().host_usage = Some(json!({
+            "through": { "sequence": 12 },
+            "summary": {
+                "pending": { "models": 0, "tools": 1 },
+                "models": {
+                    "calls": 1,
+                    "input": { "known": 100, "missing": 0 },
+                    "output": { "known": 20, "missing": 0 }
+                }
+            }
+        }));
+        assert!(
+            validate_trial_evidence(&pending_tool_usage)
+                .unwrap_err()
+                .contains("incomplete host usage")
+        );
+
+        let mut completed_zero_calls = sample_outcome(
+            Some(transcript.clone()),
+            GuestRunStatus::Completed,
+            "completed",
+            0,
+        );
+        completed_zero_calls
+            .guest_result
+            .as_mut()
+            .unwrap()
+            .host_usage = Some(json!({
+            "through": { "sequence": 12 },
+            "summary": {
+                "pending": { "models": 0, "tools": 0 },
+                "models": {
+                    "calls": 0,
+                    "input": { "known": 0, "missing": 0 },
+                    "output": { "known": 0, "missing": 0 }
+                }
+            }
+        }));
+        assert!(
+            validate_trial_evidence(&completed_zero_calls)
+                .unwrap_err()
+                .contains("0 model calls")
+        );
+
+        for invalid_models in [
+            json!({
+                "calls": 2,
+                "input": { "known": 100, "missing": 1 },
+                "output": { "known": 40, "missing": 0 }
+            }),
+            json!({
+                "calls": 2,
+                "input": { "known": 200, "missing": 0 },
+                "output": { "known": 20, "missing": 1 }
+            }),
+            json!({
+                "calls": 1,
+                "input": { "known": 100 },
+                "output": { "known": 20, "missing": 0 }
+            }),
+        ] {
+            let mut partial = sample_outcome(
+                Some(transcript.clone()),
+                GuestRunStatus::Completed,
+                "completed",
+                0,
+            );
+            partial.guest_result.as_mut().unwrap().host_usage = Some(json!({
+                "through": { "sequence": 12 },
+                "summary": {
+                    "pending": { "models": 0, "tools": 0 },
+                    "models": invalid_models,
+                }
+            }));
+            assert!(
+                validate_trial_evidence(&partial)
+                    .unwrap_err()
+                    .contains("incomplete token usage")
+            );
+        }
     }
 }
