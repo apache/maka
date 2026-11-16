@@ -58,45 +58,52 @@ pub struct GuestRunRequest {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum GuestRunStatus {
-    Completed,
-    SubjectStopped,
-    InfraFailed,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GuestEvidence {
+    pub steps_observed: u32,
+    pub session_id: String,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Value>,
+    pub host_usage: Value,
+    pub host_usage_attempts: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GuestRunResult {
-    pub status: GuestRunStatus,
-    pub steps_observed: u32,
-    pub session_id: Option<String>,
-    pub run_id: Option<String>,
-    pub execution: Option<Value>,
-    pub host_usage: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_usage_attempts: Option<Value>,
-    pub transcript_file: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub infra_error: Option<String>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum GuestRunResult {
+    Completed {
+        evidence: GuestEvidence,
+    },
+    SubjectStopped {
+        stop_reason: String,
+        evidence: GuestEvidence,
+    },
+    InfraFailed {
+        infra_error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence: Option<GuestEvidence>,
+    },
 }
 
 impl GuestRunResult {
-    fn infra_error(message: impl Into<String>) -> Self {
-        Self {
-            status: GuestRunStatus::InfraFailed,
-            steps_observed: 0,
-            session_id: None,
-            run_id: None,
-            execution: None,
-            host_usage: None,
-            host_usage_attempts: None,
-            transcript_file: None,
-            stop_reason: None,
-            infra_error: Some(message.into()),
+    pub fn infra_error(message: impl Into<String>) -> Self {
+        Self::InfraFailed {
+            infra_error: message.into(),
+            evidence: None,
+        }
+    }
+
+    fn into_evidence(self) -> Option<GuestEvidence> {
+        match self {
+            Self::Completed { evidence } | Self::SubjectStopped { evidence, .. } => Some(evidence),
+            Self::InfraFailed { evidence, .. } => evidence,
         }
     }
 }
@@ -129,10 +136,8 @@ pub async fn run_from_files(request_file: &Path, result_file: &Path) -> Result<(
         .await
         .map_err(|e| format!("failed to write {}: {e}", result_file.display()))?;
 
-    if result.status == GuestRunStatus::InfraFailed {
-        return Err(result
-            .infra_error
-            .unwrap_or_else(|| "maka host guest infrastructure failed".into()));
+    if let GuestRunResult::InfraFailed { infra_error, .. } = result {
+        return Err(infra_error);
     }
     Ok(())
 }
@@ -192,25 +197,29 @@ async fn execute(req: GuestRunRequest) -> Result<GuestRunResult, String> {
 
         let inner = run_session(&req, &canonical_workspace_str, &journal_path, &host_proc).await;
         let shutdown = host_proc.shutdown().await;
-
-        let (mut result, session_err) = match inner {
-            Ok(res) => (res, None),
-            Err(err) => (GuestRunResult::infra_error(err.clone()), Some(err)),
-        };
-        if let Err(err) = shutdown {
-            let combined = match session_err.or_else(|| result.infra_error.take()) {
-                Some(existing) => format!("{existing}; host shutdown failed: {err}"),
-                None => format!("host shutdown failed: {err}"),
-            };
-            result.status = GuestRunStatus::InfraFailed;
-            result.infra_error = Some(combined);
-        }
-        Ok::<GuestRunResult, String>(result)
+        Ok::<GuestRunResult, String>(finalize_run_result(inner, shutdown))
     }
     .await;
 
     let _ = tokio::fs::remove_dir_all(&run_dir).await;
     result
+}
+
+fn finalize_run_result(
+    inner: Result<GuestRunResult, String>,
+    shutdown: Result<(), String>,
+) -> GuestRunResult {
+    match (inner, shutdown) {
+        (Ok(res), Ok(())) => res,
+        (Err(err), Ok(())) => GuestRunResult::infra_error(err),
+        (Err(err), Err(shut_err)) => {
+            GuestRunResult::infra_error(format!("{err}; host shutdown failed: {shut_err}"))
+        }
+        (Ok(res), Err(shut_err)) => GuestRunResult::InfraFailed {
+            infra_error: format!("host shutdown failed: {shut_err}"),
+            evidence: res.into_evidence(),
+        },
+    }
 }
 
 async fn run_session(
@@ -335,7 +344,6 @@ async fn run_session_with_client(
                     "delivery": "steer",
                     "message": req.instruction,
                     "attachments": [],
-                    "backend": backend,
                 }),
                 Attachments::new(),
                 Some(session_id.clone()),
@@ -365,7 +373,7 @@ async fn run_session_with_client(
 
         let final_execution = await_terminal_execution(client, &session_id, &run_id).await?;
 
-        let transcript = export_history(client, &session_id, &run_id, &mut step_ids).await?;
+        let transcript = export_history(client, &session_id).await?;
         let transcript_file = req.artifacts_dir.join("transcript.json");
         let transcript_json = serde_json::to_string_pretty(&transcript)
             .map_err(|e| format!("failed to serialize transcript: {e}"))?;
@@ -375,46 +383,44 @@ async fn run_session_with_client(
 
         let host_usage = query_settled_usage_summary(client, &session_id).await?;
         let through_fence = host_usage
-            .as_ref()
-            .and_then(|u| u.get("through"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        let host_usage_attempts = Some(
+            .get("through")
+            .ok_or("usageSummary missing through fence")?
+            .clone();
+        let host_usage_attempts =
             query_all_usage_attempts(client, &session_id, &run_id, through_fence, &mut step_ids)
-                .await?,
-        );
+                .await?;
 
-        let state_kind = final_execution
+        let evidence = GuestEvidence {
+            steps_observed: u32::try_from(step_ids.len()).unwrap_or(u32::MAX),
+            session_id: session_id.clone(),
+            run_id,
+            execution: final_execution,
+            host_usage,
+            host_usage_attempts,
+        };
+        let state_kind = evidence
+            .execution
             .as_ref()
             .and_then(|e| e["state"]["kind"].as_str());
-        let (status, stop_reason) = if run_error.is_none() && state_kind == Some("completed") {
-            (GuestRunStatus::Completed, None)
+        if run_error.is_none() && state_kind == Some("completed") {
+            Ok(GuestRunResult::Completed { evidence })
         } else {
-            let reason = run_error.unwrap_or_else(|| {
+            let stop_reason = run_error.unwrap_or_else(|| {
                 format!(
                     "execution ended in state '{}': {}",
                     state_kind.unwrap_or("unknown"),
-                    final_execution
+                    evidence
+                        .execution
                         .as_ref()
                         .map(|e| e["state"].to_string())
                         .unwrap_or_default()
                 )
             });
-            (GuestRunStatus::SubjectStopped, Some(reason))
-        };
-
-        Ok(GuestRunResult {
-            status,
-            steps_observed: u32::try_from(step_ids.len()).unwrap_or(u32::MAX),
-            session_id: Some(session_id.clone()),
-            run_id: Some(run_id),
-            execution: final_execution,
-            host_usage,
-            host_usage_attempts,
-            transcript_file: Some(transcript_file),
-            stop_reason,
-            infra_error: None,
-        })
+            Ok(GuestRunResult::SubjectStopped {
+                stop_reason,
+                evidence,
+            })
+        }
     }
     .await;
 
@@ -597,10 +603,7 @@ async fn await_terminal_execution(
     }
 }
 
-async fn query_settled_usage_summary(
-    client: &Client,
-    session_id: &str,
-) -> Result<Option<Value>, String> {
+async fn query_settled_usage_summary(client: &Client, session_id: &str) -> Result<Value, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let mut poll = tokio::time::interval(Duration::from_millis(50));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -626,7 +629,7 @@ async fn query_settled_usage_summary(
             && usage["summary"]["pending"]["tools"].as_u64() == Some(0))
             || tokio::time::Instant::now() >= deadline
         {
-            return Ok(Some(usage));
+            return Ok(usage);
         }
         poll.tick().await;
     }
@@ -719,12 +722,7 @@ async fn stop_with_reason(
     }
 }
 
-async fn export_history(
-    client: &Client,
-    session_id: &str,
-    run_id: &str,
-    step_ids: &mut BTreeSet<String>,
-) -> Result<Value, String> {
+async fn export_history(client: &Client, session_id: &str) -> Result<Value, String> {
     let mut through = Value::Null;
     let mut position = json!({ "kind": "start" });
     let mut pages = Vec::new();
@@ -746,15 +744,6 @@ async fn export_history(
             .get("through")
             .ok_or("history page missing through fence")?
             .clone();
-        if let Some(chunks) = page["chunks"].as_array() {
-            for chunk in chunks {
-                if chunk["runId"].as_str() == Some(run_id)
-                    && let Some(step) = chunk["modelPart"]["stepId"].as_str()
-                {
-                    step_ids.insert(step.to_owned());
-                }
-            }
-        }
         let after = page
             .get("after")
             .ok_or("history page missing after cursor")?
@@ -1084,6 +1073,67 @@ mod tests {
         assert!(!req_path.exists());
         let saved: GuestRunResult =
             serde_json::from_str(&tokio::fs::read_to_string(&res_path).await.unwrap()).unwrap();
-        assert_eq!(saved.status, GuestRunStatus::InfraFailed);
+        assert!(matches!(
+            saved,
+            GuestRunResult::InfraFailed { evidence: None, .. }
+        ));
+    }
+
+    #[test]
+    fn finalize_run_result_preserves_evidence_when_shutdown_fails() {
+        let evidence = GuestEvidence {
+            steps_observed: 2,
+            session_id: "sess-1".into(),
+            run_id: "run-1".into(),
+            execution: Some(json!({ "state": { "kind": "completed" } })),
+            host_usage: json!({ "summary": { "pending": { "models": 0, "tools": 0 } } }),
+            host_usage_attempts: json!({ "attempts": [], "total": 0, "nextCursor": null }),
+        };
+
+        let ok_both = finalize_run_result(
+            Ok(GuestRunResult::Completed {
+                evidence: evidence.clone(),
+            }),
+            Ok(()),
+        );
+        assert_eq!(
+            ok_both,
+            GuestRunResult::Completed {
+                evidence: evidence.clone()
+            }
+        );
+
+        let err_session_ok_shutdown = finalize_run_result(Err("session broke".into()), Ok(()));
+        assert_eq!(
+            err_session_ok_shutdown,
+            GuestRunResult::InfraFailed {
+                infra_error: "session broke".into(),
+                evidence: None,
+            }
+        );
+
+        let err_both =
+            finalize_run_result(Err("session broke".into()), Err("cleanup broke".into()));
+        assert_eq!(
+            err_both,
+            GuestRunResult::InfraFailed {
+                infra_error: "session broke; host shutdown failed: cleanup broke".into(),
+                evidence: None,
+            }
+        );
+
+        let ok_session_err_shutdown = finalize_run_result(
+            Ok(GuestRunResult::Completed {
+                evidence: evidence.clone(),
+            }),
+            Err("cleanup broke".into()),
+        );
+        assert_eq!(
+            ok_session_err_shutdown,
+            GuestRunResult::InfraFailed {
+                infra_error: "host shutdown failed: cleanup broke".into(),
+                evidence: Some(evidence),
+            }
+        );
     }
 }

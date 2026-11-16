@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-use crate::guest::{GuestRunResult, GuestRunStatus, SandboxMode};
+use crate::guest::{GuestRunResult, SandboxMode};
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct HarborRunOptions {
@@ -272,20 +272,21 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
     let Some(guest) = &outcome.guest_result else {
         return Err("missing guest-result.json from trial artifacts".into());
     };
-    if guest.status == GuestRunStatus::InfraFailed || guest.infra_error.is_some() {
-        return Err(format!(
-            "guest infrastructure failed: {}",
-            guest.infra_error.as_deref().unwrap_or("unknown error")
-        ));
-    }
-    let state_kind = guest
+    let (is_completed, evidence) = match guest {
+        GuestRunResult::InfraFailed { infra_error, .. } => {
+            return Err(format!("guest infrastructure failed: {infra_error}"));
+        }
+        GuestRunResult::Completed { evidence } => (true, evidence),
+        GuestRunResult::SubjectStopped { evidence, .. } => (false, evidence),
+    };
+    let state_kind = evidence
         .execution
         .as_ref()
         .and_then(|e| e["state"]["kind"].as_str());
     if !matches!(state_kind, Some("completed" | "failed" | "cancelled")) {
         return Err(format!(
             "guest execution receipt missing terminal state: {:?}",
-            guest.execution
+            evidence.execution
         ));
     }
     if !outcome
@@ -298,12 +299,7 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
             outcome.transcript_path
         ));
     }
-    let Some(usage) = &guest.host_usage else {
-        return Err("incomplete host usage accounting: missing usageSummary".into());
-    };
-    if guest.host_usage_attempts.is_none() {
-        return Err("incomplete host usage accounting: missing usage attempts".into());
-    }
+    let usage = &evidence.host_usage;
     let pending_models = usage
         .pointer("/summary/pending/models")
         .and_then(Value::as_u64);
@@ -321,7 +317,7 @@ pub fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String>
     else {
         return Err("incomplete host usage accounting: missing summary.models.calls".into());
     };
-    if guest.status == GuestRunStatus::Completed && calls == 0 {
+    if is_completed && calls == 0 {
         return Err(
             "incomplete host usage accounting: completed run recorded 0 model calls".into(),
         );
@@ -371,47 +367,44 @@ fn find_trial_result_json(job_dir: &Path) -> Result<Option<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guest::GuestEvidence;
     use serde_json::json;
 
-    fn sample_outcome(
+    fn sample_evidence(state_kind: &str, pending_models: u64) -> GuestEvidence {
+        GuestEvidence {
+            steps_observed: 3,
+            session_id: "sess-1".into(),
+            run_id: "run-1".into(),
+            execution: Some(json!({ "state": { "kind": state_kind } })),
+            host_usage: json!({
+                "through": { "sequence": 12 },
+                "summary": {
+                    "pending": { "models": pending_models, "tools": 0 },
+                    "models": {
+                        "calls": 1,
+                        "input": { "known": 100, "missing": 0 },
+                        "output": { "known": 20, "missing": 0 }
+                    }
+                }
+            }),
+            host_usage_attempts: json!({
+                "through": { "sequence": 12 },
+                "attempts": [],
+                "total": 0,
+                "nextCursor": null
+            }),
+        }
+    }
+
+    fn outcome_with(
         transcript_path: Option<PathBuf>,
-        status: GuestRunStatus,
-        state_kind: &str,
-        pending_models: u64,
+        guest_result: GuestRunResult,
     ) -> HarborRunOutcome {
         HarborRunOutcome {
             reward: Some(0.0),
             verifier_result: Some(json!({ "rewards": { "reward": 0.0 } })),
             exception_info: None,
-            guest_result: Some(GuestRunResult {
-                status,
-                steps_observed: 3,
-                session_id: Some("sess-1".into()),
-                run_id: Some("run-1".into()),
-                execution: Some(json!({ "state": { "kind": state_kind } })),
-                host_usage: Some(json!({
-                    "through": { "sequence": 12 },
-                    "summary": {
-                        "pending": { "models": pending_models, "tools": 0 },
-                        "models": {
-                            "calls": 1,
-                            "input": { "known": 100, "missing": 0 },
-                            "output": { "known": 20, "missing": 0 }
-                        }
-                    }
-                })),
-                host_usage_attempts: Some(json!({
-                    "through": { "sequence": 12 },
-                    "attempts": [],
-                    "total": 0,
-                    "nextCursor": null
-                })),
-                transcript_file: Some(PathBuf::from("/tmp/transcript.json")),
-                stop_reason: (status == GuestRunStatus::SubjectStopped)
-                    .then(|| "exceeded maxSteps (3)".into()),
-                infra_error: (status == GuestRunStatus::InfraFailed)
-                    .then(|| "host startup failed".into()),
-            }),
+            guest_result: Some(guest_result),
             transcript_path,
             harbor_result_path: PathBuf::from("/tmp/result.json"),
         }
@@ -427,18 +420,24 @@ mod tests {
     #[test]
     fn accepts_completed_subject_with_zero_reward() {
         let (_dir, transcript) = temp_transcript_file();
-        let outcome = sample_outcome(Some(transcript), GuestRunStatus::Completed, "completed", 0);
+        let outcome = outcome_with(
+            Some(transcript),
+            GuestRunResult::Completed {
+                evidence: sample_evidence("completed", 0),
+            },
+        );
         assert!(validate_trial_evidence(&outcome).is_ok());
     }
 
     #[test]
     fn accepts_subject_stopped_with_settled_receipt_and_zero_reward() {
         let (_dir, transcript) = temp_transcript_file();
-        let outcome = sample_outcome(
+        let outcome = outcome_with(
             Some(transcript),
-            GuestRunStatus::SubjectStopped,
-            "cancelled",
-            0,
+            GuestRunResult::SubjectStopped {
+                stop_reason: "exceeded maxSteps (3)".into(),
+                evidence: sample_evidence("cancelled", 0),
+            },
         );
         assert!(validate_trial_evidence(&outcome).is_ok());
     }
@@ -447,11 +446,12 @@ mod tests {
     fn rejects_infra_failed_exception_missing_reward_or_unsettled_usage() {
         let (_dir, transcript) = temp_transcript_file();
 
-        let infra = sample_outcome(
+        let infra = outcome_with(
             Some(transcript.clone()),
-            GuestRunStatus::InfraFailed,
-            "failed",
-            0,
+            GuestRunResult::InfraFailed {
+                infra_error: "host startup failed".into(),
+                evidence: Some(sample_evidence("failed", 0)),
+            },
         );
         assert!(
             validate_trial_evidence(&infra)
@@ -459,11 +459,11 @@ mod tests {
                 .contains("infrastructure failed")
         );
 
-        let mut with_exc = sample_outcome(
+        let mut with_exc = outcome_with(
             Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            0,
+            GuestRunResult::Completed {
+                evidence: sample_evidence("completed", 0),
+            },
         );
         with_exc.exception_info = Some(json!({ "exception_type": "RuntimeError" }));
         assert!(
@@ -472,11 +472,11 @@ mod tests {
                 .contains("exception")
         );
 
-        let mut no_reward = sample_outcome(
+        let mut no_reward = outcome_with(
             Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            0,
+            GuestRunResult::Completed {
+                evidence: sample_evidence("completed", 0),
+            },
         );
         no_reward.reward = None;
         assert!(
@@ -485,11 +485,11 @@ mod tests {
                 .contains("finite numeric reward")
         );
 
-        let pending_usage = sample_outcome(
+        let pending_usage = outcome_with(
             Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            1,
+            GuestRunResult::Completed {
+                evidence: sample_evidence("completed", 1),
+            },
         );
         assert!(
             validate_trial_evidence(&pending_usage)
@@ -497,113 +497,87 @@ mod tests {
                 .contains("incomplete host usage")
         );
 
-        let mut zero_token_usage = sample_outcome(
-            Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            0,
-        );
-        zero_token_usage.guest_result.as_mut().unwrap().host_usage = Some(json!({
-            "through": { "sequence": 12 },
-            "summary": {
-                "pending": { "models": 0, "tools": 0 },
-                "models": {
-                    "calls": 2,
-                    "input": { "known": 0, "missing": 2 },
-                    "output": { "known": 0, "missing": 2 }
-                }
-            }
-        }));
-        assert!(
-            validate_trial_evidence(&zero_token_usage)
-                .unwrap_err()
-                .contains("incomplete token usage")
-        );
-
-        let mut pending_tool_usage = sample_outcome(
-            Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            0,
-        );
-        pending_tool_usage.guest_result.as_mut().unwrap().host_usage = Some(json!({
-            "through": { "sequence": 12 },
-            "summary": {
-                "pending": { "models": 0, "tools": 1 },
-                "models": {
-                    "calls": 1,
-                    "input": { "known": 100, "missing": 0 },
-                    "output": { "known": 20, "missing": 0 }
-                }
-            }
-        }));
-        assert!(
-            validate_trial_evidence(&pending_tool_usage)
-                .unwrap_err()
-                .contains("incomplete host usage")
-        );
-
-        let mut completed_zero_calls = sample_outcome(
-            Some(transcript.clone()),
-            GuestRunStatus::Completed,
-            "completed",
-            0,
-        );
-        completed_zero_calls
-            .guest_result
-            .as_mut()
-            .unwrap()
-            .host_usage = Some(json!({
-            "through": { "sequence": 12 },
-            "summary": {
-                "pending": { "models": 0, "tools": 0 },
-                "models": {
-                    "calls": 0,
-                    "input": { "known": 0, "missing": 0 },
-                    "output": { "known": 0, "missing": 0 }
-                }
-            }
-        }));
-        assert!(
-            validate_trial_evidence(&completed_zero_calls)
-                .unwrap_err()
-                .contains("0 model calls")
-        );
-
-        for invalid_models in [
-            json!({
-                "calls": 2,
-                "input": { "known": 100, "missing": 1 },
-                "output": { "known": 40, "missing": 0 }
-            }),
-            json!({
-                "calls": 2,
-                "input": { "known": 200, "missing": 0 },
-                "output": { "known": 20, "missing": 1 }
-            }),
-            json!({
-                "calls": 1,
-                "input": { "known": 100 },
-                "output": { "known": 20, "missing": 0 }
-            }),
-        ] {
-            let mut partial = sample_outcome(
-                Some(transcript.clone()),
-                GuestRunStatus::Completed,
-                "completed",
-                0,
-            );
-            partial.guest_result.as_mut().unwrap().host_usage = Some(json!({
-                "through": { "sequence": 12 },
-                "summary": {
+        for (summary, expected_err) in [
+            (
+                json!({
                     "pending": { "models": 0, "tools": 0 },
-                    "models": invalid_models,
-                }
-            }));
+                    "models": {
+                        "calls": 2,
+                        "input": { "known": 0, "missing": 2 },
+                        "output": { "known": 0, "missing": 2 }
+                    }
+                }),
+                "incomplete token usage",
+            ),
+            (
+                json!({
+                    "pending": { "models": 0, "tools": 1 },
+                    "models": {
+                        "calls": 1,
+                        "input": { "known": 100, "missing": 0 },
+                        "output": { "known": 20, "missing": 0 }
+                    }
+                }),
+                "incomplete host usage",
+            ),
+            (
+                json!({
+                    "pending": { "models": 0, "tools": 0 },
+                    "models": {
+                        "calls": 0,
+                        "input": { "known": 0, "missing": 0 },
+                        "output": { "known": 0, "missing": 0 }
+                    }
+                }),
+                "0 model calls",
+            ),
+            (
+                json!({
+                    "pending": { "models": 0, "tools": 0 },
+                    "models": {
+                        "calls": 2,
+                        "input": { "known": 100, "missing": 1 },
+                        "output": { "known": 40, "missing": 0 }
+                    }
+                }),
+                "incomplete token usage",
+            ),
+            (
+                json!({
+                    "pending": { "models": 0, "tools": 0 },
+                    "models": {
+                        "calls": 2,
+                        "input": { "known": 200, "missing": 0 },
+                        "output": { "known": 20, "missing": 1 }
+                    }
+                }),
+                "incomplete token usage",
+            ),
+            (
+                json!({
+                    "pending": { "models": 0, "tools": 0 },
+                    "models": {
+                        "calls": 1,
+                        "input": { "known": 100 },
+                        "output": { "known": 20, "missing": 0 }
+                    }
+                }),
+                "incomplete token usage",
+            ),
+        ] {
+            let mut evidence = sample_evidence("completed", 0);
+            evidence.host_usage = json!({
+                "through": { "sequence": 12 },
+                "summary": summary,
+            });
+            let outcome = outcome_with(
+                Some(transcript.clone()),
+                GuestRunResult::Completed { evidence },
+            );
             assert!(
-                validate_trial_evidence(&partial)
+                validate_trial_evidence(&outcome)
                     .unwrap_err()
-                    .contains("incomplete token usage")
+                    .contains(expected_err)
             );
         }
     }
