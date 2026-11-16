@@ -214,3 +214,61 @@ pub(super) async fn prepare(
 fn io_error(error: std::io::Error) -> Error {
     Error::Provider(format!("External agent attachment I/O failed: {error}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::{durable::RunOwner, input::MessageInput};
+    use maka_event_log::{
+        ROOT_MIGRATIONS, RootStore,
+        root::{RootNamespaces, RootOwner},
+    };
+    use maka_plugin_core::composition::InstanceId;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn external_prompt_preserves_quote_only_input() {
+        let base = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: base.path().join("owners"),
+            control: base.path().join("control"),
+        };
+        let owner = RootOwner::create(&base.path().join("root"), &namespaces).unwrap();
+        let root = RootStore::open(Arc::new(owner), ROOT_MIGRATIONS)
+            .await
+            .unwrap();
+        let store = ArtifactStore::new(root.data_writer().unwrap());
+        let scope = SessionScope {
+            owner: RunOwner {
+                deployment: Uuid::new_v4(),
+                namespace: InstanceId(vec![Uuid::new_v4()]),
+            },
+            session: "quote-fixture".into(),
+        };
+        let mut content = MessageInput::from("");
+        content.quotes = Some(vec![
+            serde_json::from_value(
+                serde_json::json!({"text":"Earlier evidence", "label":"Prior finding"}),
+            )
+            .unwrap(),
+        ]);
+        let material = prepare(
+            &store,
+            &scope,
+            &content,
+            Language::En,
+            &CancellationToken::new(),
+            base.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            material.message.trim(),
+            "<quoted_excerpt label=\"Prior finding\">\nEarlier evidence\n</quoted_excerpt>"
+        );
+        assert!(material.images.is_empty());
+        drop(store);
+        root.close().await.unwrap();
+    }
+}
