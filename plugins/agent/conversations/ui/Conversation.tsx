@@ -4149,6 +4149,7 @@ export function Conversation(props: ConversationProps) {
               previewImage={props.previewImage}
               previewTerminal={props.previewTerminal}
               openLink={props.openLink}
+              openSession={canOpenWorker() ? openWorker : undefined}
               senders={senders}
               userScroll={() => cancelNavigation()}
               onExpand={reveal}

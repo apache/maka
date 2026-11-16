@@ -921,15 +921,16 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     })
     .await;
     let client = fixture.client().await;
+    let backend = json!({
+        "kind":"model",
+        "connectionId":fixture.selection["connectionId"],
+        "modelId":fixture.selection["modelId"],
+    });
     let conversation = |title| {
         json!({
             "title":title,"labels":[],
             "workspace":{"kind":"session","sessionId":fixture.session},
-            "backend":{
-                "kind":"model",
-                "connectionId":fixture.selection["connectionId"],
-                "modelId":fixture.selection["modelId"],
-            },
+            "backend":backend,
         })
     };
     let current = mutate(&client, "create", conversation("Current conversation")).await;
@@ -938,9 +939,32 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     assert_eq!(referenced["kind"], "created", "{referenced}");
     let current = current["session"]["id"].as_str().unwrap();
     let referenced = referenced["session"]["id"].as_str().unwrap();
+    mutate(
+        &client,
+        "send",
+        json!({
+            "sessionId":referenced,"backend":backend,
+            "message":"What is left on the release checklist?",
+        }),
+    )
+    .await;
+    let history = "The builds are ready. Review the release notes before tagging the release.";
+    let mut prior_reply = fixture.next_request().await;
+    prior_reply.delta(history).await;
+    prior_reply.finish().await;
+    fixture.idle(&client, referenced).await;
     client.close().await.unwrap();
 
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
     desktop
         .press("Open conversation Current conversation")
         .await;
@@ -953,21 +977,25 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     let mention = format!("Review [@Release checklist](maka://session/{referenced}) ");
     desktop.expect_text(&mention).await;
     desktop.key("right", false);
-    desktop.paste("with @Release").await;
+    desktop.paste("before tagging. @Release").await;
     desktop.press("Release-notes.md").await;
-    let text = format!("{mention}with @Release-notes.md ");
+    let text = format!("{mention}before tagging. @Release-notes.md ");
     desktop.expect_text(&text).await;
     desktop.key("right", false);
     desktop.artifact("composer-session-reference-draft");
+    assert!(desktop.controls("@Release checklist").is_empty());
     desktop.press("Send message").await;
 
-    let request = desktop.request(&mut fixture).await;
+    let mut request = desktop.request(&mut fixture).await;
     let message = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(message["role"], "user");
     assert_eq!(
         message["content"].as_str().unwrap().trim_end(),
         text.trim_end()
     );
+    request
+        .delta("I’ll compare the release notes with the checklist.")
+        .await;
     desktop
         .wait("the current conversation did not finish", request.finish())
         .await;
@@ -982,10 +1010,39 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
         .query("agent", "observe", json!({"sessionId":referenced}))
         .await
         .unwrap();
-    assert!(target["session"]["tailMessageId"].is_null(), "{target}");
     assert_eq!(target["session"]["activity"], "idle");
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
-    desktop.artifact("composer-session-reference-sent");
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.press("@Release checklist").await;
+    desktop.control("Close side pane").await;
+    let reference = desktop.control("@Release checklist").await;
+    let copy = desktop
+        .until(
+            "the referenced conversation's earlier reply did not appear in the side pane",
+            || {
+                desktop
+                    .controls("Copy message")
+                    .into_iter()
+                    .find(|bounds| bounds.left() > reference.right())
+            },
+        )
+        .await;
+    desktop.artifact("composer-session-reference-beside");
+    desktop.hover_at(copy.center());
+    desktop
+        .until("the reply's copy action did not appear", || {
+            desktop.draws_in(copy).then_some(())
+        })
+        .await;
+    desktop.press_at(copy.center());
+    let copied = desktop
+        .until("the earlier reply was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(copied, history);
+    desktop.press("Close side pane").await;
+    desktop.control("@Release checklist").await;
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
     desktop.close().await;
     fixture.finish().await;
 }

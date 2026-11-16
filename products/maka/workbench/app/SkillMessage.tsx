@@ -25,7 +25,11 @@ import { C, bodyTextStyle } from './ui';
 import type { Row } from './history';
 
 /** Message selection uses the same atom model and source serializer as the composer. */
-export function SkillMessage(props: { row(): Row; sourceId: string }) {
+export function SkillMessage(props: {
+  row(): Row;
+  sourceId: string;
+  openSession?(sessionId: string): void;
+}) {
   const fragments = () => props.row().fragments ?? [{ offset: 0, text: props.row().text }];
   const groups = computed(() => skillTextGroups(fragments()));
   const hasTokens = computed(() => groups().some(hasComposerToken));
@@ -45,6 +49,9 @@ export function SkillMessage(props: { row(): Row; sourceId: string }) {
               accessibilityLabel={group().text}
               value={group().text}
               readonly
+              onOpenSessionReference={
+                props.openSession ? ({ sessionId }) => props.openSession?.(sessionId) : undefined
+              }
               autoFocus={false}
               placeholder=""
               sourceId={props.sourceId}
