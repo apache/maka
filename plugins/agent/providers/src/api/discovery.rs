@@ -19,7 +19,7 @@
 
 use super::{ApiProvider, Configuration, authentication, effects, inventory};
 use crate::facts::{
-    adapter::AdapterKind,
+    adapter::RuntimeAdapter,
     discovery::{DiscoveryAuth, ModelDiscovery, ModelFilter, ModelProtocols, ResponseShape},
 };
 use effects::HeaderAuth;
@@ -64,8 +64,8 @@ pub(super) async fn discover(
         authentication::authorize(provider.facts.auth_kind, request.credential)?
     };
     let kind = if matches!(
-        provider.facts.runtime_adapter.kind,
-        AdapterKind::Anthropic { .. }
+        provider.facts.runtime_adapter,
+        RuntimeAdapter::Anthropic { .. }
     ) {
         HeaderAuth::Anthropic
     } else {
@@ -94,8 +94,8 @@ pub(super) async fn discover(
                 return Err(Error::Unavailable);
             }
             let mut url = base;
-            match &provider.facts.runtime_adapter.kind {
-                AdapterKind::Google { .. } => {
+            match &provider.facts.runtime_adapter {
+                RuntimeAdapter::Google {} => {
                     version(&mut url, "v1beta");
                     append(&mut url, "models");
                     let mut client = client;
@@ -106,11 +106,13 @@ pub(super) async fn discover(
                     let root = client.get(url).await?;
                     return normalize(names(rows(&root, "models")?, true));
                 }
-                AdapterKind::Anthropic { .. } => {
+                RuntimeAdapter::Anthropic { .. } => {
                     version(&mut url, "v1");
                     append(&mut url, "models");
                 }
-                AdapterKind::Openai { .. } | AdapterKind::OpenaiCompatible { .. } => {
+                RuntimeAdapter::OpenaiChat {}
+                | RuntimeAdapter::OpenaiResponses { .. }
+                | RuntimeAdapter::OpenaiCompatible { .. } => {
                     if let Some(path) = path {
                         url = url.join(path).map_err(|_| invalid())?;
                         if url.origin() != endpoint(&configuration.base_url)?.origin() {

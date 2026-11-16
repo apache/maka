@@ -50,9 +50,6 @@ pub(super) fn provider(
             ("provider_invalid", Some("unsupported_execution_profile"))
         }
         ProviderError::InvalidEndpoint => ("provider_invalid", Some("invalid_endpoint")),
-        ProviderError::MissingResponsesContract => {
-            ("provider_invalid", Some("missing_responses_contract"))
-        }
         ProviderError::UnsupportedParallelPolicy => {
             ("provider_invalid", Some("unsupported_parallel_policy"))
         }
