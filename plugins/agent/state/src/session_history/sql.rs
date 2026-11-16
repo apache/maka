@@ -363,7 +363,22 @@ pub(super) fn request_preparation(
 ) -> Result<(RequestSpec, UnixMillis), StoreError> {
     let owner = check_cut(c, history, cut)?;
     spec(c, history, run)?;
-    let sequence:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? AND step=? AND kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.session,run.to_string(),step.to_string(),bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
+    let sequence = c
+        .query_row(
+            "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
+             WHERE owner=? AND session=? AND run=? AND step=?
+               AND kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=?
+             ORDER BY sequence LIMIT 1",
+            params![
+                owner,
+                history.session,
+                run.to_string(),
+                step.to_string(),
+                bind_u64(cut.through_sequence)?
+            ],
+            |row| read_u64(row, 0),
+        )
+        .optional()?;
     let sequence =
         sequence.ok_or_else(|| invalid("request Step is outside captured source cut"))?;
     let original = item(c, history, cut, sequence)?

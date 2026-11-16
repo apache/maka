@@ -8496,6 +8496,7 @@ dependencies = [
  "maka-sandbox",
  "maka-session-state",
  "regex",
+ "regex-syntax",
  "rusqlite",
  "schemars 1.2.3",
  "serde",

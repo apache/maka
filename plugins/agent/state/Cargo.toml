@@ -42,6 +42,7 @@ thiserror.workspace = true
 unicode-normalization = "0.1.26"
 tokio-util.workspace = true
 regex = "1.13.1"
+regex-syntax = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true

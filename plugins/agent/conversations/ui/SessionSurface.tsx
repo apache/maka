@@ -2157,6 +2157,8 @@ export function createConversationUi(
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
     async kind(sessionId) {
+      const listed = browsing.sessions().find((session) => session.id === sessionId);
+      if (listed) return listed.kind;
       return (await host.query('agent', 'observe', { sessionId })).session.kind;
     },
     async openBot() {

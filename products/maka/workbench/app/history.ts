@@ -86,36 +86,6 @@ export function historyTurnKey(
     : row.turnId;
 }
 
-/** Prepare the latest turn before exposing its first history window. */
-export async function readHistoryTail(
-  page: ConversationHistoryPage,
-  readOlder: (
-    cursor: NonNullable<ConversationHistoryPage['before']>,
-  ) => Promise<ConversationHistoryPage | null>,
-): Promise<ConversationHistoryPage | null> {
-  const chunks = [...page.chunks];
-  const turnKey = historyTurnKey(chunks.at(-1));
-  let before = page.before;
-  for (let olderPages = 0; olderPages < 8 && before !== null && turnKey !== undefined; ) {
-    if (
-      chunks.some(
-        (chunk) =>
-          chunk.role === 'user' &&
-          chunk.field === 'body' &&
-          chunk.offset === 0 &&
-          historyTurnKey(chunk) === turnKey,
-      )
-    )
-      break;
-    const older = await readOlder(before);
-    if (older === null) return null;
-    chunks.unshift(...older.chunks);
-    before = older.before;
-    if (older.chunks.length) olderPages++;
-  }
-  return { ...page, chunks, before };
-}
-
 export function rootEventSequence(row: Pick<Row, 'position' | 'sequence'>): number | undefined {
   return row.position?.kind === 'live'
     ? row.position.sequence
