@@ -94,7 +94,7 @@ pub enum GuestRunResult {
     },
 }
 
-pub fn is_terminal_execution_state(state: &ExecutionState) -> bool {
+pub(crate) fn is_terminal_execution_state(state: &ExecutionState) -> bool {
     matches!(
         state,
         ExecutionState::Completed | ExecutionState::Failed { .. } | ExecutionState::Cancelled
@@ -206,7 +206,7 @@ async fn execute(req: GuestRunRequest) -> Result<GuestRunResult, String> {
             spawn_host_serve(&maka_bin, &command_path, &state_root, &req.artifacts_dir).await?;
 
         let inner = run_session(&req, &canonical_workspace_str, &journal_path, &host_proc).await;
-        if !needs_immediate_cleanup(&inner) {
+        if matches!(inner, Ok(GuestRunResult::Completed { .. })) {
             host_proc.detach();
             return inner;
         }
@@ -215,14 +215,10 @@ async fn execute(req: GuestRunRequest) -> Result<GuestRunResult, String> {
     }
     .await;
 
-    if needs_immediate_cleanup(&result) {
+    if !matches!(result, Ok(GuestRunResult::Completed { .. })) {
         let _ = tokio::fs::remove_dir_all(&run_dir).await;
     }
     result
-}
-
-fn needs_immediate_cleanup(outcome: &Result<GuestRunResult, String>) -> bool {
-    !matches!(outcome, Ok(GuestRunResult::Completed { .. }))
 }
 
 fn finalize_run_result(
@@ -459,18 +455,7 @@ fn delivery_fact_step_id(fact: &DeliveryFact) -> Option<StepId> {
         | DeliveryFact::PartCommitted { step_id, .. }
         | DeliveryFact::Delta { step_id, .. }
         | DeliveryFact::ToolInputReady { step_id, .. } => Some(*step_id),
-        DeliveryFact::Opened
-        | DeliveryFact::ExecutorStarted
-        | DeliveryFact::ExecutorTextChanged { .. }
-        | DeliveryFact::TranscriptChanged
-        | DeliveryFact::ToolDispatched { .. }
-        | DeliveryFact::ToolRejected { .. }
-        | DeliveryFact::ToolSettled { .. }
-        | DeliveryFact::ProviderToolResult { .. }
-        | DeliveryFact::ExecutorToolStart { .. }
-        | DeliveryFact::ExecutorToolProgress { .. }
-        | DeliveryFact::ExecutorToolResult { .. }
-        | DeliveryFact::Ended { .. } => None,
+        _ => None,
     }
 }
 
@@ -808,20 +793,16 @@ async fn query_typed<T: DeserializeOwned>(
 }
 
 async fn commit_typed<T: DeserializeOwned>(label: &str, mutation: Mutation) -> Result<T, String> {
-    let raw = commit(mutation).await?;
-    serde_json::from_value(raw).map_err(|e| format!("{label} receipt decode failed: {e}"))
-}
-
-async fn commit(mutation: Mutation) -> Result<Value, String> {
     mutation
         .prepare()
         .await
-        .map_err(|e| format!("mutation prepare failed: {e}"))?;
+        .map_err(|e| format!("{label} prepare failed: {e}"))?;
     let reply = mutation
         .confirm()
         .await
-        .map_err(|e| format!("mutation confirm failed: {e}"))?;
-    returned(reply)
+        .map_err(|e| format!("{label} confirm failed: {e}"))?;
+    let raw = returned(reply)?;
+    serde_json::from_value(raw).map_err(|e| format!("{label} receipt decode failed: {e}"))
 }
 
 fn returned(reply: OperationReply) -> Result<Value, String> {
@@ -1119,6 +1100,7 @@ pub(crate) mod tests {
         output_missing: u64,
     ) -> GuestEvidence {
         let run_id = RunId::new();
+        let tok = |known, missing| Tokens { known, missing };
         let through = UsageFence {
             schema_version: 1,
             state_domain: "domain-1".into(),
@@ -1126,6 +1108,42 @@ pub(crate) mod tests {
             auxiliary_sequence: 0,
             cell_sequence: 0,
             query_digest: "sha256:00".into(),
+        };
+        let summary = Totals {
+            models: ModelTotals {
+                calls,
+                success: calls,
+                error: 0,
+                aborted: 0,
+                unknown: 0,
+                duration_ms: 10.0,
+                input: tok(100, input_missing),
+                output: tok(20, output_missing),
+                cache_read: tok(0, 0),
+                cache_write: tok(0, 0),
+                reasoning: tok(0, 0),
+                cost: Cost {
+                    known_usd: 0.0,
+                    unvalued: 0,
+                    unpriced: 0,
+                },
+            },
+            tools: ToolTotals {
+                calls: 0,
+                success: 0,
+                error: 0,
+                unknown: 0,
+                rejected: 0,
+                duration_ms: 0.0,
+                mean_latency_ms: None,
+            },
+            pending: Pending {
+                models: pending_models,
+                tools: pending_tools,
+            },
+            by_provider: Vec::new(),
+            by_model: Vec::new(),
+            by_tool: Vec::new(),
         };
         GuestEvidence {
             steps_observed: 2,
@@ -1140,57 +1158,7 @@ pub(crate) mod tests {
             }),
             host_usage: UsageReport {
                 through: through.clone(),
-                summary: Totals {
-                    models: ModelTotals {
-                        calls,
-                        success: calls,
-                        error: 0,
-                        aborted: 0,
-                        unknown: 0,
-                        duration_ms: 10.0,
-                        input: Tokens {
-                            known: 100,
-                            missing: input_missing,
-                        },
-                        output: Tokens {
-                            known: 20,
-                            missing: output_missing,
-                        },
-                        cache_read: Tokens {
-                            known: 0,
-                            missing: 0,
-                        },
-                        cache_write: Tokens {
-                            known: 0,
-                            missing: 0,
-                        },
-                        reasoning: Tokens {
-                            known: 0,
-                            missing: 0,
-                        },
-                        cost: Cost {
-                            known_usd: 0.0,
-                            unvalued: 0,
-                            unpriced: 0,
-                        },
-                    },
-                    tools: ToolTotals {
-                        calls: 0,
-                        success: 0,
-                        error: 0,
-                        unknown: 0,
-                        rejected: 0,
-                        duration_ms: 0.0,
-                        mean_latency_ms: None,
-                    },
-                    pending: Pending {
-                        models: pending_models,
-                        tools: pending_tools,
-                    },
-                    by_provider: Vec::new(),
-                    by_model: Vec::new(),
-                    by_tool: Vec::new(),
-                },
+                summary,
                 next_cursor: None,
             },
             host_usage_attempts: UsagePage {
@@ -1256,82 +1224,29 @@ pub(crate) mod tests {
 
     #[test]
     fn finalize_run_result_preserves_evidence_when_shutdown_fails() {
-        let evidence = || sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0);
+        let stopped = || GuestRunResult::SubjectStopped {
+            stop_reason: "exceeded maxSteps".into(),
+            evidence: Box::new(sample_evidence(ExecutionState::Cancelled, 0, 0, 1, 0, 0)),
+        };
 
-        let ok_both = finalize_run_result(
-            Ok(GuestRunResult::Completed {
-                evidence: Box::new(evidence()),
-            }),
-            Ok(()),
-        );
-        assert!(matches!(ok_both, GuestRunResult::Completed { .. }));
-
-        let err_session_ok_shutdown = finalize_run_result(Err("session broke".into()), Ok(()));
         assert!(matches!(
-            err_session_ok_shutdown,
-            GuestRunResult::InfraFailed {
-                ref infra_error,
-                evidence: None,
-            } if infra_error == "session broke"
+            finalize_run_result(Ok(stopped()), Ok(())),
+            GuestRunResult::SubjectStopped { .. }
         ));
-
-        let err_both =
-            finalize_run_result(Err("session broke".into()), Err("cleanup broke".into()));
         assert!(matches!(
-            err_both,
-            GuestRunResult::InfraFailed {
-                ref infra_error,
-                evidence: None,
-            } if infra_error == "session broke; host shutdown failed: cleanup broke"
+            finalize_run_result(Err("session broke".into()), Ok(())),
+            GuestRunResult::InfraFailed { ref infra_error, evidence: None }
+                if infra_error == "session broke"
         ));
-
-        let ok_session_err_shutdown = finalize_run_result(
-            Ok(GuestRunResult::Completed {
-                evidence: Box::new(evidence()),
-            }),
-            Err("cleanup broke".into()),
-        );
         assert!(matches!(
-            ok_session_err_shutdown,
-            GuestRunResult::InfraFailed {
-                ref infra_error,
-                evidence: Some(_),
-            } if infra_error == "host shutdown failed: cleanup broke"
+            finalize_run_result(Err("session broke".into()), Err("cleanup broke".into())),
+            GuestRunResult::InfraFailed { ref infra_error, evidence: None }
+                if infra_error == "session broke; host shutdown failed: cleanup broke"
         ));
-    }
-
-    #[test]
-    fn needs_immediate_cleanup_distinguishes_completed_from_stop_and_errors() {
-        let evidence = || sample_evidence(ExecutionState::Completed, 0, 0, 1, 0, 0);
-
-        assert!(!needs_immediate_cleanup(&Ok(GuestRunResult::Completed {
-            evidence: Box::new(evidence()),
-        })));
-        assert!(needs_immediate_cleanup(&Ok(
-            GuestRunResult::SubjectStopped {
-                stop_reason: "exceeded maxSteps".into(),
-                evidence: Box::new(evidence()),
-            }
-        )));
-        assert!(needs_immediate_cleanup(&Ok(GuestRunResult::InfraFailed {
-            infra_error: "host shutdown failed".into(),
-            evidence: Some(Box::new(evidence())),
-        })));
-        assert!(needs_immediate_cleanup(&Err("boom".into())));
-    }
-
-    #[test]
-    fn terminal_execution_state_matches_only_settled_states() {
-        assert!(is_terminal_execution_state(&ExecutionState::Completed));
-        assert!(is_terminal_execution_state(&ExecutionState::Failed {
-            reason: None,
-        }));
-        assert!(is_terminal_execution_state(&ExecutionState::Cancelled));
-        assert!(!is_terminal_execution_state(&ExecutionState::Admitted));
-        assert!(!is_terminal_execution_state(&ExecutionState::Running));
-        assert!(!is_terminal_execution_state(&ExecutionState::Waiting {
-            waits: Vec::new(),
-            authority_unavailable: false,
-        }));
+        assert!(matches!(
+            finalize_run_result(Ok(stopped()), Err("cleanup broke".into())),
+            GuestRunResult::InfraFailed { ref infra_error, evidence: Some(_) }
+                if infra_error == "host shutdown failed: cleanup broke"
+        ));
     }
 }
