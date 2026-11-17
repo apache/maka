@@ -38,6 +38,7 @@ import {
   type CurrentDiffTarget,
   createCurrentDiff,
 } from '../../../../products/maka/workbench/app/CurrentDiff';
+import { currentDiffTargetKey } from '../../../../products/maka/workbench/app/currentDiffState';
 import { createHost, HostProvider, useHost } from '../../../../products/maka/workbench/app/host';
 import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
 import { currentLocale, tr } from '../../../../products/maka/workbench/app/locale';
@@ -95,7 +96,7 @@ function DiffPanel(props: UiViewProps) {
         </Button>
         <Each
           of={target() === undefined ? [] : [target()!]}
-          key={(value) => `${value.sessionId}/${value.area}/${value.path.bytesBase64}`}
+          key={(value) => currentDiffTargetKey(value)}
         >
           {(value) => {
             const model = createCurrentDiff(host, value());

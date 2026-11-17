@@ -29,7 +29,22 @@ const native = {
   locale: `export const tr = key => key;`,
   workspaceFileState: `export const createWorkspaceFiles = (_host, options) => ({ sessionId: options.sessionId });`,
   CurrentFile: `export const createCurrentFile = (_host, target) => ({target, anchorValue: target.anchor, setAnchor(next) { this.anchorValue = next; }, activate() {}, suspend() {}, dispose() {this.disposed = true;}});`,
-  currentDiffState: `export const createCurrentDiff = (_host, target) => ({target, anchorValue: target.anchor, anchor() { return this.anchorValue; }, setAnchor(next) { this.anchorValue = next; }, state: () => ({ kind: 'loading' }), position: { x: 0, y: 0 }, refresh: async () => {}, dispose() { this.disposed = true; }});`,
+  currentDiffState: `
+    export const resolveDiffSource = (target) => target.source ?? { kind: 'working', area: target.area ?? 'worktree' };
+    export const resolveDiffSourceKey = (target) => {
+      if (target.sourceKey) return target.sourceKey;
+      const src = resolveDiffSource(target);
+      if (src.kind === 'working') return 'working:' + src.area;
+      if (src.kind === 'compare') {
+        if (src.spec.kind === 'branch') return 'branch:' + src.spec.base;
+        if (src.spec.kind === 'commit') return 'commit:' + src.spec.oid;
+        return 'range:' + src.spec.base + '..' + src.spec.head;
+      }
+      return 'pr:' + src.repo.host + '/' + src.repo.owner + '/' + src.repo.repo + '#' + src.number;
+    };
+    export const currentDiffTargetKey = (target) => target.sessionId + '::' + resolveDiffSourceKey(target) + '::' + target.path.bytesBase64;
+    export const createCurrentDiff = (_host, target) => ({target, anchorValue: target.anchor, anchor() { return this.anchorValue; }, setAnchor(next) { this.anchorValue = next; }, threads: () => [], setThreads() {}, state: () => ({ kind: 'loading' }), position: { x: 0, y: 0 }, refresh: async () => {}, dispose() { this.disposed = true; }});
+  `,
   terminalState: `
     export const completed = reply => reply.value;
     export const terminalRunning = entry => entry.result.status === 'running';
@@ -333,4 +348,125 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
     'repo',
     'Repository',
   ]);
+});
+
+test('patch line bijection, viewed digest invalidation, and GitHub PR review state', async (t) => {
+  const { buildPatchLineMap, formatGitHubThreadPrompt, formatPrKey } = await import(
+    new URL('reviewState.ts', appRoot)
+  );
+  const { resources } = setup(t);
+
+  const patch = [
+    'diff --git a/src/lib.rs b/src/lib.rs',
+    '--- a/src/lib.rs',
+    '+++ b/src/lib.rs',
+    '@@ -10,3 +10,4 @@',
+    ' fn keep() {}',
+    '-fn old_call() {}',
+    '+fn new_call() {}',
+    '+fn extra_call() {}',
+    ' fn end_first() {}',
+    '@@ -40,2 +41,2 @@',
+    ' fn second_hunk() {',
+    '+    added_in_second();',
+    '',
+  ].join('\n');
+
+  const map = buildPatchLineMap(patch);
+  assert.deepEqual(map.oldVirtualToReal, [10, 11, 12, 40]);
+  assert.deepEqual(map.newVirtualToReal, [10, 11, 12, 13, 41, 42]);
+  assert.equal(map.oldRealToVirtual.get(11), 1);
+  assert.equal(map.newRealToVirtual.get(12), 2);
+  assert.equal(map.newRealToVirtual.get(42), 5);
+  assert.equal(map.newLines[5], '    added_in_second();');
+
+  assert.equal(
+    resources.reviewStore.isViewed('A', 'branch:main', path.bytesBase64, 'sha-v1'),
+    false,
+  );
+  assert.equal(
+    resources.reviewStore.toggleViewed('A', 'branch:main', path.bytesBase64, 'sha-v1'),
+    true,
+  );
+  assert.equal(
+    resources.reviewStore.isViewed('A', 'branch:main', path.bytesBase64, 'sha-v1'),
+    true,
+  );
+  assert.equal(
+    resources.reviewStore.isViewed('A', 'branch:main', path.bytesBase64, 'sha-v2'),
+    false,
+  );
+
+  const branchTarget = {
+    sessionId: 'A',
+    source: {
+      kind: 'compare',
+      spec: { kind: 'branch', base: 'origin/main' },
+      label: 'origin/main…HEAD',
+    },
+    digest: 'sha-v1',
+    path,
+    title: 'src/lib.rs',
+  };
+  const prNote = resources.reviewStore.upsertNote({
+    sessionId: 'A',
+    path,
+    pathLabel: 'src/lib.rs',
+    diffTarget: branchTarget,
+    side: 'new',
+    startLine: 2,
+    endLine: 3,
+    realStartLine: 12,
+    realEndLine: 13,
+    excerpt: 'fn extra_call() {}',
+    comment: 'Check edge case.',
+  });
+  resources.jumpToNote(prNote);
+  assert.equal(resources.activeTab().kind, 'diff');
+  assert.deepEqual(resources.activeTab().model.target.source, branchTarget.source);
+
+  const prKey = formatPrKey({ host: 'github.com', owner: 'apache', repo: 'maka' }, 6974);
+  const draft = resources.reviewStore.upsertPrDraft('A', {
+    prKey,
+    path: 'src/lib.rs',
+    side: 'RIGHT',
+    line: 42,
+    startLine: 41,
+    excerpt: 'added_in_second();',
+    body: 'Nit: prefer borrowed slice here.',
+  });
+  assert.equal(resources.reviewStore.prDrafts('A', prKey).length, 1);
+  assert.equal(resources.reviewStore.prDrafts('A', prKey)[0].id, draft.id);
+
+  const thread = {
+    id: 501,
+    path: 'src/lib.rs',
+    side: 'RIGHT',
+    line: 42,
+    startLine: 41,
+    outdated: false,
+    diffHunk: '@@ -40,2 +41,2 @@',
+    comments: [
+      {
+        id: 501,
+        author: 'reviewer',
+        body: 'Handle empty slice.',
+        createdAt: '2026-11-17T12:00:00Z',
+        htmlUrl: 'https://github.com/apache/maka/pull/6974#discussion_r501',
+      },
+    ],
+  };
+  resources.reviewStore.setPrThreads('A', prKey, [thread]);
+  resources.reviewStore.appendPrThreadReply('A', prKey, 501, {
+    id: 502,
+    author: 'author',
+    body: 'Done!',
+    createdAt: '2026-11-17T12:05:00Z',
+    htmlUrl: 'https://github.com/apache/maka/pull/6974#discussion_r502',
+  });
+  const updatedThread = resources.reviewStore.prThreads('A', prKey)[0];
+  assert.equal(updatedThread.comments.length, 2);
+  const promptText = formatGitHubThreadPrompt(6974, updatedThread, 'fn second_hunk() {');
+  assert.ok(promptText.includes('GitHub PR #6974 review thread on `src/lib.rs#L41-L42`'));
+  assert.ok(promptText.includes('**@reviewer**: Handle empty slice.'));
 });

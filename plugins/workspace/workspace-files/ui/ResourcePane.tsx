@@ -72,7 +72,10 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const personal = () => resources.terminalSection() === 'terminals';
   const terminal = () => resources.activeTerminal();
   const showTerminals = (kind: 'terminals' | 'agent-terminals') =>
-    inputAction(resources.inventory, { sessionId: closeTarget.sessionId, kind });
+    inputAction(resources.inventory, {
+      sessionId: closeTarget.sessionId,
+      kind,
+    });
   const previews = () => resources.tabs().filter((tab) => tab.kind !== 'terminal');
   const closeTarget = {
     sessionId,
@@ -117,7 +120,13 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           keymap.bind('mod+]', () => resources.goForward(), { within: node }),
         ];
       }}
-      style={{ flex: 1, minHeight: 0, backgroundColor: C.panel, padding: 8, gap: 8 }}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        backgroundColor: C.panel,
+        padding: 8,
+        gap: 8,
+      }}
     >
       <View
         desktop={props.docked ? windowDrag : undefined}
@@ -259,9 +268,16 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       sessionId: tab().sessionId,
                       instance: tab().instance,
                     })}
-                    accessibilityLabel={tr('Preview {name}', { name: tab().title })}
+                    accessibilityLabel={tr('Preview {name}', {
+                      name: tab().title,
+                    })}
                     tooltip={textTooltip(() => tab().title)}
-                    style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 6 }}
+                    style={{
+                      ...controlStyle,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
                   >
@@ -290,7 +306,9 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       sessionId: tab().sessionId,
                       instance: tab().instance,
                     })}
-                    accessibilityLabel={tr('Close {name}', { name: tab().title })}
+                    accessibilityLabel={tr('Close {name}', {
+                      name: tab().title,
+                    })}
                     tooltip={textTooltip(() => tr('Close {name}', { name: tab().title }))}
                     style={{
                       ...controlStyle,
@@ -315,7 +333,12 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           accessibilityLabel={tr('Agent terminals')}
           selected={agent()}
           onPress={showTerminals('agent-terminals')}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+          }}
           selectedStyle={{ backgroundColor: C.raised }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
@@ -331,7 +354,11 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               accessibilityLabel={tr('{count} running commands', {
                 count: resources.runningAgentTerminals().length,
               })}
-              style={{ ...captionTextStyle, color: C.accent, fontWeight: '600' }}
+              style={{
+                ...captionTextStyle,
+                color: C.accent,
+                fontWeight: '600',
+              }}
             >
               {resources.runningAgentTerminals().length}
             </Text>
@@ -341,7 +368,12 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           accessibilityLabel={tr('Close workspace preview')}
           onPress={inputAction(resources.close, closeTarget)}
           tooltip={textTooltip(() => tr('Close workspace preview · Esc'))}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          style={{
+            ...controlStyle,
+            width: 32,
+            paddingHorizontal: 8,
+            alignItems: 'center',
+          }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
         >
@@ -367,7 +399,11 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         />
       </If>
       <If when={resources.active() === 'changes'}>
-        <WorkspaceChanges sessionId={sessionId} openDiff={(target) => resources.openDiff(target)} />
+        <WorkspaceChanges
+          sessionId={sessionId}
+          reviewStore={resources.reviewStore}
+          openDiff={(target) => resources.openDiff(target)}
+        />
       </If>
       <If when={resources.active() === 'files'}>
         <WorkspaceFiles model={resources.files} />
@@ -377,7 +413,11 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           const current = tab();
           const openImageViewer: OpenImageViewer = (image, restoreFocus) =>
             resources.openImageViewer(
-              { sessionId: current.sessionId, instance: current.instance, image },
+              {
+                sessionId: current.sessionId,
+                instance: current.instance,
+                image,
+              },
               restoreFocus,
             );
           if (current.kind === 'file')
@@ -399,7 +439,13 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             return (
               <>
                 <If when={current.model.agentOwned()}>
-                  <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      gap: 4,
+                      alignItems: 'center',
+                    }}
+                  >
                     <Button
                       accessibilityLabel={tr('Back to Agent terminals')}
                       onPress={showTerminals('agent-terminals')}

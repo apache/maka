@@ -696,3 +696,224 @@ fn workspace_diff_combines_changed_files_and_counts_binary_skips() {
     assert!(combined.patch.contains("-fn a() -> i32 { 1 }"));
     assert!(combined.patch.contains("+fn a() -> i32 { 100 }"));
 }
+
+#[test]
+fn revisions_and_merge_base_compare_across_diverged_branches_and_commits() {
+    let f = Fixture::new();
+    git(&f.root, &["checkout", "-b", "main", "--quiet"]);
+    git(
+        &f.root,
+        &["remote", "add", "origin", "git@github.com:forker/maka.git"],
+    );
+    git(
+        &f.root,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            "https://github.com/apache/maka.git",
+        ],
+    );
+
+    fs::write(
+        f.root.join("shared.rs"),
+        "pub fn v() -> i32 { 1 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("unrelated.rs"),
+        "pub fn keep() -> i32 { 1 }
+",
+    )
+    .unwrap();
+    git(&f.root, &["add", "."]);
+    git(&f.root, &["commit", "--quiet", "-m", "initial on main"]);
+    let base_oid = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    // Create feature branch from base_oid.
+    git(&f.root, &["checkout", "-b", "feat/review", "--quiet"]);
+    fs::write(
+        f.root.join("shared.rs"),
+        "pub fn v() -> i32 { 2 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("added.rs"),
+        "pub fn added() {}
+",
+    )
+    .unwrap();
+    git(&f.root, &["add", "."]);
+    git(
+        &f.root,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "feat: update shared and add file",
+        ],
+    );
+    let feat_oid = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    // Advance main independently so main and feat/review diverge!
+    git(&f.root, &["checkout", "main", "--quiet"]);
+    fs::write(
+        f.root.join("unrelated.rs"),
+        "pub fn keep() -> i32 { 99 }
+",
+    )
+    .unwrap();
+    git(&f.root, &["add", "."]);
+    git(
+        &f.root,
+        &["commit", "--quiet", "-m", "chore: unrelated main advance"],
+    );
+    git(&f.root, &["checkout", "feat/review", "--quiet"]);
+
+    let rev = revisions(&f.root, &f.identity, &f.private, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert_eq!(rev.head_branch.as_deref(), Some("feat/review"));
+    assert_eq!(rev.head_oid.as_deref(), Some(feat_oid.as_str()));
+    assert_eq!(rev.default_base.as_deref(), Some("main"));
+    assert_eq!(rev.commits.len(), 2);
+    assert_eq!(rev.commits[0].summary, "feat: update shared and add file");
+    assert_eq!(rev.remotes.len(), 2);
+    assert_eq!(
+        (
+            rev.remotes[0].remote.as_str(),
+            rev.remotes[0].host.as_str(),
+            rev.remotes[0].owner.as_str(),
+            rev.remotes[0].repo.as_str()
+        ),
+        ("origin", "github.com", "forker", "maka")
+    );
+    assert_eq!(
+        (
+            rev.remotes[1].remote.as_str(),
+            rev.remotes[1].owner.as_str(),
+            rev.remotes[1].repo.as_str()
+        ),
+        ("upstream", "apache", "maka")
+    );
+
+    // Branch compare must diff merge-base(main, feat/review) -> feat/review, excluding unrelated.rs!
+    let branch_cmp = compare(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &GitCompareSpec::Branch {
+            base: "main".into(),
+        },
+        true,
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(branch_cmp.base_oid.as_deref(), Some(base_oid.as_str()));
+    assert_eq!(branch_cmp.head_oid, feat_oid);
+    let paths: Vec<_> = branch_cmp
+        .entries
+        .iter()
+        .map(|e| (String::from_utf8(e.path.bytes().unwrap()).unwrap(), e.kind))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            ("added.rs".to_owned(), GitChangeKind::Added),
+            ("shared.rs".to_owned(), GitChangeKind::Modified),
+        ]
+    );
+    let combined_patch = branch_cmp.patch.unwrap();
+    assert!(combined_patch.patch.contains("+pub fn v() -> i32 { 2 }"));
+    assert!(!combined_patch.patch.contains("unrelated.rs"));
+
+    let single = compare_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &GitCompareSpec::Branch {
+            base: "main".into(),
+        },
+        &WorkspacePath::from_bytes(b"shared.rs").unwrap(),
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    match single {
+        GitDiff::Text {
+            patch,
+            before,
+            after,
+        } => {
+            assert_eq!(
+                before,
+                "pub fn v() -> i32 { 1 }
+"
+            );
+            assert_eq!(
+                after,
+                "pub fn v() -> i32 { 2 }
+"
+            );
+            assert!(patch.contains("-pub fn v() -> i32 { 1 }"));
+            assert!(patch.contains("+pub fn v() -> i32 { 2 }"));
+        }
+        other => panic!("expected text diff, got {other:?}"),
+    }
+
+    // Root commit compare (no parent) treats all files in initial commit as Added.
+    let root_cmp = compare(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &GitCompareSpec::Commit {
+            oid: base_oid.clone(),
+        },
+        false,
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(root_cmp.base_oid, None);
+    assert_eq!(root_cmp.entries.len(), 2);
+    assert!(
+        root_cmp
+            .entries
+            .iter()
+            .all(|e| e.kind == GitChangeKind::Added)
+    );
+}
+
+#[test]
+fn parses_ssh_https_and_enterprise_remotes_safely() {
+    assert_eq!(
+        parse_remote_repo(
+            "origin",
+            "ssh://git@github.corp.example:2222/team/service.git"
+        ),
+        Some(GitRemoteRepo {
+            remote: "origin".into(),
+            host: "github.corp.example".into(),
+            owner: "team".into(),
+            repo: "service".into(),
+        })
+    );
+    assert_eq!(parse_remote_repo("origin", "/local/path/repo"), None);
+    assert_eq!(parse_remote_repo("origin", "C:\\Users\\repo"), None);
+    assert_eq!(
+        parse_remote_repo("origin", "https://github.com/../escape.git"),
+        None
+    );
+}

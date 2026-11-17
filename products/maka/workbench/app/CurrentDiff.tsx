@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { computed, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { cleanup, computed, effect, inputAction, keymap, Scroll, signal, Text, View } from 'nsh';
 import {
   Button,
   DiffView,
@@ -30,27 +30,37 @@ import {
 import type { GitArea } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   createCurrentDiff,
+  currentDiffTargetKey,
   type CurrentDiffModel,
   type CurrentDiffTarget,
+  resolveDiffSource,
+  resolveDiffSourceKey,
 } from './currentDiffState';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
   AddLineNoteButton,
   formatReviewNote,
+  GitHubThreadCard,
   InlineReviewComposer,
   InlineReviewNoteCard,
-  lineRangeText,
+  PendingPrCommentCard,
+  realLineRangeText,
 } from './ReviewComposer';
 import {
+  buildPatchLineMap,
   type CodeLocation,
   extractLineIdentifiers,
+  formatGitHubThreadPrompt,
+  formatPrKey,
+  type GitHubRepoRef,
+  type GitHubReviewThread,
+  type PatchLineMap,
+  type PendingPrComment,
   type ReviewNote,
   type ReviewStore,
 } from './reviewState';
 import { renderText } from './text';
-
-export { createCurrentDiff, type CurrentDiffModel, type CurrentDiffTarget };
 import {
   bodyTextStyle,
   C,
@@ -65,6 +75,8 @@ import {
   quietHoverStyle,
   textTooltip,
 } from './ui';
+
+export { createCurrentDiff, type CurrentDiffModel, type CurrentDiffTarget };
 
 export const gitAreaLabel: Record<GitArea, string> = {
   get staged() {
@@ -82,13 +94,21 @@ export type DiffReviewBridge = {
   store: ReviewStore;
   canPrompt: boolean;
   deliverPrompt(text: string, mode: 'insert' | 'send'): boolean;
+  openDiff?(target: CurrentDiffTarget): void;
   openFileAt?(line: number): void;
   lookupSymbol?(kind: 'definition' | 'references', symbol: string, line: number): Promise<void>;
   openLocation?(loc: CodeLocation): void;
+  replyPrThread?(
+    repo: GitHubRepoRef,
+    prNumber: number,
+    threadId: number,
+    body: string,
+  ): Promise<string | null>;
 };
 
 type DraftAnnotation = {
-  editId?: string;
+  editNoteId?: string;
+  editPrDraftId?: string;
   side: DiffSide;
   startLine: number;
   endLine: number;
@@ -100,11 +120,31 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
   const layout = signal<'split' | 'unified'>('unified');
   const softWrap = signal(false);
   const expandedAll = signal(false);
+  const showOutdated = signal(false);
   const stats = signal<DiffStats>({ added: 0, deleted: 0, hunks: 0 });
   const selectedRange = signal<DiffLineRange | null>(null);
   const activeSymbol = signal<string | null>(null);
   const draftNote = signal<DraftAnnotation | null>(null);
   let diffRef: DiffViewRef | undefined;
+  let unbinds: (() => void)[] = [];
+  cleanup(() => {
+    for (const fn of unbinds) fn();
+  });
+
+  const source = () => resolveDiffSource(model.target);
+  const sourceKey = () => resolveDiffSourceKey(model.target);
+  const pathKey = () => model.target.path.bytesBase64;
+  const prKey = () => {
+    const src = source();
+    return src.kind === 'pr' ? formatPrKey(src.repo, src.number) : null;
+  };
+
+  const sourceBadge = () => {
+    const src = source();
+    if (src.kind === 'working') return gitAreaLabel[src.area];
+    if (src.kind === 'compare') return src.label;
+    return `PR #${src.number}`;
+  };
 
   const notice = () => {
     const state = model.state();
@@ -115,6 +155,8 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
         return tr('Not a Git workspace.');
       case 'binary':
         return tr('Binary file. A text diff is unavailable.');
+      case 'large':
+        return tr('Diff is too large to display inline.');
       case 'unchanged':
         return tr('No current changes in this area.');
       case 'unsupported':
@@ -122,18 +164,88 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
       case 'error':
         return renderText(state.message);
       case 'text':
+      case 'patch_only':
         return '';
     }
   };
 
-  const textState = computed(() => {
+  const renderableState = computed(() => {
     const cur = model.state();
-    return cur.kind === 'text' ? cur : null;
+    if (cur.kind === 'text') {
+      const usesPatch = cur.before === cur.after;
+      return {
+        mode: usesPatch ? ('patch' as const) : ('full' as const),
+        before: cur.before,
+        after: cur.after,
+        patch: cur.patch,
+        digest: cur.digest,
+        patchMap: usesPatch ? buildPatchLineMap(cur.patch) : (null as PatchLineMap | null),
+      };
+    }
+    if (cur.kind === 'patch_only') {
+      return {
+        mode: 'patch' as const,
+        before: '',
+        after: '',
+        patch: cur.patch,
+        digest: cur.digest,
+        patchMap: buildPatchLineMap(cur.patch),
+      };
+    }
+    return null;
   });
+
+  const currentDigest = () => renderableState()?.digest ?? model.target.digest ?? '';
+
+  const isViewed = computed(() => {
+    const store = props.review?.store;
+    const digest = currentDigest();
+    if (!store || !digest) return false;
+    return store.isViewed(model.target.sessionId, sourceKey(), pathKey(), digest);
+  });
+
+  const navContext = computed(() => {
+    const store = props.review?.store;
+    if (!store || !props.review?.openDiff) return null;
+    const queue = store.reviewQueue(model.target.sessionId);
+    if (queue.length <= 1) return null;
+    const currentKey = currentDiffTargetKey(model.target);
+    const index = queue.findIndex((item) => item.key === currentKey);
+    if (index < 0) return null;
+    return {
+      index,
+      total: queue.length,
+      prev: index > 0 ? queue[index - 1]! : null,
+      next: index + 1 < queue.length ? queue[index + 1]! : null,
+    };
+  });
+
+  const toggleViewed = () => {
+    const store = props.review?.store;
+    const digest = currentDigest();
+    if (!store || !digest) return;
+    store.toggleViewed(model.target.sessionId, sourceKey(), pathKey(), digest);
+  };
+
+  const virtualToReal = (side: DiffSide, virtualLine: number): number => {
+    const cur = renderableState();
+    if (!cur?.patchMap) return virtualLine + 1;
+    const arr = side === 'old' ? cur.patchMap.oldVirtualToReal : cur.patchMap.newVirtualToReal;
+    return arr[virtualLine] ?? virtualLine + 1;
+  };
+
+  const realToVirtual = (side: DiffSide, realLine1: number): number | null => {
+    const cur = renderableState();
+    if (!cur) return null;
+    if (!cur.patchMap) return Math.max(0, realLine1 - 1);
+    const map = side === 'old' ? cur.patchMap.oldRealToVirtual : cur.patchMap.newRealToVirtual;
+    const mapped = map.get(realLine1);
+    return mapped === undefined ? null : mapped;
+  };
 
   effect(() => {
     const anc = model.anchor();
-    const cur = textState();
+    const cur = renderableState();
     if (!anc || !cur) return;
     setTimeout(() => {
       if (!diffRef) return;
@@ -157,17 +269,25 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
   });
 
   const extractExcerpt = (side: DiffSide, startLine: number, endLine: number): string => {
-    const cur = textState();
+    const cur = renderableState();
     if (!cur) return '';
-    const source = side === 'old' ? cur.before : cur.after;
-    const lines = source.split('\n');
-    return lines.slice(startLine, endLine + 1).join('\n');
+    const lo = Math.min(startLine, endLine);
+    const hi = Math.max(startLine, endLine);
+    if (cur.patchMap) {
+      const lines = side === 'old' ? cur.patchMap.oldLines : cur.patchMap.newLines;
+      return lines.slice(lo, hi + 1).join('\n');
+    }
+    const text = side === 'old' ? cur.before : cur.after;
+    return text
+      .split('\n')
+      .slice(lo, hi + 1)
+      .join('\n');
   };
 
   const selectedSymbols = computed(() => {
     const range = selectedRange();
-    const cur = textState();
-    if (!range || !cur) return [];
+    const cur = renderableState();
+    if (!range || !cur || cur.mode !== 'full') return [];
     const snippet = extractExcerpt(range.side, range.start, Math.min(range.end, range.start + 3));
     return extractLineIdentifiers(snippet, 8);
   });
@@ -175,23 +295,86 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
   const fileNotes = computed<ReviewNote[]>(() => {
     const store = props.review?.store;
     if (!store) return [];
-    return store
-      .notes(model.target.sessionId)
-      .filter(
-        (n) =>
-          n.path.bytesBase64 === model.target.path.bytesBase64 &&
-          (n.area === undefined || n.area === model.target.area),
+    const curKey = currentDiffTargetKey(model.target);
+    return store.notes(model.target.sessionId).filter((n) => {
+      if (n.diffTarget) return currentDiffTargetKey(n.diffTarget) === curKey;
+      return (
+        n.path.bytesBase64 === model.target.path.bytesBase64 &&
+        (n.area === undefined || n.area === model.target.area)
       );
+    });
+  });
+
+  const filePrDrafts = computed<PendingPrComment[]>(() => {
+    const store = props.review?.store;
+    const key = prKey();
+    const src = source();
+    if (!store || !key || src.kind !== 'pr') return [];
+    return store.prDrafts(model.target.sessionId, key).filter((d) => d.path === src.pathString);
+  });
+
+  const allFilePrThreads = computed<GitHubReviewThread[]>(() => {
+    const store = props.review?.store;
+    const key = prKey();
+    const src = source();
+    if (src.kind !== 'pr') return [];
+    const fromStore = store && key ? store.prThreads(model.target.sessionId, key) : [];
+    const sourceList = fromStore.length > 0 ? fromStore : model.threads();
+    return sourceList.filter((t) => t.path === src.pathString);
+  });
+
+  const mappedPrThreads = computed(() => {
+    const inline: {
+      thread: GitHubReviewThread;
+      side: DiffSide;
+      virtualLine: number;
+    }[] = [];
+    const unmapped: GitHubReviewThread[] = [];
+    for (const thread of allFilePrThreads()) {
+      if (thread.outdated || thread.line === null) {
+        unmapped.push(thread);
+        continue;
+      }
+      const side: DiffSide = thread.side === 'LEFT' ? 'old' : 'new';
+      const vLine = realToVirtual(side, thread.line);
+      if (vLine === null) {
+        unmapped.push(thread);
+      } else {
+        inline.push({ thread, side, virtualLine: vLine });
+      }
+    }
+    return { inline, unmapped };
   });
 
   const annotations = computed<DiffAnnotation[]>(() => {
-    const list: DiffAnnotation[] = fileNotes().map((note) => ({
-      id: note.id,
-      side: note.side,
-      line: note.endLine,
-    }));
+    const list: DiffAnnotation[] = [];
+    for (const item of mappedPrThreads().inline) {
+      list.push({
+        id: `gh-thread:${item.thread.id}`,
+        side: item.side,
+        line: item.virtualLine,
+      });
+    }
+    for (const draftItem of filePrDrafts()) {
+      const side: DiffSide = draftItem.side === 'LEFT' ? 'old' : 'new';
+      const vLine = realToVirtual(side, draftItem.line);
+      if (vLine !== null) {
+        list.push({
+          id: `pr-draft:${draftItem.id}`,
+          side,
+          line: vLine,
+        });
+      }
+    }
+    for (const note of fileNotes()) {
+      list.push({
+        id: note.id,
+        side: note.side,
+        line: note.endLine,
+      });
+    }
     const draft = draftNote();
-    if (draft && !draft.editId) {
+    if (draft && !draft.editNoteId && !draft.editPrDraftId) {
       list.push({
         id: '__draft__',
         side: draft.side,
@@ -202,25 +385,51 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
   });
 
   const startDraft = (range: DiffLineRange) => {
+    const lo = Math.min(range.start, range.end);
+    const hi = Math.max(range.start, range.end);
     draftNote.set({
       side: range.side,
-      startLine: range.start,
-      endLine: range.end,
+      startLine: lo,
+      endLine: hi,
     });
   };
 
   const buildNoteInput = (draft: DraftAnnotation, comment: string) => ({
-    ...(draft.editId ? { id: draft.editId } : {}),
+    ...(draft.editNoteId ? { id: draft.editNoteId } : {}),
     sessionId: model.target.sessionId,
     path: model.target.path,
     pathLabel: model.target.title,
-    area: model.target.area,
+    ...(model.target.area ? { area: model.target.area } : {}),
+    diffTarget: model.target,
     side: draft.side,
     startLine: draft.startLine,
     endLine: draft.endLine,
+    realStartLine: virtualToReal(draft.side, draft.startLine),
+    realEndLine: virtualToReal(draft.side, draft.endLine),
     excerpt: extractExcerpt(draft.side, draft.startLine, draft.endLine),
     comment,
   });
+
+  const savePrDraftComment = (draft: DraftAnnotation, body: string) => {
+    const src = source();
+    const key = prKey();
+    const store = props.review?.store;
+    if (src.kind !== 'pr' || !key || !store) return;
+    const side = draft.side === 'old' ? ('LEFT' as const) : ('RIGHT' as const);
+    const realStart = virtualToReal(draft.side, draft.startLine);
+    const realEnd = virtualToReal(draft.side, draft.endLine);
+    store.upsertPrDraft(model.target.sessionId, {
+      ...(draft.editPrDraftId ? { id: draft.editPrDraftId } : {}),
+      prKey: key,
+      path: src.pathString,
+      side,
+      line: Math.max(realStart, realEnd),
+      ...(realStart < realEnd ? { startLine: Math.min(realStart, realEnd), startSide: side } : {}),
+      excerpt: extractExcerpt(draft.side, draft.startLine, draft.endLine),
+      body,
+    });
+    draftNote.set(null);
+  };
 
   const toggleExpandAll = () => {
     const next = !expandedAll();
@@ -234,35 +443,202 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
     const sel = selectedRange();
     const hunks = diffRef ? await diffRef.hunks() : [];
     const firstHunk = hunks[0];
-    const line =
+    const vLine =
       sel?.side === 'new' ? sel.start : sel ? sel.start : firstHunk ? firstHunk.newStart : 0;
-    props.review.openFileAt(line);
+    const real1 = virtualToReal(sel?.side ?? 'new', vLine);
+    props.review.openFileAt(Math.max(0, real1 - 1));
   };
 
   return (
-    <View style={{ flex: 1, minHeight: 0, gap: 6 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+    <View
+      ref={(node) => {
+        for (const fn of unbinds) fn();
+        unbinds = node
+          ? [
+              keymap.bind('v', toggleViewed, {
+                when: 'notEditing',
+                within: node,
+              }),
+              keymap.bind(
+                '[',
+                () => {
+                  const prev = navContext()?.prev;
+                  if (prev) props.review?.openDiff?.(prev.target);
+                },
+                { when: 'notEditing', within: node },
+              ),
+              keymap.bind(
+                ']',
+                () => {
+                  const next = navContext()?.next;
+                  if (next) props.review?.openDiff?.(next.target);
+                },
+                { when: 'notEditing', within: node },
+              ),
+            ]
+          : [];
+      }}
+      style={{ flex: 1, minHeight: 0, gap: 6 }}
+    >
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          flexWrap: 'wrap',
+        }}
+      >
         <Icon name="code" size={14} color={C.muted} />
         <Text
           tooltip={textTooltip(() => model.target.title)}
           style={[
-            { ...captionTextStyle, flex: 1, minWidth: 80, color: C.text, fontWeight: '500' },
+            {
+              ...captionTextStyle,
+              flex: 1,
+              minWidth: 80,
+              color: C.text,
+              fontWeight: '500',
+            },
             { numberOfLines: 1 },
           ]}
         >
           {model.target.title}
         </Text>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {gitAreaLabel[model.target.area]}
-        </Text>
-        <If when={textState() !== null}>
+        <View
+          style={{
+            paddingHorizontal: 6,
+            paddingVertical: 2,
+            borderRadius: 4,
+            backgroundColor: C.card,
+          }}
+        >
+          <Text
+            style={{
+              ...captionTextStyle,
+              fontSize: 12,
+              color: source().kind === 'pr' ? C.accent : C.secondary,
+            }}
+          >
+            {sourceBadge()}
+          </Text>
+        </View>
+        <If when={renderableState() !== null}>
           <Text style={{ ...captionTextStyle, color: C.success }}>+{stats().added}</Text>
           <Text style={{ ...captionTextStyle, color: C.danger }}>−{stats().deleted}</Text>
         </If>
+        <If when={navContext() !== null}>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 2,
+              backgroundColor: C.card,
+              borderRadius: 6,
+              padding: 2,
+            }}
+          >
+            <Button
+              accessibilityLabel={tr('Previous file')}
+              tooltip={textTooltip(() => tr('Previous file · ['))}
+              disabled={!navContext()?.prev}
+              onPress={() => {
+                const prev = navContext()?.prev;
+                if (prev) props.review?.openDiff?.(prev.target);
+              }}
+              style={{
+                ...controlStyle,
+                width: 24,
+                minHeight: 24,
+                paddingHorizontal: 4,
+                paddingVertical: 2,
+                borderRadius: 4,
+                alignItems: 'center',
+              }}
+              hoverStyle={quietHoverStyle()}
+              focusStyle={quietFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Icon name="back" size={13} color={C.secondary} />
+            </Button>
+            <Text
+              style={{
+                ...captionTextStyle,
+                fontSize: 12,
+                paddingHorizontal: 4,
+                color: C.muted,
+              }}
+            >
+              {navContext()!.index + 1} / {navContext()!.total}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Next file')}
+              tooltip={textTooltip(() => tr('Next file · ]'))}
+              disabled={!navContext()?.next}
+              onPress={() => {
+                const next = navContext()?.next;
+                if (next) props.review?.openDiff?.(next.target);
+              }}
+              style={{
+                ...controlStyle,
+                width: 24,
+                minHeight: 24,
+                paddingHorizontal: 4,
+                paddingVertical: 2,
+                borderRadius: 4,
+                alignItems: 'center',
+              }}
+              hoverStyle={quietHoverStyle()}
+              focusStyle={quietFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Icon name="right" size={13} color={C.secondary} />
+            </Button>
+          </View>
+        </If>
+        <If when={props.review !== undefined && currentDigest().length > 0}>
+          <Button
+            accessibilityLabel={tr('Mark file as viewed')}
+            tooltip={textTooltip(() => tr('Mark file as viewed · V'))}
+            selected={isViewed()}
+            onPress={toggleViewed}
+            style={{
+              ...controlStyle,
+              minHeight: 26,
+              height: 26,
+              paddingHorizontal: 8,
+              borderRadius: 6,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              backgroundColor: isViewed() ? C.added : C.card,
+            }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+          >
+            <Icon name="check" size={12} color={isViewed() ? C.success : C.muted} />
+            <Text
+              style={{
+                ...captionTextStyle,
+                fontSize: 12,
+                color: isViewed() ? C.success : C.secondary,
+                fontWeight: isViewed() ? '500' : '400',
+              }}
+            >
+              {tr('Viewed')}
+            </Text>
+          </Button>
+        </If>
       </View>
 
-      <If when={textState() !== null}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      <If when={renderableState() !== null}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            flexWrap: 'wrap',
+          }}
+        >
           <View
             role="tablist"
             style={{
@@ -358,28 +734,30 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             <Icon name="down" size={14} color={C.secondary} />
           </Button>
 
-          <Button
-            accessibilityLabel={
-              expandedAll() ? tr('Collapse unchanged lines') : tr('Expand unchanged lines')
-            }
-            tooltip={textTooltip(() =>
-              expandedAll() ? tr('Collapse unchanged lines') : tr('Expand unchanged lines'),
-            )}
-            selected={expandedAll()}
-            onPress={toggleExpandAll}
-            style={{
-              ...controlStyle,
-              width: 28,
-              minHeight: 28,
-              paddingHorizontal: 6,
-              alignItems: 'center',
-              backgroundColor: expandedAll() ? C.cardRaised : 'transparent',
-            }}
-            hoverStyle={quietHoverStyle()}
-            focusStyle={quietFocusStyle()}
-          >
-            <Icon name="compaction" size={14} color={expandedAll() ? C.text : C.secondary} />
-          </Button>
+          <If when={renderableState()?.mode === 'full'}>
+            <Button
+              accessibilityLabel={
+                expandedAll() ? tr('Collapse unchanged lines') : tr('Expand unchanged lines')
+              }
+              tooltip={textTooltip(() =>
+                expandedAll() ? tr('Collapse unchanged lines') : tr('Expand unchanged lines'),
+              )}
+              selected={expandedAll()}
+              onPress={toggleExpandAll}
+              style={{
+                ...controlStyle,
+                width: 28,
+                minHeight: 28,
+                paddingHorizontal: 6,
+                alignItems: 'center',
+                backgroundColor: expandedAll() ? C.cardRaised : 'transparent',
+              }}
+              hoverStyle={quietHoverStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Icon name="compaction" size={14} color={expandedAll() ? C.text : C.secondary} />
+            </Button>
+          </If>
 
           <Button
             accessibilityLabel={tr('Wrap lines')}
@@ -419,7 +797,11 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                 void (async () => {
                   const hunks = diffRef ? await diffRef.hunks() : [];
                   const line = hunks[0] ? hunks[0].newStart : 0;
-                  const range: DiffLineRange = { side: 'new', start: line, end: line };
+                  const range: DiffLineRange = {
+                    side: 'new',
+                    start: line,
+                    end: line,
+                  };
                   selectedRange.set(range);
                   startDraft(range);
                 })();
@@ -498,8 +880,23 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             flexWrap: 'wrap',
           }}
         >
-          <Text style={{ ...captionTextStyle, color: C.secondary, fontWeight: '500' }}>
-            {lineRangeText(selectedRange()!.start, selectedRange()!.end)}
+          <Text
+            style={{
+              ...captionTextStyle,
+              color: C.secondary,
+              fontWeight: '500',
+            }}
+          >
+            {realLineRangeText(
+              virtualToReal(
+                selectedRange()!.side,
+                Math.min(selectedRange()!.start, selectedRange()!.end),
+              ),
+              virtualToReal(
+                selectedRange()!.side,
+                Math.max(selectedRange()!.start, selectedRange()!.end),
+              ),
+            )}
           </Text>
           <Button
             accessibilityLabel={tr('Add review note')}
@@ -537,7 +934,9 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                       }}
                     >
                       <Button
-                        accessibilityLabel={tr('Inspect symbol {symbol}', { symbol: sym() })}
+                        accessibilityLabel={tr('Inspect symbol {symbol}', {
+                          symbol: sym(),
+                        })}
                         onPress={() => activeSymbol.set(activeSymbol() === sym() ? null : sym())}
                         style={{
                           minHeight: 22,
@@ -548,7 +947,13 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                         hoverStyle={quietHoverStyle()}
                         focusStyle={quietFocusStyle()}
                       >
-                        <Text style={{ ...codeTextStyle, fontSize: 11, color: C.text }}>
+                        <Text
+                          style={{
+                            ...codeTextStyle,
+                            fontSize: 11,
+                            color: C.text,
+                          }}
+                        >
                           {sym()}
                         </Text>
                       </Button>
@@ -559,7 +964,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                             void props.review?.lookupSymbol?.(
                               'definition',
                               sym(),
-                              selectedRange()!.start,
+                              virtualToReal(selectedRange()!.side, selectedRange()!.start) - 1,
                             )
                           }
                           style={{
@@ -573,7 +978,13 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                           hoverStyle={{ opacity: 0.9 }}
                           focusStyle={controlFocusStyle()}
                         >
-                          <Text style={{ ...captionTextStyle, fontSize: 11, color: C.chrome }}>
+                          <Text
+                            style={{
+                              ...captionTextStyle,
+                              fontSize: 11,
+                              color: C.chrome,
+                            }}
+                          >
                             {tr('Definition')}
                           </Text>
                         </Button>
@@ -583,7 +994,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                             void props.review?.lookupSymbol?.(
                               'references',
                               sym(),
-                              selectedRange()!.start,
+                              virtualToReal(selectedRange()!.side, selectedRange()!.start) - 1,
                             )
                           }
                           style={{
@@ -597,7 +1008,13 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                           hoverStyle={controlHoverStyle()}
                           focusStyle={controlFocusStyle()}
                         >
-                          <Text style={{ ...captionTextStyle, fontSize: 11, color: C.secondary }}>
+                          <Text
+                            style={{
+                              ...captionTextStyle,
+                              fontSize: 11,
+                              color: C.secondary,
+                            }}
+                          >
                             {tr('References')}
                           </Text>
                         </Button>
@@ -611,10 +1028,74 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
         </View>
       </If>
 
+      <If when={mappedPrThreads().unmapped.length > 0 && props.review !== undefined}>
+        <View
+          style={{
+            borderRadius: 8,
+            backgroundColor: C.card,
+            padding: 8,
+            gap: 6,
+          }}
+        >
+          <Button
+            onPress={() => showOutdated.set(!showOutdated())}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              paddingVertical: 2,
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+          >
+            <Icon name={showOutdated() ? 'down' : 'right'} size={13} color={C.muted} />
+            <Text
+              style={{
+                ...captionTextStyle,
+                color: C.secondary,
+                fontWeight: '500',
+              }}
+            >
+              {tr('{count} outdated review threads', {
+                count: mappedPrThreads().unmapped.length,
+              })}
+            </Text>
+          </Button>
+          <If when={showOutdated()}>
+            <Scroll style={{ maxHeight: 200 }}>
+              <Each of={mappedPrThreads().unmapped} key={(t) => String(t.id)}>
+                {(thread) => (
+                  <GitHubThreadCard
+                    thread={thread()}
+                    canPrompt={props.review!.canPrompt}
+                    onReply={async (body) => {
+                      const src = source();
+                      if (src.kind !== 'pr' || !props.review?.replyPrThread) {
+                        return tr('GitHub replies are unavailable.');
+                      }
+                      return props.review.replyPrThread(src.repo, src.number, thread().id, body);
+                    }}
+                    onAskAgent={(mode) => {
+                      const src = source();
+                      const prNum = src.kind === 'pr' ? src.number : 0;
+                      const promptText = formatGitHubThreadPrompt(prNum, thread());
+                      props.review!.deliverPrompt(promptText, mode);
+                    }}
+                  />
+                )}
+              </Each>
+            </Scroll>
+          </If>
+        </View>
+      </If>
+
       <If when={notice()}>
         <Text
           style={[
-            { ...bodyTextStyle, color: model.state().kind === 'error' ? C.danger : C.muted },
+            {
+              ...bodyTextStyle,
+              color: model.state().kind === 'error' ? C.danger : C.muted,
+            },
             { userSelect: 'text' },
           ]}
         >
@@ -622,7 +1103,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
         </Text>
       </If>
 
-      <If when={textState() !== null}>
+      <If when={renderableState() !== null}>
         <View
           style={{
             flex: 1,
@@ -638,16 +1119,16 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             }}
             language={model.target.title}
             oldValue={(() => {
-              const cur = textState();
-              return cur && cur.before !== cur.after ? cur.before : undefined;
+              const cur = renderableState();
+              return cur && cur.mode === 'full' ? cur.before : undefined;
             })()}
             newValue={(() => {
-              const cur = textState();
-              return cur && cur.before !== cur.after ? cur.after : undefined;
+              const cur = renderableState();
+              return cur && cur.mode === 'full' ? cur.after : undefined;
             })()}
             patch={(() => {
-              const cur = textState();
-              return cur && cur.before === cur.after ? cur.patch : undefined;
+              const cur = renderableState();
+              return cur && cur.mode === 'patch' ? cur.patch : undefined;
             })()}
             layout={layout()}
             inline="wordAlt"
@@ -663,7 +1144,11 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               activeSymbol.set(null);
             }}
             onLineNumberPress={({ line }) => {
-              selectedRange.set({ side: line.side, start: line.line, end: line.line });
+              selectedRange.set({
+                side: line.side,
+                start: line.line,
+                end: line.line,
+              });
             }}
             annotations={annotations()}
             renderAddAnnotation={
@@ -675,12 +1160,18 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               props.review
                 ? (ann) => {
                     const draft = draftNote();
+                    const isPr = source().kind === 'pr';
                     if (ann.id === '__draft__' && draft) {
                       return (
                         <InlineReviewComposer
                           startLine={draft.startLine}
                           endLine={draft.endLine}
+                          realStartLine={virtualToReal(draft.side, draft.startLine)}
+                          realEndLine={virtualToReal(draft.side, draft.endLine)}
                           canPrompt={props.review!.canPrompt}
+                          onAddPrComment={
+                            isPr ? (comment) => savePrDraftComment(draft, comment) : undefined
+                          }
                           onSave={(comment) => {
                             props.review!.store.upsertNote(buildNoteInput(draft, comment));
                             draftNote.set(null);
@@ -697,13 +1188,112 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                         />
                       );
                     }
+
+                    if (ann.id.startsWith('gh-thread:')) {
+                      const tid = Number(ann.id.slice('gh-thread:'.length));
+                      const entry = mappedPrThreads().inline.find((i) => i.thread.id === tid);
+                      if (!entry) return <View />;
+                      return (
+                        <GitHubThreadCard
+                          thread={entry.thread}
+                          canPrompt={props.review!.canPrompt}
+                          onReply={async (body) => {
+                            const src = source();
+                            if (src.kind !== 'pr' || !props.review?.replyPrThread) {
+                              return tr('GitHub replies are unavailable.');
+                            }
+                            return props.review.replyPrThread(
+                              src.repo,
+                              src.number,
+                              entry.thread.id,
+                              body,
+                            );
+                          }}
+                          onAskAgent={(mode) => {
+                            const src = source();
+                            const prNum = src.kind === 'pr' ? src.number : 0;
+                            const startV = entry.thread.startLine
+                              ? (realToVirtual(entry.side, entry.thread.startLine) ??
+                                entry.virtualLine)
+                              : entry.virtualLine;
+                            const excerpt = extractExcerpt(
+                              entry.side,
+                              Math.min(startV, entry.virtualLine),
+                              entry.virtualLine,
+                            );
+                            const promptText = formatGitHubThreadPrompt(
+                              prNum,
+                              entry.thread,
+                              excerpt,
+                            );
+                            props.review!.deliverPrompt(promptText, mode);
+                          }}
+                        />
+                      );
+                    }
+
+                    if (ann.id.startsWith('pr-draft:')) {
+                      const did = ann.id.slice('pr-draft:'.length);
+                      const pending = filePrDrafts().find((d) => d.id === did);
+                      if (!pending) return <View />;
+                      if (draft?.editPrDraftId === pending.id) {
+                        return (
+                          <InlineReviewComposer
+                            startLine={draft.startLine}
+                            endLine={draft.endLine}
+                            realStartLine={pending.startLine ?? pending.line}
+                            realEndLine={pending.line}
+                            initialComment={pending.body}
+                            canPrompt={false}
+                            prCommentMode
+                            onAddPrComment={(comment) => savePrDraftComment(draft, comment)}
+                            onSave={() => {}}
+                            onInsertPrompt={() => {}}
+                            onSendNow={() => {}}
+                            onCancel={() => draftNote.set(null)}
+                          />
+                        );
+                      }
+                      const key = prKey();
+                      return (
+                        <PendingPrCommentCard
+                          draft={pending}
+                          onEdit={() => {
+                            const side: DiffSide = pending.side === 'LEFT' ? 'old' : 'new';
+                            const vEnd = realToVirtual(side, pending.line) ?? 0;
+                            const vStart = pending.startLine
+                              ? (realToVirtual(side, pending.startLine) ?? vEnd)
+                              : vEnd;
+                            draftNote.set({
+                              editPrDraftId: pending.id,
+                              side,
+                              startLine: vStart,
+                              endLine: vEnd,
+                              initialComment: pending.body,
+                            });
+                          }}
+                          onRemove={() => {
+                            if (key) {
+                              props.review!.store.removePrDraft(
+                                model.target.sessionId,
+                                key,
+                                pending.id,
+                              );
+                            }
+                          }}
+                        />
+                      );
+                    }
+
                     const existing = fileNotes().find((n) => n.id === ann.id);
                     if (!existing) return <View />;
-                    if (draft?.editId === existing.id) {
+                    if (draft?.editNoteId === existing.id) {
                       return (
                         <InlineReviewComposer
                           startLine={existing.startLine}
                           endLine={existing.endLine}
+                          realStartLine={existing.realStartLine}
+                          realEndLine={existing.realEndLine}
                           initialComment={existing.comment}
                           canPrompt={props.review!.canPrompt}
                           onSave={(comment) => {
@@ -714,14 +1304,20 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                             draftNote.set(null);
                           }}
                           onInsertPrompt={(comment) => {
-                            const text = formatReviewNote({ ...existing, comment });
+                            const text = formatReviewNote({
+                              ...existing,
+                              comment,
+                            });
                             if (props.review!.deliverPrompt(text, 'insert')) {
                               props.review!.store.removeNote(existing.sessionId, existing.id);
                               draftNote.set(null);
                             }
                           }}
                           onSendNow={(comment) => {
-                            const text = formatReviewNote({ ...existing, comment });
+                            const text = formatReviewNote({
+                              ...existing,
+                              comment,
+                            });
                             if (props.review!.deliverPrompt(text, 'send')) {
                               props.review!.store.removeNote(existing.sessionId, existing.id);
                               draftNote.set(null);
@@ -737,7 +1333,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                         canPrompt={props.review!.canPrompt}
                         onEdit={() =>
                           draftNote.set({
-                            editId: existing.id,
+                            editNoteId: existing.id,
                             side: existing.side,
                             startLine: existing.startLine,
                             endLine: existing.endLine,

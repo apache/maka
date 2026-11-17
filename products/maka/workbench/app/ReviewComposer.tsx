@@ -36,6 +36,8 @@ import {
   type CodeLocation,
   formatReviewBatch,
   formatReviewNote,
+  type GitHubReviewThread,
+  type PendingPrComment,
   type ReviewNote,
   type ReviewStore,
   type SymbolLocationBatch,
@@ -56,9 +58,19 @@ import {
 } from './ui';
 
 export function lineRangeText(startLine: number, endLine: number): string {
-  return startLine === endLine
-    ? tr('Line {line}', { line: startLine + 1 })
-    : tr('Lines {start}–{end}', { start: startLine + 1, end: endLine + 1 });
+  return realLineRangeText(startLine + 1, endLine + 1);
+}
+
+export function realLineRangeText(startLine1: number, endLine1: number): string {
+  return startLine1 === endLine1
+    ? tr('Line {line}', { line: startLine1 })
+    : tr('Lines {start}–{end}', { start: startLine1, end: endLine1 });
+}
+
+function formatShortTimestamp(iso: string): string {
+  if (!iso) return '';
+  const idx = iso.indexOf('T');
+  return idx > 0 ? iso.slice(0, idx) : iso;
 }
 
 export function AddLineNoteButton(props: { onPress(): void }) {
@@ -86,8 +98,12 @@ export function AddLineNoteButton(props: { onPress(): void }) {
 export function InlineReviewComposer(props: {
   startLine: number;
   endLine: number;
+  realStartLine?: number;
+  realEndLine?: number;
   initialComment?: string;
   canPrompt: boolean;
+  prCommentMode?: boolean;
+  onAddPrComment?(comment: string): void;
   onSave(comment: string): void;
   onInsertPrompt(comment: string): void;
   onSendNow(comment: string): void;
@@ -96,16 +112,39 @@ export function InlineReviewComposer(props: {
   const draft = signal(props.initialComment ?? '');
   const valid = () => draft().trim().length > 0;
   let focusedOnce = false;
-  let unbindEsc: (() => void) | undefined;
-  cleanup(() => unbindEsc?.());
+  let unbinds: (() => void)[] = [];
+  cleanup(() => {
+    for (const fn of unbinds) fn();
+  });
+
+  const displayRange = () =>
+    props.realStartLine !== undefined
+      ? realLineRangeText(props.realStartLine, props.realEndLine ?? props.realStartLine)
+      : lineRangeText(props.startLine, props.endLine);
+
+  const submitDefault = () => {
+    if (!valid()) return;
+    if (props.onAddPrComment) props.onAddPrComment(draft());
+    else if (props.canPrompt) props.onSendNow(draft());
+    else props.onSave(draft());
+  };
 
   return (
     <View
       ref={(node) => {
-        unbindEsc?.();
-        unbindEsc = node
-          ? keymap.bind('escape', () => props.onCancel(), { when: 'always', within: node })
-          : undefined;
+        for (const fn of unbinds) fn();
+        unbinds = node
+          ? [
+              keymap.bind('escape', () => props.onCancel(), {
+                when: 'always',
+                within: node,
+              }),
+              keymap.bind('mod+enter', submitDefault, {
+                when: 'always',
+                within: node,
+              }),
+            ]
+          : [];
       }}
       style={{
         marginVertical: 4,
@@ -120,8 +159,15 @@ export function InlineReviewComposer(props: {
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="conversation" size={14} color={C.accent} />
-        <Text style={{ ...captionTextStyle, flex: 1, color: C.secondary, fontWeight: '500' }}>
-          {lineRangeText(props.startLine, props.endLine)}
+        <Text
+          style={{
+            ...captionTextStyle,
+            flex: 1,
+            color: C.secondary,
+            fontWeight: '500',
+          }}
+        >
+          {displayRange()}
         </Text>
         <Button
           accessibilityLabel={tr('Cancel')}
@@ -149,13 +195,13 @@ export function InlineReviewComposer(props: {
         multiline
         value={draft()}
         onChange={({ value }) => draft.set(value)}
-        onSubmit={() => {
-          if (!valid()) return;
-          if (props.canPrompt) props.onSendNow(draft());
-          else props.onSave(draft());
-        }}
+        onSubmit={submitDefault}
         submitBehavior="newline"
-        placeholder={tr('Add a review note or prompt…')}
+        placeholder={
+          props.onAddPrComment
+            ? tr('Add a GitHub PR comment or local agent note…')
+            : tr('Add a review note or prompt…')
+        }
         accessibilityLabel={tr('Add review note')}
         style={{
           ...bodyTextStyle,
@@ -179,31 +225,12 @@ export function InlineReviewComposer(props: {
           flexWrap: 'wrap',
         }}
       >
-        <Button
-          accessibilityLabel={tr('Save note')}
-          disabled={!valid()}
-          onPress={() => {
-            if (valid()) props.onSave(draft());
-          }}
-          style={{
-            ...controlStyle,
-            minHeight: 28,
-            height: 28,
-            paddingHorizontal: 8,
-            backgroundColor: C.card,
-          }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Save note')}</Text>
-        </Button>
-        <If when={props.canPrompt}>
+        <If when={!props.prCommentMode}>
           <Button
-            accessibilityLabel={tr('Add to prompt')}
+            accessibilityLabel={tr('Save note')}
             disabled={!valid()}
             onPress={() => {
-              if (valid()) props.onInsertPrompt(draft());
+              if (valid()) props.onSave(draft());
             }}
             style={{
               ...controlStyle,
@@ -216,13 +243,67 @@ export function InlineReviewComposer(props: {
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
-            <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Add to prompt')}</Text>
+            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Save note')}</Text>
           </Button>
+          <If when={props.canPrompt}>
+            <Button
+              accessibilityLabel={tr('Add to prompt')}
+              disabled={!valid()}
+              onPress={() => {
+                if (valid()) props.onInsertPrompt(draft());
+              }}
+              style={{
+                ...controlStyle,
+                minHeight: 28,
+                height: 28,
+                paddingHorizontal: 8,
+                backgroundColor: C.card,
+              }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Add to prompt')}</Text>
+            </Button>
+            <Button
+              accessibilityLabel={tr('Send now')}
+              disabled={!valid()}
+              onPress={() => {
+                if (valid()) props.onSendNow(draft());
+              }}
+              style={{
+                ...controlStyle,
+                minHeight: 28,
+                height: 28,
+                paddingHorizontal: 10,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                backgroundColor: props.onAddPrComment ? C.cardRaised : C.accent,
+              }}
+              hoverStyle={props.onAddPrComment ? controlHoverStyle() : { opacity: 0.9 }}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Icon name="send" size={12} color={props.onAddPrComment ? C.text : C.chrome} />
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  color: props.onAddPrComment ? C.text : C.chrome,
+                  fontWeight: '500',
+                }}
+              >
+                {tr('Send now')}
+              </Text>
+            </Button>
+          </If>
+        </If>
+        <If when={Boolean(props.onAddPrComment)}>
           <Button
-            accessibilityLabel={tr('Send now')}
+            accessibilityLabel={tr('Add PR comment')}
             disabled={!valid()}
             onPress={() => {
-              if (valid()) props.onSendNow(draft());
+              if (valid() && props.onAddPrComment) props.onAddPrComment(draft());
             }}
             style={{
               ...controlStyle,
@@ -238,9 +319,15 @@ export function InlineReviewComposer(props: {
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
-            <Icon name="send" size={12} color={C.chrome} />
-            <Text style={{ ...captionTextStyle, color: C.chrome, fontWeight: '500' }}>
-              {tr('Send now')}
+            <Icon name="plus" size={12} color={C.chrome} />
+            <Text
+              style={{
+                ...captionTextStyle,
+                color: C.chrome,
+                fontWeight: '500',
+              }}
+            >
+              {props.prCommentMode ? tr('Save PR comment') : tr('Add PR comment')}
             </Text>
           </Button>
         </If>
@@ -256,6 +343,14 @@ export function InlineReviewNoteCard(props: {
   onRemove(): void;
   onSendNow(): void;
 }) {
+  const rangeLabel = () =>
+    props.note.realStartLine !== undefined
+      ? realLineRangeText(
+          props.note.realStartLine,
+          props.note.realEndLine ?? props.note.realStartLine,
+        )
+      : lineRangeText(props.note.startLine, props.note.endLine);
+
   return (
     <View
       style={{
@@ -271,8 +366,15 @@ export function InlineReviewNoteCard(props: {
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="note" size={14} color={C.accent} />
-        <Text style={{ ...captionTextStyle, flex: 1, color: C.secondary, fontWeight: '500' }}>
-          {lineRangeText(props.note.startLine, props.note.endLine)}
+        <Text
+          style={{
+            ...captionTextStyle,
+            flex: 1,
+            color: C.secondary,
+            fontWeight: '500',
+          }}
+        >
+          {rangeLabel()}
         </Text>
         <If when={props.canPrompt}>
           <Button
@@ -328,6 +430,287 @@ export function InlineReviewNoteCard(props: {
       <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
         {props.note.comment}
       </Text>
+    </View>
+  );
+}
+
+export function PendingPrCommentCard(props: {
+  draft: PendingPrComment;
+  onEdit(): void;
+  onRemove(): void;
+}) {
+  const rangeLabel = () =>
+    realLineRangeText(props.draft.startLine ?? props.draft.line, props.draft.line);
+
+  return (
+    <View
+      style={{
+        marginVertical: 4,
+        marginHorizontal: 8,
+        padding: 8,
+        gap: 4,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: C.accent,
+        backgroundColor: C.panel,
+      }}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <Icon name="conversation" size={14} color={C.accent} />
+        <Text style={{ ...captionTextStyle, color: C.accent, fontWeight: '500' }}>
+          {tr('Pending PR comment')}
+        </Text>
+        <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>{rangeLabel()}</Text>
+        <Button
+          accessibilityLabel={tr('Edit note')}
+          tooltip={textTooltip(() => tr('Edit note'))}
+          onPress={props.onEdit}
+          style={{
+            ...controlStyle,
+            minHeight: 24,
+            height: 24,
+            paddingHorizontal: 6,
+            alignItems: 'center',
+          }}
+          hoverStyle={quietHoverStyle()}
+          focusStyle={quietFocusStyle()}
+        >
+          <Icon name="edit" size={12} color={C.secondary} />
+        </Button>
+        <Button
+          accessibilityLabel={tr('Remove note')}
+          tooltip={textTooltip(() => tr('Remove note'))}
+          onPress={props.onRemove}
+          style={{
+            ...controlStyle,
+            minHeight: 24,
+            height: 24,
+            paddingHorizontal: 6,
+            alignItems: 'center',
+          }}
+          hoverStyle={quietHoverStyle()}
+          focusStyle={quietFocusStyle()}
+        >
+          <Icon name="trash" size={12} color={C.muted} />
+        </Button>
+      </View>
+      <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
+        {props.draft.body}
+      </Text>
+    </View>
+  );
+}
+
+export function GitHubThreadCard(props: {
+  thread: GitHubReviewThread;
+  canPrompt: boolean;
+  onReply(body: string): Promise<string | null>;
+  onAskAgent(mode: 'insert' | 'send'): void;
+}) {
+  const replying = signal(false);
+  const replyText = signal('');
+  const submitting = signal(false);
+  const error = signal('');
+
+  const submitReply = async () => {
+    const trimmed = replyText().trim();
+    if (!trimmed || submitting()) return;
+    submitting.set(true);
+    error.set('');
+    try {
+      const errMsg = await props.onReply(trimmed);
+      if (errMsg) {
+        error.set(errMsg);
+      } else {
+        replyText.set('');
+        replying.set(false);
+      }
+    } finally {
+      submitting.set(false);
+    }
+  };
+
+  return (
+    <View
+      style={{
+        marginVertical: 4,
+        marginHorizontal: 8,
+        padding: 8,
+        gap: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: C.line,
+        backgroundColor: C.panel,
+      }}
+    >
+      <Each of={props.thread.comments} key={(c) => String(c.id)}>
+        {(comment, index) => (
+          <View
+            style={{
+              gap: 4,
+              ...(index() > 0 ? { paddingTop: 6, borderTopWidth: 1, borderTopColor: C.line } : {}),
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Icon name="user" size={12} color={C.secondary} />
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  color: C.text,
+                  fontWeight: '500',
+                }}
+              >
+                @{comment().author}
+              </Text>
+              <If when={comment().createdAt.length > 0}>
+                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                  {formatShortTimestamp(comment().createdAt)}
+                </Text>
+              </If>
+              <If when={index() === 0 && props.thread.outdated}>
+                <View
+                  style={{
+                    paddingHorizontal: 6,
+                    paddingVertical: 2,
+                    borderRadius: 4,
+                    backgroundColor: C.card,
+                  }}
+                >
+                  <Text style={{ fontSize: 11, lineHeight: 14, color: C.muted }}>
+                    {tr('Outdated')}
+                  </Text>
+                </View>
+              </If>
+            </View>
+            <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
+              {comment().body}
+            </Text>
+          </View>
+        )}
+      </Each>
+
+      <If
+        when={replying()}
+        else={
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              flexWrap: 'wrap',
+            }}
+          >
+            <Button
+              accessibilityLabel={tr('Reply')}
+              onPress={() => replying.set(true)}
+              style={{
+                ...controlStyle,
+                minHeight: 24,
+                height: 24,
+                paddingHorizontal: 8,
+                backgroundColor: C.card,
+              }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+            >
+              <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Reply')}</Text>
+            </Button>
+            <If when={props.canPrompt}>
+              <Button
+                accessibilityLabel={tr('Add to prompt')}
+                onPress={() => props.onAskAgent('insert')}
+                style={{
+                  ...controlStyle,
+                  minHeight: 24,
+                  height: 24,
+                  paddingHorizontal: 8,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  backgroundColor: C.card,
+                }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Icon name="snippet" size={12} color={C.secondary} />
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Ask Agent')}</Text>
+              </Button>
+            </If>
+          </View>
+        }
+      >
+        <View style={{ gap: 6, paddingTop: 4 }}>
+          <Input
+            multiline
+            value={replyText()}
+            onChange={({ value }) => replyText.set(value)}
+            submitBehavior="newline"
+            placeholder={tr('Write a reply on GitHub…')}
+            accessibilityLabel={tr('Reply')}
+            style={{
+              ...bodyTextStyle,
+              minHeight: 48,
+              maxHeight: 120,
+              paddingHorizontal: 8,
+              paddingVertical: 6,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: C.line,
+              backgroundColor: C.card,
+              color: C.text,
+            }}
+          />
+          <If when={error().length > 0}>
+            <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
+          </If>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 4 }}>
+            <Button
+              accessibilityLabel={tr('Cancel')}
+              disabled={submitting()}
+              onPress={() => {
+                replying.set(false);
+                error.set('');
+              }}
+              style={{
+                ...controlStyle,
+                minHeight: 28,
+                height: 28,
+                paddingHorizontal: 8,
+              }}
+              hoverStyle={quietHoverStyle()}
+              focusStyle={quietFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Cancel')}</Text>
+            </Button>
+            <Button
+              accessibilityLabel={tr('Reply')}
+              disabled={!replyText().trim() || submitting()}
+              onPress={() => void submitReply()}
+              style={{
+                ...controlStyle,
+                minHeight: 28,
+                height: 28,
+                paddingHorizontal: 10,
+                backgroundColor: C.accent,
+              }}
+              hoverStyle={{ opacity: 0.9 }}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  color: C.chrome,
+                  fontWeight: '500',
+                }}
+              >
+                {submitting() ? tr('Sending…') : tr('Reply')}
+              </Text>
+            </Button>
+          </View>
+        </View>
+      </If>
     </View>
   );
 }
@@ -389,11 +772,21 @@ export function ReviewBatchBar(props: {
                     >
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.secondary, fontWeight: '500' },
+                          {
+                            ...captionTextStyle,
+                            color: C.secondary,
+                            fontWeight: '500',
+                          },
                           { numberOfLines: 1 },
                         ]}
                       >
-                        {note().pathLabel} · {lineRangeText(note().startLine, note().endLine)}
+                        {note().pathLabel} ·{' '}
+                        {note().realStartLine !== undefined
+                          ? realLineRangeText(
+                              note().realStartLine!,
+                              note().realEndLine ?? note().realStartLine!,
+                            )
+                          : lineRangeText(note().startLine, note().endLine)}
                       </Text>
                       <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
                         {note().comment}
@@ -420,7 +813,14 @@ export function ReviewBatchBar(props: {
             </View>
           </Scroll>
         </If>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            flexWrap: 'wrap',
+          }}
+        >
           <Button
             onPress={() => expanded.set(!expanded())}
             style={{
@@ -450,7 +850,12 @@ export function ReviewBatchBar(props: {
               props.store.clearNotes(props.sessionId);
               expanded.set(false);
             }}
-            style={{ ...controlStyle, minHeight: 28, height: 28, paddingHorizontal: 8 }}
+            style={{
+              ...controlStyle,
+              minHeight: 28,
+              height: 28,
+              paddingHorizontal: 8,
+            }}
             hoverStyle={quietHoverStyle()}
             focusStyle={quietFocusStyle()}
           >
@@ -489,7 +894,13 @@ export function ReviewBatchBar(props: {
               focusStyle={controlFocusStyle()}
             >
               <Icon name="send" size={12} color={C.chrome} />
-              <Text style={{ ...captionTextStyle, color: C.chrome, fontWeight: '500' }}>
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  color: C.chrome,
+                  fontWeight: '500',
+                }}
+              >
                 {tr('Send review')}
               </Text>
             </Button>
@@ -563,7 +974,9 @@ export function SymbolLocationsDrawer(props: {
       </View>
       <If when={props.batch.truncated}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Showing first {count} matches', { count: props.batch.locations.length })}
+          {tr('Showing first {count} matches', {
+            count: props.batch.locations.length,
+          })}
         </Text>
       </If>
       <List
@@ -591,7 +1004,12 @@ export function SymbolLocationsDrawer(props: {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <Text
                 style={[
-                  { ...captionTextStyle, color: C.secondary, fontWeight: '500', flexShrink: 1 },
+                  {
+                    ...captionTextStyle,
+                    color: C.secondary,
+                    fontWeight: '500',
+                    flexShrink: 1,
+                  },
                   { numberOfLines: 1 },
                 ]}
               >

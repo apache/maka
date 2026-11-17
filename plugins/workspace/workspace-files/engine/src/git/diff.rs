@@ -30,6 +30,63 @@ pub(super) enum PatchDiff {
     Unsupported,
 }
 
+pub(super) fn patch_images(
+    repo: &Repository,
+    name: &[u8],
+    before: Option<&Image>,
+    after: Option<&Image>,
+) -> io::Result<PatchDiff> {
+    if before.map(|i| (i.mode, &i.bytes)) == after.map(|i| (i.mode, &i.bytes)) {
+        return Ok(PatchDiff::Unchanged);
+    }
+    if before
+        .into_iter()
+        .chain(after)
+        .any(|image| image.bytes.contains(&0) || std::str::from_utf8(&image.bytes).is_err())
+    {
+        return Ok(PatchDiff::Binary);
+    }
+    interrupted(&repo.cancel)?;
+    let mut patch = Vec::new();
+    image::append(&mut patch, name, before, after, repo.repo.object_hash())?;
+    interrupted(&repo.cancel)?;
+    Ok(PatchDiff::Text(
+        String::from_utf8(patch).map_err(|_| failure("git_unsupported"))?,
+    ))
+}
+
+pub(super) fn diff_images(
+    repo: &Repository,
+    name: &[u8],
+    before: Option<Image>,
+    after: Option<Image>,
+) -> io::Result<GitDiff> {
+    match patch_images(repo, name, before.as_ref(), after.as_ref())? {
+        PatchDiff::Unchanged => Ok(GitDiff::Unchanged),
+        PatchDiff::Binary => Ok(GitDiff::Binary),
+        PatchDiff::Unsupported => Ok(GitDiff::Unsupported),
+        PatchDiff::Text(patch) => {
+            let before_text = match before {
+                Some(image) => {
+                    String::from_utf8(image.bytes).map_err(|_| failure("git_unsupported"))?
+                }
+                None => String::new(),
+            };
+            let after_text = match after {
+                Some(image) => {
+                    String::from_utf8(image.bytes).map_err(|_| failure("git_unsupported"))?
+                }
+                None => String::new(),
+            };
+            Ok(GitDiff::Text {
+                patch,
+                before: before_text,
+                after: after_text,
+            })
+        }
+    }
+}
+
 pub(super) fn read_patch_from_status(
     repo: &Repository,
     area: GitArea,
@@ -44,68 +101,14 @@ pub(super) fn read_patch_from_status(
     let Some((before, after)) = pair else {
         return Ok(PatchDiff::Unsupported);
     };
-    if before.as_ref().map(|i| (i.mode, &i.bytes)) == after.as_ref().map(|i| (i.mode, &i.bytes)) {
-        return Ok(PatchDiff::Unchanged);
-    }
-    if before
-        .iter()
-        .chain(after.iter())
-        .any(|image| image.bytes.contains(&0) || std::str::from_utf8(&image.bytes).is_err())
-    {
-        return Ok(PatchDiff::Binary);
-    }
-    interrupted(&repo.cancel)?;
-    let mut patch = Vec::new();
-    image::append(
-        &mut patch,
-        name,
-        before.as_ref(),
-        after.as_ref(),
-        repo.repo.object_hash(),
-    )?;
-    interrupted(&repo.cancel)?;
-    Ok(PatchDiff::Text(
-        String::from_utf8(patch).map_err(|_| failure("git_unsupported"))?,
-    ))
+    patch_images(repo, name, before.as_ref(), after.as_ref())
 }
 
 pub(super) fn read(repo: &Repository, area: GitArea, name: &[u8]) -> io::Result<GitDiff> {
     let Some((before, after)) = images(repo, area, name)? else {
         return Ok(GitDiff::Unsupported);
     };
-    if before.as_ref().map(|i| (i.mode, &i.bytes)) == after.as_ref().map(|i| (i.mode, &i.bytes)) {
-        return Ok(GitDiff::Unchanged);
-    }
-    if before
-        .iter()
-        .chain(after.iter())
-        .any(|image| image.bytes.contains(&0) || std::str::from_utf8(&image.bytes).is_err())
-    {
-        return Ok(GitDiff::Binary);
-    }
-    interrupted(&repo.cancel)?;
-    let mut patch = Vec::new();
-    image::append(
-        &mut patch,
-        name,
-        before.as_ref(),
-        after.as_ref(),
-        repo.repo.object_hash(),
-    )?;
-    interrupted(&repo.cancel)?;
-    let before_text = match before {
-        Some(image) => String::from_utf8(image.bytes).map_err(|_| failure("git_unsupported"))?,
-        None => String::new(),
-    };
-    let after_text = match after {
-        Some(image) => String::from_utf8(image.bytes).map_err(|_| failure("git_unsupported"))?,
-        None => String::new(),
-    };
-    Ok(GitDiff::Text {
-        patch: String::from_utf8(patch).map_err(|_| failure("git_unsupported"))?,
-        before: before_text,
-        after: after_text,
-    })
+    diff_images(repo, name, before, after)
 }
 fn head_image(repo: &Repository, name: &[u8]) -> io::Result<Option<Image>> {
     if repo.head.is_none() {
@@ -215,7 +218,7 @@ fn untracked(repo: &Repository, name: &[u8]) -> io::Result<bool> {
     }
     Ok(false)
 }
-fn object(repo: &Repository, id: gix::hash::ObjectId, mode: u32) -> io::Result<Image> {
+pub(super) fn object(repo: &Repository, id: gix::hash::ObjectId, mode: u32) -> io::Result<Image> {
     interrupted(&repo.cancel)?;
     let object = repo.repo.find_blob(id).map_err(io::Error::other)?;
     Ok(Image {

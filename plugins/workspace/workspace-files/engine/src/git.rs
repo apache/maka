@@ -36,9 +36,12 @@ use std::{
 mod diff;
 pub(crate) mod image;
 mod repository;
+mod revisions;
 mod scan;
 #[cfg(test)]
 mod tests;
+
+pub use revisions::parse_remote_repo;
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -92,6 +95,79 @@ pub struct GitWorkspaceDiff {
     pub patch: String,
     pub truncated: bool,
     pub skipped_files: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitBranchEntry")]
+pub struct GitBranchEntry {
+    pub name: String,
+    pub oid: String,
+    pub remote: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitCommitSummary")]
+pub struct GitCommitSummary {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author: String,
+    pub timestamp: i64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitRemoteRepo")]
+pub struct GitRemoteRepo {
+    pub remote: String,
+    pub host: String,
+    pub owner: String,
+    pub repo: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitRevisions")]
+pub struct GitRevisions {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub head_branch: Option<String>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub head_oid: Option<String>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub default_base: Option<String>,
+    pub branches: Vec<GitBranchEntry>,
+    pub commits: Vec<GitCommitSummary>,
+    pub remotes: Vec<GitRemoteRepo>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentGitCompareSpec")]
+pub enum GitCompareSpec {
+    Branch { base: String },
+    Commit { oid: String },
+    Range { base: String, head: String },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitCompareEntry")]
+pub struct GitCompareEntry {
+    pub path: WorkspacePath,
+    pub kind: GitChangeKind,
+    pub digest: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitCompare")]
+pub struct GitCompare {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub base_oid: Option<String>,
+    pub head_oid: String,
+    pub entries: Vec<GitCompareEntry>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<GitWorkspaceDiff>")]
+    pub patch: Option<GitWorkspaceDiff>,
 }
 
 /// Blocking work: the caller retains its resource ticket and joins on cancellation.
@@ -203,6 +279,65 @@ pub fn workspace_diff(
             truncated,
             skipped_files,
         }))
+    })())
+}
+pub fn revisions(
+    workspace: &Path,
+    identity: &Observation,
+    private_root: &Path,
+    binding: Option<&Binding>,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<Option<GitRevisions>> {
+    expose((|| {
+        let Some(repo) =
+            repository::Repository::open(workspace, identity, private_root, binding, cancel)?
+        else {
+            return Ok(None);
+        };
+        let result = revisions::read_revisions(&repo)?;
+        repo.finish()?;
+        Ok(Some(result))
+    })())
+}
+pub fn compare(
+    workspace: &Path,
+    identity: &Observation,
+    private_root: &Path,
+    binding: Option<&Binding>,
+    spec: &GitCompareSpec,
+    include_patch: bool,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<Option<GitCompare>> {
+    expose((|| {
+        let Some(repo) =
+            repository::Repository::open(workspace, identity, private_root, binding, cancel)?
+        else {
+            return Ok(None);
+        };
+        let result = revisions::compare(&repo, spec, include_patch)?;
+        repo.finish()?;
+        Ok(Some(result))
+    })())
+}
+pub fn compare_diff(
+    workspace: &Path,
+    identity: &Observation,
+    private_root: &Path,
+    binding: Option<&Binding>,
+    spec: &GitCompareSpec,
+    path: &WorkspacePath,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<Option<GitDiff>> {
+    expose((|| {
+        let bytes = path.bytes().map_err(|_| failure("git_invalid_path"))?;
+        let Some(repo) =
+            repository::Repository::open(workspace, identity, private_root, binding, cancel)?
+        else {
+            return Ok(None);
+        };
+        let result = revisions::compare_diff(&repo, spec, &bytes)?;
+        repo.finish()?;
+        Ok(Some(result))
     })())
 }
 

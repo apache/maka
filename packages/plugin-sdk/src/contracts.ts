@@ -8293,6 +8293,82 @@ export const contracts: {
           },
           resources: {},
         },
+        deleteGitHubToken: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenKey',
+            type: 'object',
+            properties: {
+              host: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['host'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'updated',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'auth'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_token',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
+              },
+            },
+          },
+          resources: {},
+        },
         deletePreset: {
           mode: 'mutation',
           input: {
@@ -12763,6 +12839,325 @@ export const contracts: {
           },
           resources: {},
         },
+        gitCompare: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitCompareRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              spec: {
+                $ref: '#/$defs/AgentGitCompareSpec',
+              },
+              includePatch: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'spec'],
+            $defs: {
+              AgentGitCompareSpec: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'branch',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'commit',
+                      },
+                      oid: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'oid'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                      head: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base', 'head'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentGitCompare',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentGitCompare',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentGitCompare: {
+                type: 'object',
+                properties: {
+                  baseOid: {
+                    type: ['string', 'null'],
+                  },
+                  headOid: {
+                    type: 'string',
+                  },
+                  entries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitCompareEntry',
+                    },
+                  },
+                  patch: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/GitWorkspaceDiff',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['baseOid', 'headOid', 'entries', 'patch'],
+              },
+              AgentGitCompareEntry: {
+                type: 'object',
+                properties: {
+                  path: {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  kind: {
+                    $ref: '#/$defs/GitChangeKind',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'kind', 'digest'],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              GitChangeKind: {
+                type: 'string',
+                enum: ['added', 'modified', 'deleted', 'type_changed', 'conflicted'],
+              },
+              GitWorkspaceDiff: {
+                type: 'object',
+                properties: {
+                  patch: {
+                    type: 'string',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                  skippedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['patch', 'truncated', 'skippedFiles'],
+              },
+            },
+          },
+          resources: {},
+        },
+        gitCompareDiff: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitCompareDiffRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              spec: {
+                $ref: '#/$defs/AgentGitCompareSpec',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'spec', 'path'],
+            $defs: {
+              AgentGitCompareSpec: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'branch',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'commit',
+                      },
+                      oid: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'oid'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                      head: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base', 'head'],
+                  },
+                ],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_GitDiff',
+            anyOf: [
+              {
+                $ref: '#/$defs/GitDiff',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              GitDiff: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'text',
+                      },
+                      patch: {
+                        type: 'string',
+                      },
+                      before: {
+                        type: 'string',
+                      },
+                      after: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'patch', 'before', 'after'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'binary',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unchanged',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         gitDiff: {
           mode: 'query',
           input: {
@@ -12867,6 +13262,136 @@ export const contracts: {
                     additionalProperties: false,
                   },
                 ],
+              },
+            },
+          },
+          resources: {},
+        },
+        gitRevisions: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentGitRevisions',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentGitRevisions',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentGitRevisions: {
+                type: 'object',
+                properties: {
+                  headBranch: {
+                    type: ['string', 'null'],
+                  },
+                  headOid: {
+                    type: ['string', 'null'],
+                  },
+                  defaultBase: {
+                    type: ['string', 'null'],
+                  },
+                  branches: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitBranchEntry',
+                    },
+                  },
+                  commits: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitCommitSummary',
+                    },
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitRemoteRepo',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'headBranch',
+                  'headOid',
+                  'defaultBase',
+                  'branches',
+                  'commits',
+                  'remotes',
+                ],
+              },
+              AgentGitBranchEntry: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  oid: {
+                    type: 'string',
+                  },
+                  remote: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'oid', 'remote'],
+              },
+              AgentGitCommitSummary: {
+                type: 'object',
+                properties: {
+                  oid: {
+                    type: 'string',
+                  },
+                  shortOid: {
+                    type: 'string',
+                  },
+                  summary: {
+                    type: 'string',
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  timestamp: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: ['oid', 'shortOid', 'summary', 'author', 'timestamp'],
+              },
+              AgentGitRemoteRepo: {
+                type: 'object',
+                properties: {
+                  remote: {
+                    type: 'string',
+                  },
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['remote', 'host', 'owner', 'repo'],
               },
             },
           },
@@ -13015,6 +13540,1194 @@ export const contracts: {
                 required: ['patch', 'truncated', 'skippedFiles'],
               },
             },
+          },
+          resources: {},
+        },
+        githubPullRequestDetail: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullDetailRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              includePatch: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullDetailResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  detail: {
+                    $ref: '#/$defs/AgentGitHubPullDetail',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'detail'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'auth', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_found',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  number: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'auth', 'number'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'error',
+                  },
+                  repo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubRepoRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'auth', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubPullDetail: {
+                type: 'object',
+                properties: {
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  number: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  draft: {
+                    type: 'boolean',
+                  },
+                  merged: {
+                    type: 'boolean',
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  headRef: {
+                    type: 'string',
+                  },
+                  headSha: {
+                    type: 'string',
+                  },
+                  baseRef: {
+                    type: 'string',
+                  },
+                  baseSha: {
+                    type: 'string',
+                  },
+                  additions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  changedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                  files: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubPullFile',
+                    },
+                  },
+                  threads: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewThread',
+                    },
+                  },
+                  reviews: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewSummary',
+                    },
+                  },
+                  patch: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/GitWorkspaceDiff',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'repo',
+                  'auth',
+                  'number',
+                  'title',
+                  'body',
+                  'state',
+                  'draft',
+                  'merged',
+                  'author',
+                  'headRef',
+                  'headSha',
+                  'baseRef',
+                  'baseSha',
+                  'additions',
+                  'deletions',
+                  'changedFiles',
+                  'htmlUrl',
+                  'files',
+                  'threads',
+                  'reviews',
+                  'patch',
+                ],
+              },
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
+              },
+              AgentGitHubPullFile: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  previousPath: {
+                    type: ['string', 'null'],
+                  },
+                  status: {
+                    $ref: '#/$defs/AgentGitHubPullFileStatus',
+                  },
+                  additions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                  hasPatch: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'path',
+                  'previousPath',
+                  'status',
+                  'additions',
+                  'deletions',
+                  'digest',
+                  'hasPatch',
+                ],
+              },
+              AgentGitHubPullFileStatus: {
+                type: 'string',
+                enum: ['added', 'modified', 'removed', 'renamed', 'copied', 'changed'],
+              },
+              AgentGitHubReviewThread: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                  side: {
+                    $ref: '#/$defs/AgentGitHubDiffSide',
+                  },
+                  line: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  startLine: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  outdated: {
+                    type: 'boolean',
+                  },
+                  diffHunk: {
+                    type: 'string',
+                  },
+                  comments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewComment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'path',
+                  'side',
+                  'line',
+                  'startLine',
+                  'outdated',
+                  'diffHunk',
+                  'comments',
+                ],
+              },
+              AgentGitHubDiffSide: {
+                type: 'string',
+                enum: ['LEFT', 'RIGHT'],
+              },
+              AgentGitHubReviewComment: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  createdAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'body', 'createdAt', 'htmlUrl'],
+              },
+              AgentGitHubReviewSummary: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  submittedAt: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'state', 'body', 'submittedAt'],
+              },
+              GitWorkspaceDiff: {
+                type: 'object',
+                properties: {
+                  patch: {
+                    type: 'string',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                  skippedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['patch', 'truncated', 'skippedFiles'],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubPullRequestFileDiff: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullFileDiffRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              path: {
+                type: 'string',
+              },
+              baseSha: {
+                type: ['string', 'null'],
+                default: null,
+              },
+              headSha: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'path'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullFileDiff',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'full',
+                  },
+                  patch: {
+                    type: 'string',
+                  },
+                  before: {
+                    type: 'string',
+                  },
+                  after: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'patch', 'before', 'after'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'patch_only',
+                  },
+                  patch: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'patch'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'binary',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'large',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_found',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {},
+        },
+        githubPullRequests: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullRequestsRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              state: {
+                $ref: '#/$defs/AgentGitHubPullStateFilter',
+                default: 'open',
+              },
+              headBranch: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubPullStateFilter: {
+                type: 'string',
+                enum: ['open', 'closed', 'all'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullRequestsResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  currentBranchPr: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  pulls: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubPullSummary',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'remotes', 'auth', 'currentBranchPr', 'pulls'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'no_remote',
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'remotes'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'remotes', 'auth', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'error',
+                  },
+                  repo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubRepoRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'remotes', 'auth', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
+              },
+              AgentGitHubPullSummary: {
+                type: 'object',
+                properties: {
+                  number: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  draft: {
+                    type: 'boolean',
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  headRef: {
+                    type: 'string',
+                  },
+                  headSha: {
+                    type: 'string',
+                  },
+                  baseRef: {
+                    type: 'string',
+                  },
+                  baseSha: {
+                    type: 'string',
+                  },
+                  updatedAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'number',
+                  'title',
+                  'state',
+                  'draft',
+                  'author',
+                  'headRef',
+                  'headSha',
+                  'baseRef',
+                  'baseSha',
+                  'updatedAt',
+                  'htmlUrl',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubReplyComment: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubReplyCommentInput',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              commentId: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              body: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'commentId', 'body'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubReplyCommentResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'replied',
+                  },
+                  comment: {
+                    $ref: '#/$defs/AgentGitHubReviewComment',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'comment'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubReviewComment: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  createdAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'body', 'createdAt', 'htmlUrl'],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubSubmitReview: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubSubmitReviewInput',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              expectedHeadSha: {
+                type: 'string',
+              },
+              event: {
+                $ref: '#/$defs/AgentGitHubReviewEvent',
+              },
+              body: {
+                type: 'string',
+                default: '',
+              },
+              comments: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentGitHubDraftReviewComment',
+                },
+                default: [],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'expectedHeadSha', 'event'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubReviewEvent: {
+                type: 'string',
+                enum: ['comment', 'approve', 'request_changes'],
+              },
+              AgentGitHubDraftReviewComment: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  side: {
+                    $ref: '#/$defs/AgentGitHubDiffSide',
+                  },
+                  line: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  startLine: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                    default: null,
+                  },
+                  startSide: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubDiffSide',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    default: null,
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'side', 'line', 'body'],
+              },
+              AgentGitHubDiffSide: {
+                type: 'string',
+                enum: ['LEFT', 'RIGHT'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubSubmitReviewResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'submitted',
+                  },
+                  reviewId: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reviewId', 'state', 'htmlUrl'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'stale_head',
+                  },
+                  actualHeadSha: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'actualHeadSha'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
           },
           resources: {},
         },
@@ -34317,6 +36030,90 @@ export const contracts: {
             },
           },
           resources: {},
+        },
+        saveGitHubToken: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenKey',
+            type: 'object',
+            properties: {
+              host: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['host'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'updated',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'auth'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_token',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
+              },
+            },
+          },
+          resources: {
+            secret: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
         },
         schedule: {
           mode: 'mutation',

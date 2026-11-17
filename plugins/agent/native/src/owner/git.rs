@@ -111,7 +111,96 @@ impl Owner {
         .await
     }
 
-    async fn read_git<T: std::marker::Send + 'static>(
+    pub async fn git_revisions(
+        self: &Arc<Self>,
+        input: SessionRead,
+        scope: &Scope,
+    ) -> Result<Option<GitRevisions>, String> {
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                owner
+                    .read_git(
+                        &input.session_id,
+                        &scope,
+                        |workspace, observed, private_root, cancel| {
+                            maka_fs_tools::git::revisions(
+                                Path::new(&workspace.path),
+                                observed,
+                                private_root,
+                                workspace.worktree.as_deref(),
+                                cancel,
+                            )
+                        },
+                    )
+                    .await
+            })
+        })
+        .await
+    }
+
+    pub async fn git_compare(
+        self: &Arc<Self>,
+        input: GitCompareRead,
+        scope: &Scope,
+    ) -> Result<Option<GitCompare>, String> {
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                owner
+                    .read_git(
+                        &input.session_id,
+                        &scope,
+                        move |workspace, observed, private_root, cancel| {
+                            maka_fs_tools::git::compare(
+                                Path::new(&workspace.path),
+                                observed,
+                                private_root,
+                                workspace.worktree.as_deref(),
+                                &input.spec,
+                                input.include_patch,
+                                cancel,
+                            )
+                        },
+                    )
+                    .await
+            })
+        })
+        .await
+    }
+
+    pub async fn git_compare_diff(
+        self: &Arc<Self>,
+        input: GitCompareDiffRead,
+        scope: &Scope,
+    ) -> Result<Option<GitDiff>, String> {
+        input
+            .path
+            .validate()
+            .map_err(|_| "agent_git_input_invalid")?;
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                owner
+                    .read_git(
+                        &input.session_id,
+                        &scope,
+                        move |workspace, observed, private_root, cancel| {
+                            maka_fs_tools::git::compare_diff(
+                                Path::new(&workspace.path),
+                                observed,
+                                private_root,
+                                workspace.worktree.as_deref(),
+                                &input.spec,
+                                &input.path,
+                                cancel,
+                            )
+                        },
+                    )
+                    .await
+            })
+        })
+        .await
+    }
+
+    pub(super) async fn read_git<T: std::marker::Send + 'static>(
         &self,
         session_id: &str,
         scope: &Scope,
@@ -185,6 +274,8 @@ impl Owner {
 fn git_failure(error: &io::Error) -> &'static str {
     match error.to_string().as_str() {
         "git_invalid_path" => "agent_git_invalid_path",
+        "git_invalid_revision" => "agent_git_invalid_revision",
+        "git_revision_not_found" => "agent_git_revision_not_found",
         "git_unsupported" => "agent_git_unsupported",
         "git_private" => "agent_git_private",
         "git_cancelled" => "agent_git_cancelled",

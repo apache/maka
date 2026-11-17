@@ -22,6 +22,7 @@ import type { ResourceUpdate } from '../../../../packages/plugin-sdk/src/index.j
 import type { WorkspaceFocusTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import {
   createCurrentDiff,
+  currentDiffTargetKey,
   type CurrentDiffModel,
   type CurrentDiffTarget,
 } from '../../../../products/maka/workbench/app/currentDiffState';
@@ -41,10 +42,13 @@ import {
   type CodeLocation as AgentCodeLocation,
   type CodeReferencesResult as AgentCodeReferencesResult,
   createReviewStore,
+  formatPrKey,
+  type GitHubReplyCommentResult,
   parentPathOf,
   relativizeWorkspaceFileUrl,
   type ReviewNote,
 } from '../../../../products/maka/workbench/app/reviewState';
+import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   completed,
   createTerminals,
@@ -248,7 +252,7 @@ export function createResources(
     const enriched: CurrentDiffTarget = stampedAnchor
       ? { ...target, anchor: stampedAnchor }
       : target;
-    const identity = `diff:${target.area}:${target.path.bytesBase64}`;
+    const identity = `diff:${currentDiffTargetKey(enriched)}`;
     const tab = open(target.sessionId, identity, (instance) => ({
       kind: 'diff',
       instance,
@@ -453,7 +457,16 @@ export function createResources(
   };
 
   const jumpToNote = (note: ReviewNote) => {
-    if (note.area) {
+    if (note.diffTarget) {
+      openDiff({
+        ...note.diffTarget,
+        anchor: {
+          side: note.side,
+          line: note.startLine,
+          endLine: note.endLine,
+        },
+      });
+    } else if (note.area) {
       openDiff({
         sessionId: note.sessionId,
         area: note.area,
@@ -617,6 +630,31 @@ export function createResources(
       return canPrompt();
     },
     deliverPrompt: (text, mode) => deliverPrompt(target.sessionId, text, mode),
+    openDiff: (next) => openDiff(next),
+    async replyPrThread(repo, prNumber, threadId, body) {
+      try {
+        const { reply } = await host.control('githubReplyComment', {
+          sessionId: target.sessionId,
+          repo,
+          number: prNumber,
+          commentId: threadId,
+          body,
+        });
+        const result = settingsValue(reply) as GitHubReplyCommentResult;
+        if (result.kind === 'replied') {
+          reviewStore.appendPrThreadReply(
+            target.sessionId,
+            formatPrKey(repo, prNumber),
+            threadId,
+            result.comment,
+          );
+          return null;
+        }
+        return result.message;
+      } catch (err) {
+        return err instanceof Error ? err.message : tr('Failed to post GitHub reply.');
+      }
+    },
     openFileAt(line) {
       openFile({
         sessionId: target.sessionId,

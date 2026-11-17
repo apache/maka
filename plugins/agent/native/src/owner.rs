@@ -59,6 +59,7 @@ mod external_setup;
 mod files;
 mod fork;
 mod git;
+mod github;
 mod global_instructions;
 mod goal;
 mod imports;
@@ -257,6 +258,7 @@ pub(crate) struct Owner {
     cleanup_workers: TaskTracker,
     producers: TaskTracker,
     lsp_pool: maka_fs_tools::symbols::LspPool,
+    github: github::GitHubHub,
     producer_gate: Arc<Mutex<()>>,
     stop: CancellationToken,
 }
@@ -601,6 +603,7 @@ impl Owner {
             cleanup_workers: TaskTracker::new(),
             producers: TaskTracker::new(),
             lsp_pool: maka_fs_tools::symbols::LspPool::new(),
+            github: github::GitHubHub::default(),
             producer_gate: Arc::default(),
             stop,
         });
