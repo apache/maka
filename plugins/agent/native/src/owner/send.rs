@@ -39,6 +39,18 @@ pub(crate) enum NativeMutation<T> {
         change: maka_event_log::root_store::DataChange,
     },
 }
+impl<T> NativeMutation<T> {
+    pub(crate) fn map_fixed<U>(self, f: impl FnOnce(T) -> U) -> Result<NativeMutation<U>, String> {
+        match self {
+            Self::Returned(value) => Ok(NativeMutation::Returned(f(value))),
+            Self::Commit { value, change } => Ok(NativeMutation::Commit {
+                value: f(value),
+                change,
+            }),
+            Self::Computed { .. } => Err("agent_computed_mutation_requires_typed_statement".into()),
+        }
+    }
+}
 impl<T: serde::Serialize> NativeMutation<T> {
     pub(crate) fn complete(
         self,
@@ -222,21 +234,6 @@ impl Owner {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
         let allowed_tools = self.admitted_tools(id, &session.configuration.tools);
-        let preset_management = (!external || host_bridge)
-            && [
-                "SubagentPresetList",
-                "SubagentPresetRead",
-                "SubagentPresetCreate",
-                "SubagentPresetUpdate",
-                "SubagentPresetDelete",
-            ]
-            .iter()
-            .all(|name| {
-                self.tools.contains(name)
-                    && allowed_tools
-                        .as_ref()
-                        .is_none_or(|held| held.iter().any(|held| held == name))
-            });
         let behavior = self.bot_behavior(
             id,
             self.capture_behavior(
@@ -244,7 +241,6 @@ impl Owner {
                 &snapshot,
                 language,
                 session.configuration.applied_preset.as_ref(),
-                preset_management,
             )
             .await?,
             &snapshot,

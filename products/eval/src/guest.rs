@@ -71,12 +71,11 @@ pub(crate) struct GuestEvidence {
     pub host_usage_attempts: UsagePage,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(
     tag = "status",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub(crate) enum GuestRunResult {
     Completed {
@@ -91,6 +90,90 @@ pub(crate) enum GuestRunResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         evidence: Option<Box<GuestEvidence>>,
     },
+}
+
+// Deserialize via serde_json::Map rather than serde's internal Content buffer so
+// workspace feature unification (serde_json/arbitrary_precision) preserves f64 fields.
+impl<'de> Deserialize<'de> for GuestRunResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        let mut map = serde_json::Map::<String, Value>::deserialize(deserializer)?;
+        let status = map
+            .remove("status")
+            .and_then(|v| match v {
+                Value::String(s) => Some(s),
+                _ => None,
+            })
+            .ok_or_else(|| D::Error::missing_field("status"))?;
+        match status.as_str() {
+            "completed" => {
+                let raw_ev = map
+                    .remove("evidence")
+                    .ok_or_else(|| D::Error::missing_field("evidence"))?;
+                if let Some((extra, _)) = map.into_iter().next() {
+                    return Err(D::Error::unknown_field(&extra, &["status", "evidence"]));
+                }
+                let evidence: GuestEvidence =
+                    serde_json::from_value(raw_ev).map_err(D::Error::custom)?;
+                Ok(Self::Completed {
+                    evidence: Box::new(evidence),
+                })
+            }
+            "subjectStopped" => {
+                let stop_reason = match map.remove("stopReason") {
+                    Some(Value::String(s)) => s,
+                    Some(_) => return Err(D::Error::custom("stopReason must be a string")),
+                    None => return Err(D::Error::missing_field("stopReason")),
+                };
+                let raw_ev = map
+                    .remove("evidence")
+                    .ok_or_else(|| D::Error::missing_field("evidence"))?;
+                if let Some((extra, _)) = map.into_iter().next() {
+                    return Err(D::Error::unknown_field(
+                        &extra,
+                        &["status", "stopReason", "evidence"],
+                    ));
+                }
+                let evidence: GuestEvidence =
+                    serde_json::from_value(raw_ev).map_err(D::Error::custom)?;
+                Ok(Self::SubjectStopped {
+                    stop_reason,
+                    evidence: Box::new(evidence),
+                })
+            }
+            "infraFailed" => {
+                let infra_error = match map.remove("infraError") {
+                    Some(Value::String(s)) => s,
+                    Some(_) => return Err(D::Error::custom("infraError must be a string")),
+                    None => return Err(D::Error::missing_field("infraError")),
+                };
+                let evidence = match map.remove("evidence") {
+                    Some(Value::Null) | None => None,
+                    Some(raw_ev) => Some(Box::new(
+                        serde_json::from_value::<GuestEvidence>(raw_ev)
+                            .map_err(D::Error::custom)?,
+                    )),
+                };
+                if let Some((extra, _)) = map.into_iter().next() {
+                    return Err(D::Error::unknown_field(
+                        &extra,
+                        &["status", "infraError", "evidence"],
+                    ));
+                }
+                Ok(Self::InfraFailed {
+                    infra_error,
+                    evidence,
+                })
+            }
+            other => Err(D::Error::unknown_variant(
+                other,
+                &["completed", "subjectStopped", "infraFailed"],
+            )),
+        }
+    }
 }
 
 pub(crate) fn is_terminal_execution_state(state: &ExecutionState) -> bool {

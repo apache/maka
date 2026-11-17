@@ -86,3 +86,219 @@ pub enum InlineReferenceKind {
     Skill,
     WorkspaceFile,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionReferenceKind {
+    Room,
+    Conversation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionReference {
+    pub kind: SessionReferenceKind,
+    pub label: String,
+    pub session_id: String,
+}
+
+/// Extract [#Room](maka://session/<id>) and [@Conversation](maka://session/<id>) links.
+pub fn extract_session_references(text: &str) -> Vec<SessionReference> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        let label_start = i + 1;
+        let mut j = label_start;
+        let mut raw_label = String::new();
+        let mut closed = false;
+        let mut nested_open = None;
+        while j < bytes.len() {
+            let ch = text[j..].chars().next().unwrap();
+            if ch == '\\' && j + 1 < bytes.len() {
+                let next = text[j + 1..].chars().next().unwrap();
+                raw_label.push(next);
+                j += 1 + next.len_utf8();
+                continue;
+            }
+            if ch == '[' {
+                nested_open = Some(j);
+                break;
+            }
+            if ch == ']' {
+                closed = true;
+                j += 1;
+                break;
+            }
+            if ch == '\n' || ch == '\r' {
+                break;
+            }
+            raw_label.push(ch);
+            j += ch.len_utf8();
+        }
+        if let Some(next_bracket) = nested_open {
+            i = next_bracket;
+            continue;
+        }
+        if !closed || !text[j..].starts_with("(maka://session/") {
+            i += 1;
+            continue;
+        }
+        let id_start = j + "(maka://session/".len();
+        let Some(rel_end) = text[id_start..].find(')') else {
+            i += 1;
+            continue;
+        };
+        let candidate = text[id_start..id_start + rel_end].trim_end_matches('/');
+        if crate::interaction::entity_id(candidate).is_ok() && seen.insert(candidate.to_owned()) {
+            let (kind, clean_label) = if let Some(rest) = raw_label.strip_prefix('#') {
+                (SessionReferenceKind::Room, rest.trim().to_owned())
+            } else if let Some(rest) = raw_label.strip_prefix('@') {
+                (SessionReferenceKind::Conversation, rest.trim().to_owned())
+            } else {
+                (
+                    SessionReferenceKind::Conversation,
+                    raw_label.trim().to_owned(),
+                )
+            };
+            found.push(SessionReference {
+                kind,
+                label: if clean_label.is_empty() {
+                    candidate.to_owned()
+                } else {
+                    clean_label
+                },
+                session_id: candidate.to_owned(),
+            });
+        }
+        i = id_start + rel_end + 1;
+    }
+    found
+}
+
+fn escape_xml_json(json: &str, out: &mut String) {
+    for ch in json.chars() {
+        match ch {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+pub fn render_quotes(
+    quotes: &[QuoteRef],
+    language: crate::language::Language,
+) -> Result<String, String> {
+    use crate::language::Language;
+    let mut text = String::new();
+    for (index, quote) in quotes.iter().enumerate() {
+        if index != 0 {
+            text.push('\n');
+        }
+        text.push_str("<quoted_excerpt");
+        if let Some(label) = &quote.label {
+            text.push_str(" label=\"");
+            text.push_str(&label.replace('"', "'"));
+            text.push('"');
+        }
+        text.push_str(">\n");
+        if let Some(source) = &quote.source {
+            let provenance = serde_json::to_string(source).map_err(|e| e.to_string())?;
+            text.push_str(match language {
+                Language::En => "Session snapshot provenance (display-only): ",
+                Language::ZhCn => "会话快照来源（仅供展示）：",
+                Language::ZhTw => "工作階段快照來源（僅供顯示）：",
+            });
+            escape_xml_json(&provenance, &mut text);
+            text.push('\n');
+        }
+        text.push_str(&quote.text);
+        text.push_str("\n</quoted_excerpt>");
+    }
+    Ok(text)
+}
+
+pub fn render_directory_references(
+    references: &[DirectoryReference],
+    language: crate::language::Language,
+) -> Result<String, String> {
+    use crate::language::Language;
+    let json = serde_json::to_string(references).map_err(|e| e.to_string())?;
+    let mut text = String::from("<directory_references>\n");
+    text.push_str(match language {
+        Language::En => {
+            "Live directory paths on the originating Runtime Host, available to Shell and Read according to workspace permissions. The project and working directory are unchanged.\n"
+        }
+        Language::ZhCn => {
+            "原始运行时主机上的实时目录路径，Shell 和 Read 可按工作区权限访问。项目与工作目录不变。\n"
+        }
+        Language::ZhTw => {
+            "原始執行階段主機上的即時目錄路徑，Shell 和 Read 可依工作區權限存取。專案與工作目錄不變。\n"
+        }
+    });
+    escape_xml_json(&json, &mut text);
+    text.push_str("\n</directory_references>");
+    Ok(text)
+}
+
+pub fn render_session_references(
+    message_text: &str,
+    language: crate::language::Language,
+) -> Option<String> {
+    use crate::language::Language;
+    let refs = extract_session_references(message_text);
+    if refs.is_empty() {
+        return None;
+    }
+    let mut out = String::from("<session_references>\n");
+    out.push_str(match language {
+        Language::En => {
+            "Referenced Maka Sessions/Rooms for context. Read their messages with Read (or SessionRead if Read is unavailable):\n"
+        }
+        Language::ZhCn => {
+            "消息中引用的 Maka 会话或房间上下文，需要时可直接用 Read（无 Read 权限时用 SessionRead）读取：\n"
+        }
+        Language::ZhTw => {
+            "訊息中引用的 Maka 對話或房間脈絡，需要時可直接用 Read（無 Read 權限時用 SessionRead）讀取：\n"
+        }
+    });
+    for r in refs {
+        let kind_label = match (language, r.kind) {
+            (Language::ZhCn, SessionReferenceKind::Room) => "房间",
+            (Language::ZhTw, SessionReferenceKind::Room) => "房間",
+            (_, SessionReferenceKind::Room) => "Room",
+            (Language::ZhCn, SessionReferenceKind::Conversation) => "会话",
+            (Language::ZhTw, SessionReferenceKind::Conversation) => "對話",
+            (_, SessionReferenceKind::Conversation) => "Conversation",
+        };
+        let read_arg = serde_json::json!({"path": format!("maka://session/{}", r.session_id)});
+        let label = serde_json::to_string(&r.label).expect("label string");
+        out.push_str(&format!("- {kind_label} {label}: Read({read_arg})\n"));
+    }
+    out.push_str("</session_references>");
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_open_bracket_preserves_inner_room_or_conversation_kind() {
+        let refs =
+            extract_session_references("参考 [见之前 [#Reviewers](maka://session/ma_123)] 的结论");
+        assert_eq!(
+            refs,
+            vec![SessionReference {
+                kind: SessionReferenceKind::Room,
+                label: "Reviewers".into(),
+                session_id: "ma_123".into(),
+            }]
+        );
+    }
+}

@@ -1159,9 +1159,11 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     let mut request = desktop.request(&mut fixture).await;
     let message = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(message["role"], "user");
-    assert_eq!(
-        message["content"].as_str().unwrap().trim_end(),
-        text.trim_end()
+    let user_content = message["content"].as_str().unwrap();
+    assert!(user_content.starts_with(text.trim_end()), "{user_content}");
+    assert!(
+        user_content.contains("<session_references>"),
+        "{user_content}"
     );
     request
         .delta(&format!(
@@ -1981,10 +1983,9 @@ async fn desktop_presents_session_tools_in_chat_and_trajectory() {
         .await;
     let answer = desktop.request(&mut fixture).await;
     assert!(
-        answer
-            .body
-            .to_string()
-            .contains("agent_session_unavailable"),
+        answer.body.to_string().contains(
+            "Session or Room was not found or is archived; check the ID with SessionList"
+        ),
         "{}",
         answer.body
     );
@@ -2014,28 +2015,28 @@ async fn desktop_presents_session_tools_in_chat_and_trajectory() {
         .unwrap();
     answer
         .tool_call(
-            "SessionWork",
+            "SessionRead",
             json!({
-                "sessionId": session["id"],
-                "target": {"kind": "run", "runId": observed["run"]["runId"]}
+                "sessionId": session["id"]
             }),
         )
         .await;
     let final_answer = desktop.request(&mut fixture).await;
     assert!(
-        final_answer.body.to_string().contains("delivered"),
+        final_answer
+            .body
+            .to_string()
+            .contains(observed["run"]["runId"].as_str().unwrap()),
         "{}",
         final_answer.body
     );
-    desktop
-        .press("Toggle tool Check conversation progress")
-        .await;
+    desktop.press("Toggle tool Inspect conversation").await;
     desktop.control("Toggle original tool details").await;
     desktop.artifact("session-work-expanded");
 
     desktop.press("Trajectory").await;
     desktop.control(&format!("Inspect {title}")).await;
-    desktop.control("Inspect Check conversation progress").await;
+    desktop.control("Inspect Inspect conversation").await;
     final_answer.finish().await;
     desktop.close().await;
     fixture.finish().await;

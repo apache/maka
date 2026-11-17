@@ -39,6 +39,21 @@ use maka_plugin_core::{
     storage::Namespace,
 };
 
+fn fork_result_to_session_create(res: ForkResult) -> SessionCreateOutput {
+    match res {
+        ForkResult::Forked { session } => SessionCreateOutput::Forked { session },
+        ForkResult::RevisionConflict { expected, actual } => {
+            SessionCreateOutput::RevisionConflict { expected, actual }
+        }
+        ForkResult::Rejected { reason } => SessionCreateOutput::Rejected { reason },
+    }
+}
+
+enum PreparedFork {
+    Returned(ForkResult),
+    Computed(maka_event_log::root_store::DataChange),
+}
+
 impl Owner {
     pub async fn fork(
         self: &Arc<Self>,
@@ -48,13 +63,49 @@ impl Owner {
     ) -> Result<NativeMutation<ForkResult>, String> {
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
-            Box::pin(async move { owner.fork_inner(input, &operation, &scope).await })
+            Box::pin(async move {
+                match owner.fork_inner(input, &operation, &scope, false).await? {
+                    PreparedFork::Returned(res) => Ok(NativeMutation::Returned(res)),
+                    PreparedFork::Computed(change) => Ok(NativeMutation::Computed { change }),
+                }
+            })
         })
         .await
     }
 
-    async fn original_fork(&self, reference: &RecoveryRef) -> Result<Option<ForkResult>, String> {
-        self.check_fork_reference(reference)?;
+    pub(super) async fn fork_for_session_create(
+        self: &Arc<Self>,
+        input: Fork,
+        operation: &RecoveryRef,
+        scope: &Scope,
+    ) -> Result<NativeMutation<SessionCreateOutput>, String> {
+        let operation = operation.clone();
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                match owner.fork_inner(input, &operation, &scope, true).await? {
+                    PreparedFork::Returned(res) => {
+                        Ok(NativeMutation::Returned(fork_result_to_session_create(res)))
+                    }
+                    PreparedFork::Computed(change) => Ok(NativeMutation::Computed { change }),
+                }
+            })
+        })
+        .await
+    }
+
+    async fn original_fork(
+        &self,
+        reference: &RecoveryRef,
+        session_create_tool: bool,
+    ) -> Result<Option<ForkResult>, String> {
+        self.check_fork_reference_method(
+            reference,
+            if session_create_tool {
+                "sessionCreate"
+            } else {
+                "fork"
+            },
+        )?;
         let observed = self
             .store
             .operation(reference)
@@ -66,8 +117,22 @@ impl Owner {
             Some(OperationOutcome::Returned {
                 result: OperationResult::Success { value },
             }) => {
-                let value: ForkResult = serde_json::from_value(value)
-                    .map_err(|_| "agent_fork_reference_unavailable")?;
+                let value: ForkResult = if session_create_tool {
+                    match serde_json::from_value::<SessionCreateOutput>(value)
+                        .map_err(|_| "agent_fork_reference_unavailable")?
+                    {
+                        SessionCreateOutput::Forked { session } => ForkResult::Forked { session },
+                        SessionCreateOutput::RevisionConflict { expected, actual } => {
+                            ForkResult::RevisionConflict { expected, actual }
+                        }
+                        SessionCreateOutput::Rejected { reason } => ForkResult::Rejected { reason },
+                        SessionCreateOutput::Created { .. } => {
+                            return Err("agent_fork_reference_unavailable".into());
+                        }
+                    }
+                } else {
+                    serde_json::from_value(value).map_err(|_| "agent_fork_reference_unavailable")?
+                };
                 if let ForkResult::Forked { session } = &value
                     && session.id != self.operation_id(reference)
                 {
@@ -85,6 +150,14 @@ impl Owner {
     }
 
     fn check_fork_reference(&self, reference: &RecoveryRef) -> Result<(), String> {
+        self.check_fork_reference_method(reference, "fork")
+    }
+
+    fn check_fork_reference_method(
+        &self,
+        reference: &RecoveryRef,
+        expected_method: &str,
+    ) -> Result<(), String> {
         reference
             .validate()
             .map_err(|_| "agent_fork_reference_invalid")?;
@@ -92,7 +165,7 @@ impl Owner {
             || reference.source.deployment != self.data_source.deployment
             || reference.namespace != self.data_source.namespace
             || reference.export != maka_agent_api::EXPORT
-            || reference.method != "fork"
+            || reference.method != expected_method
         {
             return Err("agent_fork_reference_unavailable".into());
         }
@@ -104,11 +177,12 @@ impl Owner {
         input: Fork,
         operation: &RecoveryRef,
         scope: &Scope,
-    ) -> Result<NativeMutation<ForkResult>, String> {
+        session_create_tool: bool,
+    ) -> Result<PreparedFork, String> {
         // The exact Host receipt wins even after source changes or deletion.
         // Neither this lookup nor forkReceipt recreates a removed destination.
-        if let Some(recorded) = self.original_fork(operation).await? {
-            return Ok(NativeMutation::Returned(recorded));
+        if let Some(recorded) = self.original_fork(operation, session_create_tool).await? {
+            return Ok(PreparedFork::Returned(recorded));
         }
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(rejected(reason));
@@ -133,7 +207,7 @@ impl Owner {
         };
         let source = resolve_session(source)?;
         if source.revision != input.expected_revision {
-            return Ok(NativeMutation::Returned(ForkResult::RevisionConflict {
+            return Ok(PreparedFork::Returned(ForkResult::RevisionConflict {
                 expected: input.expected_revision,
                 actual: source.revision,
             }));
@@ -328,6 +402,7 @@ impl Owner {
                             planned,
                             source: self.data_source.clone(),
                             caller: policy.caller,
+                            session_create_tool,
                         })
                     })
                     .map_err(fork_failure)?
@@ -387,12 +462,13 @@ impl Owner {
                             planned,
                             source: self.data_source.clone(),
                             caller: policy.caller,
+                            session_create_tool,
                         })
                     })
                     .map_err(fork_failure)?
             }
         };
-        Ok(NativeMutation::Computed { change })
+        Ok(PreparedFork::Computed(change))
     }
 
     pub async fn fork_receipt(
@@ -403,7 +479,8 @@ impl Owner {
         self.check_fork_reference(&input.reference)?;
         self.resource_work(scope, move |owner, _scope| {
             Box::pin(async move {
-                let Some(ForkResult::Forked { .. }) = owner.original_fork(&input.reference).await?
+                let Some(ForkResult::Forked { .. }) =
+                    owner.original_fork(&input.reference, false).await?
                 else {
                     return Ok(ForkReceiptResult { session: None });
                 };
@@ -427,6 +504,7 @@ struct ForkPublication<S> {
     planned: maka_agent_state::session_catalog::PlannedCatalog,
     source: DataSource,
     caller: Option<maka_agent_state::CallerFence>,
+    session_create_tool: bool,
 }
 
 #[derive(Serialize)]
@@ -458,10 +536,18 @@ where
         self,
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<Self::Value>, StoreError> {
+        let session_create_tool = self.session_create_tool;
+        let encode_reply = |reply: ForkResult| -> Result<Value, StoreError> {
+            if session_create_tool {
+                Ok(serde_json::to_value(fork_result_to_session_create(reply))?)
+            } else {
+                Ok(serde_json::to_value(reply)?)
+            }
+        };
         let rejected = |reply: ForkResult| -> Result<Prepared<Self::Value>, StoreError> {
             Ok(Prepared {
                 value: ForkPublicationValue {
-                    reply: serde_json::to_value(reply)?,
+                    reply: encode_reply(reply)?,
                     inner: None,
                 },
                 changed: false,
@@ -494,7 +580,7 @@ where
                     })?;
                 Ok(Prepared {
                     value: ForkPublicationValue {
-                        reply: serde_json::to_value(ForkResult::Forked {
+                        reply: encode_reply(ForkResult::Forked {
                             session: Box::new(session),
                         })?,
                         inner: Some(installed.value),
@@ -565,17 +651,17 @@ impl Statement for EmptyHistory {
         false
     }
 }
-fn rejected(reason: Rejection) -> NativeMutation<ForkResult> {
-    NativeMutation::Returned(ForkResult::Rejected { reason })
+fn rejected(reason: Rejection) -> PreparedFork {
+    PreparedFork::Returned(ForkResult::Rejected { reason })
 }
-fn publication_error(error: StoreError) -> Result<NativeMutation<ForkResult>, String> {
+fn publication_error(error: StoreError) -> Result<PreparedFork, String> {
     let reason = match error {
         StoreError::SessionRevisionConflict { expected, actual }
         | StoreError::SessionCreationRejected(CreationRejection::SourceRevisionConflict {
             expected,
             actual,
         }) => {
-            return Ok(NativeMutation::Returned(ForkResult::RevisionConflict {
+            return Ok(PreparedFork::Returned(ForkResult::RevisionConflict {
                 expected,
                 actual,
             }));

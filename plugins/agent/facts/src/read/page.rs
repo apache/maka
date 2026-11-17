@@ -239,9 +239,10 @@ impl TextPageScan<'_> {
             ));
         }
         let mut stop = self.candidates[low];
-        if let Some(relative) = self.content[..stop.byte - start.byte]
+        let span = stop.byte - start.byte;
+        if let Some(relative) = self.content[..span]
             .rfind('\n')
-            .filter(|relative| *relative > 0 && !stop.before_newline)
+            .filter(|relative| *relative * 2 >= span && !stop.before_newline)
         {
             stop = *self
                 .candidates
@@ -340,7 +341,7 @@ mod tests {
                 );
             }
         }
-        let text = "😀".repeat(8_000);
+        let text = "😀".repeat(MAX_PAGE_CHARS);
         let input: ReadInput = serde_json::from_value(json!({"path":"file"})).unwrap();
         let page = input.resolve().unwrap().page(&text).unwrap();
         assert!(page.partial_line);
@@ -450,5 +451,41 @@ mod tests {
         let mut scan = request.scan_with_budget(512);
         scan.push(text);
         assert_eq!(scan.finish(), Err(ReadError::ContentChanged));
+    }
+
+    #[test]
+    fn short_header_followed_by_huge_json_line_retains_payload_on_first_page() {
+        let header = "{\"state\":\"completed\"}\n";
+        let payload = "x".repeat(MAX_PAGE_CHARS * 2);
+        let full = format!("{header}{payload}");
+        let mut input = ReadInput {
+            path: "archive:1234567890ab".into(),
+            offset: None,
+            limit: None,
+        };
+        let first = input
+            .resolve()
+            .unwrap()
+            .page_with_budget(&full, 4_096)
+            .unwrap();
+        assert!(
+            first.content.len() > header.len() + 2_000,
+            "first page should include substantial line-2 payload, got {} bytes",
+            first.content.len()
+        );
+        assert!(first.partial_line);
+        let mut rebuilt = first.content;
+        input = first.next.unwrap();
+        loop {
+            let page = input
+                .resolve()
+                .unwrap()
+                .page_with_budget(&full, 4_096)
+                .unwrap();
+            rebuilt.push_str(&page.content);
+            let Some(next) = page.next else { break };
+            input = next;
+        }
+        assert_eq!(rebuilt, full);
     }
 }

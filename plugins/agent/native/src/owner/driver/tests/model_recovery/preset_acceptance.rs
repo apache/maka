@@ -18,10 +18,12 @@
  */
 
 use super::*;
+mod ax_session_tools;
 mod rooms;
 enum ModelReply {
     Stream(String),
     RateLimited,
+    Fatal(String),
 }
 fn completion(delta: Value, finish: &str) -> ModelReply {
     ModelReply::Stream(super::bot_tools::completion(delta, finish))
@@ -60,6 +62,12 @@ impl Provider {
                             axum::http::StatusCode::TOO_MANY_REQUESTS,
                             [("retry-after", "0")],
                             "rate limited",
+                        )
+                            .into_response(),
+                        Ok(ModelReply::Fatal(message)) => (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            [("content-type", "application/json")],
+                            serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string(),
                         )
                             .into_response(),
                         Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
@@ -1113,11 +1121,8 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
             let id = session["id"].as_str().unwrap();
             let sent = call(client,"agent","send",json!({"sessionId":id,"message":"Hello"})).await?;
             let (request,reply) = provider.next().await?;
-            let system = request["messages"].as_array().unwrap().iter()
-                .filter(|m| m["role"] == "system" || m["role"] == "developer")
-                .filter_map(|m|m["content"].as_str()).collect::<Vec<_>>().join("\n");
-            assert_eq!(system.contains("SubagentPresetCreate"), !restricted, "{system}");
-            if !restricted { assert!(system.contains("ALL_TOOLS")); }
+            let advertised = serde_json::to_string(&request["tools"]).unwrap();
+            assert_eq!(advertised.contains("SubagentPresetCreate"), !restricted, "{advertised}");
             reply.send(completion(json!({"role":"assistant","content":"Hello"}),"stop")).map_err(|_|"reply lost")?;
             quiescent_message(client,id,&sent["messageId"]).await?;
         }
@@ -1168,7 +1173,7 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
         let child = listed["sessions"][0]["id"].as_str().ok_or_else(||format!("child missing: {listed}"))?;
         let sent = call(client,"agent","send",json!({"sessionId":parent_id,"message":"Delegate this one-off task"})).await?;
         let (_,reply) = provider.next().await?;
-        let input = json!({"sessionId":child,"message":"one-off product task"});
+        let input = json!({"sessionId":child,"message":"one-off product task","onComplete":"none"});
         reply.send(if code {tool_response("exec",json!({"code":format!("text(await tools.SessionSend({input}));")}))} else {tool_response("SessionSend",input)}).map_err(|_|"send response lost")?;
         let mut saw_child = false;
         let mut saw_parent = false;

@@ -3452,7 +3452,10 @@ fn terminal_outcome(error: &RunError) -> Option<maka_agent_facts::accounting::Ou
         .then_some(maka_agent_facts::accounting::Outcome::Error)
 }
 
-fn merge_input_skills(system: &mut Option<SystemPrompt>, input: &RunInput) -> Result<(), RunError> {
+pub(super) fn merge_input_skills(
+    system: &mut Option<SystemPrompt>,
+    input: &RunInput,
+) -> Result<(), RunError> {
     let RunInput::Message {
         content,
         source_messages,

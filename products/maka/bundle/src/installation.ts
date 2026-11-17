@@ -55,22 +55,47 @@ export function installation(
     'files',
     'read',
     'Read',
-    'Read UTF-8 text or a PNG, JPEG, GIF, or WebP image. Images are returned as image content. In Code Mode, pass an image result to image() to show it to the model.',
+    'Read UTF-8 workspace files, PNG/JPEG/GIF/WebP images, or Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Line offset is 0-based; relative paths cannot contain ".." or cross symlinks. In Code Mode, pass an image result to image() to show it to the model.',
     'image',
   );
-  add('files', 'write', 'Write', 'Write a file in the selected workspace.');
-  add('files', 'edit', 'Edit', 'Edit a file in the selected workspace.');
-  add('files', 'applyPatch', 'ApplyPatch', 'Apply a patch in the selected workspace.');
+  add(
+    'files',
+    'write',
+    'Write',
+    'Create or overwrite a UTF-8 file in the selected workspace. Parent directories must already exist; paths cannot contain ".." or cross symlinks.',
+  );
+  add(
+    'files',
+    'edit',
+    'Edit',
+    'Replace an exact, unique old_string with new_string in an existing workspace file. Read the file first; paths cannot contain ".." or cross symlinks.',
+  );
+  add(
+    'files',
+    'applyPatch',
+    'ApplyPatch',
+    'Apply a structured patch (create, update, or delete) in the selected workspace. Parent directories must exist when creating files; paths cannot contain ".." or cross symlinks.',
+  );
   add('processes', 'execute', 'Shell', 'Run a command under the selected workspace permissions.');
-  add('processes', 'read', 'ProcessRead', 'Read output from a previously started command.');
+  add(
+    'processes',
+    'read',
+    'ProcessRead',
+    'Read recent stdout/stderr and status from a background Shell process using its ref.',
+  );
   add(
     'processes',
     'health',
     'BackgroundTaskHealth',
     'Check a Shell process and optionally an HTTP(S) endpoint. Process state and endpoint health are independent; endpoint success does not prove listener ownership or browser readiness. Uses HEAD, falling back to GET for 405/501, without redirects or response bodies. Set include_logs for logs. Endpoint access requires network permission; elapsed time includes approval.',
   );
-  add('processes', 'writeStdin', 'ProcessInput', 'Send input to a previously started command.');
-  add('processes', 'stop', 'ProcessStop', 'Stop a previously started command.');
+  add(
+    'processes',
+    'writeStdin',
+    'ProcessInput',
+    'Send stdin text, keystrokes, mouse events, or terminal resize to a background Shell process using its ref.',
+  );
+  add('processes', 'stop', 'ProcessStop', 'Stop a background Shell process.');
   add('web', 'fetch', 'WebFetch', 'Read a web page. Network destinations require permission.');
   add(
     'web',
@@ -82,7 +107,7 @@ export function installation(
     'computer',
     'evaluate',
     'cua_repl',
-    'Execute JavaScript in a persistent, session-owned Computer Use REPL, independent of Code Mode. Start with await cua.getState() or const app = await cua.getApp(...); discovery and selection emit state and API documentation. Variables and targets persist within this Host process. No Node, filesystem or arbitrary network APIs. Cancellation, timeout or heap exhaustion requires cua_reset and target rebinding; dispatched input may already have taken effect.',
+    'Execute JavaScript in a persistent, session-owned Computer Use REPL, independent of Code Mode. Start with await cua.getState() or const app = await cua.getApp(...); discovery and observation methods emit state and API docs automatically. Emit custom values with nodeRepl.write(value) or nodeRepl.emitImage(image) (exec helpers like text() are not defined here). Variables and targets persist within this Host process; no Node, filesystem, or arbitrary network APIs. Cancellation, timeout, or heap exhaustion requires cua_reset and target rebinding.',
     'computer',
   );
   add(
@@ -166,7 +191,7 @@ export function installation(
       method,
       name,
       description +
-        ' The maka-plugin-authoring skill documents the shared NSH UI contract. Mutation outcomes use the original operation receipt; an unknown result must be recovered, not retried as a new edit.',
+        ' Consult the maka-plugin-authoring skill for the shared UI contract; if a mutation outcome is uncertain, re-read the current state before retrying.',
     );
 
   add('skills', 'search', 'SkillSearch', 'Find applicable skills in the selected collections.');
@@ -190,102 +215,52 @@ export function installation(
     [
       'createPreset',
       'SubagentPresetCreate',
-      'Persist a shared subagent preset only when the user explicitly asks to create a reusable role. Do not save one-off task requirements. Clarify an ambiguous name or missing description/model choice. Use a native ModelList kind=model choice as model: {connectionId, modelId}, with its optional thinkingLevel; executor choices are unsupported. Instruction may be empty. Report success only for kind=saved and show the actual returned saved configuration. For an unknown outcome recover the original operation receipt; never submit a replacement creation.',
+      'Persist a shared subagent preset only when the user explicitly asks to create a reusable role; never save one-off task requirements or store roles in workspace files. Clarify an ambiguous name or missing description/model choice before saving. Pass a native ModelList kind=model choice as model: {connectionId, modelId} with optional thinkingLevel (executor runtimes are unsupported). Report success only for kind=saved; if an outcome is uncertain, check SubagentPresetList before retrying.',
     ],
     [
       'updatePreset',
       'SubagentPresetUpdate',
-      'Modify a shared preset only at the user\'s explicit request. Read its current revision and supply expectedRevision. Send only requested fields; omitted fields remain unchanged, instruction="" clears the role instruction, thinkingLevel={kind:"default"} restores default, and enabled toggles availability. Changes affect future sessions only. On conflict re-read and reconcile the requested change, never blindly overwrite. Only kind=saved is success; report other outcomes accurately. Recover an unknown outcome from the original operation receipt without submitting another edit.',
+      'Modify a shared preset only at the user\'s explicit request, supplying expectedRevision from SubagentPresetRead. Send only fields to change: omitted fields stay untouched, instruction="" clears the instruction, thinkingLevel={kind:"default"} restores default, and enabled toggles availability. Changes apply to future sessions only; on revision conflict, re-read and reconcile instead of overwriting.',
     ],
     [
       'deletePreset',
       'SubagentPresetDelete',
-      'Delete the explicitly requested shared preset by stable ID and its observed expectedRevision. Follow the ordinary operation flow without extra mandatory confirmation rounds. Existing sessions retain their applied role. Only kind=deleted is success; on conflict re-read and reconcile, and recover unknown outcomes using the original operation receipt rather than resubmitting.',
+      'Delete an explicitly requested shared preset by stable ID and expectedRevision. Existing sessions keep their applied role; on revision conflict, re-read before retrying.',
     ],
     [
-      'list',
+      'sessionList',
       'SessionList',
-      'Find conversations by task title, workspace/project or status. Use scope=children with your sessionId to enumerate workers you created. Child conversations remain discoverable here even though the human sidebar hides them.',
+      'List or search Agent conversations and Rooms. Filter by kind ("agent" | "room"), scope ("all" | "children" | "archived"), query (matches title or workspace path), workspacePath, or activity ("idle" | "working" | "waiting"). With scope="children", parentSessionId defaults to your own Session. Pass nextCursor as cursor to paginate.',
     ],
     [
-      'observe',
+      'sessionRead',
       'SessionRead',
-      'Inspect a conversation before controlling it: current revision, parent, sandbox policy, selected backend and active Run. Use its actual state and Run IDs rather than assuming an earlier send has completed.',
+      'Inspect an Agent conversation or Room in one call: metadata, active/latest Run state and blockers, pending questions/approvals, queued messages, and transcript. Omit sessionId to inspect your own Session. Links like [#Room](maka://session/<id>) or [@Conversation](maka://session/<id>) can be read with Read({ path: "maka://session/<id>" }) or SessionRead({ sessionId: "<id>" }). For Agent sessions, view defaults to "turns" (conversation digest with resultPath URIs you can pass to Read for full tool outputs); use "raw" for raw chunks or "status_only" to skip transcript rows. Paginate with beforeCursor/afterCursor as cursor, navigate Rooms with messageId + anchor ("at" | "before" | "after"), or pass row for exact Recall/Cell lookups.',
     ],
     [
-      'history',
-      'SessionHistory',
-      'Read a session transcript. A Markdown link like [#Room](maka://session/<id>) or [@Conversation](maka://session/<id>) in user text is a context reference for the current conversation. Use <id> as sessionId with position kind=tail to read recent context. Rooms return posted messages with immutable IDs, authors, mentions, replyTo and delivery receipts. Use message/before_message/after_message positions with messageId to navigate Room messages. Agent sessions expose delegated results and failures. Page with returned cursors; tool metadata alone is not the full tool output. Use the indicated result reader when evidence is archived.',
-    ],
-    [
-      'create',
+      'sessionCreate',
       'SessionCreate',
-      'Create an Agent conversation or a shared Room. Set kind=room for a place where humans and agents can post without starting a model loop. Rooms use the selected workspace and can address Agent sessions with SessionSend mentions. For delegated work, use kind=agent (the default). Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace by directory path (absolute, ~ allowed, within the configured workspace locations) or reuse a conversation\'s with kind=session, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable. To apply a reusable role, pass presetId from SubagentPresetList and omit backend; creation rechecks the latest preset and captures its instruction and model. Do not copy its instruction into the task. If an explicitly requested preset is unavailable, report the specific reason without substituting another role or model. With no explicit role, choose an appropriate available preset or delegate normally. Recover uncertain creation using its original operation receipt, not another SessionCreate.',
+      'Create a new Agent conversation or shared Room (kind="room"), or branch from an existing conversation via forkFrom (when using forkFrom, omit workspace, kind, presetId, backend, tools, and automaticTitle, which are cloned from the source). Choose a specific, recognizable task title (e.g. "Fix queued-message cancellation"). Workspace defaults to { kind: "same" } (reuses your workspace); pass { kind: "worktree" } for an isolated Git worktree or { kind: "directory", path } for another allowed root. For a reusable role, pass presetId from SubagentPresetList and omit backend (report an unavailable requested preset without substituting); otherwise omit backend to inherit defaults or pass a ModelList selection. Follow up with SessionSend to dispatch the task.',
     ],
     [
-      'fork',
-      'SessionFork',
-      'Create a child conversation seeded with a selected history prefix when the worker needs that context. Choose a specific task title and a complete turn boundary; use SessionCreate instead for an independent task.',
-    ],
-    [
-      'metadata',
-      'SessionUpdate',
-      'Update a conversation title, labels or pin using its current revision. Use a concise task-oriented title that identifies the work. Agent calls cannot change sandbox permissions; permission changes require a human action.',
-    ],
-    [
-      'changeSession',
-      'SessionChange',
-      'Archive, restore or delete a conversation using its current revision. Deletion removes history; do not use it merely to hide workers, which are already kept out of the human sidebar.',
-    ],
-    [
-      'send',
+      'sessionSend',
       'SessionSend',
-      'Send a message to an Agent session or a Room. Room posts return a posted receipt without starting a model. For a Room message, mentions names the Agent session IDs to receive it, and replyTo refers to an existing message in that Room. A Room source header supplies the sessionId and replyTo for returning your response with this same tool. Each mention has its own accepted/rejected receipt. For additional context, corrections, progress updates or guidance for ongoing work, omit delivery or use delivery=steer (the default). Use delivery=queue only when the message should wait until the current turn ends. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. For a preset conversation, omit backend to preserve its selected model; only supply backend for an explicit model override. Other new conversations may use a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt confirms admission, not completion; queued may also mean pending steering. For native model callers, set onComplete=notify_caller to request a best-effort Host notification when that message finishes, fails or is cancelled, and once per pending interaction or authority blocker that needs attention. An attention notification does not finish the task or remove its completion watch; inspect the referenced interaction or SessionWork, address it within your existing authority or ask the user, and do not redispatch the task. Check completion in the receipt: registered means the watch was saved with task admission, so do other work or finish your turn instead of polling for completion. Progress queries remain available. Use SessionWork/SessionHistory to read actual results before reporting success.',
-    ],
-    [
-      'stop',
-      'SessionStop',
-      'Request Stop for the exact active Run read from SessionRead. Cancellation may still be settling; inspect SessionWork before reporting that the work has stopped or starting a replacement.',
-    ],
-    [
-      'continueRun',
-      'SessionContinueRun',
-      'Continue from an eligible terminal native-model Run (completed, failed or cancelled) using its exact sourceRunId and sourceHighWater returned by SessionExecution. Supply model: { connectionId, modelId } from a ModelList kind=model choice and its native thinkingLevel, not a tagged backend/executor selection. This admits a new continuation Run, never replays the original request or resumes an old process. First reconcile all original effects and cleanup with SessionExecution/SessionWork.',
-    ],
-    [
-      'pendingInteractions',
-      'SessionPendingInteractions',
-      'List pending approvals and questions for a direct child you created. If the child is waiting for input, read the selected request with SessionInteraction before deciding with SessionRespond. This does not answer or approve anything.',
-    ],
-    [
-      'interaction',
-      'SessionInteraction',
-      'Read one direct child interaction, its exact request and any committed outcome. Inspect the requested action, permission scope and context before responding; never infer approval requirements from a child message alone.',
+      'Send a message to an Agent conversation (a worker you created or an existing conversation when requested) or post to a Room. For Room posts, replyTo threads your reply and mentions wakes listed Agent session IDs. For Agent workers, state the objective, context, constraints, and expected deliverable (workers do not share your chat history unless forked). Delivery defaults to "steer" to guide an active turn immediately; use "queue" to wait until the current turn ends. For Agent callers, onComplete defaults to "notify_caller", waking you automatically with an inline <worker_result> summary when the target finishes or needs attention—do other work or finish your turn instead of polling.',
     ],
     [
       'respond',
       'SessionRespond',
-      'Answer or approve an interaction belonging to a direct child you created. Use the original requestId and a matching answer. You may approve within your current effective authority; broader permissions or a grant lasting longer than your authority pause this call and ask the human in your conversation. Prefer a once grant when the original request supports it. Do not retry a waiting call. You cannot self-approve, approve siblings, or answer human-only escalations. The returned record contains the winning outcome, which may have been answered concurrently.',
+      'Answer a pending question or permission approval for a direct worker Session you created, using requestId from SessionRead. You may approve within your own effective permissions (prefer scope="once" when supported); broader grants pause and escalate to the human user. Do not retry a call that is waiting on human escalation.',
     ],
     [
-      'queue',
-      'SessionQueue',
-      'Read queued messages and the queue revision before editing or retracting a follow-up. A queued message has not necessarily reached the worker yet.',
+      'sessionStop',
+      'SessionStop',
+      'Stop the active Run in a worker Session you created. Omit runId to stop whichever Run is currently active, or pass a specific runId to avoid stopping a newer Run.',
     ],
     [
-      'editQueue',
-      'SessionEditQueue',
-      'Update, retract, promote or reorder only messages sent by your own conversation, using the observed queue revision and original message IDs. Human messages and other conversations’ messages cannot be edited, even in a child you manage. Keep the existing admission rather than resending an uncertain message.',
-    ],
-    [
-      'work',
-      'SessionWork',
-      'Observe progress or completion for an original message or Run. Continue with the returned cursor; running or admitted is not a completed result. Read final output before reporting success.',
-    ],
-    [
-      'execution',
-      'SessionExecution',
-      'Resolve the original Run by runId, including its state, waits/blockers and highWater fence. Reconcile this record after uncertainty instead of blindly repeating the delegated task.',
+      'sessionManage',
+      'SessionManage',
+      'Manage Session metadata, lifecycle, queued messages, or native-model Run continuation via action: update (title, labels, pinned), archive, restore, remove (deletes history permanently; not needed to hide workers, which are already hidden from the main sidebar), edit_queue (retract, promote, update, or reorder messages sent by your Session), or continue_run (continue an eligible terminal native-model Run). Omit expectedRevision to apply against current state, or pass it for optimistic concurrency.',
     ],
   ] as const satisfies readonly (readonly [keyof ServiceMethods['agent'], string, string])[])
     tools.push({

@@ -821,6 +821,7 @@ impl Call {
             &artifacts,
             &scope,
             &request.content,
+            request.language,
             &cancellation,
             &material_root,
         )
@@ -900,6 +901,7 @@ impl Call {
         let mut steering = steering::Steering::new(
             artifacts,
             scope,
+            request.language,
             cancellation.clone(),
             inputs.clone(),
             request.task_id,

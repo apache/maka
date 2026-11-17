@@ -886,6 +886,39 @@ impl ExternalPorts for DriverExecutor {
                     .await?,
             )
             .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+            // skills::prompt carries the session-scoped available-skills metadata catalog.
+            // Background wake-up turns (SessionCompletion, ScheduledTask, Goal) bypass
+            // prepare_skills, so inherit the most recent Run's skill prompt to avoid
+            // flipping instructions_digest and re-injecting system instructions.
+            let mut skill_prompt = None;
+            super::driver_model::merge_input_skills(&mut skill_prompt, &input)?;
+            if skill_prompt.is_none() {
+                let history = self
+                    .state
+                    .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
+                let mut before = history.capture_before(view.run).await?;
+                for _ in 0..16 {
+                    let Some(prior) = history.latest(&before).await? else {
+                        break;
+                    };
+                    let prior_view = history.view_at(&before, prior.run).await?;
+                    if let Ok(prior_input) = serde_json::from_slice::<RunInput>(
+                        &self.state.content(prior.run, prior_view.spec.input).await?,
+                    ) {
+                        super::driver_model::merge_input_skills(&mut skill_prompt, &prior_input)?;
+                        if skill_prompt.is_some() {
+                            break;
+                        }
+                    }
+                    before = history.capture_before(prior.run).await?;
+                }
+            }
+            let instructions = match (&self.instructions, skill_prompt) {
+                (Some(base), Some(skill)) => Some(format!("{base}\n\n{}", skill.text)),
+                (Some(base), None) => Some(base.clone()),
+                (None, Some(skill)) => Some(skill.text),
+                (None, None) => None,
+            };
             let RunInput::Message {
                 content,
                 source_messages,
@@ -916,7 +949,7 @@ impl ExternalPorts for DriverExecutor {
                 conversation_key: view.spec.session_id.clone(),
                 content,
                 cwd: view.spec.workspace.clone(),
-                instructions: self.instructions.clone(),
+                instructions,
                 settings: selection.settings.clone(),
             };
             let actual = self.fresh_authority(&request, &self.cancellation).await?;

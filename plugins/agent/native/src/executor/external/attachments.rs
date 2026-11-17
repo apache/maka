@@ -78,15 +78,47 @@ impl Media {
     }
 }
 
+pub(super) fn render_message_text(
+    content: &maka_agent_facts::input::MessageInput,
+    language: maka_agent_facts::language::Language,
+) -> Result<String, Error> {
+    let mut sections = Vec::new();
+    if !content.text.is_empty() {
+        sections.push(content.text.clone());
+    }
+    if let Some(quotes) = content.quotes.as_deref().filter(|q| !q.is_empty()) {
+        sections.push(
+            maka_agent_facts::input::render_quotes(quotes, language).map_err(Error::Invalid)?,
+        );
+    }
+    if let Some(dirs) = content
+        .directory_references
+        .as_deref()
+        .filter(|d| !d.is_empty())
+    {
+        sections.push(
+            maka_agent_facts::input::render_directory_references(dirs, language)
+                .map_err(Error::Invalid)?,
+        );
+    }
+    if let Some(rendered) =
+        maka_agent_facts::input::render_session_references(&content.text, language)
+    {
+        sections.push(rendered);
+    }
+    Ok(sections.join("\n\n"))
+}
+
 pub(super) async fn prepare(
     store: &ArtifactStore,
     scope: &SessionScope,
     content: &maka_agent_facts::input::MessageInput,
+    language: maka_agent_facts::language::Language,
     cancellation: &CancellationToken,
     material_root: &std::path::Path,
 ) -> Result<Materials, PreparationError> {
     let mut materials = Materials {
-        message: content.text.clone(),
+        message: render_message_text(content, language)?,
         images: Vec::new(),
         directory: None,
     };
@@ -210,4 +242,45 @@ pub(super) async fn prepare(
 
 fn io_error(error: std::io::Error) -> Error {
     Error::Provider(format!("External agent attachment I/O failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::input::MessageInput;
+    use maka_agent_facts::language::Language;
+    use serde_json::json;
+
+    #[test]
+    fn render_message_text_preserves_quotes_directories_and_session_references() {
+        let room_id = "ma_8b708bb06d73d5d83a9265c0464928803a7478a2a9083b6c3647cfc8c7c0f102_f2534dfc81315ef2b71faf2ad291705f";
+        let input: MessageInput = serde_json::from_value(json!({
+            "text": format!("请参考 [#Reviewers需要关注的事项](maka://session/{room_id}) 做一下审查"),
+            "quotes": [{
+                "text": "边界条件必须由类型约束保证。",
+                "label": "AGENTS.md"
+            }],
+            "directory_references": [{
+                "hostId": "local",
+                "path": "/tmp/example-dir"
+            }]
+        }))
+        .unwrap();
+        let rendered = render_message_text(&input, Language::ZhCn).unwrap();
+        assert!(
+            rendered.contains(r#"<quoted_excerpt label="AGENTS.md">"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("边界条件必须由类型约束保证。"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<directory_references>"), "{rendered}");
+        assert!(rendered.contains("/tmp/example-dir"), "{rendered}");
+        assert!(rendered.contains("<session_references>"), "{rendered}");
+        assert!(
+            rendered.contains(&format!(r#"{{"path":"maka://session/{room_id}"}}"#)),
+            "{rendered}"
+        );
+    }
 }
