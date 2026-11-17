@@ -336,7 +336,8 @@ async fn tool_round(
         "{request}"
     );
     let owner = rig.captured.lock().unwrap().clone().unwrap();
-    let approve_web = matches!(name, "WebFetch" | "WebSearch")
+    let approve_web = (matches!(name, "WebFetch" | "WebSearch")
+        || (name == "Shell" && input.get("additional_permissions").is_some()))
         && owner
             .mutable_session(session)
             .await?
@@ -474,6 +475,11 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},"method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
+            // The Windows process service needs the sandbox helper this rig does not install.
+            #[cfg(unix)]
+            config["tools"].as_array_mut().unwrap().push(json!(
+                {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"}
+            ));
             config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")},"preapproved":true}]);
         }).await?;
         std::fs::write(base.join("workspace/input.txt"),"local-acceptance-marker")?;
@@ -501,6 +507,29 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 "permissions":{"settings":{"access":"workspace_write","requestPermissions":requests},"revokeGrants":true}
             })).await?;
             assert_eq!(changed["kind"], "committed", "{changed}");
+            // The sandbox denies Shell network until the user approves the request.
+            #[cfg(unix)]
+            {
+                let before = web_calls.load(Ordering::SeqCst);
+                let shell = tool_round(&rig, &mut provider, id, code, "Shell", json!({
+                    "command":format!("curl -fsS {address}/page"),"login":false
+                })).await?;
+                assert!(!shell.contains("web-acceptance-marker"), "{shell}");
+                assert_eq!(web_calls.load(Ordering::SeqCst), before, "{shell}");
+                let shell = tool_round(&rig, &mut provider, id, code, "Shell", json!({
+                    "command":format!("curl -fsS {address}/page"),"login":false,
+                    "additional_permissions":{"filesystem":[],"network":"allowed"},
+                    "justification":"Read the fixture page"
+                })).await?;
+                let fetched = web_calls.load(Ordering::SeqCst) - before;
+                if requests {
+                    assert!(shell.contains("web-acceptance-marker"), "{shell}");
+                    assert_eq!(fetched, 1, "{shell}");
+                } else {
+                    assert!(shell.contains("Workspace policy does not allow requesting additional permissions"), "{shell}");
+                    assert_eq!(fetched, 0, "{shell}");
+                }
+            }
             let output = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
             if requests {
                 assert!(output.contains("https://www.rust-lang.org/"), "{output}");

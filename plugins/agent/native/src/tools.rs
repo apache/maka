@@ -507,6 +507,7 @@ fn catalog_inner(
                     tool_names: tool_names.clone(),
                     selection: selection.clone(),
                     computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
+                    processes: contract == &process_contract,
                     input_projection,
                     title_kind,
                     presentation,
@@ -648,6 +649,8 @@ struct Service {
     target: String,
     selection: ServiceTool,
     computer: bool,
+    /// Bound to the workspace process service (Shell and its process controls).
+    processes: bool,
     input_projection: Projection,
     title_kind: Option<title::Kind>,
     presentation: Option<String>,
@@ -774,6 +777,7 @@ impl Service {
             selection,
             mode,
             computer,
+            processes,
             ..
         } = self;
         Box::pin(async move {
@@ -853,11 +857,13 @@ impl Service {
             } else {
                 access.sandbox_floor(&context.call.origin).await?
             };
-            if selection.input == ToolInput::Web
+            if (selection.input == ToolInput::Web || processes)
                 && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor
             {
-                // Host HTTP still requires a destination grant. Its inherited ceiling
-                // is independent of the workspace process sandbox's base network.
+                // Host HTTP and process network still require a grant. Their inherited
+                // ceiling is independent of the preset's base network, which a process
+                // keeps until a request is approved or a Run/Session grant applies.
+                // Process controls share it so a PTY launched with a grant stays usable.
                 *network = access.spec().network_approval_ceiling().clone();
             }
             let request = services

@@ -392,6 +392,7 @@ impl Rig {
             maka_settings_native::provide(&mut registry, catalog.clone())?;
             maka_files_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
+            maka_processes_native::provide(&mut registry)?;
         }
         let capture = self.captured.clone();
         let completion_gate = self.completion_gate.clone();
@@ -3212,6 +3213,12 @@ mod model_recovery {
             }]);
         }
         configure(&mut configuration);
+        // Only rigs that select a process tool install the process service.
+        let with_processes = configuration["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["target"]["name"] == "processes")
+        });
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -3222,26 +3229,41 @@ mod model_recovery {
             base_url,
             replay: false,
         };
-        let agent = package(
-            "maka.tests.model-agent",
-            maka_agent_api::native(),
-            BTreeMap::from([
-                (
-                    "files".into(),
-                    Import {
-                        contract: maka_workspace_api::files::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-                (
-                    "web".into(),
-                    Import {
-                        contract: maka_web_api::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-            ]),
-        )?;
+        let mut imports = BTreeMap::from([
+            (
+                "files".into(),
+                Import {
+                    contract: maka_workspace_api::files::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "web".into(),
+                Import {
+                    contract: maka_web_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+        ]);
+        if with_processes {
+            imports.insert(
+                maka_workspace_api::processes::EXPORT.into(),
+                Import {
+                    contract: maka_workspace_api::processes::contract(),
+                    cardinality: Cardinality::One,
+                },
+            );
+        }
+        let agent = package("maka.tests.model-agent", maka_agent_api::native(), imports)?;
+        let processes = with_processes
+            .then(|| {
+                package(
+                    "maka.tests.processes",
+                    maka_workspace_api::processes::native(),
+                    BTreeMap::new(),
+                )
+            })
+            .transpose()?;
         let files = package(
             "maka.tests.files",
             maka_workspace_api::files::native(),
@@ -3280,7 +3302,7 @@ mod model_recovery {
                 ),
             ]),
         )?;
-        let input = Input {
+        let mut input = Input {
             base: None,
             ui: None,
             instances: BTreeMap::from([
@@ -3310,6 +3332,7 @@ mod model_recovery {
                         configuration,
                         ["files", "web"]
                             .into_iter()
+                            .chain(with_processes.then_some(maka_workspace_api::processes::EXPORT))
                             .map(|name| {
                                 (
                                     name.into(),
@@ -3364,15 +3387,27 @@ mod model_recovery {
                 ),
             ]),
         };
+        let mut packages = vec![agent, settings, client, files, web];
+        if let Some(processes) = processes {
+            input.instances.insert(
+                maka_workspace_api::processes::EXPORT.into(),
+                node(
+                    Uuid::new_v4(),
+                    processes.application_ref(),
+                    json!({
+                        "filesystem": {"default": "write", "rules": [], "denyGlobs": []},
+                        "network": "allowed",
+                        "helper": null,
+                        "sessionOwner": [boot.agent],
+                    }),
+                    BTreeMap::new(),
+                ),
+            );
+            packages.push(processes);
+        }
         let store = root(base, true).await?;
         store
-            .commit_application(
-                boot.deployment,
-                0,
-                input,
-                vec![],
-                vec![agent, settings, client, files, web],
-            )
+            .commit_application(boot.deployment, 0, input, vec![], packages)
             .await?;
         let loaded = store
             .load_application(boot.deployment)
