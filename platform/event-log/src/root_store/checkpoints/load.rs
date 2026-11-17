@@ -35,6 +35,7 @@ impl HistoryCheckpoints {
     }
 
     pub async fn load_exact(&self, load: LoadOperation) -> Result<LoadedCheckpoint, StoreError> {
+        self.require_local_restore()?;
         let request = self.load_request(load)?;
         let log = self.session.scoped().await?;
         let gates = self.session.gates.clone();

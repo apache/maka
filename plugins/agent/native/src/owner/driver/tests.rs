@@ -393,6 +393,14 @@ impl Rig {
             maka_files_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
         }
+        let primary_agent = store
+            .load_application(deployment)
+            .await?
+            .ok_or("test deployment missing")?
+            .source()
+            .input
+            .instances["agent"]
+            .key;
         let capture = self.captured.clone();
         let completion_gate = self.completion_gate.clone();
         let helper = std::env::current_exe()?;
@@ -413,7 +421,9 @@ impl Rig {
                                 Some(observe) => owner.with_model_observation(observe),
                                 None => owner,
                             };
-                            *capture.lock().unwrap() = Some(owner.clone());
+                            if owner.run_owner().namespace == InstanceId(vec![primary_agent]) {
+                                *capture.lock().unwrap() = Some(owner.clone());
+                            }
                             let service = Arc::new(crate::service::Agent(owner));
                             NativeActivation {
                                 exports: Ok(BTreeMap::from([(
@@ -437,6 +447,12 @@ impl Rig {
         )?;
         let methods: &[&str] = if model_test {
             &[
+                "memories",
+                "memory",
+                "memoryHistory",
+                "memoryEvidence",
+                "memorySource",
+                "changeMemory",
                 "presets",
                 "preset",
                 "createPreset",
@@ -449,6 +465,7 @@ impl Rig {
                 "interaction",
                 "respond",
                 "create",
+                "continuationAvailability",
                 "continueRun",
                 "models",
                 "observe",
@@ -460,6 +477,7 @@ impl Rig {
                 "compact",
                 "selectBackend",
                 "execution",
+                "stop",
                 "send",
                 "uploadAttachment",
                 "work",
@@ -467,6 +485,12 @@ impl Rig {
                 "queue",
                 "openBot",
                 "botOutbox",
+                "sessionList",
+                "sessionRead",
+                "sessionCreate",
+                "sessionSend",
+                "sessionStop",
+                "sessionManage",
             ]
         } else {
             &[
@@ -479,11 +503,20 @@ impl Rig {
                 "search",
                 "fork",
                 "list",
+                "continuationAvailability",
+                "continueRun",
                 "execution",
                 "stop",
                 "goal",
                 "changeGoal",
+                "sessionList",
+                "sessionRead",
+                "sessionCreate",
+                "sessionSend",
+                "sessionStop",
+                "sessionManage",
                 "metadata",
+                "listFiles",
             ]
         };
         let mut endpoints = BTreeMap::from([(
@@ -498,6 +531,17 @@ impl Rig {
             },
         )]);
         if model_test {
+            endpoints.insert(
+                "receipts".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "receipts".into(),
+                    grant: Grant {
+                        methods: ["read".into()].into(),
+                        recovery: true,
+                    },
+                },
+            );
             endpoints.insert(
                 "web".into(),
                 HostEndpoint {
@@ -519,9 +563,30 @@ impl Rig {
                             "assistantPreferences".into(),
                             "connections".into(),
                             "create".into(),
+                            "update".into(),
                             "updateAssistantPreferences".into(),
                         ]
                         .into(),
+                        recovery: false,
+                    },
+                },
+            );
+        }
+        if model_test
+            && store
+                .load_application(deployment)
+                .await?
+                .is_some_and(|loaded| loaded.source().input.instances.contains_key("memory_peer"))
+        {
+            endpoints.insert(
+                "memory_peer".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "memory_peer".into(),
+                    grant: Grant {
+                        methods: ["create", "memory", "changeMemory"]
+                            .map(String::from)
+                            .into(),
                         recovery: false,
                     },
                 },
@@ -1878,15 +1943,14 @@ mod bounded_risk {
             let original = first_result
                 .iter()
                 .filter_map(|part| part["text"].as_str())
-                .find_map(|text| text.split_once(": SessionHistory("))
+                .find_map(|text| text.split_once(": SessionRead("))
                 .and_then(|(_, request)| request.strip_suffix(')'))
                 .ok_or("missing original child result position")?;
-            let mut history_input: Value = serde_json::from_str(original)?;
-            history_input["view"] = json!("text");
+            let read_input: Value = serde_json::from_str(original)?;
             let page = model_recovery::call(
-                rig.client.as_ref().unwrap(), "agent", "history", history_input,
+                rig.client.as_ref().unwrap(), "agent", "sessionRead", read_input,
             ).await?;
-            assert!(page["chunks"].as_array().unwrap().iter().any(|row| {
+            assert!(page["transcript"]["items"].as_array().unwrap().iter().any(|row| {
                 row["text"].as_str().is_some_and(|text| text.contains("Oversized original child result."))
                     && row["totalBytes"].as_u64() == Some(child_body.len() as u64)
             }));
@@ -3113,9 +3177,11 @@ mod source_recovery {
 
 mod model_recovery {
     mod bot_tools;
+    mod memory;
     mod predictions;
     mod preset_acceptance;
     mod presets;
+    mod work_groups;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
@@ -3123,17 +3189,17 @@ mod model_recovery {
 
     const CHILD_ENV: &str = "MAKA_NATIVE_MODEL_RECOVERY_CHILD";
     #[derive(serde::Serialize, serde::Deserialize)]
-    struct Boot {
-        deployment: Uuid,
-        agent: Uuid,
-        settings: Uuid,
-        gateway: Uuid,
+    pub(super) struct Boot {
+        pub(super) deployment: Uuid,
+        pub(super) agent: Uuid,
+        pub(super) settings: Uuid,
+        pub(super) gateway: Uuid,
         #[serde(default)]
-        web: Option<Uuid>,
-        source: Value,
-        base_url: String,
+        pub(super) web: Option<Uuid>,
+        pub(super) source: Value,
+        pub(super) base_url: String,
         #[serde(default)]
-        replay: bool,
+        pub(super) replay: bool,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Frozen {
@@ -3170,7 +3236,7 @@ mod model_recovery {
             RootStore::open(Arc::new(owner), &migrations).await?,
         ))
     }
-    async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
+    pub(super) async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
         bootstrap_with(base, base_url, |config| config["todo"] = json!(todo)).await
     }
     async fn bootstrap_with(
@@ -3199,6 +3265,12 @@ mod model_recovery {
             }]);
         }
         configure(&mut configuration);
+        let memory_peer = configuration
+            .as_object_mut()
+            .unwrap()
+            .remove("memoryTestPeer")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -3240,37 +3312,64 @@ mod model_recovery {
             maka_settings_native::native(),
             BTreeMap::new(),
         )?;
-        let client = package(
-            "maka.tests.model-client",
-            gateway_native(),
-            BTreeMap::from([
-                (
-                    "web".into(),
-                    Import {
-                        contract: maka_web_api::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-                (
-                    "agent".into(),
-                    Import {
-                        contract: maka_agent_api::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-                (
-                    "settings".into(),
-                    Import {
-                        contract: maka_settings_native::contract::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-            ]),
+        let receipts = package(
+            "maka.tests.memory-receipts",
+            maka_host_runtime::application::operations::native(),
+            BTreeMap::new(),
         )?;
-        let input = Input {
+        let mut client_imports = BTreeMap::from([
+            (
+                "receipts".into(),
+                Import {
+                    contract: maka_plugin_core::operation::receipt_reader_contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "web".into(),
+                Import {
+                    contract: maka_web_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "agent".into(),
+                Import {
+                    contract: maka_agent_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "settings".into(),
+                Import {
+                    contract: maka_settings_native::contract::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+        ]);
+        if memory_peer {
+            client_imports.insert(
+                "memory_peer".into(),
+                Import {
+                    contract: maka_agent_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            );
+        }
+        let client = package("maka.tests.model-client", gateway_native(), client_imports)?;
+        let mut input = Input {
             base: None,
             ui: None,
             instances: BTreeMap::from([
+                (
+                    "receipts".into(),
+                    node(
+                        Uuid::new_v4(),
+                        receipts.application_ref(),
+                        json!({}),
+                        BTreeMap::new(),
+                    ),
+                ),
                 (
                     "files".into(),
                     node(
@@ -3326,6 +3425,13 @@ mod model_recovery {
                         json!({}),
                         BTreeMap::from([
                             (
+                                "receipts".into(),
+                                vec![Target::Instance {
+                                    path: vec!["receipts".into()],
+                                    export: "Receipts".into(),
+                                }],
+                            ),
+                            (
                                 "web".into(),
                                 vec![Target::Instance {
                                     path: vec!["web".into()],
@@ -3351,6 +3457,18 @@ mod model_recovery {
                 ),
             ]),
         };
+        if memory_peer {
+            let mut peer = input.instances["agent"].clone();
+            peer.key = Uuid::new_v4();
+            input.instances.insert("memory_peer".into(), peer);
+            input.instances.get_mut("client").unwrap().bindings.insert(
+                "memory_peer".into(),
+                vec![Target::Instance {
+                    path: vec!["memory_peer".into()],
+                    export: "agent".into(),
+                }],
+            );
+        }
         let store = root(base, true).await?;
         store
             .commit_application(
@@ -3358,7 +3476,7 @@ mod model_recovery {
                 0,
                 input,
                 vec![],
-                vec![agent, settings, client, files, web],
+                vec![agent, settings, client, files, web, receipts],
             )
             .await?;
         let loaded = store
@@ -3369,7 +3487,7 @@ mod model_recovery {
         store.shutdown().await?;
         Ok(boot)
     }
-    async fn attach(rig: &mut Rig, boot: &Boot) -> TestResult<()> {
+    pub(super) async fn attach(rig: &mut Rig, boot: &Boot) -> TestResult<()> {
         let store = root(rig.directory.path(), false).await?;
         let loaded = store
             .load_application(boot.deployment)
@@ -3443,7 +3561,7 @@ mod model_recovery {
                 cleanup?;
                 result?
             }
-            _ => return Err("unexpected test service reply variant".into()),
+            reply => return Err(format!("{endpoint}.{method}: unexpected reply {reply:?}").into()),
         };
         call.close().await?;
         Ok(value)
@@ -5544,6 +5662,64 @@ mod replay_origin_regressions {
         );
         assert!(cleanup.is_empty(), "compaction fixture did not settle");
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn codex_compaction_checkpoint_satisfies_continuation_replay_boundary() {
+        let mut rig = Rig::new().expect("owned fixture");
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let current = model(&rig, "model-a", Some("4000")).await?;
+            let origin = ReplayOrigin::observed(
+                "model-a",
+                current.context.as_ref().and_then(|value| value.codex.as_ref()),
+            );
+            let checkpoint = Message::Assistant {
+                content: vec![AssistantPart::CodexCompaction {
+                    item: json!({"type":"compaction","id":"cp-1","encrypted_content":"opaque-4000"}),
+                }],
+                provider_options: None,
+            };
+            let mut checkpoint_only = builder(&rig).await?;
+            append_observed(&mut checkpoint_only, checkpoint.clone(), origin.clone()).await?;
+            assert!(!checkpoint_only.needs_continuation_cue());
+            let prompt = finish(&rig, checkpoint_only, &current, ModelOperation::Inference).await?;
+            maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;
+            prompt.close().await?;
+
+            let mut with_partial = builder(&rig).await?;
+            append_observed(&mut with_partial, checkpoint, origin).await?;
+            with_partial
+                .append(Message::Assistant {
+                    content: vec![AssistantPart::Text {
+                        text: "Half output".into(),
+                        provider_options: None,
+                    }],
+                    provider_options: None,
+                })
+                .await?;
+            assert!(with_partial.needs_continuation_cue());
+            crate::owner::driver_model::append_continuation_cue(Language::ZhCn, &mut with_partial)
+                .await?;
+            assert!(!with_partial.needs_continuation_cue());
+            let prompt = finish(&rig, with_partial, &current, ModelOperation::Inference).await?;
+            maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;
+            prompt.close().await?;
+
+            let driver = rig.driver.as_ref().ok_or("driver missing")?;
+            let r0 = driver.access.execution().run_id;
+            rig.append(vec![Fact::RunTerminated { terminal: Terminal::Cancelled, diagnostic: None }], vec![]).await?;
+            let view = driver.state.frontier(r0).await?;
+            let history = driver.state.session_history(view.spec.owner, session);
+            assert_eq!(history.continuation_source(r0, view.revision).await?.base, history.capture_before(r0).await?);
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+        assert!(cleanup.is_empty());
+    }
 }
 
 mod tool_history;
@@ -6416,6 +6592,218 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     let cleanup = rig.finish().await;
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(matches!(served, Ok(Ok(()))), "{served:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_markers() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
+    let mut rig = Rig::new().expect("workspace reclone fixture");
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let run_git = |cwd: &std::path::Path, args: &[&str]| -> Result<(), String> {
+            let output = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .map_err(|e| format!("git {args:?}: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Ok(())
+        };
+
+        let remote_a = rig.directory.path().join("remote-a");
+        std::fs::create_dir_all(&remote_a)?;
+        run_git(&remote_a, &["init"])?;
+        std::fs::write(remote_a.join("before.txt"), "v1\n")?;
+        run_git(&remote_a, &["add", "before.txt"])?;
+        run_git(&remote_a, &["commit", "-m", "initial"])?;
+
+        let root_workspace = rig.directory.path().join("workspace");
+        let repo_a = root_workspace.join("repo-a");
+        let repo_b = root_workspace.join("repo-b");
+        std::fs::create_dir_all(&root_workspace)?;
+        std::fs::create_dir_all(&repo_b)?;
+        run_git(
+            &root_workspace,
+            &[
+                "clone",
+                remote_a.to_str().ok_or("invalid remote_a path")?,
+                "repo-a",
+            ],
+        )?;
+        let baseline_exclude = std::fs::read_to_string(repo_a.join(".git/info/exclude"))?;
+
+        let _initial = rig.start().await?;
+        let client = rig.client.as_ref().ok_or("client missing")?;
+
+        let first = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "First conversation",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_a},
+            }),
+        )
+        .await?;
+        let first_id = first["session"]["id"]
+            .as_str()
+            .ok_or("first session id missing")?
+            .to_owned();
+        let project_id = first["session"]["workspace"]["projectId"]
+            .as_str()
+            .ok_or("projectId missing on cloned git workspace")?
+            .to_owned();
+
+        let other = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "Other workspace conversation",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_b},
+            }),
+        )
+        .await?;
+        let other_id = other["session"]["id"]
+            .as_str()
+            .ok_or("other session id missing")?
+            .to_owned();
+
+        let names = |dir: &std::path::Path| -> std::io::Result<Vec<std::ffi::OsString>> {
+            let mut entries = std::fs::read_dir(dir)?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort();
+            Ok(entries)
+        };
+        assert_eq!(
+            names(&repo_a)?,
+            vec![
+                std::ffi::OsString::from(".git"),
+                std::ffi::OsString::from("before.txt"),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_a.join(".git/info/exclude"))?,
+            baseline_exclude
+        );
+        assert!(names(&repo_b)?.is_empty());
+
+        run_git(&remote_a, &["rm", "before.txt"])?;
+        std::fs::write(remote_a.join("after-reclone.txt"), "v2\n")?;
+        run_git(&remote_a, &["add", "after-reclone.txt"])?;
+        run_git(&remote_a, &["commit", "-m", "advance remote"])?;
+
+        std::fs::remove_dir_all(&repo_a)?;
+        run_git(
+            &root_workspace,
+            &[
+                "clone",
+                remote_a.to_str().ok_or("invalid remote_a path")?,
+                "repo-a",
+            ],
+        )?;
+        let recloned_exclude = std::fs::read_to_string(repo_a.join(".git/info/exclude"))?;
+
+        let files = model_recovery::call(
+            client,
+            "agent",
+            "listFiles",
+            json!({
+                "sessionId": &first_id,
+                "path": null,
+                "after": null,
+            }),
+        )
+        .await?;
+        let page: maka_fs_tools::files::FilePage = serde_json::from_value(files)?;
+        assert_eq!(
+            page.entries,
+            vec![maka_fs_tools::files::FileEntry {
+                path: maka_fs_tools::path::WorkspacePath::from_bytes(b"after-reclone.txt")?,
+                kind: maka_fs_tools::files::FileKind::File,
+            }]
+        );
+
+        let second = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "Second conversation after reclone",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_a},
+            }),
+        )
+        .await?;
+        let second_id = second["session"]["id"]
+            .as_str()
+            .ok_or("second session id missing")?
+            .to_owned();
+        assert_eq!(second["session"]["workspace"]["projectId"], project_id);
+
+        for scope in [
+            json!({"kind": "workspace", "sessionId": &first_id}),
+            json!({"kind": "project", "projectId": &project_id}),
+        ] {
+            let scoped = model_recovery::call(
+                client,
+                "agent",
+                "list",
+                json!({
+                    "filter": "all",
+                    "scope": scope,
+                    "position": {"kind": "start"},
+                }),
+            )
+            .await?;
+            let scoped_ids: Vec<_> = scoped["sessions"]
+                .as_array()
+                .ok_or("scoped sessions missing")?
+                .iter()
+                .filter_map(|entry| entry["id"].as_str())
+                .collect();
+            assert!(scoped_ids.contains(&first_id.as_str()), "{scoped_ids:?}");
+            assert!(scoped_ids.contains(&second_id.as_str()), "{scoped_ids:?}");
+            assert!(!scoped_ids.contains(&other_id.as_str()), "{scoped_ids:?}");
+        }
+        assert_eq!(
+            names(&repo_a)?,
+            vec![
+                std::ffi::OsString::from(".git"),
+                std::ffi::OsString::from("after-reclone.txt"),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_a.join(".git/info/exclude"))?,
+            recloned_exclude
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 

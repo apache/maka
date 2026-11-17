@@ -21,56 +21,33 @@
 
 [简体中文](README.zh-CN.md)
 
-A plugin is declared by a leaf `package.ts`. It lists executable entries, configuration, imports and exports. A Cargo crate is a compilation unit: one plugin may use several crates, and related plugins may share an implementation crate.
+Each leaf `package.ts` under `plugins/` declares a deployable plugin (`application.host`, `application.ui`, or `application.composition`) along with its configuration schema, service imports, and exports. Cargo crates provide the underlying Rust implementations: one complex plugin may span multiple crates, while related plugin entries can share a single native crate.
 
-| Family | What it owns |
+| Directory | Scope |
 | --- | --- |
-| [agent](agent/README.md) | Conversations, model execution, tools, goals and scheduling |
-| [workspace](workspace/README.md) | Files, processes, Web and Decisions API services |
-| [settings](settings/native/README.md) | Connections, credentials and preferences |
-| [skills](skills/native/README.md) | Skill discovery, reads and publication |
-| [interactions](interactions/native/README.md) | Questions and forms |
-| `application/` | Deployment management, plugin installation and UI authoring |
-| `shared/` | Shared TypeScript contracts and authoring helpers |
+| [`agent/`](agent/README.md) | Conversations, Rooms, model protocols, durable execution engine, Code Mode, MCP client, Goals, and scheduling |
+| `workspace/` | Sandboxed file tools (`Read`, `Write`, `Edit`, `ApplyPatch`, `Glob`, `List`), background shells/PTYs, Web fetch/search, Computer Use bindings, and Decisions API |
+| `settings/` | Model provider connections, credentials, usage accounting, and user preferences |
+| `skills/` | Local, remote, and bundled `SKILL.md` discovery, paged reads, and installation |
+| `interactions/` | Structured user questions (`AskUserQuestion`) and permission escalation prompts |
+| `application/` | Runtime plugin installation, deployment inspection, and live composition editing |
+| `shared/` | Shared TypeScript contract helpers |
 
-For an existing plugin, start with its declaration and follow its selected implementation. Native entries select an implementation supplied by the executable; JavaScript entries name their bundled local module. Neither a family directory nor a linked crate activates a plugin.
+## Host and UI plugin model
 
-Packages declare `application.host`, `application.ui`, or a composition template. Each deployment instance selects its entry through `usePackage: host / ui / composition`; a pure UI plugin needs no placeholder Host service. The [terminal shell](../products/maka/terminal-shell/README.md) and [desktop shell](../products/maka/desktop-shell/README.md) run the same [NSH workbench](../products/maka/workbench/README.md), sharing dynamic UI modules and public Host capabilities. A package may declare a `root` contribution to provide the entire application; the deployment source selects it through `ui: { path, id }`. Maka’s default workbench is an ordinary UI package, and a missing root never falls back to it. Installation implies user trust, so UI plugins use the existing workbench capabilities directly.
+- **Host entries (`usePackage: "host"`)** — Run either a registered native Rust factory or a bundled JavaScript `HostService` on the background V8 runtime, receiving only the explicit capabilities bound in the deployment.
+- **UI entries (`usePackage: "ui"`)** — Run inside the shared NSH workbench VM across both terminal and desktop shells. `activate(context)` returns `{ exports, prepareReload? }` to contribute roots, typed `view` slots (`UiRuntime.renderView`), commands, panels, settings pages, or custom tool cards. `context.services` and `context.operations` bind directly to the instance's declared Host imports and two-phase operation receipts.
+- **Compositions (`usePackage: "composition"` / `base.package`)** — Bundle reusable instance graphs. Default Maka installations pin a root baseline composition (`base.package`) and layer user `overrides` (`configurationFields`, `remove`) plus standalone `instances` without shifting existing state identities; see [product bundle](../products/maka/bundle/README.md).
 
-A deployment may also select an immutable root composition through `base.package`, applying the same overrides to its inherited children while keeping independent roots in `instances`. Unlike a structural composition instance, this adds no parent or identity namespace. `remove` records a deletion; `configurationFields` records exact object-field edits, with an omitted value deleting a field and explicit null remaining a value. Whole-field `configuration` overrides retain their replacement semantics. The template's `ui` is inherited unless the source selects another root or explicitly clears `base.ui`. See the [product baseline model](../products/maka/bundle/README.md#installation-and-upgrades) and [canonical types](../platform/plugin-core/src/composition.rs).
+## Building and wiring a plugin
 
-A UI entry can declare service imports and bind them to Host exports, including its own package's backend. `UiContext.application` is the native application client bound to those imports, retaining the Client, journal and original receipts. `UiContext.services[importName][index]` selects a particular provider, including imports with multiple providers; `UiContext.operations` recovers that instance’s original mutation receipts. Keep business controllers local to their owning activation and its application client. The full `UiContext.host` and `maka/host` remain available to trusted UI code, including root and catalog integration. See the [UI authoring guide](../skills/maka-plugin-authoring/references/ui-plugins.md).
-
-Business UI can be a formal `view` contribution with a named contract. Consumers select its `UiTarget` (`{ path, id }`) through configuration and render it with `UiRuntime.renderView(target, contract, input)`, which checks the target’s contribution kind and contract. Conversation navigation, sessions, composers, settings and workspace previews use these shared contracts, so their providers can be selected independently of the root application. Commands declare `title` and optional `description`, `shortcut`, `order`, `trigger`, `takesArgument` and `hint`; implementations can also report whether the command is enabled.
-
-Each UI module’s synchronous `activate(context)` returns `{ exports, prepareReload? }`. The activation owns shared business state and resources across its rendered contributions; use `nsh.cleanup` for resource cleanup. Optional `prepareReload()` saves owned edits and returns JSON before the shared VM is replaced. The same instance identity and package ID receive that state through `context.restored`, including a new package revision. Roots receive `{ context, runtime }` and own layout and navigation; business views retain their own state and reload handoff.
-
-Build a single package from the repository root:
+Build an individual plugin package from the repository root:
 
 ```sh
-node scripts/plugins/build.mjs   --plugin plugins/workspace/workspace-web --output /tmp/maka-web-bundle
+node scripts/plugins/build.mjs --plugin plugins/workspace/workspace-web --output /tmp/maka-web-bundle
+maka application inspect-package --package /tmp/maka-web-bundle/packages/workspace-web
 ```
 
-The builder replaces its output directory. It emits immutable-package inputs under `packages/`; inspect one with `maka application inspect-package --package /tmp/maka-web-bundle/packages/workspace-web`.
+To ship a plugin in the default Maka distribution, add its directory to [`products/maka/bundle/package-inputs.json`](../products/maka/bundle/package-inputs.json), wire its instances and bindings in [`products/maka/bundle/src/composition.ts`](../products/maka/bundle/src/composition.ts), and (for new Rust services) register its factory in [`products/maka/native/src/lib.rs`](../products/maka/native/src/lib.rs).
 
-To include a plugin in Maka, add its path to [the product selection](../products/maka/bundle/package-inputs.json), then add instances and bindings in [the composition](../products/maka/bundle/src/composition.ts). A new native implementation also needs a factory in [the product registry](../products/maka/native/README.md). An import identifies a dependency; Host grants determine which calls are allowed.
-
-The [plugin-authoring skill](../skills/maka-plugin-authoring/SKILL.md) includes a runnable standalone starter and guides for services, UI, state and native extensions. The [SDK](../packages/plugin-sdk/README.md) supplies the exact contracts.
-
-Plugin lists use the package author's `displayName` and `description`. Describe what the user can do in one sentence; internal package IDs remain stable technical identities. Optional `localizations` maps language tags to translated names and descriptions:
-
-```ts
-{
-  id: 'example.notes',
-  displayName: 'Notes',
-  description: 'Write and find your notes.',
-  localizations: {
-    'zh-CN': { displayName: '笔记', description: '记录和查找笔记。' },
-  },
-  // application: ...
-}
-```
-
-The plugin manager displays and searches this copy. Missing translations fall back to the default copy, then the instance name or package ID. Labels should predict the action or destination, following [Apple's guidance on clear names](https://developer.apple.com/videos/play/wwdc2026/290/). Use familiar icons with accessible labels and tooltips for common actions; keep explicit text for consequential or unfamiliar actions. Shell lists use their native virtualized controls and preserve the visible row; data cursors remain an implementation detail.
-
-Configured Agent service tools capture permission for exactly their selected method on the original binding. Do not duplicate those direct calls in the Host's `native` grants. Independent background preparation, executor callbacks and cross-component delegation still require their explicit grants; tool confirmation, filesystem/network permissions and resource checks remain separate. Existing saved tool configurations acquire this behavior when the new native implementation starts, without rewriting deployment sources or launcher grants.
+For standalone third-party plugin authoring, see [`@maka-agent/plugin-sdk`](../packages/plugin-sdk/README.md) and the bundled [`maka-plugin-authoring`](../skills/maka-plugin-authoring/SKILL.md) skill.

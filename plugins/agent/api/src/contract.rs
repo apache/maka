@@ -17,14 +17,14 @@
  * under the License.
  */
 
-use maka_sandbox::workspace::DirectoryIdentity;
 mod mcp_management;
 use HistoryRowAddress as RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 pub use maka_agent_ports::session::history::{HistoryOrder, HistoryRowAddress, HistoryView};
-use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
-use maka_sandbox::workspace::WorkspaceIdentity;
+use maka_plugin_core::contract::{
+    Contract, Interface, Method, MethodMode, ResourceType, Transport,
+};
 pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,10 @@ mod fork;
 pub use fork::*;
 mod git;
 pub use git::*;
+mod github;
+pub use github::*;
+mod symbols;
+pub use symbols::*;
 mod goal;
 mod imports;
 pub use goal::*;
@@ -65,6 +69,8 @@ mod execution;
 pub use execution::*;
 mod compaction;
 pub use compaction::*;
+mod session_tools;
+pub use session_tools::*;
 
 mod interaction;
 pub use interaction::*;
@@ -321,6 +327,9 @@ pub enum SessionKind {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCreate")]
 pub struct Create {
+    /// Immutable memory privacy boundary; descendants inherit it.
+    #[serde(default)]
+    pub incognito: bool,
     /// Rooms receive messages without running a model. Their mentions address Agent sessions.
     #[serde(default)]
     pub kind: SessionKind,
@@ -451,10 +460,6 @@ pub struct Workspace {
     pub project_id: Option<uuid::Uuid>,
     #[schemars(length(min = 1))]
     pub path: String,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    pub directory_identity: DirectoryIdentity,
-    #[schemars(with = "String", regex(pattern = "^workspace:v1:[A-Fa-f0-9-]{36}$"))]
-    pub identity: WorkspaceIdentity,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -580,6 +585,9 @@ pub use maka_agent_facts::executor::BackendPreference;
 #[schemars(rename = "AgentModelChoice")]
 pub struct ModelChoice {
     pub selection: BackendPreference,
+    /// Previously published selections, including their implied thinking level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<BackendPreference>,
     pub source_name: String,
     pub label: String,
     pub thinking_levels: Vec<String>,
@@ -613,10 +621,18 @@ pub enum ModelsPage {
     Ready {
         revision: String,
         choices: Vec<ModelChoice>,
+        refreshing: bool,
         complete: bool,
         next: Option<ModelsCursor>,
     },
     Changed,
+}
+#[derive(Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentModelsWatch")]
+pub struct ModelsWatch {
+    #[serde(default)]
+    pub query: String,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -819,6 +835,8 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    #[serde(default)]
+    pub incognito: bool,
     pub kind: SessionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_preset: Option<crate::preset::AppliedPreset>,
@@ -1107,6 +1125,8 @@ pub struct Observation {
     pub remembered_backend: Option<BackendPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<SessionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_run_id: Option<maka_agent_facts::durable::RunId>,
     pub through: u64,
     pub run: Option<Run>,
     pub parts: Vec<Part>,
@@ -1353,7 +1373,7 @@ pub struct QueueMutation {
     pub expected_revision: u64,
     pub edit: QueueAction,
 }
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -1444,6 +1464,8 @@ pub struct HistoryChunk {
     pub timing: Option<maka_agent_ports::session::history::TurnTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folded_work: Option<maka_agent_ports::session::history::FoldedWork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<Box<maka_agent_ports::session::history::WorkGroup>>,
     pub field: maka_agent_ports::session::history::HistoryField,
     pub message_id: Option<String>,
     pub turn_id: Option<String>,
@@ -1775,6 +1797,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                         .collect(),
                     timing: chunk.timing,
                     folded_work: chunk.folded_work,
+                    work: chunk.work,
                     field: chunk.field,
                     message_id: chunk.message_id,
                     turn_id: chunk.turn_id,
@@ -2000,6 +2023,12 @@ pub fn contract() -> Contract {
             methods: BTreeMap::from([
                 ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
                 ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("memorySource".into(), method::<MemorySourceSelection, MemoryEvidenceReference>(MethodMode::Query)),
+                ("memoryEvidence".into(), method::<MemoryEvidenceRead, MemoryEvidencePage>(MethodMode::Query)),
+                ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),
+                ("memories".into(), method::<MemoriesRead, MemoryPage>(MethodMode::Query)),
+                ("memory".into(), method::<MemoryRead, Option<MemoryRecord>>(MethodMode::Query)),
+                ("changeMemory".into(), method::<MemoryChange, MemoryResult>(MethodMode::Mutation)),
                 ("createPreset".into(), method::<PresetCreate, PresetResult>(MethodMode::Mutation)),
                 ("updatePreset".into(), method::<PresetUpdate, PresetResult>(MethodMode::Mutation)),
                 ("deletePreset".into(), method::<PresetDelete, PresetResult>(MethodMode::Mutation)),
@@ -2247,6 +2276,76 @@ pub fn contract() -> Contract {
                     method::<GitDiffRead, Option<GitDiff>>(MethodMode::Query),
                 ),
                 (
+                    "gitWorkspaceDiff".into(),
+                    method::<GitWorkspaceDiffRead, Option<GitWorkspaceDiff>>(MethodMode::Query),
+                ),
+                (
+                    "gitRevisions".into(),
+                    method::<SessionRead, Option<GitRevisions>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompare".into(),
+                    method::<GitCompareRead, Option<GitCompare>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompareDiff".into(),
+                    method::<GitCompareDiffRead, Option<GitDiff>>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequests".into(),
+                    method::<GitHubPullRequestsRead, GitHubPullRequestsResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestDetail".into(),
+                    method::<GitHubPullDetailRead, GitHubPullDetailResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestFileDiff".into(),
+                    method::<GitHubPullFileDiffRead, GitHubPullFileDiff>(MethodMode::Query),
+                ),
+                (
+                    "githubSubmitReview".into(),
+                    method::<GitHubSubmitReviewInput, GitHubSubmitReviewResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "githubReplyComment".into(),
+                    method::<GitHubReplyCommentInput, GitHubReplyCommentResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "saveGitHubToken".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "secret".into(),
+                            ResourceType {
+                                name: "maka.text.utf8".into(),
+                                version: 1,
+                            }
+                            .required(),
+                        )]),
+                        ..method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "deleteGitHubToken".into(),
+                    method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation),
+                ),
+                (
+                    "codeDefinition".into(),
+                    method::<CodeDefinitionRead, CodeDefinitionResult>(MethodMode::Query),
+                ),
+                (
+                    "codeReferences".into(),
+                    method::<CodeReferencesRead, CodeReferencesResult>(MethodMode::Query),
+                ),
+                (
+                    "codeHover".into(),
+                    method::<CodeHoverRead, Option<CodeHoverResult>>(MethodMode::Query),
+                ),
+                (
                     "snapshotPatch".into(),
                     method::<ExecutionRead, PatchResult>(MethodMode::Mutation),
                 ),
@@ -2273,6 +2372,7 @@ pub fn contract() -> Contract {
                     method::<Send, SendResult>(MethodMode::Mutation),
                 ),
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
+                ("watchModels".into(), method::<ModelsWatch, ModelsPage>(MethodMode::Subscription)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
                 ("externalAgents".into(),method::<crate::external::ExternalAgentsRead, crate::external::ExternalAgents>(MethodMode::Query)),
                 ("externalUsageLimits".into(),method::<crate::external::ExternalUsageLimitsRead, crate::external::ExternalUsageLimits>(MethodMode::Query)),
@@ -2377,6 +2477,30 @@ pub fn contract() -> Contract {
                     method::<InteractionRespond, InteractionResult>(MethodMode::Mutation),
                 ),
                 (
+                    "sessionList".into(),
+                    method::<SessionListInput, SessionListOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionRead".into(),
+                    method::<SessionReadInput, SessionReadOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionCreate".into(),
+                    method::<SessionCreateInput, SessionCreateOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionSend".into(),
+                    method::<SessionSendInput, SendResult>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionStop".into(),
+                    method::<SessionStopInput, SessionStopOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionManage".into(),
+                    method::<SessionManageInput, SessionManageOutput>(MethodMode::Mutation),
+                ),
+                (
                     "watch".into(),
                     method::<Watch, DeliveryPage>(MethodMode::Subscription),
                 ),
@@ -2384,3 +2508,6 @@ pub fn contract() -> Contract {
         },
     }
 }
+
+pub mod memory;
+pub use memory::*;

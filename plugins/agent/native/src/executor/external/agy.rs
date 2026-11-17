@@ -32,7 +32,7 @@ mainAgent: true
 subagent: false
 tools: [search_web, define_subagent, invoke_subagent, manage_subagents, send_message]
 ---
-Use the Maka MCP tools for workspace operations, automation and conversation work.
+Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
 ";
 
 pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
@@ -305,7 +305,7 @@ async fn query_output(
 fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
     let catalog = std::str::from_utf8(bytes)
         .map_err(|_| Error::Invalid("agy models returned non-UTF-8 output".into()))?;
-    let mut models = Vec::new();
+    let mut rows = Vec::new();
     let mut ids = std::collections::BTreeSet::new();
     for row in catalog.lines() {
         let (id, name) = row
@@ -315,15 +315,89 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
         if !ids.insert(id) {
             return Err(Error::Invalid("agy models returned duplicate IDs".into()));
         }
-        models.push(serde_json::json!({"id":id,"displayName":name}));
+        rows.push((id, name));
+    }
+    // ACP accepts the base model and thought_level separately. Only collapse a
+    // family when the CLI actually lists multiple matching ID/name variants.
+    // A lone suffix can be part of a model's identity (e.g. GPT-OSS Medium).
+    let mut families: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for &(id, name) in &rows {
+        if let Some((base, label, effort)) = model_variant(id, name) {
+            families
+                .entry((base, label))
+                .or_default()
+                .push((id, effort));
+        }
+    }
+    families.retain(|(base, label), variants| {
+        variants.len() > 1
+            && !ids.contains(base)
+            && rows.iter().all(|(id, name)| {
+                let Some((prefix, effort)) = id.rsplit_once('-') else {
+                    return true;
+                };
+                prefix != *base
+                    || !EFFORTS.contains(&effort)
+                    || model_variant(id, name).is_some_and(|(_, candidate, _)| candidate == *label)
+            })
+    });
+    let mut emitted = std::collections::BTreeSet::new();
+    let mut models = Vec::new();
+    for (id, name) in rows {
+        if let Some((base, label, _)) = model_variant(id, name)
+            && let Some(variants) = families.get(&(base, label))
+        {
+            if !emitted.insert(base) {
+                continue;
+            }
+            let mut variants = variants.clone();
+            variants.sort_by_key(|(_, effort)| EFFORTS.iter().position(|level| level == effort));
+            models.push(serde_json::json!({
+                "id":base, "displayName":label,
+                "effortLevels":variants.iter().map(|(_, effort)| effort).collect::<Vec<_>>(),
+                "aliases":variants.iter().map(|(id, effort)| serde_json::json!({"id":id,"effort":effort})).collect::<Vec<_>>()
+            }));
+        } else {
+            models.push(serde_json::json!({"id":id,"displayName":name}));
+        }
     }
     Ok(models)
+}
+
+const EFFORTS: &[&str] = &[
+    "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+fn model_variant<'a>(id: &'a str, name: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
+    let (base, effort) = id.rsplit_once('-')?;
+    let (label, suffix) = name.strip_suffix(')')?.rsplit_once(" (")?;
+    (!base.is_empty()
+        && !label.is_empty()
+        && EFFORTS.contains(&effort)
+        && suffix.eq_ignore_ascii_case(effort))
+    .then_some((base, label, effort))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn groups_only_proven_thinking_variants_and_preserves_single_or_unknown_models() {
+        let models = parse_models(b"opus-low\tOpus (Low)\nopus-medium\tOpus (Medium)\nopus-high\tOpus (High)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\ncustom-high\tDifferent model\ncustom-low\tCustom (Low)\n").unwrap();
+        assert_eq!(
+            models,
+            vec![
+                serde_json::json!({"id":"opus","displayName":"Opus","effortLevels":["low","medium","high"],
+                "aliases":[{"id":"opus-low","effort":"low"},{"id":"opus-medium","effort":"medium"},{"id":"opus-high","effort":"high"}]}),
+                serde_json::json!({"id":"gpt-oss-120b-medium","displayName":"GPT-OSS 120B (Medium)"}),
+                serde_json::json!({"id":"custom-high","displayName":"Different model"}),
+                serde_json::json!({"id":"custom-low","displayName":"Custom (Low)"}),
+            ]
+        );
+        assert!(parse_models(b"same\tOne\nsame\tTwo\n").is_err());
+    }
 
     #[test]
     fn antigravity_uses_one_static_agent_directory_in_maka() -> io::Result<()> {

@@ -28,6 +28,7 @@ pub mod external_publication;
 pub mod external_steering;
 pub mod fold;
 pub mod interactions;
+pub mod memory;
 pub mod operation;
 pub mod queue;
 pub mod recall;
@@ -231,4 +232,61 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "index history tool result metadata",
         sql: include_str!("../migrations/0041_history_tool_metadata.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 43,
+        description: "scoped ordinary memory",
+        sql: include_str!("../migrations/0043_memory.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 44,
+        description: "memory assertion metadata",
+        sql: include_str!("../migrations/0044_memory_metadata.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 45,
+        description: "memory version evidence",
+        sql: include_str!("../migrations/0045_memory_evidence.sql"),
+    },
 ];
+
+#[cfg(test)]
+mod migration_tests {
+    #[test]
+    fn composed_product_migrations_initialize_upgrade_and_reopen() {
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(super::MIGRATIONS)
+            .copied()
+            .collect();
+        for upgrade in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("root.sqlite");
+            let db = rusqlite::Connection::open(&path).unwrap();
+            if upgrade {
+                let previous: Vec<_> = catalog
+                    .iter()
+                    .filter(|m| {
+                        m.description != "checkpoint repository"
+                            && m.description != "scoped ordinary memory"
+                            && m.description != "memory assertion metadata"
+                            && m.description != "memory version evidence"
+                    })
+                    .copied()
+                    .collect();
+                maka_event_log::migration::run(&db, &previous).unwrap();
+            }
+            maka_event_log::migration::run(&db, &catalog).unwrap();
+            drop(db);
+            let db = rusqlite::Connection::open(&path).unwrap();
+            maka_event_log::migration::run(&db, &catalog).unwrap();
+            let identities: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM checkpoint_repository_sessions",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(identities, 0);
+        }
+    }
+}

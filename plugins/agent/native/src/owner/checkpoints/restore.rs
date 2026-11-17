@@ -182,19 +182,28 @@ impl Owner {
                 {
                     return Err("agent_directory_unavailable".into());
                 }
-                let request = storage::RestoreOperation {
-                    operation: operation.operation,
-                    fingerprint,
-                    revision: storage::Revision(input.checkpoint.revision),
-                    parent: path,
-                    parent_identity: parent.identity.clone(),
-                };
                 let parent_directory = workspace::open_directory(
                     &owner.workspace_roots,
                     &parent,
                     root.canonical_path(),
                 )
                 .await?;
+                let parent_for_identity = parent_directory
+                    .try_clone()
+                    .map_err(|_| "agent_directory_unavailable")?;
+                let parent_identity = tokio::task::spawn_blocking(move || {
+                    maka_sandbox::workspace::DirectoryIdentity::capture(&parent_for_identity)
+                })
+                .await
+                .map_err(|_| "agent_directory_unavailable")?
+                .map_err(|_| "agent_directory_unavailable")?;
+                let request = storage::RestoreOperation {
+                    operation: operation.operation,
+                    fingerprint,
+                    revision: storage::Revision(input.checkpoint.revision),
+                    parent: path,
+                    parent_identity,
+                };
                 let parent_clone = parent_directory
                     .try_clone()
                     .map_err(|_| "agent_directory_unavailable")?;
@@ -230,30 +239,12 @@ impl Owner {
                     .validate_workspace_fence(&physical, &observed)
                     .await
                     .map_err(failure)?;
-                let (directory, directory_identity) = tokio::task::spawn_blocking(move || {
-                    maka_fs_tools::directory::identity(&directory)
-                        .map(|identity| (directory, identity))
-                })
-                .await
-                .map_err(|_| "agent_directory_unavailable")?
-                .map_err(|_| "agent_directory_unavailable")?;
-                let identity = maka_fs_tools::workspace::ensure_directory_identity(
-                    prepared.path.clone(),
-                    directory,
-                    root.canonical_path().to_owned(),
-                    root.control_directory().to_owned(),
-                    None,
-                )
-                .await
-                .map_err(|_| "agent_workspace_initialization_failed")?;
                 let selected = Workspace {
                     path: prepared
                         .path
                         .to_str()
                         .ok_or("agent_directory_unavailable")?
                         .to_owned(),
-                    directory_identity,
-                    identity,
                     project_id: None,
                     worktree: None,
                 };

@@ -71,6 +71,334 @@ fn timing(page: &Value) -> wire::TurnTiming {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_failure_shows_original_tool_diagnostic() {
+    use maka_plugin_core::operation::{Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef};
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig.tool(attempt, "Computer", "click", json!({})).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let owner = driver.state.frontier(run).await?.spec.owner;
+        let digest = format!("sha256-{}", "a".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let reason = BlockerKind::OperationUnknown {
+            tool: tool.clone(),
+            reference: reference.clone(),
+        };
+        let diagnostic = "The app started, but its window never appeared.";
+        let committed = rig
+            .append(
+                vec![
+                    Fact::ToolOriginalBound {
+                        tool: tool.clone(),
+                        reference: reference.clone(),
+                    },
+                    Fact::OperationObserved {
+                        tool,
+                        reply: maka_agent_facts::operation::RecordedOperationReply {
+                            reference,
+                            receipt: Receipt::Recorded {
+                                outcome: OperationOutcome::Unknown {
+                                    diagnostic: diagnostic.into(),
+                                },
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                        },
+                    },
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: reason.clone(),
+                    },
+                    Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        diagnostic: Some(format!("{reason:?}")),
+                    },
+                ],
+                vec![],
+            )
+            .await?;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let failures: Vec<_> = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "failure")
+            .map(|row| row["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(failures, [diagnostic]);
+
+        let history = driver.state.session_history(owner, session);
+        let cut = history.capture().await?;
+        let sequence = history
+            .fact_sequence(&cut, run, committed.facts.last().unwrap().id)
+            .await?
+            .ok_or("missing termination position")?;
+        let snapshot = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut,
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        let termination = snapshot
+            .item(sequence)
+            .await?
+            .ok_or("missing archived termination")?;
+        let archived =
+            maka_agent_state::session_history::source_tree::HistoryDataSource::Snapshot(snapshot);
+        assert_eq!(
+            archived.recovery_failure_at(&termination).await?.as_deref(),
+            Some(diagnostic)
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(()))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() -> TestResult<()> {
+    use maka_agent_engine::ports::Preparation;
+    use maka_agent_facts::operation::inline_reply;
+    use maka_plugin_core::operation::{
+        OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+
+    let mut rig = Rig::new()?;
+    rig.model_overrides = json!({"llama3.2": {"codeMode": false, "vision": true, "apiProtocol": "openai-chat-completions"}});
+    let (request, mut captured) = tokio::sync::mpsc::channel(1);
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let request = request.clone();
+            async move {
+                let _ = request.try_send(serde_json::from_slice::<Value>(&body).expect("model request JSON"));
+                ([( "content-type", "text/event-stream")], concat!(
+                    "data: {\"id\":\"followup\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"The click did not run.\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"followup\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: [DONE]\n\n",
+                ))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+    let stop = CancellationToken::new();
+    let server_stop = stop.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(server_stop.cancelled_owned())
+            .await
+    });
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+        let (img_tool, _) = rig.tool(attempt, "exec", "snap-1", json!({"code":"1"})).await?;
+        let (cell_tool, _) = rig.tool(attempt, "exec", "cell-1", json!({"code":"1"})).await?;
+        let (tool, _) = rig.tool(attempt, "computer", "click-1", json!({})).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let view = driver.state.frontier(driver.access.execution().run_id).await?;
+        let link = AgentStepLink { run: view.run, step: view.attempts[&attempt].step, attempt };
+        let img_cell = CellId::for_agent(link, &img_tool.call);
+        let rec_cell = CellId::for_agent(link, &cell_tool.call);
+        let src = ContentBlob::new(b"1".to_vec());
+        let interrupted = ContentBlob::json(&maka_agent_facts::cells::CellInterruption {
+            cell: img_cell,
+            diagnostic: "post-yield stop".into(),
+            children: Default::default(),
+            prior_output: None,
+        })?;
+        let completed = ContentBlob::json(&CellObservation::Completed {
+            cell_id: rec_cell,
+            content: vec![],
+            result: json!({"ok":"recovered-cell-ok"}),
+        })?;
+        driver.state.append(
+            driver.access.claim(),
+            (&view).into(),
+            vec![
+                Change { id: img_cell.started_fact_id(), at: at(), fact: Fact::Cell { event: CellEvent::Started { cell: img_cell, owner: CellOwner::Agent { link, call: img_tool.call.clone() }, source: src.reference().clone() } } },
+                Change { id: rec_cell.started_fact_id(), at: at(), fact: Fact::Cell { event: CellEvent::Started { cell: rec_cell, owner: CellOwner::Agent { link, call: cell_tool.call.clone() }, source: src.reference().clone() } } },
+                Change::new(Fact::Cell { event: CellEvent::VmBound { cell: rec_cell, binding: maka_agent_facts::cells::CellVmBinding { runtime: "fixture".into(), version: 1, descriptor: src.reference().clone() } } }, at()),
+                Change::new(Fact::Cell { event: CellEvent::Interrupted { cell: img_cell, report: interrupted.reference().clone() } }, at()),
+                Change::new(Fact::Cell { event: CellEvent::Completed { cell: rec_cell, result: completed.reference().clone(), publication: maka_agent_facts::cells::SessionPublication { values: BTreeMap::new(), loaded_tools: None } } }, at()),
+            ],
+            vec![src, interrupted, completed],
+        ).await?;
+        rig.finish_model_request(attempt, None).await?;
+        super::super::effects::publish_return_for_test(
+            &driver.state,
+            &driver.access,
+            &img_tool,
+            maka_agent_facts::tool_output::ToolSuccess::from(ToolOutput::Mcp(
+                maka_agent_facts::capability::CallResult {
+                    content: vec![maka_agent_facts::capability::ContentBlock::Image {
+                        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=".into(),
+                        mime_type: "image/png".into(),
+                    }],
+                    structured_content: None,
+                },
+            )),
+            None,
+        )
+        .await?;
+        let run = driver.access.execution().run_id;
+        let owner = driver.state.frontier(run).await?.spec.owner;
+        let digest = format!("sha256-{}", "a".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace,
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let observed = |outcome| Fact::OperationObserved {
+            tool: tool.clone(),
+            reply: inline_reply(OperationReply {
+                reference: reference.clone(),
+                receipt: Receipt::Recorded {
+                    outcome,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+            }),
+        };
+        rig.append(
+            vec![
+                Fact::ToolOriginalBound {
+                    tool: tool.clone(),
+                    reference: reference.clone(),
+                },
+                observed(OperationOutcome::Unknown {
+                    diagnostic: "Original launch uncertain".into(),
+                }),
+                Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason: BlockerKind::OperationUnknown {
+                        tool: tool.clone(),
+                        reference: reference.clone(),
+                    },
+                },
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    diagnostic: Some("Original launch uncertain".into()),
+                },
+            ],
+            vec![],
+        )
+        .await?;
+        driver
+            .state
+            .observe(
+                run,
+                vec![Change::new(
+                    observed(OperationOutcome::Returned {
+                        result: OperationResult::Failure {
+                            diagnostic: "App identity did not match. Click was not sent.".into(),
+                        },
+                    }),
+                    at(),
+                )],
+                vec![],
+            )
+            .await?;
+
+        let client = rig.client.as_ref().unwrap();
+        let BackendSpec::Model { binding, .. } = driver.state.frontier(run).await?.spec.backend
+        else {
+            return Err("fixture model binding missing".into());
+        };
+        let sent = model_recovery::call(client, "agent", "send", json!({
+            "sessionId":session, "message":"Did the click run?",
+            "backend":{"kind":"model","connectionId":binding.connection_id,"modelId":binding.model},
+            "delivery":"queue",
+        })).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let request = captured
+            .recv()
+            .await
+            .ok_or("follow-up did not reach the model")?;
+        let messages = request["messages"]
+            .as_array()
+            .ok_or("model messages missing")?;
+        let exchange: Vec<_> = messages
+            .iter()
+            .filter_map(|message| {
+                if message["tool_calls"]
+                    .as_array()
+                    .is_some_and(|calls| calls.iter().any(|call| call["id"] == "click-1"))
+                {
+                    Some("call")
+                } else if message["role"] == "tool" && message["tool_call_id"] == "click-1" {
+                    assert!(
+                        message["content"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .contains("App identity did not match. Click was not sent.")
+                    );
+                    Some("failure")
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(exchange, ["call", "failure"]);
+        let req_text = request.to_string();
+        assert!(req_text.contains("image/png"), "local_returned lost to RecoveredCell: {req_text}");
+        assert!(req_text.contains("recovered-cell-ok"), "RecoveredCell fallback missing: {req_text}");
+        model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    server.await??;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
     use maka_agent_engine::DriverExit;
 
@@ -1629,4 +1957,305 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
         "executor tool history regression: {result:?}"
     );
     assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let mut boot = model_recovery::bootstrap(
+        &base,
+        format!("http://{}/v1", listener.local_addr()?),
+        false,
+    )
+    .await?;
+    boot.replay = true;
+    model_recovery::attach(&mut rig, &boot).await?;
+
+    let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<Value>(8);
+    let steer_ready = Arc::new(tokio::sync::Notify::new());
+    let steer_signal = steer_ready.clone();
+    let note_ready = Arc::new(tokio::sync::Notify::new());
+    let note_signal = note_ready.clone();
+    let stop = CancellationToken::new();
+    let ws_stop = stop.clone();
+    let server = tokio::spawn(async move {
+        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut conns = tokio::task::JoinSet::<TestResult<()>>::new();
+        loop {
+            let (tcp, _) = tokio::select! {
+                _ = ws_stop.cancelled() => break,
+                accepted = listener.accept() => accepted?,
+            };
+            let (req_tx, steer_signal, note_signal, ws_stop, step) = (
+                req_tx.clone(),
+                steer_signal.clone(),
+                note_signal.clone(),
+                ws_stop.clone(),
+                step.clone(),
+            );
+            conns.spawn(async move {
+                let mut ws = tokio_tungstenite::accept_async(tcp).await?;
+                loop {
+                    let frame = tokio::select! {
+                        _ = ws_stop.cancelled() => return Ok(()),
+                        frame = ws.next() => frame,
+                    };
+                    let text = match frame {
+                        Some(Ok(WsMessage::Text(text))) => text,
+                        Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                        _ => return Ok(()),
+                    };
+                    let idx = step.fetch_add(1, Ordering::SeqCst);
+                    req_tx.send(serde_json::from_str(&text)?).await?;
+                    let events = match idx {
+                        0 => {
+                            for ev in [
+                                json!({"type":"response.created","response":{"id":"resp-0"}}),
+                                json!({
+                                    "type": "response.output_item.done",
+                                    "item": {"type":"reasoning","id":"rs-steer","encrypted_content":"enc-steer","summary":[{"type":"summary_text","text":"thinking"}]}
+                                }),
+                            ] {
+                                ws.send(WsMessage::text(ev.to_string())).await?;
+                            }
+                            steer_signal.notify_one();
+                            continue;
+                        }
+                        1 => {
+                            let hold_call = json!({
+                                "type": "custom_tool_call",
+                                "id": "fc-hold",
+                                "call_id": "call-2-hold",
+                                "name": "exec",
+                                "input": format!(
+                                    r#"// @exec: {{"yield_time_ms": 30000}}
+image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control();
+for (let i = 0; i < 40; i++) {{
+  await new Promise((r) => setTimeout(r, 50));
+  notify('bg-note');
+}}
+await new Promise((r) => setTimeout(r, 30000));"#
+                                )
+                            });
+                            vec![
+                                json!({"type":"response.created","response":{"id":"r-1"}}),
+                                json!({"type":"response.output_item.done","item":hold_call}),
+                                json!({"type":"response.completed","response":{"id":"r-1","model":"llama3.2","output":[hold_call],"usage":{"input_tokens":50,"output_tokens":10}}}),
+                            ]
+                        }
+                        2 => {
+                            for ev in [
+                                json!({"type":"response.created","response":{"id":"r-2"}}),
+                                json!({"type":"response.output_item.done","item":{"type":"reasoning","id":"rs-bg-prefix","encrypted_content":"enc-bg","summary":[{"type":"summary_text","text":"bg"}]}}),
+                            ] {
+                                ws.send(WsMessage::text(ev.to_string())).await?;
+                            }
+                            tokio::select! {
+                                _ = ws_stop.cancelled() => {}
+                                _ = note_signal.notified() => {}
+                            }
+                            return Ok(());
+                        }
+                        3..=5 => continue,
+                        6 => vec![
+                            json!({"type":"response.created","response":{"id":"r-5"}}),
+                            json!({"type":"response.output_item.done","item":{"type":"reasoning","id":"rs-orphan","encrypted_content":"enc-orphan","summary":[{"type":"summary_text","text":"orphan"}]}}),
+                            json!({"type":"response.incomplete","response":{"id":"r-5","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
+                        ],
+                        7 => vec![
+                            json!({"type":"response.created","response":{"id":"r-6"}}),
+                            json!({"type":"response.output_item.done","item":{"type":"message","id":"m-half","role":"assistant","content":[{"type":"output_text","text":"First half."}]}}),
+                            json!({"type":"response.incomplete","response":{"id":"r-6","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
+                        ],
+                        _ => {
+                            let msg = json!({"type":"message","id":"m-done","role":"assistant","content":[{"type":"output_text","text":"Second half."}]});
+                            vec![
+                                json!({"type":"response.created","response":{"id":"r-done"}}),
+                                json!({"type":"response.output_item.done","item":msg}),
+                                json!({"type":"response.completed","response":{"id":"r-done","model":"llama3.2","output":[msg],"usage":{"input_tokens":60,"output_tokens":10}}}),
+                            ]
+                        }
+                    };
+                    for event in events {
+                        ws.send(WsMessage::text(event.to_string())).await?;
+                    }
+                }
+            });
+        }
+        while let Some(joined) = conns.join_next().await {
+            let _ = joined?;
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    });
+
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(20), async {
+        let client = rig.client.as_ref().ok_or("client missing")?;
+        let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
+        let catalog = model_recovery::call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let created_conn = model_recovery::call(client, "settings", "create", json!({
+            "expectedCatalogRevision": catalog["revision"],
+            "connection": {
+                "slug": "replay-same",
+                "name": "Replay Same",
+                "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration": {"baseUrl": boot.base_url},
+                "enabled": true,
+                "enabledModelIds": ["llama3.2"],
+                "modelOverrides": {"llama3.2": {"codeMode": true, "vision": true, "apiProtocol": "openai-chat-completions"}}
+            }
+        })).await?;
+        let conn_id = created_conn["connection"]["connectionId"].clone();
+        let session_resp = model_recovery::call(client, "agent", "create", json!({
+            "title": "Resilient continuation",
+            "automaticTitle": false,
+            "labels": [],
+            "workspace": {"kind": "directory", "path": base.join("workspace")}
+        })).await?;
+        let session = session_resp["session"]["id"].as_str().ok_or("session missing")?.to_owned();
+        let backend = json!({"kind":"model","connectionId":conn_id,"modelId":"llama3.2"});
+
+        model_recovery::call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Inspect pixel.",
+            "backend": backend
+        })).await?;
+        let _ = req_rx.recv().await.ok_or("initial request missing")?;
+        steer_ready.notified().await;
+        let r1: RunId = loop {
+            let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId":session})).await?;
+            if !obs["run"]["runId"].is_null() {
+                break serde_json::from_value(obs["run"]["runId"].clone())?;
+            }
+            tokio::task::yield_now().await;
+        };
+        loop {
+            let view = owner.durable.frontier(r1).await?;
+            if view.attempts.values().any(|a| a.observed > 0) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        model_recovery::call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Also verify.",
+            "delivery": "steer",
+            "backend": backend
+        })).await?;
+        let steered_req = req_rx.recv().await.ok_or("steered request missing")?;
+        assert!(!steered_req.to_string().contains("rs-steer"), "{steered_req}");
+        let step3_req = req_rx.recv().await.ok_or("post-yield request missing")?;
+        assert!(step3_req.to_string().contains("input_image"), "{step3_req}");
+        while owner.durable.cells().notifications(r1, None, 1).await?.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        note_ready.notify_one();
+        let note_req = req_rx.recv().await.ok_or("post-notification request missing")?;
+        let note_text = note_req.to_string();
+        assert!(note_text.contains("bg-note"), "{note_text}");
+        assert!(!note_text.contains("rs-bg-prefix"), "prefix reasoning leaked before notification: {note_text}");
+        model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":r1})).await?;
+        let r1_exec = wait_terminal(client, &session, json!(r1)).await?;
+        assert_eq!(r1_exec["state"]["kind"], "cancelled");
+
+        let mut source = r1_exec;
+        for _ in 0..2 {
+            let avail = model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":source["runId"]})).await?;
+            assert_eq!(avail["kind"], "ready", "avail={avail} frontier={:?}", owner.durable.frontier(serde_json::from_value(source["runId"].clone())?).await?);
+            let started = model_recovery::call(client, "agent", "continueRun", json!({
+                "sessionId": session,
+                "sourceRunId": source["runId"],
+                "sourceHighWater": source["highWater"],
+                "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+            })).await?;
+            assert_eq!(started["kind"], "started", "started={started}");
+            let next_id = started["execution"]["runId"].clone();
+            let _ = req_rx.recv().await.ok_or("held continuation request missing")?;
+            model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":next_id})).await?;
+            source = wait_terminal(client, &session, next_id.clone()).await?;
+            assert_eq!(source["state"]["kind"], "cancelled");
+            let observed = model_recovery::call(client, "agent", "observe", json!({"sessionId":session})).await?;
+            assert_eq!(observed["latestRunId"], next_id);
+        }
+        assert_eq!(
+            model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":r1})).await?["kind"],
+            "rejected"
+        );
+        assert_eq!(
+            model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":source["runId"]})).await?["kind"],
+            "ready"
+        );
+
+        let r4 = model_recovery::call(client, "agent", "continueRun", json!({
+            "sessionId": session,
+            "sourceRunId": source["runId"],
+            "sourceHighWater": source["highWater"],
+            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+        })).await?;
+        let req2 = req_rx.recv().await.ok_or("r4 request missing")?;
+        let req2_text = req2.to_string();
+        assert!(req2_text.contains("input_image"), "unaccepted tool image lost: {req2_text}");
+        assert!(req2_text.contains("call-2-hold"), "unaccepted interrupted cell lost: {req2_text}");
+        let r4_exec = wait_terminal(client, &session, r4["execution"]["runId"].clone()).await?;
+
+        let r5 = model_recovery::call(client, "agent", "continueRun", json!({
+            "sessionId": session,
+            "sourceRunId": r4_exec["runId"],
+            "sourceHighWater": r4_exec["highWater"],
+            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+        })).await?;
+        let req3 = req_rx.recv().await.ok_or("r5 request missing")?;
+        let req3_text = req3.to_string();
+        assert!(!req3_text.contains("rs-orphan"), "orphan reasoning leaked: {req3_text}");
+        assert!(!req3_text.contains("Continue from where"), "unexpected cue: {req3_text}");
+        let r5_exec = wait_terminal(client, &session, r5["execution"]["runId"].clone()).await?;
+
+        let r6 = model_recovery::call(client, "agent", "continueRun", json!({
+            "sessionId": session,
+            "sourceRunId": r5_exec["runId"],
+            "sourceHighWater": r5_exec["highWater"],
+            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+        })).await?;
+        let req4 = req_rx.recv().await.ok_or("r6 request missing")?;
+        let req4_text = req4.to_string();
+        assert!(req4_text.contains("First half."), "{req4_text}");
+        assert!(req4_text.contains("Continue from where"), "{req4_text}");
+        let r6_exec = wait_terminal(client, &session, r6["execution"]["runId"].clone()).await?;
+        assert_eq!(r6_exec["state"]["kind"], "completed");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    server.await??;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+async fn wait_terminal(client: &HostClient, session: &str, run_id: Value) -> TestResult<Value> {
+    let target = json!({"kind": "run", "runId": run_id});
+    loop {
+        let work = model_recovery::call(
+            client,
+            "agent",
+            "work",
+            json!({"sessionId": session, "target": target}),
+        )
+        .await?;
+        if matches!(
+            work["execution"]["state"]["kind"].as_str(),
+            Some("completed" | "failed" | "cancelled")
+        ) {
+            return Ok(work["execution"].clone());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

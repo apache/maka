@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StoredSessionConfiguration {
+    #[serde(default)]
+    pub incognito: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +55,8 @@ pub struct StoredSessionConfiguration {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedConfiguration {
+    #[serde(default)]
+    pub incognito: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,6 +91,7 @@ impl StoredSessionConfiguration {
             .workspace
             .boundary_revision(self.boundary_revision, stamp)?;
         Ok(ResolvedConfiguration {
+            incognito: self.incognito,
             parent_session_id: self.parent_session_id,
             backend: self.backend,
             applied_preset: self.applied_preset,

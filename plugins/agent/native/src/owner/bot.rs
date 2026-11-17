@@ -62,18 +62,12 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     // tiers and ownership checks exist.
     "SessionList",
     "SessionRead",
-    "SessionHistory",
-    "SessionQueue",
-    "SessionWork",
-    "SessionExecution",
-    // Delegation: the Bot may create workers and send to or stop only the
+    // Delegation: the Bot may create workers and send to, respond to, or stop only
     // conversations it created itself (checked against `parentSessionId`).
     "SessionCreate",
     "SessionSend",
-    "SessionStop",
-    "SessionPendingInteractions",
-    "SessionInteraction",
     "SessionRespond",
+    "SessionStop",
 ];
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";
@@ -731,6 +725,7 @@ impl Owner {
             },
         ];
         let create = Create {
+            incognito: false,
             kind: SessionKind::Agent,
             preset_id: None,
             backend: None,
@@ -998,17 +993,10 @@ const ABILITIES: &[Ability] = &[
         "{} (checklist)",
     ),
     (
-        &[
-            "SessionList",
-            "SessionRead",
-            "SessionHistory",
-            "SessionQueue",
-            "SessionWork",
-            "SessionExecution",
-        ],
-        "{}（只读地查看用户的会话）",
-        "{}（唯讀地查看使用者的會話）",
-        "{} (read the user's conversations, read-only)",
+        &["SessionList", "SessionRead"],
+        "{}（查看用户的会话与 Room）",
+        "{}（查看使用者的會話與 Room）",
+        "{} (inspect conversations and Rooms, read-only)",
     ),
     (
         &[
@@ -1029,10 +1017,15 @@ const ABILITIES: &[Ability] = &[
         "{} (find selectable models and thinking levels for delegation)",
     ),
     (
-        &["SessionCreate", "SessionSend", "SessionStop"],
-        "{}（新建工作会话并派活；只能给自己创建的会话发消息或停止）",
-        "{}（新建工作會話並派活；只能給自己建立的會話發訊息或停止）",
-        "{} (create work conversations and hand them tasks; you may only send to or stop conversations you created)",
+        &[
+            "SessionCreate",
+            "SessionSend",
+            "SessionRespond",
+            "SessionStop",
+        ],
+        "{}（新建工作会话、派活、处理其提问/审批或停止；只能控制自己创建的会话）",
+        "{}（新建工作會話、派活、處理其提問/審批或停止；只能控制自己建立的會話）",
+        "{} (create work conversations, delegate tasks, answer their prompts/approvals, or stop them; restricted to conversations you created)",
     ),
     (
         &["Skill", "SkillSearch"],

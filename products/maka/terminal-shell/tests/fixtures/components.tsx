@@ -386,8 +386,6 @@ function WorkspacePages(props: { busy: boolean }) {
     },
     workspace: {
       path: `/workspace/${workspace}`,
-      directoryIdentity: workspace,
-      identity: workspace,
     },
   });
   const scope = { kind: 'all' } as const;

@@ -86,36 +86,6 @@ export function historyTurnKey(
     : row.turnId;
 }
 
-/** Prepare the latest turn before exposing its first history window. */
-export async function readHistoryTail(
-  page: ConversationHistoryPage,
-  readOlder: (
-    cursor: NonNullable<ConversationHistoryPage['before']>,
-  ) => Promise<ConversationHistoryPage | null>,
-): Promise<ConversationHistoryPage | null> {
-  const chunks = [...page.chunks];
-  const turnKey = historyTurnKey(chunks.at(-1));
-  let before = page.before;
-  for (let olderPages = 0; olderPages < 8 && before !== null && turnKey !== undefined; ) {
-    if (
-      chunks.some(
-        (chunk) =>
-          chunk.role === 'user' &&
-          chunk.field === 'body' &&
-          chunk.offset === 0 &&
-          historyTurnKey(chunk) === turnKey,
-      )
-    )
-      break;
-    const older = await readOlder(before);
-    if (older === null) return null;
-    chunks.unshift(...older.chunks);
-    before = older.before;
-    if (older.chunks.length) olderPages++;
-  }
-  return { ...page, chunks, before };
-}
-
 export function rootEventSequence(row: Pick<Row, 'position' | 'sequence'>): number | undefined {
   return row.position?.kind === 'live'
     ? row.position.sequence
@@ -153,6 +123,7 @@ export type Row = {
   finalAnswer?: boolean;
   compaction?: HistoryCompaction;
   foldedWork?: AgentHistoryChunk['foldedWork'];
+  work?: AgentHistoryChunk['work'];
   metadataThrough?: number | null;
   runId?: RunId;
   stepId?: StepId;
@@ -170,8 +141,9 @@ export function modelPartRowId({ stepId, attemptId, ordinal }: NonNullable<Row['
 
 /** One identity across streaming fragments, canonical handoff and tool result pairing. */
 export function stableRowId(
-  row: Pick<Row, 'tool' | 'position' | 'modelPart' | 'messageId' | 'field'>,
+  row: Pick<Row, 'tool' | 'position' | 'modelPart' | 'messageId' | 'field' | 'work'>,
 ): string {
+  if (row.work && row.position) return historyRowKey(row.position, 'work');
   if (row.tool?.call) return `tool/${row.tool.toolUseId}/${historyRowKey(row.tool.call.position)}`;
   if (row.position && row.position.kind !== 'live') return historyRowKey(row.position, row.field);
   if (row.modelPart && !row.tool) return modelPartRowId(row.modelPart);
@@ -182,6 +154,24 @@ export function stableRowId(
 
 export function activityMessage(origin: MessageOrigin | null | undefined): boolean {
   return origin?.kind === 'automation' || senderSession(origin) !== null;
+}
+
+export function historyFollowTail(
+  rows: readonly Row[],
+  view: 'chat' | 'conversation' = 'chat',
+): Row | undefined {
+  if (view === 'conversation') return rows.at(-1);
+  return rows.findLast(
+    (row) =>
+      Boolean(row.work) ||
+      historyTurnKey(row) === undefined ||
+      (!row.tool &&
+        row.field !== 'thinking' &&
+        (row.role === 'assistant' ||
+          row.role === 'failure' ||
+          row.role === 'compaction' ||
+          (row.role === 'user' && !activityMessage(row.origin)))),
+  );
 }
 
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
@@ -208,6 +198,7 @@ export function historyFollowPosition(
   for (const row of live) if (!row.preview && row.closedAt != null) consider(row.startSequence);
   for (const sequence of closedStarts) consider(sequence);
   if (start !== undefined) return { kind: 'event', sequence: start };
+  if (last?.work) return { kind: 'after', cursor: last.work.end };
   return last
     ? {
         kind: 'after',
@@ -319,6 +310,7 @@ export function historyMetadata(
     finalAnswer: chunk.finalAnswer,
     compaction: chunk.compaction ?? undefined,
     foldedWork: chunk.foldedWork ?? previous?.foldedWork,
+    work: chunk.work ?? undefined,
     tool: chunk.tool,
     metadataThrough: through,
   };
@@ -341,9 +333,14 @@ export function replaceHistoryMetadata(
 // These are the Desktop transcript's position/fragment rules, independent of
 // either renderer. History cursors use byte offsets; JS never derives them
 // from UTF-16 string lengths.
+export function historyChunkKey(chunk: AgentHistoryChunk): string {
+  return historyRowKey(chunk.position, chunk.work ? 'work' : chunk.field);
+}
+
 export function compareRows(a: Row, b: Row): number {
   return (
     compareHistoryOrder(a.order!, b.order!) ||
+    Number(!a.work) - Number(!b.work) ||
     Number(a.field === 'body') - Number(b.field === 'body')
   );
 }
@@ -356,11 +353,17 @@ export function mergeHistoryPage(
 ): Row[] {
   const changed = new Map<string, Row>();
   for (const chunk of chunks) {
-    const key = historyRowKey(chunk.position, chunk.field);
+    const key = historyChunkKey(chunk);
     const previous = changed.get(key) ?? lookup(key);
+    const previousThrough = previous?.metadataThrough;
+    const newerMetadata =
+      previous !== undefined &&
+      previousThrough != null &&
+      through !== null &&
+      previousThrough > through;
     const fresh = { offset: chunk.offset, text: chunk.text };
     const fragments = (
-      older && previous
+      (older || newerMetadata) && previous
         ? [
             ...previous.fragments!,
             ...(previous.fragments!.some((part) => part.offset === chunk.offset) ? [] : [fresh]),
@@ -372,11 +375,9 @@ export function mergeHistoryPage(
       messageId: chunk.messageId ?? undefined,
       turnId: chunk.turnId ?? undefined,
       timestamp: chunk.timestamp ?? undefined,
-      ...(previous?.metadataThrough != null &&
-      through !== null &&
-      previous.metadataThrough > through
+      ...(newerMetadata
         ? {
-            ...historyMetadata(previous, previous.metadataThrough, previous),
+            ...historyMetadata(previous, previousThrough, previous),
             ...(chunk.offset === 0 && previous.attachments === undefined
               ? { attachments: chunk.attachments ?? [] }
               : {}),

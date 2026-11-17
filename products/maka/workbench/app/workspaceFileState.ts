@@ -29,11 +29,19 @@ import type {
   WorkspacePath,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
+export type WorkspaceFileAnchor = {
+  line: number;
+  endLine?: number;
+  column?: number;
+  nonce?: number;
+};
+
 export type WorkspaceFileTarget = {
   sessionId: string;
   path: WorkspacePath;
   parent: WorkspacePath | null;
   title: string;
+  anchor?: WorkspaceFileAnchor;
 };
 export type WorkspaceDirectoryTarget = { sessionId: string; path: WorkspacePath | null };
 export type WorkspaceFileAction = {

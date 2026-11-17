@@ -81,7 +81,8 @@ impl Handler for Agent {
         }
         if matches!(
             method.as_str(),
-            "createPreset"
+            "changeMemory"
+                | "createPreset"
                 | "updatePreset"
                 | "deletePreset"
                 | "markRead"
@@ -105,11 +106,19 @@ impl Handler for Agent {
                 | "changeGoal"
                 | "schedule"
                 | "project"
+                | "sessionCreate"
+                | "sessionSend"
+                | "sessionStop"
+                | "sessionManage"
         ) {
             return Box::pin(async move {
                 let result: Result<HandlerValue, String> = async {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     match method.as_str() {
+                        "changeMemory" => owner
+                            .change_memory(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
                         "createPreset" => owner
                             .create_preset(decode(input)?, context.scope())
                             .await?
@@ -197,6 +206,22 @@ impl Handler for Agent {
                             .edit_queue(decode(input)?, operation, context.scope())
                             .await?
                             .complete(&context),
+                        "sessionCreate" => owner
+                            .session_create_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionSend" => owner
+                            .session_send_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionStop" => owner
+                            .session_stop_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionManage" => owner
+                            .session_manage_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
                         "stop" => {
                             let input: Stop = decode(input)?;
                             if !owner
@@ -238,6 +263,16 @@ impl Handler for Agent {
                 "preset" => encode(owner.preset(decode(input)?).await?),
                 "work" => encode(owner.work(decode(input)?).await?),
                 "workReadiness" => encode(owner.work_readiness(decode(input)?).await?),
+                "sessionList" => encode(
+                    owner
+                        .session_list_tool(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "sessionRead" => encode(
+                    owner
+                        .session_read_tool(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "list" => encode(catalog_page(&owner, &decode(input)?).await?),
                 "catalog" => {
                     let mut input: List = decode(input)?;
@@ -303,6 +338,21 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "memorySource" => {
+                    encode(owner.memory_source(decode(input)?, context.scope()).await?)
+                }
+                "memoryEvidence" => encode(
+                    owner
+                        .memory_evidence(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "memoryHistory" => encode(
+                    owner
+                        .memory_history(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "memories" => encode(owner.memories(decode(input)?, context.scope()).await?),
+                "memory" => encode(owner.memory(decode(input)?, context.scope()).await?),
                 "globalInstructions" => {
                     let _: GlobalInstructionsRead = decode(input)?;
                     encode(owner.global_instructions(context.scope()).await?)
@@ -576,6 +626,111 @@ impl Handler for Agent {
                 "watchFiles" => owner.watch_files(decode(input)?, context).await,
                 "readFile" => owner.read_file(decode(input)?, context).await,
                 "gitDiff" => encode(owner.git_diff(decode(input)?, context.scope()).await?),
+                "gitWorkspaceDiff" => encode(
+                    owner
+                        .git_workspace_diff(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "gitRevisions" => {
+                    encode(owner.git_revisions(decode(input)?, context.scope()).await?)
+                }
+                "gitCompare" => encode(owner.git_compare(decode(input)?, context.scope()).await?),
+                "gitCompareDiff" => encode(
+                    owner
+                        .git_compare_diff(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "githubPullRequests" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_requests(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "githubPullRequestDetail" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_request_detail(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "githubPullRequestFileDiff" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_request_file_diff(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "githubSubmitReview" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_submit_review(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "githubReplyComment" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_reply_comment(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "saveGitHubToken" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    let key: maka_agent_api::contract::GitHubTokenKey = decode(input)?;
+                    let resource = context
+                        .attachments()
+                        .get("secret")
+                        .ok_or("agent_github_token_required")?;
+                    if resource.bytes() == 0 {
+                        return encode(maka_agent_api::contract::GitHubTokenResult::InvalidToken);
+                    }
+                    let bytes = resource
+                        .read(0..resource.bytes())
+                        .map_err(|_| "agent_github_token_unavailable".to_owned())?;
+                    let Ok(secret) = String::from_utf8(bytes) else {
+                        return encode(maka_agent_api::contract::GitHubTokenResult::InvalidToken);
+                    };
+                    encode(owner.save_github_token(key, secret).await?)
+                }
+                "deleteGitHubToken" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(owner.delete_github_token(decode(input)?).await?)
+                }
+                "codeDefinition" => encode(
+                    owner
+                        .code_definition(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "codeReferences" => encode(
+                    owner
+                        .code_references(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "codeHover" => encode(owner.code_hover(decode(input)?, context.scope()).await?),
                 "readPatch" => encode(owner.read_patch(decode(input)?, context.scope()).await?),
                 "diagnostics" => diagnostics::query(&owner, decode(input)?, &context).await,
                 "watchDiagnostics" => diagnostics::watch(&owner, decode(input)?, &context).await,
@@ -626,6 +781,43 @@ impl Handler for Agent {
                             .collect(),
                         executors: owner.executors.names(),
                     })
+                }
+                "watchModels" => {
+                    let input: maka_agent_api::contract::ModelsWatch = decode(input)?;
+                    let mut changes = owner.executors.external_catalog_changes();
+                    let root = owner
+                        .store
+                        .owned_root()
+                        .map_err(|error| error.to_string())?;
+                    let mut configuration = root.capability_changes();
+                    loop {
+                        configuration.borrow_and_update();
+                        if let Some(changes) = changes.as_mut() {
+                            changes.borrow_and_update();
+                        }
+                        context
+                            .emit(encode(
+                                owner
+                                    .models(
+                                        maka_agent_api::contract::ModelsRead::Start {
+                                            query: input.query.clone(),
+                                        },
+                                        &context.scope().cancellation,
+                                    )
+                                    .await?,
+                            )?)
+                            .await?;
+                        tokio::select! { biased;
+                            () = context.scope().cancellation.cancelled() => return Err("agent_model_observation_cancelled".into()),
+                            result = configuration.changed() => result.map_err(|_| "agent_model_observation_closed")?,
+                            result = async {
+                                match changes.as_mut() {
+                                    Some(changes) => changes.changed().await.map_err(|_| "agent_model_observation_closed"),
+                                    None => std::future::pending().await,
+                                }
+                            } => result?,
+                        }
+                    }
                 }
                 "models" => encode(
                     owner
@@ -705,8 +897,7 @@ fn handler_error(diagnostic: String) -> HandlerError {
         | "agent_worktree_initialization_unknown"
         | "agent_project_commit_unknown"
         | "agent_project_registration_unknown"
-        | "agent_project_selection_unknown"
-        | "agent_workspace_initialization_failed" => HandlerError::Unknown { diagnostic },
+        | "agent_project_selection_unknown" => HandlerError::Unknown { diagnostic },
         _ => HandlerError::Returned { diagnostic },
     }
 }
@@ -735,4 +926,25 @@ impl maka_host_runtime::application::NativeOwner for Agent {
     fn close(&self) -> BoxFuture<'static, Result<(), String>> {
         self.0.close()
     }
+}
+
+pub(crate) async fn catalog_page_for_tool(
+    owner: &Owner,
+    input: &List,
+) -> Result<SessionPage, String> {
+    catalog_page(owner, input).await
+}
+pub(crate) async fn history_observation_for_tool(
+    owner: &Owner,
+    scope: &maka_capabilities::call::Scope,
+    input: SessionRead,
+) -> Result<Observation, String> {
+    history::observation(owner, scope, input).await
+}
+pub(crate) async fn history_read_for_tool(
+    owner: &Owner,
+    scope: &maka_capabilities::call::Scope,
+    input: History,
+) -> Result<HistoryPage, String> {
+    history::read(owner, scope, input).await
 }

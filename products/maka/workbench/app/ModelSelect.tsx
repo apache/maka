@@ -47,6 +47,7 @@ import {
   routeKey,
   sameBackend,
   sameRoute,
+  selectionForChoice,
   thinkingLevel,
   withThinkingLevel,
   type BackendIdentity,
@@ -121,7 +122,7 @@ export function ModelSelect(props: {
   });
   const model = () => {
     const details = owner.modelDetails();
-    return details.kind === 'ready' && sameRoute(owner.backend(), details.choice.selection)
+    return details.kind === 'ready' && selectionForChoice(owner.backend(), details.choice)
       ? details.choice.label
       : modelCaption(owner.backend(), details);
   };
@@ -249,6 +250,7 @@ function ModelMenu(props: {
   const choices = () => page()?.choices ?? [];
   const selected = signal(0);
   const loading = signal(false);
+  const refreshing = signal(false);
   const pending = signal(false);
   const saving = delayed(pending);
   const effortOpen = signal(false);
@@ -256,18 +258,22 @@ function ModelMenu(props: {
   let alive = true;
   let generation = 0;
   let modelsQueued = false;
+  let restartQueued = false;
+  let pageSearch = '';
+  let subscription: { close(): Promise<void> } | null = null;
   let removeSearchKeys = () => {};
   let list: ListRef | undefined;
   cleanup(() => {
     alive = false;
     generation += 1;
     removeSearchKeys();
+    void subscription?.close();
   });
 
   const active = () => alive && props.current();
   const readyChoice = () => {
     const details = owner.modelDetails();
-    return details.kind === 'ready' && sameRoute(owner.backend(), details.choice.selection)
+    return details.kind === 'ready' && selectionForChoice(owner.backend(), details.choice)
       ? details.choice
       : null;
   };
@@ -275,7 +281,8 @@ function ModelMenu(props: {
     const choice = readyChoice();
     return (
       choice !== null &&
-      (choice.thinkingLevels.length > 0 || thinkingLevel(owner.backend()) != null)
+      (choice.thinkingLevels.length > 0 ||
+        thinkingLevel(selectionForChoice(owner.backend(), choice)) != null)
     );
   };
   effect(() => {
@@ -314,7 +321,7 @@ function ModelMenu(props: {
     const choice = readyChoice();
     if (
       !choice ||
-      !sameRoute(request.backend, choice.selection) ||
+      !selectionForChoice(request.backend, choice) ||
       !choice.thinkingLevels.includes(request.level) ||
       effectiveThinkingLevel(request.backend, choice) !== request.level
     )
@@ -325,7 +332,7 @@ function ModelMenu(props: {
     const choice = readyChoice();
     if (
       !choice ||
-      !sameRoute(request.backend, choice.selection) ||
+      !selectionForChoice(request.backend, choice) ||
       choice.defaultThinkingLevel != null ||
       thinkingLevel(request.backend) !== null
     )
@@ -337,27 +344,26 @@ function ModelMenu(props: {
     if (!active() || (!restart && !page()?.next)) return;
     if (restart) {
       generation += 1;
-      batch(() => {
-        page.set(null);
-        selected.set(0);
-        error.set('');
-      });
+      restartQueued = true;
     }
     modelsQueued = true;
-    // Discarding a Promise cannot cancel admitted Host work. Keep one query
-    // in flight, then read the latest search or the next published page.
     if (loading()) return;
     loading.set(true);
     error.set('');
     try {
       do {
         modelsQueued = false;
+        const reset = restartQueued;
+        restartQueued = false;
         const reading = generation;
         const search = query();
+        const sameSearch = search === pageSearch;
+        const focused = () => (sameSearch ? choices()[index()] : undefined);
+        const count = reset ? (sameSearch ? Math.max(16, choices().length) : 16) : 0;
+        let previousPage = reset ? null : page();
         let changed = false;
         try {
           do {
-            const previousPage = page();
             if (previousPage && !previousPage.next) break;
             const result = await host.query(
               'agent',
@@ -373,22 +379,38 @@ function ModelMenu(props: {
                   'The model catalog keeps changing. Retry to read the current choices.',
                 );
               changed = true;
-              page.set(null);
-              selected.set(0);
+              previousPage = null;
               continue;
             }
-            const nextChoices = [...(previousPage?.choices ?? []), ...result.choices];
-            const currentIndex =
-              !previousPage && !search
-                ? nextChoices.findIndex((choice) => sameRoute(owner.backend(), choice.selection))
-                : -1;
+            const nextPage = {
+              revision: result.revision,
+              next: result.next,
+              choices: [...(previousPage?.choices ?? []), ...result.choices],
+            };
+            refreshing.set(result.refreshing);
+            if (
+              nextPage.next &&
+              (nextPage.choices.length < count ||
+                (focused() &&
+                  !nextPage.choices.some((choice) =>
+                    sameRoute(focused()!.selection, choice.selection),
+                  )))
+            ) {
+              previousPage = nextPage;
+              continue;
+            }
+            const focus = focused()?.selection ?? (!search ? owner.backend() : null);
+            const currentIndex = focus
+              ? nextPage.choices.findIndex((choice) => selectionForChoice(focus, choice))
+              : -1;
             batch(() => {
-              page.set({
-                revision: result.revision,
-                next: result.next,
-                choices: nextChoices,
-              });
-              if (currentIndex >= 0) selected.set(currentIndex);
+              page.set(nextPage);
+              pageSearch = search;
+              selected.set(
+                currentIndex >= 0
+                  ? currentIndex
+                  : Math.min(selected(), Math.max(0, nextPage.choices.length - 1)),
+              );
             });
             break;
           } while (active() && reading === generation);
@@ -404,6 +426,29 @@ function ModelMenu(props: {
     }
   };
 
+  void (async () => {
+    try {
+      const opened = await host.subscribe('agent', 'watchModels', {});
+      if (!active()) {
+        await opened.close();
+        return;
+      }
+      subscription = opened;
+      for (;;) {
+        const result = await opened.next();
+        if (!active() || result === null) break;
+        if (result.kind !== 'ready') continue;
+        refreshing.set(result.refreshing);
+        if (page()?.revision !== result.revision) {
+          void loadModels(true);
+          void owner.refreshModel();
+        }
+      }
+    } catch (reason) {
+      if (active()) error.set(errorText(reason, 'Could not load models.'));
+    }
+  })();
+
   const retryCatalog = () => {
     if (active() && !pending()) void loadModels(true);
   };
@@ -415,7 +460,7 @@ function ModelMenu(props: {
   const byId = computed(() => new Map(choices().map((choice) => [routeId(choice), choice])));
   const ids = computed(() => choices().map(routeId));
   const modelAction = (choice: ModelChoice) =>
-    action(sameRoute(owner.backend(), choice.selection) ? owner.backend()! : choice.selection);
+    action(selectionForChoice(owner.backend(), choice) ?? choice.selection);
   const move = (delta: number) => {
     const next = Math.max(0, Math.min(choices().length - 1, index() + delta));
     selected.set(next);
@@ -445,8 +490,6 @@ function ModelMenu(props: {
   };
   props.attach(handle);
   cleanup(() => props.detach(handle));
-  void owner.refreshModel();
-  void loadModels(true);
 
   return (
     <View style={{ minHeight: 0, flexShrink: 1 }}>
@@ -508,7 +551,7 @@ function ModelMenu(props: {
                 const initial = byId().get(key());
                 if (!initial) return <View />;
                 const choice = () => byId().get(key()) ?? initial;
-                const checked = () => sameRoute(owner.backend(), choice().selection);
+                const checked = () => selectionForChoice(owner.backend(), choice()) !== null;
                 return (
                   <Button
                     accessibilityLabel={tr('Use {model} · {connection}', {
@@ -572,10 +615,14 @@ function ModelMenu(props: {
           )}
         </List>
       </If>
-      <If when={loading() && choices().length === 0}>
+      <If
+        when={(loading() || refreshing() || page() === null) && !error() && choices().length === 0}
+      >
         <Text style={noteStyle()}>{tr('Loading…')}</Text>
       </If>
-      <If when={!loading() && !error() && choices().length === 0}>
+      <If
+        when={page() !== null && !loading() && !refreshing() && !error() && choices().length === 0}
+      >
         <Text style={noteStyle()}>{tr('No models match this search.')}</Text>
       </If>
       <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
@@ -642,7 +689,7 @@ function ModelMenu(props: {
                         onPress={inputAction(selectEffort, {
                           ...action(
                             withThinkingLevel(
-                              owner.backend() ?? item().selection,
+                              selectionForChoice(owner.backend(), item()) ?? item().selection,
                               item().defaultThinkingLevel === level() ? null : level(),
                             ),
                           ),
@@ -667,7 +714,8 @@ function ModelMenu(props: {
                 </Each>
                 <If
                   when={
-                    item().defaultThinkingLevel == null && thinkingLevel(owner.backend()) != null
+                    item().defaultThinkingLevel == null &&
+                    thinkingLevel(selectionForChoice(owner.backend(), item())) != null
                   }
                 >
                   <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
@@ -676,7 +724,12 @@ function ModelMenu(props: {
                     accessibilityLabel={tr('Use provider settings')}
                     onPress={inputAction(
                       resetEffort,
-                      action(withThinkingLevel(owner.backend() ?? item().selection, null)),
+                      action(
+                        withThinkingLevel(
+                          selectionForChoice(owner.backend(), item()) ?? item().selection,
+                          null,
+                        ),
+                      ),
                     )}
                     style={menuRowStyle()}
                     hoverStyle={menuRowHoverStyle()}

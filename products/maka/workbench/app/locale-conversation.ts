@@ -755,11 +755,6 @@ export const conversationMessages = {
   Error: ['Error', '错误', '錯誤'],
   'Expand session browser': ['Expand session browser', '展开对话侧栏', '展開對話側欄'],
   'Exit {code}': ['Exit {code}', '退出码 {code}', '結束碼 {code}'],
-  'Failed after {duration}': [
-    'Failed after {duration}',
-    '运行 {duration} 后失败',
-    '執行 {duration} 後失敗',
-  ],
   'Failed {count} times': ['Failed {count} times', '共失败 {count} 次', '共失敗 {count} 次'],
   File: msg_toolFilePath,
   Files: ['Files', '文件', '檔案'],

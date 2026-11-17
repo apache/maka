@@ -2079,7 +2079,7 @@ pub(super) fn termination_facts(
 ) -> Vec<Fact> {
     let mut facts = Vec::new();
     if terminal == Terminal::Failed
-        && let Some(reason) = view.recovery_failure()
+        && let Some(diagnostic) = view.recovery_failure_diagnostic()
     {
         facts.extend(
             view.waits
@@ -2092,7 +2092,7 @@ pub(super) fn termination_facts(
         );
         facts.push(Fact::RunTerminated {
             terminal,
-            diagnostic: Some(format!("{reason:?}")),
+            diagnostic: Some(diagnostic),
         });
         return facts;
     }

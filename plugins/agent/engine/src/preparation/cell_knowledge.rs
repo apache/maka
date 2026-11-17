@@ -398,10 +398,18 @@ impl OriginalChild<'_> {
                     request
                         .validate()
                         .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+                    let pointer = serde_json::json!({
+                        "sessionId": session,
+                        "row": {
+                            "through": request.through,
+                            "position": row.address,
+                            "field": "body",
+                        }
+                    });
                     return Ok(format!(
-                        "Original ({} bytes): SessionHistory({})",
+                        "Original ({} bytes): SessionRead({})",
                         reference.bytes,
-                        serde_json::to_string(&request).map_err(RunError::Json)?
+                        serde_json::to_string(&pointer).map_err(RunError::Json)?
                     ));
                 }
             }

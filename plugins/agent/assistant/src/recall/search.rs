@@ -184,12 +184,12 @@ pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
     [
         (
             "Recall",
-            "Search original conversation history (user, assistant, tool calls, and tool results) across all readable Sessions, including archives and compacted earlier prefixes of the current Turn. Literal terms match case-insensitively with Unicode normalization and OR semantics, ranked by distinct matched terms first so multi-term queries surface passages combining your terms. Excludes only the uncompacted live tail of the current Turn. before/after select neighboring messages around each anchor (default 4 each; pass 0 for an anchor-only scan). An explicit limit selects the number of ranked turns; omitting it returns all matching turns. Passages contain excerpts and an original row position. Use SessionHistory at that position to read the original. RecallMore expands wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
+            "Search original conversation history (user, assistant, tool calls, and tool results) across all readable Sessions, including archives and compacted earlier prefixes of the current Turn. Literal terms match case-insensitively with Unicode normalization and OR semantics, ranked by distinct matched terms first so multi-term queries surface passages combining your terms. Excludes only the uncompacted live tail of the current Turn. before/after select neighboring messages around each anchor (default 4 each; pass 0 for an anchor-only scan). An explicit limit selects the number of ranked turns; omitting it returns all matching turns. Passages contain excerpts and an Original: SessionRead(...) row pointer. Pass that object to SessionRead to read the complete original. RecallMore expands wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
             schemars::schema_for!(ToolQuery).into(),
         ),
         (
             "RecallMore",
-            "Read excerpts around a Recall anchor using its Session and message IDs. Use SessionHistory at the returned original row position for the complete source. before/after select neighboring messages (default 8 each). Compacted earlier prefixes of the current Turn are readable; only the uncompacted live tail of the current Turn is excluded.",
+            "Read excerpts around a Recall anchor using its Session and message IDs. Pass the returned Original: SessionRead(...) row pointer to SessionRead for the complete source. before/after select neighboring messages (default 8 each). Compacted earlier prefixes of the current Turn are readable; only the uncompacted live tail of the current Turn is excluded.",
             schemars::schema_for!(More).into(),
         ),
         (

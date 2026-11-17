@@ -59,7 +59,7 @@ export function Workbench(props: {
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
-  const preferredPreviewWidth = signal(48 * CELL);
+  const preferredPreviewWidth = signal(platform.idiom === 'terminal' ? 48 * CELL : 66 * CELL);
   const preview = () => props.previewShown() && canDockPreview();
   const browser = () => props.expanded() && canDockBrowser(props.previewShown());
   const room = () => sidePaneRoom(browser(), preview());

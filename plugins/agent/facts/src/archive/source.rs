@@ -320,7 +320,10 @@ mod tests {
 
     #[tokio::test]
     async fn archived_shell_output_with_nul_can_be_paged() {
-        let stdout = format!("{}\nlast\0line", "前\0后\n".repeat(1_000));
+        let stdout = format!(
+            "{}\nlast\0line",
+            "前\0后\n".repeat(MAX_PAGE_CHARS / 8 + 200)
+        );
         let projection = JsonSource::new(SourceBytes::Inline(
             serde_json::to_vec(&json!({
                 "kind": "json",

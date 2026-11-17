@@ -617,6 +617,7 @@ impl Owner {
                     &session_id,
                     &fingerprint,
                     &StoredSessionConfiguration {
+                        incognito: self.session(source_session).await?.configuration.incognito,
                         parent_session_id: Some(source_session.clone()),
                         backend: None,
                         compaction_prompt: None,

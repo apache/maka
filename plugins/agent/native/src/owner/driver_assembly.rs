@@ -190,6 +190,8 @@ impl Owner {
             access.clone(),
         )
         .map_err(RunError::InvalidInput)?;
+        // Keep Goal tool visibility static across turns so starting or completing a Goal
+        // never mutates the tool catalog or exec.description prefix cache.
         if self.settings.goals {
             live.tools = live
                 .tools

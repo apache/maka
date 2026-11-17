@@ -644,61 +644,29 @@ impl Session {
                             .into_iter()
                             .filter(|w| w.pid.is_some_and(|pid| pids.contains(&pid)))
                             .collect();
-                        if selected.is_empty() && cfg!(target_os = "macos") {
-                            #[cfg(target_os = "macos")]
-                            if let Some(expected) = expected.clone() {
-                                if expected.binding.is_some() {
+                        #[cfg(target_os = "macos")]
+                        if selected.is_empty() {
+                            let approved = match &expected {
+                                Some(approved) if approved.binding.is_some() => {
                                     return Err(failed(
                                         "stale_target: approved window is no longer available",
                                     ));
                                 }
-                                tokio::task::spawn_blocking(move || {
-                                    crate::macos::permission_subject::verify_launch(
-                                        &expected, language,
-                                    )
+                                Some(approved) => approved.clone(),
+                                None => tokio::task::spawn_blocking(move || {
+                                    crate::macos::permission_subject::Request::RawApp(name)
+                                        .resolve(language)
                                 })
                                 .await
-                                .map_err(failed)??;
-                            }
-                            let bundle = name.contains('.')
-                                && !name.contains('/')
-                                && !name.contains(' ')
-                                && !name.ends_with(".app")
-                                && name.chars().all(|c| {
-                                    c.is_ascii_lowercase()
-                                        || c.is_ascii_digit()
-                                        || matches!(c, '.' | '-')
-                                });
-                            let args = if bundle {
-                                json!({"bundle_id":name})
-                            } else {
-                                json!({"name":name})
+                                .map_err(failed)??,
                             };
-                            let launched = self
-                                .invoke_native(
-                                    "launch_app",
-                                    args,
-                                    cancellation,
-                                    language,
-                                    #[cfg(target_os = "windows")]
-                                    invocation,
-                                )
-                                .await?;
-                            let pid=launched.structured_content.as_ref().and_then(|value| value["pid"].as_u64()).ok_or_else(|| ToolError::OutcomeUnknown(match language { Language::En => "launch requested but process identity unavailable; inspect inventory before retrying", Language::ZhCn => "已请求启动但无法获取进程标识；重试前请检查清单", Language::ZhTw => "已請求啟動但無法取得程序識別；重試前請檢查清單" }.into()))?;
-                            self.windows(
-                                session,
-                                cancellation,
-                                language,
-                                #[cfg(target_os = "windows")]
-                                invocation,
-                            )
-                            .await?
-                            .into_iter()
-                            .filter(|w| w.pid.map(u64::from) == Some(pid))
-                            .collect()
+                            self.launch_mac_windows(&approved, session, cancellation, language)
+                                .await?
                         } else {
                             selected
                         }
+                        #[cfg(not(target_os = "macos"))]
+                        selected
                     }
                 };
                 if candidates.len() != 1 {

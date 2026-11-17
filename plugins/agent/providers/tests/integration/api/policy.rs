@@ -208,3 +208,92 @@ async fn ollama_cloud_catalog_models_are_executable() {
         );
     }
 }
+
+#[tokio::test]
+async fn declared_protocols_govern_defaults_precedence_and_closed_rejection() {
+    for (provider, id, expected_adapter) in [
+        ("openai", "gpt-5.4", "responses"),
+        ("openai", "gpt-4.1", "chat-completions"),
+        ("openai", "custom-unlisted", "responses"),
+        ("deepseek", "deepseek-flash", "responses"),
+        ("deepseek", "deepseek-chat", "chat-completions"),
+        ("opencode", "grok-4.5", "responses"),
+        ("opencode", "muse-spark-1.2", "responses"),
+        ("opencode-go", "muse-spark-1.3-contributor", "responses"),
+        ("zenmux", "openai/gpt-5.2", "chat-completions"),
+    ] {
+        let binding = binding(provider);
+        let prepared = binding
+            .prepare(request(&binding, id, ModelOverride::default()))
+            .await
+            .unwrap();
+        assert_eq!(prepared.adapter, expected_adapter, "{provider}/{id}");
+    }
+
+    // Precedence: explicit ModelOverride > discovered ModelInfo > catalog ModelFacts > runtimeAdapter.
+    let opencode = binding("opencode");
+    let mut discovered = request(&opencode, "claude-discovered", ModelOverride::default());
+    discovered.model.api_protocol = Some(ApiProtocol::AnthropicMessages);
+    let prepared = opencode.prepare(discovered.clone()).await.unwrap();
+    assert_eq!(prepared.adapter, "anthropic-messages");
+    assert!(matches!(prepared.protocol, ProviderKind::Anthropic));
+
+    discovered.overrides = Some(ModelOverride {
+        api_protocol: Some(ApiProtocol::OpenaiResponses),
+        ..Default::default()
+    });
+    let overridden = opencode.prepare(discovered).await.unwrap();
+    assert_eq!(overridden.adapter, "responses");
+    assert!(matches!(overridden.protocol, ProviderKind::OpenaiResponses));
+
+    let catalog_overridden = opencode
+        .prepare(request(
+            &opencode,
+            "grok-4.5",
+            ModelOverride {
+                api_protocol: Some(ApiProtocol::OpenaiChatCompletions),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap();
+    assert_eq!(catalog_overridden.adapter, "chat-completions");
+    assert!(matches!(
+        catalog_overridden.protocol,
+        ProviderKind::OpenaiCompatible { ref name } if name == "opencode"
+    ));
+
+    for (provider, id, wire) in [
+        (
+            "anthropic",
+            "claude-sonnet-4-5",
+            Some(ApiProtocol::OpenaiResponses),
+        ),
+        ("openai", "gpt-5.4", Some(ApiProtocol::AnthropicMessages)),
+        (
+            "zenmux",
+            "openai/gpt-5.2",
+            Some(ApiProtocol::OpenaiResponses),
+        ),
+        ("opencode", "gemini-3-flash", None),
+        ("google", "gemini-2.5-pro", None),
+    ] {
+        let binding = binding(provider);
+        let err = binding
+            .prepare(request(
+                &binding,
+                id,
+                ModelOverride {
+                    api_protocol: wire,
+                    ..Default::default()
+                },
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(err).unwrap(),
+            json!({"kind": "unsupported_protocol"}),
+            "{provider}/{id}"
+        );
+    }
+}

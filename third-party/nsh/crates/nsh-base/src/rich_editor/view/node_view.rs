@@ -169,4 +169,16 @@ pub trait MarkView: Send + Sync {
     /// span holding `text` as it is (the caret and selection place
     /// themselves by its characters), styled as the app likes.
     fn create(&self, mark: &Mark, text: &str) -> AnyElement;
+
+    /// A piece cut from a marked text node by decorations. Source-backed views
+    /// can use the original node-relative bytes and honor the decoration classes.
+    fn create_piece(
+        &self,
+        mark: &Mark,
+        text: &str,
+        _source_bytes: std::ops::Range<usize>,
+        _classes: &[String],
+    ) -> AnyElement {
+        self.create(mark, text)
+    }
 }

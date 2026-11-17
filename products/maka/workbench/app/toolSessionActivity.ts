@@ -136,7 +136,7 @@ const sessionDetails = (value: unknown, outcome?: MessageKey): ToolSection[] | n
         : activity
           ? status(activity)
           : []),
-    ...section('Workspace', record(session.workspace)?.path, 'code'),
+    ...section('Workspace', record(session.workspace)?.path ?? session.workspacePath, 'code'),
     ...model(session.backend),
     ...(permission ? section('Permissions', tr(permission)) : []),
   ];
@@ -387,6 +387,125 @@ export const sessionToolPresentations: Record<string, ActivityPresentation> = {
               .join('\n'),
           )
         : status('No matching models');
+    }),
+  },
+  'maka.agent.Agent@1/sessionList': {
+    title: () => tr('Find conversations'),
+    icon: 'search',
+    arguments: fromRecord((input) => [
+      ...section('Search', input.query),
+      ...(input.scope === 'children' ? section('Scope', tr('Delegated conversations')) : []),
+      ...(input.scope === 'archived' ? section('Scope', tr('Archived')) : []),
+    ]),
+    result: fromRecord((result) =>
+      Array.isArray(result.sessions)
+        ? result.sessions.length
+          ? section(
+              'Conversations',
+              result.sessions
+                .map((item) => record(item)?.title)
+                .filter((title): title is string => typeof title === 'string')
+                .join('\n'),
+            )
+          : status('No matching conversations')
+        : null,
+    ),
+  },
+  'maka.agent.Agent@1/sessionRead': {
+    title: () => tr('Inspect conversation'),
+    icon: 'book',
+    arguments: target,
+    result: fromRecord((result) => {
+      const session = record(result.session);
+      if (!session || typeof session.title !== 'string') return null;
+      const activity =
+        typeof session.activity === 'string' ? activityLabels[session.activity] : undefined;
+      return [
+        ...section('Conversation', session.title),
+        ...(session.archived === true ? status('Archived') : activity ? status(activity) : []),
+        ...section('Workspace', session.workspacePath, 'code'),
+        ...section('Details', record(result.run)?.error),
+        ...section('Final response', result.liveOutputPreview),
+      ];
+    }),
+  },
+  'maka.agent.Agent@1/sessionCreate': {
+    title: () => tr('Create conversation'),
+    icon: 'plus',
+    arguments: newConversation,
+    result: fromRecord((result) => {
+      if (result.kind === 'created') return sessionDetails(result.session, 'Conversation created');
+      if (result.kind === 'forked') return sessionDetails(result.session, 'Conversation forked');
+      return rejection(result);
+    }),
+  },
+  'maka.agent.Agent@1/sessionSend': {
+    title: () => tr('Send message to agent'),
+    icon: 'send',
+    arguments: fromRecord((input, context) => [
+      ...section('Message', input.message),
+      ...(input.delivery === 'queue' ? section('Delivery', tr('After the current turn')) : []),
+      ...model(input.backend),
+      ...conversation(input.sessionId, context),
+    ]),
+    result: sendResult,
+  },
+  'maka.agent.Agent@1/sessionStop': {
+    title: () => tr('Stop conversation run'),
+    icon: 'stop',
+    arguments: target,
+    result: fromRecord((result) =>
+      typeof result.requested === 'boolean'
+        ? status(result.requested ? 'Stop requested' : 'No active run to stop')
+        : null,
+    ),
+  },
+  'maka.agent.Agent@1/sessionManage': {
+    title: () => tr('Manage conversation'),
+    icon: 'edit',
+    arguments: fromRecord((input, context) => {
+      const act = record(input.action);
+      const kind = typeof act?.kind === 'string' ? act.kind : undefined;
+      const edit = record(act?.edit);
+      const editKind = edit?.kind;
+      const labelKey: MessageKey | undefined =
+        kind === 'edit_queue' && typeof editKind === 'string'
+          ? actions[editKind]
+          : kind === 'continue_run'
+            ? 'Continue conversation run'
+            : kind === 'update'
+              ? 'Update conversation'
+              : kind
+                ? actions[kind]
+                : undefined;
+      return [
+        ...section('Action', labelKey ? tr(labelKey) : undefined),
+        ...section('Title', act?.title),
+        ...section('Labels', labels(act?.labels)),
+        ...(typeof act?.pinned === 'boolean'
+          ? section('Pin', tr(act.pinned ? 'Pinned' : 'Unpinned'))
+          : []),
+        ...section('Message', edit?.message),
+        ...model(act?.model),
+        ...conversation(input.sessionId, context),
+      ];
+    }),
+    result: fromRecord((result) => {
+      if (result.kind === 'updated') {
+        const archived = record(result.session)?.archived === true;
+        return sessionDetails(result.session, archived ? undefined : 'Conversation updated');
+      }
+      if (result.kind === 'removed') return status('Conversation deleted');
+      if (result.kind === 'continuation_started') return status('Continuation started');
+      if (result.kind === 'continuation_rejected') {
+        return rejection({ kind: 'rejected', reason: result.reason });
+      }
+      if (result.kind === 'queue_edited') {
+        const inner = record(result.result);
+        if (!inner) return null;
+        return inner.kind === 'committed' ? status('Queue updated') : rejection(inner);
+      }
+      return rejection(result);
     }),
   },
   'maka.agent.Agent@1/list': {

@@ -53,7 +53,7 @@ impl Session {
         input["app"] = approved.display.app_path.clone().into();
         if matches!(operation, NativeComputerMethod::GetAppState) {
             let key = self
-                .raw_mac_application(&approved, cancellation, language)
+                .raw_mac_application(&approved, invocation.session(), cancellation, language)
                 .await?;
             return self
                 .raw_mac_state(&key, &approved, &input, invocation, cancellation, language)
@@ -120,7 +120,7 @@ impl Session {
                     )
                 };
             let key = self
-                .raw_mac_application(&approved, cancellation, language)
+                .raw_mac_application(&approved, invocation.session(), cancellation, language)
                 .await?;
             let handle = self
                 .raw_mac_window(
@@ -190,7 +190,7 @@ impl Session {
             let always_simulate =
                 crate::macos::page_scroll::element_click::configured_simulation()?;
             let key = self
-                .raw_mac_application(&approved, cancellation, language)
+                .raw_mac_application(&approved, invocation.session(), cancellation, language)
                 .await?;
             let record = self
                 .raw_computer
@@ -299,7 +299,7 @@ impl Session {
                 let text = text("text")?;
                 // The native app-wide paste body remains a separate parity seam.
                 let key = self
-                    .raw_mac_application(&approved, cancellation, language)
+                    .raw_mac_application(&approved, invocation.session(), cancellation, language)
                     .await?;
                 let handle = self
                     .raw_mac_window(
@@ -322,7 +322,7 @@ impl Session {
             _ => return Err(failed("native method is not installed for macOS")),
         };
         let key = self
-            .raw_mac_application(&approved, cancellation, language)
+            .raw_mac_application(&approved, invocation.session(), cancellation, language)
             .await?;
         if matches!(&action, Action::PressKey { .. } | Action::TypeText { .. }) {
             let input = match action {
@@ -439,6 +439,83 @@ impl Session {
         Ok(pids)
     }
 
+    pub(in crate::session) async fn launch_mac_windows(
+        &mut self,
+        approved: &crate::ComputerAppTarget,
+        session: &str,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Vec<WindowInfo>, ToolError> {
+        let expected = approved.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::macos::permission_subject::verify_launch(&expected, language)
+        })
+        .await
+        .map_err(failed)??;
+        // LaunchServices otherwise reuses a running copy with the same bundle ID.
+        structured(
+            self.raw_tool(
+                RawTool::LaunchApp,
+                json!({
+                    "name": approved.display.app_path,
+                    "creates_new_application_instance": true,
+                }),
+                false,
+                cancellation,
+                language,
+            )
+            .await?,
+        )?;
+
+        // A bootstrap process can exit before the window-owning process appears.
+        let observe = async {
+            loop {
+                let expected = approved.clone();
+                let pids = tokio::task::spawn_blocking(move || {
+                    crate::macos::permission_subject::running_window_owners(&expected)
+                })
+                .await
+                .map_err(failed)?;
+                if !pids.is_empty() {
+                    let mut windows = self.windows(session, cancellation, language).await?;
+                    windows.retain(|window| window.pid.is_some_and(|pid| pids.contains(&pid)));
+                    if !windows.is_empty() {
+                        return Ok(windows);
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+        };
+        let diagnostic = |cancelled| {
+            let app = &approved.display.app_path;
+            ToolError::Failed(match (language, cancelled) {
+                (Language::En, false) => {
+                    format!(
+                        "macOS was asked to open {app}, but no window owned by that app appeared."
+                    )
+                }
+                (Language::En, true) => {
+                    format!("Window discovery for {app} was interrupted after launch.")
+                }
+                (Language::ZhCn, false) => {
+                    format!("已请求启动 {app}，但没有找到属于该应用的窗口。")
+                }
+                (Language::ZhCn, true) => format!("已请求启动 {app}，查找窗口时被中断。"),
+                (Language::ZhTw, false) => {
+                    format!("已請求啟動 {app}，但找不到屬於該應用程式的視窗。")
+                }
+                (Language::ZhTw, true) => format!("已請求啟動 {app}，尋找視窗時中斷。"),
+            })
+        };
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(diagnostic(true)),
+            result = tokio::time::timeout(std::time::Duration::from_secs(5), observe) => {
+                result.map_err(|_| diagnostic(false))?
+            }
+        }
+    }
+
     async fn retire_raw_mac_application(
         &mut self,
         key: &MacApplicationKey,
@@ -479,6 +556,7 @@ impl Session {
     async fn raw_mac_application(
         &mut self,
         approved: &crate::ComputerAppTarget,
+        session: &str,
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<MacApplicationKey, ToolError> {
@@ -524,40 +602,14 @@ impl Session {
             self.retire_raw_mac_application(&key).await?;
         }
         if pids.is_empty() {
-            let expected = approved.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::macos::permission_subject::verify_launch(&expected, language)
-            })
-            .await
-            .map_err(failed)??;
-            let launched = structured(
-                self.raw_tool(
-                    RawTool::LaunchApp,
-                    json!({"name":approved.display.app_path}),
-                    false,
-                    cancellation,
-                    language,
-                )
-                .await?,
-            )?;
-            let pid = launched["pid"]
-                .as_u64()
-                .and_then(|pid| u32::try_from(pid).ok())
-                .filter(|pid| *pid != 0)
-                .ok_or_else(|| {
-                    ToolError::OutcomeUnknown(
-                        "launch requested but process identity unavailable".into(),
-                    )
-                })?;
             pids = self
-                .raw_mac_processes(approved, cancellation, language)
-                .await?;
-            if !pids.contains(&pid) {
-                return Err(ToolError::OutcomeUnknown(
-                    "launch returned a process without matching current app identity".into(),
-                ));
-            }
-            pids.retain(|current| *current == pid);
+                .launch_mac_windows(approved, session, cancellation, language)
+                .await?
+                .into_iter()
+                .filter_map(|window| window.pid)
+                .collect();
+            pids.sort_unstable();
+            pids.dedup();
         }
         let pid = unique_app_process(&pids)?;
         let generation = crate::identity::process(pid)?;

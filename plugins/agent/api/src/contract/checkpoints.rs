@@ -223,7 +223,6 @@ pub enum CheckpointLoadState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCheckpointWorkspaceSnapshot")]
 pub struct CheckpointWorkspaceSnapshot {
-    pub identity: String,
     pub consistency: CheckpointWorkspaceConsistency,
     pub warning: CheckpointWorkspaceWarning,
     pub inventory: HistoryCheckpointObject,

@@ -35,6 +35,31 @@ impl HistoryDataSource {
             Self::Snapshot(source) => source.view_at(run).await,
         }
     }
+    pub async fn recovery_failure_at(
+        &self,
+        item: &HistoryItem,
+    ) -> Result<Option<String>, StoreError> {
+        let recorded = &item.recorded;
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::RecoveryFailureAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        recorded.run,
+                        recorded.revision,
+                        item.sequence,
+                    ))
+                    .await
+            }
+            Self::Snapshot(source) => {
+                source
+                    .recovery_failure_at(recorded.run, item.sequence)
+                    .await
+            }
+        }
+    }
     pub async fn executor_view(
         &self,
         run: RunId,
@@ -426,12 +451,36 @@ impl CompactionDuration {
         match &self.0 {
             HistoryDataSource::Live { history, cut } => {
                 sql::validate_cut(c, &history.namespace.owner, &history.namespace.session, cut)?;
+                let index = if live_key == "sequence" {
+                    ""
+                } else {
+                    "INDEXED BY agent_session_history_run"
+                };
                 let attempt_step = if live_key == "attempt" {
                     " AND step=(SELECT step FROM agent_attempt_ids WHERE run=?3 AND attempt=?6)"
                 } else {
                     ""
                 };
-                let found: Option<u64> = c.query_row(&format!("SELECT sequence FROM agent_session_history WHERE owner=?1 AND session=?2 AND run=?3 AND (kind=?4 OR (?4='step_prepared' AND kind='proactive_summary_prepared')) AND sequence<=?5 AND {live_key}=?6{attempt_step} ORDER BY sequence LIMIT 1"), params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,target_run.to_string(),kind,sql::bind_u64(cut.through_sequence)?,key],|row|sql::read_u64(row,0)).optional()?;
+                let found = c
+                    .query_row(
+                        &format!(
+                            "SELECT sequence FROM agent_session_history {index}
+                             WHERE owner=?1 AND session=?2 AND run=?3
+                               AND (kind=?4 OR (?4='step_prepared' AND kind='proactive_summary_prepared'))
+                               AND sequence<=?5 AND {live_key}=?6{attempt_step}
+                             ORDER BY sequence LIMIT 1"
+                        ),
+                        params![
+                            serde_json::to_string(&history.namespace.owner)?,
+                            history.namespace.session,
+                            target_run.to_string(),
+                            kind,
+                            sql::bind_u64(cut.through_sequence)?,
+                            key,
+                        ],
+                        |row| sql::read_u64(row, 0),
+                    )
+                    .optional()?;
                 let found = found.ok_or_else(|| {
                     invalid("compaction timing original fact is missing from this fixed source cut")
                 })?;

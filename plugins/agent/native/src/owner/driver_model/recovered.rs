@@ -138,6 +138,28 @@ impl DriverModel {
                 }
             }
         }
+        if view.terminal.is_some() {
+            for (cell, source) in cells {
+                if !original.cells.contains_key(&cell)
+                    && !recovered.contains_key(&cell)
+                    && !source.has_unsettled_effects()
+                    && matches!(
+                        source.status,
+                        maka_agent_facts::cells::CellStatus::Completed { .. }
+                            | maka_agent_facts::cells::CellStatus::Interrupted { .. }
+                    )
+                {
+                    recovered.insert(
+                        cell,
+                        FrozenCellKnowledge {
+                            cell,
+                            through: view.revision,
+                            children: source.children,
+                        },
+                    );
+                }
+            }
+        }
         original.cells.append(&mut recovered);
         Ok(original)
     }

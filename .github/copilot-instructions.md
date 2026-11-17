@@ -17,6 +17,6 @@
   under the License.
 -->
 
-# Code review
+# Pull Request Review
 
-Use [.github/skills/code-review/SKILL.md](skills/code-review/SKILL.md) when reviewing a pull request. Report concrete findings and material verification gaps.
+Follow [.github/skills/code-review/SKILL.md](skills/code-review/SKILL.md) when reviewing pull requests. Focus on concrete bugs, broken invariants, and unverified failure paths.

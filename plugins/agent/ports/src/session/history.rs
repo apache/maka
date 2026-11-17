@@ -133,6 +133,8 @@ pub enum HistoryView {
     Chat,
     /// All conversation rows belonging to the live history Run at the anchor.
     Turn,
+    /// The steps of the work group at the anchor.
+    Steps,
 }
 
 /// A readable field in a conversation window, in presentation order.
@@ -503,6 +505,9 @@ pub struct Chunk {
     pub timing: Option<TurnTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folded_work: Option<FoldedWork>,
+    /// Chat and Turn views fold a Turn's consecutive steps into one chunk at the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<Box<WorkGroup>>,
     pub field: HistoryField,
     pub message_id: Option<String>,
     pub run_id: Option<maka_agent_facts::durable::RunId>,
@@ -529,6 +534,38 @@ pub struct FoldedWork {
     pub messages: u64,
     pub image_count: u64,
     pub images: Vec<WorkImage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryWorkGroup")]
+pub struct WorkGroup {
+    pub end: Cursor,
+    /// In order of first appearance.
+    pub kinds: Vec<WorkKind>,
+    pub last: WorkKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_call: Option<Box<ToolCall>>,
+    /// The first step's tool, when it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_tool_use_id: Option<String>,
+    pub thoughts: u64,
+    pub tools: u64,
+    pub messages: u64,
+    pub image_count: u64,
+    pub images: Vec<WorkImage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "HistoryWorkKind")]
+pub enum WorkKind {
+    Tool {
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+        presentation: Option<Box<str>>,
+    },
+    Thought,
+    Message,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

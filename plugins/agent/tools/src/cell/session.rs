@@ -207,12 +207,33 @@ impl CodeCells {
     ) -> Vec<ToolDefinition> {
         // Code Mode discovers deferred tools through ALL_TOOLS. Promoting
         // them into exec's description after a call invalidates the prefix.
-        let visible = availability.select(&BTreeSet::new());
+        let visible_nested = availability.select(&BTreeSet::new()).nested();
+        let all_nested = availability.all().nested();
+        let visible_names: BTreeSet<_> = visible_nested
+            .definitions()
+            .map(|d| d.name.as_str())
+            .collect();
+        let deferred_nested: Vec<_> = all_nested
+            .definitions()
+            .filter(|d| !visible_names.contains(d.name.as_str()))
+            .map(|d| d.name.as_str())
+            .collect();
         let mut exec = super::definition(language);
-        exec.description.push_str(&super::declarations(
-            visible.nested().definitions(),
-            language,
-        ));
+        if !exec.description.ends_with('\n') {
+            exec.description.push('\n');
+        }
+        exec.description
+            .push_str(&super::declarations(visible_nested.definitions(), language));
+        if !deferred_nested.is_empty() {
+            let prefix = match language {
+                maka_agent_facts::execution::CodeLanguage::JavaScript => "//",
+                maka_agent_facts::execution::CodeLanguage::Python => "#",
+            };
+            exec.description.push_str(&format!(
+                "{prefix} Deferred tools callable via tools.<name>(input) (inspect schemas in ALL_TOOLS): {}\n",
+                deferred_nested.join(", ")
+            ));
+        }
         let mut definitions = vec![exec, super::wait_definition()];
         definitions.extend(availability.direct_only().definitions().cloned());
         definitions
@@ -419,7 +440,7 @@ impl CodeCells {
             .definitions()
             .map(|d| ToolMetadata {
                 name: self.0.executor.tool_identifier(&d.name),
-                description: super::declarations(std::iter::once(d), self.0.executor.language()),
+                description: super::declaration_entry(d, self.0.executor.language()),
             })
             .collect();
         let context = CellContext::new(self.0.store.clone(), metadata)

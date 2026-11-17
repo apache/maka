@@ -202,6 +202,20 @@ impl Query for TerminatedAt {
     }
 }
 
+pub(super) struct RecoveryFailureAt(
+    pub(super) HistoryNamespace,
+    pub(super) HistoryCut,
+    pub(super) RunId,
+    pub(super) u64,
+    pub(super) u64,
+);
+impl Query for RecoveryFailureAt {
+    type Output = Option<String>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::recovery_failure_at(c, &self.0, &self.1, self.2, self.3, self.4)
+    }
+}
+
 pub(super) struct RunAt(
     pub(super) HistoryNamespace,
     pub(super) HistoryCut,
@@ -354,7 +368,7 @@ impl Query for ReportedModelAt {
         let row: Option<(u32, Vec<u8>, String)> = c
             .query_row(
                 "SELECT f.schema_version,b.payload,b.content_sha256
-             FROM agent_session_history h
+             FROM agent_session_history h INDEXED BY agent_session_history_run
              JOIN agent_facts f ON f.sequence=h.sequence
              JOIN contents b ON b.id=f.body_content_id
              WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.step=?4

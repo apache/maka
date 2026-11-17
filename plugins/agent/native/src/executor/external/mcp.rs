@@ -527,6 +527,9 @@ impl ServerHandler for Handler {
     fn get_info(&self) -> ServerConfig {
         let mut info = ServerConfig::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.instructions = Some(
+            "Maka Host tools for workspace files, shell processes, session/Room coordination (`maka://session/<id>`), presets, goals, and computer automation. Pass `maka://` resource URIs directly to Maka's `Read` tool or use `Session*` tools.".into(),
+        );
         info
     }
     async fn list_tools(

@@ -276,8 +276,6 @@ CREATE INDEX workspace_bindings_project ON workspace_bindings(owner_scope,json_e
 
 CREATE INDEX workspace_bindings_path ON workspace_bindings(json_extract(workspace_json,'$.path'),id);
 
-CREATE INDEX workspace_bindings_identity ON workspace_bindings(json_extract(workspace_json,'$.identity'),id);
-
 CREATE INDEX session_workspace_binding ON session_control(json_extract(configuration,'$.workspace.id'),id);
 
 CREATE INDEX session_binding_metadata_headroom ON session_control(

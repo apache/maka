@@ -335,7 +335,6 @@ fn object(value: storage::ObjectRef) -> HistoryCheckpointObject {
 }
 fn workspace_snapshot(w: storage::WorkspaceSnapshot) -> CheckpointWorkspaceSnapshot {
     CheckpointWorkspaceSnapshot {
-        identity: w.identity,
         inventory: object(w.inventory),
         consistency: match w.consistency {
             storage::WorkspaceConsistency::CallerConfirmedQuiescent => {

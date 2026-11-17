@@ -635,3 +635,56 @@ fn capture_cancellation_and_external_filters_preserve_results_and_ownership() {
     assert_capture_files(f.binding.directory(), &expected);
     f.export_and_apply();
 }
+
+#[test]
+fn published_worktree_survives_source_inode_replacement_and_rejects_broken_git_links() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("repository");
+    repository(&source, "sha1");
+    let (_, before_identity) = maka_fs_tools::directory::capture(&source).unwrap();
+    let root = temp.path().join("host");
+    let manager = Worktrees::open(&root).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let id = "9".repeat(64);
+    let binding = manager.plan(&source, &id, cancel.clone()).unwrap();
+    manager.ensure(&binding, &cancel).unwrap();
+    fs::write(
+        binding.directory().join("source.txt"),
+        "child edit
+",
+    )
+    .unwrap();
+
+    let moved = temp.path().join("repository-old");
+    fs::rename(&source, &moved).unwrap();
+    fs::create_dir(&source).unwrap();
+    fs::rename(moved.join(".git"), source.join(".git")).unwrap();
+    fs::rename(moved.join("source.txt"), source.join("source.txt")).unwrap();
+    let (_, after_identity) = maka_fs_tools::directory::capture(&source).unwrap();
+    assert_ne!(before_identity, after_identity);
+
+    manager.inspect(&binding).unwrap();
+    manager.ensure(&binding, &cancel).unwrap();
+    let patch = manager.capture_patch(&binding, cancel.clone()).unwrap();
+    assert!(!patch.is_empty());
+
+    let commondir = source
+        .join(".git/worktrees")
+        .join(format!("maka-{id}"))
+        .join("commondir");
+    let unrelated = temp.path().join("other-git");
+    repository(&unrelated, "sha1");
+    let original_commondir = fs::read(&commondir).unwrap();
+    fs::write(
+        &commondir,
+        format!(
+            "{}
+",
+            unrelated.join(".git").display()
+        ),
+    )
+    .unwrap();
+    assert!(manager.inspect(&binding).is_err());
+    fs::write(&commondir, original_commondir).unwrap();
+    manager.inspect(&binding).unwrap();
+}

@@ -102,10 +102,10 @@ test('built installation binds continuation, Goal and Scheduler to the original 
   const agent = instances.agent.configuration.values;
   assert.equal(agent.goals, true);
   assert.equal(agent.scheduledTasks, true);
-  const tools = agent.tools.filter((tool) => tool.name === 'SessionContinueRun');
+  const tools = agent.tools.filter((tool) => tool.name === 'SessionManage');
   assert.equal(tools.length, 1);
   assert.deepEqual(tools[0].target, { kind: 'export', name: target[0].export });
-  assert.equal(tools[0].method, 'continueRun');
+  assert.equal(tools[0].method, 'sessionManage');
 
   assert.deepEqual(source.endpoints.agent.consumer, [keys.gateway]);
   assert.equal(source.endpoints.agent.import, 'agent');
@@ -209,9 +209,13 @@ test('the built default installation nests service tools except computer REPL an
     'PluginReadDeployment',
     'PluginEditComposition',
     'ModelList',
+    'SessionList',
+    'SessionRead',
     'SessionCreate',
     'SessionSend',
-    'SessionWork',
+    'SessionRespond',
+    'SessionStop',
+    'SessionManage',
   ]) {
     assert.ok(nested.has(expected), `expected ${expected} to be nestable`);
   }

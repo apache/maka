@@ -47,6 +47,7 @@ mod driver_executor_publication;
 mod driver_external_effects;
 mod rooms;
 mod send;
+pub(crate) mod session_tools;
 use send::NativeMutation;
 mod bot;
 mod cleanup_driver;
@@ -58,6 +59,7 @@ mod external_setup;
 mod files;
 mod fork;
 mod git;
+mod github;
 mod global_instructions;
 mod goal;
 mod imports;
@@ -65,6 +67,7 @@ mod initialization;
 mod interactions;
 mod lifecycle;
 mod mcp;
+mod memory;
 mod models;
 mod notifications;
 mod patches;
@@ -80,6 +83,7 @@ mod scheduler;
 pub(crate) mod setup;
 mod skills;
 mod steering;
+mod symbols;
 mod system_permission;
 mod title;
 mod todo;
@@ -186,6 +190,7 @@ impl Runs {
     }
 }
 struct CreationPolicy {
+    incognito: bool,
     permissions: WorkspacePermissions,
     tools: Option<Vec<String>>,
     caller: Option<maka_agent_state::CallerFence>,
@@ -252,6 +257,8 @@ pub(crate) struct Owner {
     workers: TaskTracker,
     cleanup_workers: TaskTracker,
     producers: TaskTracker,
+    lsp_pool: maka_fs_tools::symbols::LspPool,
+    github: github::GitHubHub,
     producer_gate: Arc<Mutex<()>>,
     stop: CancellationToken,
 }
@@ -595,6 +602,8 @@ impl Owner {
             workers,
             cleanup_workers: TaskTracker::new(),
             producers: TaskTracker::new(),
+            lsp_pool: maka_fs_tools::symbols::LspPool::new(),
+            github: github::GitHubHub::default(),
             producer_gate: Arc::default(),
             stop,
         });
@@ -746,6 +755,7 @@ impl Owner {
     ) -> Result<CreationPolicy, String> {
         let Some(invocation) = scope.identity.agent() else {
             return Ok(CreationPolicy {
+                incognito: false,
                 permissions: self.settings.permissions.clone(),
                 tools: None,
                 caller: None,
@@ -792,6 +802,7 @@ impl Owner {
             expected_basis: Some(view.spec.permission_basis),
         };
         Ok(CreationPolicy {
+            incognito: caller.incognito,
             permissions: caller.permissions,
             // The Bot delegates workers; its own conversational tool list is not their ceiling.
             tools: if self.settings.bot && self.bot.is(&invocation.session_id) {
@@ -813,13 +824,42 @@ impl Owner {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
                 let purpose = match input.kind {
-                    SessionKind::Agent => creation::Purpose::Session,
-                    SessionKind::Room => creation::Purpose::Room,
+                    SessionKind::Agent => creation::Purpose::Session {
+                        session_create_tool: false,
+                    },
+                    SessionKind::Room => creation::Purpose::Room {
+                        session_create_tool: false,
+                    },
                 };
                 owner
                     .create_inner(input, &operation, &scope, purpose)
                     .await
                     .map(creation::PreparedCreation::into_session)
+            })
+        })
+        .await
+    }
+    pub(super) async fn create_for_session_tool(
+        self: &Arc<Self>,
+        input: Create,
+        operation: &maka_plugin_core::operation::RecoveryRef,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<NativeMutation<SessionCreateOutput>, String> {
+        let operation = operation.clone();
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                let purpose = match input.kind {
+                    SessionKind::Agent => creation::Purpose::Session {
+                        session_create_tool: true,
+                    },
+                    SessionKind::Room => creation::Purpose::Room {
+                        session_create_tool: true,
+                    },
+                };
+                owner
+                    .create_inner(input, &operation, &scope, purpose)
+                    .await
+                    .map(creation::PreparedCreation::into_session_create)
             })
         })
         .await
@@ -834,7 +874,7 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(creation::PreparedCreation::Rejected(reason));
         }
-        let is_room = matches!(purpose, creation::Purpose::Room);
+        let is_room = matches!(purpose, creation::Purpose::Room { .. });
         if is_room && (input.preset_id.is_some() || input.backend.is_some()) {
             return Err("agent_room_has_no_backend".into());
         }
@@ -1054,6 +1094,7 @@ impl Owner {
                 revision: p.revision,
             }),
             move |binding| StoredSessionConfiguration {
+                incognito: input.incognito || policy.incognito,
                 parent_session_id,
                 backend,
                 applied_preset,
@@ -1288,12 +1329,14 @@ impl Owner {
     }
     pub fn retiring(&self) {
         self.mcp_projects.retire();
+        self.lsp_pool.shutdown_all();
     }
     pub fn close(self: &Arc<Self>) -> BoxFuture<'static, Result<(), String>> {
         let owner = self.clone();
         Box::pin(async move {
             // Wake pending external startup before waiting for lifecycle readers.
             owner.stop.cancel();
+            owner.lsp_pool.shutdown_all();
             {
                 let mut runs = owner.runs.lock().await;
                 runs.closing = true;

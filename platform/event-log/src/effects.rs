@@ -162,7 +162,7 @@ impl EventLog {
         .map_err(|error| invalid(error.to_string()))?;
         let raw = serde_json::to_string(&request)?;
         let session = match &request.boundary {
-            maka_plugin_core::authorization::Boundary::Session { boundary, .. } => {
+            maka_plugin_core::authorization::Boundary::Session { boundary } => {
                 Some(boundary.session_id.clone())
             }
             _ => None,
@@ -250,7 +250,7 @@ impl EventLog {
 pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreError> {
     let (
         Owner::Native(owner),
-        maka_plugin_core::authorization::Boundary::Session { boundary, .. },
+        maka_plugin_core::authorization::Boundary::Session { boundary },
         Operation::BrowserLeaseChild {
             browser_id,
             generation,

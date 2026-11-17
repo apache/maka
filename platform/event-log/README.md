@@ -21,28 +21,28 @@
 
 [简体中文](README.zh-CN.md)
 
-Owns the State Root's SQLite database, physical writer lease, application records,
-Session resources and checkpoint publication. Agent facts, history, indexes and
-content ownership live in [`maka-agent-state`](../../plugins/agent/state).
+`maka-event-log` owns durable State Root storage: the exclusive OS process lock (`RootOwner`), the SQLite database (`RootStore`), two-phase Host operation journals, and immutable checkpoint publication. Higher-level Agent facts and projections register migrations on top of `RootStore` from [`maka-agent-state`](../../plugins/agent/state/src/lib.rs).
 
-- [`root`](src/root.rs) and [`root_store`](src/root_store.rs) bind work to the current
-  Root and coordinate shutdown with accepted operations.
-- [`connection`](src/connection.rs) runs a bounded writer FIFO and read lanes on
-  dedicated threads. [`writeback`](src/writeback.rs) commits typed statements and
-  publishes their scoped invalidation hints only after a confirmed commit.
-- [`root_store::data`](src/root_store/data.rs) supplies Root- and Session-scoped SQL
-  access. Domains can commit their state with an original Host operation receipt
-  in the same transaction.
-- [`applications`](src/applications.rs) stores application sources, deployments,
-  intents and operation outcomes.
-- [`checkpoints`](src/checkpoints.rs) and
-  [`root_store::checkpoints`](src/root_store/checkpoints.rs) publish immutable
-  snapshots and Workspace objects, verify exact Heads and settle prepared
-  restores after a process restart. The domain supplies the history snapshot.
-- [`schema`](src/schema.rs) defines the current Root schema;
-  [`migration`](src/migration.rs) validates the composed migration ledger.
-  Products compose Root and domain migrations when opening the store.
+## Key modules
 
-Run `cargo nextest run -p maka-event-log` for the registered tests. The
-`root_lease` and `checkpoint_restore` integration binaries isolate their
-process-spawning checks from other tests' Root leases.
+- [`root.rs`](src/root.rs) & [`root_store.rs`](src/root_store.rs) — Acquire the exclusive State Root lock and coordinate graceful shutdown with admitted in-flight operations.
+- [`connection.rs`](src/connection.rs) & [`writeback.rs`](src/writeback.rs) — Run a single serialized SQLite writer FIFO alongside concurrent snapshot reader threads, publishing scoped invalidation signals only after commits succeed.
+- [`root_store/data.rs`](src/root_store/data.rs) — Root- and Session-scoped SQL statements that let native services commit domain state atomically alongside a Host operation receipt.
+- [`applications.rs`](src/applications.rs) — Persistence for deployment sources, caller intent records, and provider operation receipts (`Outcome` + physical `Cleanup`).
+- [`checkpoints/`](src/checkpoints.rs) — Content-addressed workspace & history checkpoint publication, CAS Head updates, and crash-safe restore settlement.
+- [`schema.rs`](src/schema.rs) & [`migration.rs`](src/migration.rs) — Base Root schema and composed domain migration verification.
+
+## Checkpoint repositories
+
+`checkpoints::repository` decouples immutable blob storage from logical Session bindings and CAS Head commits:
+
+- **Default local authority (`RootStore::open`)** — Stores checkpoint Heads in the Root SQLite database and promotes verified staging files directly via zero-copy local links after `fsync`.
+- **External repository authority (`RootStore::open_with_checkpoint_storage`)** — Accepts a pluggable `Storage` pair. `FileRepository::open` provides a multi-process local-filesystem reference adapter arbitrated by its own SQLite database outside worker Roots.
+
+Exact checkout (`Storage::checkout_exact`) verifies all object digests and workspace closure against the persisted logical Session binding before returning the current Head, without granting execution authority.
+
+## Testing
+
+```sh
+cargo nextest run -p maka-event-log
+```

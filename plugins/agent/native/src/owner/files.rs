@@ -30,38 +30,42 @@ const FILE_STREAM_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum DraftWorkspace {
-    Directory(maka_skills_api::contract::CandidateDirectory),
-    Session(Box<Workspace>),
+    Directory {
+        path: String,
+        identity: maka_fs_tools::directory::Observation,
+    },
+    Session {
+        workspace: Box<Workspace>,
+        identity: maka_fs_tools::directory::Observation,
+    },
 }
 impl DraftWorkspace {
     fn path(&self) -> &str {
         match self {
-            Self::Directory(directory) => &directory.path,
-            Self::Session(workspace) => &workspace.path,
+            Self::Directory { path, .. } => path,
+            Self::Session { workspace, .. } => &workspace.path,
         }
     }
-    fn directory_identity(&self) -> &maka_sandbox::workspace::DirectoryIdentity {
+    fn directory_identity(&self) -> &maka_fs_tools::directory::Observation {
         match self {
-            Self::Directory(directory) => &directory.directory_identity,
-            Self::Session(workspace) => &workspace.directory_identity,
+            Self::Directory { identity, .. } | Self::Session { identity, .. } => identity,
         }
     }
     fn worktree(&self) -> Option<&maka_fs_tools::worktree::Binding> {
         match self {
-            Self::Directory(_) => None,
-            Self::Session(workspace) => workspace.worktree.as_deref(),
+            Self::Directory { .. } => None,
+            Self::Session { workspace, .. } => workspace.worktree.as_deref(),
         }
     }
     pub(super) fn workspace(&self) -> Option<&Workspace> {
         match self {
-            Self::Directory(_) => None,
-            Self::Session(workspace) => Some(workspace),
+            Self::Directory { .. } => None,
+            Self::Session { workspace, .. } => Some(workspace),
         }
     }
     pub(super) fn directory(&self) -> maka_skills_api::contract::CandidateDirectory {
         maka_skills_api::contract::CandidateDirectory {
             path: self.path().into(),
-            directory_identity: self.directory_identity().clone(),
         }
     }
 }
@@ -91,8 +95,16 @@ impl Owner {
             if !self.project_accepts_session(&workspace).await? {
                 return Err("agent_workspace_unavailable".into());
             }
-            workspace::validate(&self.workspace_roots, &workspace, &self.managed_worktrees).await?;
-            return Ok(Some(DraftWorkspace::Session(Box::new(workspace))));
+            let (_, _, identity) = workspace::open_workspace_observation(
+                &self.workspace_roots,
+                &workspace,
+                &self.managed_worktrees,
+            )
+            .await?;
+            return Ok(Some(DraftWorkspace::Session {
+                workspace: Box::new(workspace),
+                identity,
+            }));
         }
         let path = match selection {
             WorkspaceSelection::Directory { path } | WorkspaceSelection::IsolatedGit { path } => {
@@ -114,12 +126,10 @@ impl Owner {
         )
         .await?
         .ok_or("agent_workspace_unavailable")?;
-        Ok(Some(DraftWorkspace::Directory(
-            maka_skills_api::contract::CandidateDirectory {
-                path: observed.path,
-                directory_identity: observed.identity,
-            },
-        )))
+        Ok(Some(DraftWorkspace::Directory {
+            path: observed.path,
+            identity: observed.identity,
+        }))
     }
 
     pub async fn read_file(
@@ -449,7 +459,7 @@ impl Owner {
         .await
     }
 
-    async fn file_directory(
+    pub(super) async fn file_directory(
         &self,
         session: &str,
         path: Option<WorkspacePath>,
@@ -466,11 +476,17 @@ impl Owner {
             .map_err(|_| "agent_root_unavailable")?;
         let private = root.canonical_path().to_owned();
         let control = root.control_directory().to_owned();
+        let (resolved_path, _, observed) = workspace::open_workspace_observation(
+            &self.workspace_roots,
+            &original.workspace,
+            &self.managed_worktrees,
+        )
+        .await?;
         let selected = original.workspace.clone();
         let directory = worktrees::blocking(scope, &self.stop, move |cancel| {
             Directory::open(
-                Path::new(&selected.path),
-                &selected.directory_identity,
+                &resolved_path,
+                &observed,
                 &private,
                 &control,
                 selected.worktree.as_deref(),
@@ -485,7 +501,7 @@ impl Owner {
         Ok((original, directory))
     }
 
-    async fn check_file_session(
+    pub(super) async fn check_file_session(
         &self,
         session: &str,
         original: &ResolvedConfiguration,

@@ -30,12 +30,12 @@ pub(super) async fn catalog_scope(owner: &Owner, input: &List) -> Result<Catalog
         SessionListScope::Project { project_id } => CatalogSelection::Project(*project_id),
         SessionListScope::Workspace { session_id } => CatalogSelection::Workspace {
             session_id: session_id.clone(),
-            identity: owner
+            path: owner
                 .session(session_id)
                 .await?
                 .configuration
                 .workspace
-                .identity,
+                .path,
         },
     };
     Ok(CatalogScope::Owned {
@@ -171,6 +171,7 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         } else {
             SessionKind::Agent
         },
+        incognito: session.configuration.incognito,
         parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,

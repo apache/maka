@@ -136,8 +136,6 @@ pub enum Error {
     UnsupportedProtocol,
     #[error("invalid provider endpoint")]
     InvalidEndpoint,
-    #[error("Responses contract is not declared")]
-    MissingResponsesContract,
     #[error("provider protocol does not expose parallel-call policy")]
     UnsupportedParallelPolicy,
     #[error("model output limit does not leave a positive text budget")]

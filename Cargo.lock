@@ -8444,6 +8444,7 @@ dependencies = [
  "maka-web-api",
  "maka-workspace-api",
  "maka-workspace-support",
+ "reqwest",
  "rmcp",
  "rusqlite",
  "schemars 1.2.3",
@@ -8496,6 +8497,7 @@ dependencies = [
  "maka-sandbox",
  "maka-session-state",
  "regex",
+ "regex-syntax",
  "rusqlite",
  "schemars 1.2.3",
  "serde",
@@ -8864,6 +8866,27 @@ dependencies = [
  "objc2-screen-capture-kit",
  "serde",
  "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "maka-eval"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "maka-agent-api",
+ "maka-agent-facts",
+ "maka-agent-state",
+ "maka-app-client",
+ "maka-capabilities",
+ "maka-host-runtime",
+ "maka-plugin-core",
+ "maka-sandbox",
+ "maka-settings-native",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
 ]

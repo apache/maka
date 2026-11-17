@@ -33,6 +33,13 @@ pub(super) fn declarations<'a>(
     }
 }
 
+pub(super) fn declaration_entry(definition: &ToolDefinition, language: CodeLanguage) -> String {
+    match language {
+        CodeLanguage::JavaScript => declarations::render_entry(definition),
+        CodeLanguage::Python => declarations::python_entry(definition, true),
+    }
+}
+
 use maka_agent_facts::execution::CodeLanguage;
 use maka_agent_facts::tool_call::ToolRejection;
 use serde::Deserialize;

@@ -162,7 +162,12 @@ function Detail(props: { owner: SkillSettingsOwner }) {
                   />
                 </If>
                 <Each of={entry.issues} key={(issue) => issue}>
-                  {(issue) => <SettingsRow label={tr('Invalid skill')} status={issue()} />}
+                  {(issue) => (
+                    <SettingsRow
+                      label={entry.valid ? tr('Warning') : tr('Invalid skill')}
+                      status={issue()}
+                    />
+                  )}
                 </Each>
               </SettingsSection>
               <SettingsSection
