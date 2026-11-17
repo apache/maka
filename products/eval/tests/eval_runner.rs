@@ -229,8 +229,7 @@ fn link_or_copy(src: &Path, dst: &Path) {
     if dst.exists() {
         return;
     }
-    #[cfg(unix)]
-    if std::os::unix::fs::symlink(src, dst).is_ok() {
+    if std::fs::hard_link(src, dst).is_ok() {
         return;
     }
     std::fs::copy(src, dst).expect("copy binary into test bundle");
@@ -925,6 +924,16 @@ async fn run_cli_stops_at_max_steps_retires_host_and_rejects_missing_completion_
 #[tokio::test]
 async fn run_cli_persists_summary_and_surfaces_guest_root_cause_on_infra_failure() {
     let env = IsolatedEnv::new(false);
+    let staged_eval = env
+        .bundle
+        .join(format!("maka-eval{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        !staged_eval
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 
     let (bad_steps_out, _) = env
         .run_cli("deepseek", "deepseek-chat", None, 0, &live_step(0.0))
