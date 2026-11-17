@@ -37,6 +37,7 @@ export interface WorkspaceImagePreview {
 /** Session actions address the workspace owner's resources without retaining its models. */
 export interface WorkspaceActions {
   openFiles(target: { sessionId: string }): void;
+  openChanges?(target: { sessionId: string }): void;
   openAgentTerminal(
     target: { sessionId: string; ref: string },
     restoreFocus: () => boolean,
@@ -59,6 +60,7 @@ export interface WorkspaceViewInput {
   sessions(): readonly string[];
   blocked(): boolean;
   directory(sessionId: string): string | undefined;
+  prompt?(sessionId: string, input: { text: string; mode: 'insert' | 'send' }): boolean;
   readonly surface: 'pane' | 'overlays';
   readonly docked: boolean;
   report(reason: unknown): void;

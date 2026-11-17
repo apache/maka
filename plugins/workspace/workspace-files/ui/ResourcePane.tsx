@@ -17,70 +17,116 @@
  * under the License.
  */
 
-import { textTooltip } from '../../../../products/maka/workbench/app/ui';
-import { tr } from '../../../../products/maka/workbench/app/locale';
-import { cleanup, effect, inputAction, Scroll, signal, Text, View, Image } from 'nsh';
-import type { ViewRef } from 'nsh';
+import {
+  cleanup,
+  effect,
+  Image,
+  inputAction,
+  keymap,
+  Scroll,
+  signal,
+  Text,
+  View,
+  type ViewRef,
+} from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap } from 'nsh';
+import { controlsRight, windowDrag } from '../../../../products/maka/workbench/app/chrome';
+import { CurrentDiff } from '../../../../products/maka/workbench/app/CurrentDiff';
+import { CurrentFile } from '../../../../products/maka/workbench/app/CurrentFile';
+import { Icon } from '../../../../products/maka/workbench/app/Icon';
+import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
+import {
+  ImageViewerButton,
+  type OpenImageViewer,
+} from '../../../../products/maka/workbench/app/ImageViewer';
+import { tr } from '../../../../products/maka/workbench/app/locale';
+import {
+  ReviewBatchBar,
+  SymbolLocationsDrawer,
+} from '../../../../products/maka/workbench/app/ReviewComposer';
 import { Terminal } from '../../../../products/maka/workbench/app/Terminal';
 import {
   AgentTerminals,
   PersonalTerminals,
 } from '../../../../products/maka/workbench/app/Terminals';
-import { WorkspaceFiles } from '../../../../products/maka/workbench/app/WorkspaceFiles';
-import { CurrentFile } from '../../../../products/maka/workbench/app/CurrentFile';
-import type { Resources } from './resources';
-import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
-import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import {
-  ImageViewerButton,
-  type OpenImageViewer,
-} from '../../../../products/maka/workbench/app/ImageViewer';
-import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
+  controlDisabledStyle,
   controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  quietFocusStyle,
+  quietHoverStyle,
+  textTooltip,
 } from '../../../../products/maka/workbench/app/ui';
-import { controlsRight, windowDrag } from '../../../../products/maka/workbench/app/chrome';
+import { WorkspaceFiles } from '../../../../products/maka/workbench/app/WorkspaceFiles';
+import type { Resources } from './resources';
+import { WorkspaceChanges } from './WorkspaceChanges';
 
 export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const resources = props.resources;
+  const sessionId = resources.sessionId()!;
   const agent = () => resources.terminalSection() === 'agent-terminals';
   const personal = () => resources.terminalSection() === 'terminals';
   const terminal = () => resources.activeTerminal();
   const showTerminals = (kind: 'terminals' | 'agent-terminals') =>
-    inputAction(resources.inventory, { sessionId: closeTarget.sessionId, kind });
+    inputAction(resources.inventory, {
+      sessionId: closeTarget.sessionId,
+      kind,
+    });
   const previews = () => resources.tabs().filter((tab) => tab.kind !== 'terminal');
   const closeTarget = {
-    sessionId: resources.sessionId()!,
+    sessionId,
     instance: resources.instance(),
   };
+  const symbolBatch = () => resources.reviewStore.symbolBatch(sessionId);
+
   let control: ViewRef | undefined;
-  let unbind = () => {};
-  cleanup(() => unbind());
-  // Consume only a user-requested focus transfer; a resize/remount alone must
-  // leave native dialog restoration and the resident composer caret intact.
+  let unbinds: (() => void)[] = [];
+  cleanup(() => {
+    for (const fn of unbinds) fn();
+  });
+
   effect(() => {
     if (resources.focusRequest() && control) {
       resources.focusHandled();
       if (props.docked) control.focus();
     }
   });
+
   return (
     <View
       ref={(node) => {
         resources.attach(node);
-        unbind();
-        unbind = keymap.bind('escape', () => resources.close(closeTarget), {
-          when: 'always',
-          within: node,
-        });
+        for (const fn of unbinds) fn();
+        unbinds = [
+          keymap.bind(
+            'escape',
+            () => {
+              if (resources.reviewStore.symbolBatch(sessionId) !== null) {
+                resources.reviewStore.setSymbolBatch(sessionId, null);
+                return;
+              }
+              resources.close(closeTarget);
+            },
+            {
+              when: 'notEditing',
+              within: node,
+            },
+          ),
+          keymap.bind('mod+[', () => resources.goBack(), { within: node }),
+          keymap.bind('mod+]', () => resources.goForward(), { within: node }),
+        ];
       }}
-      style={{ flex: 1, minHeight: 0, backgroundColor: C.panel, padding: 8, gap: 8 }}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        backgroundColor: C.panel,
+        padding: 8,
+        gap: 8,
+      }}
     >
       <View
         desktop={props.docked ? windowDrag : undefined}
@@ -92,8 +138,69 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           paddingRight: controlsRight(props.docked),
         }}
       >
+        <If when={resources.canGoBack() || resources.canGoForward()}>
+          <Button
+            accessibilityLabel={tr('Go back')}
+            tooltip={textTooltip(() => tr('Go back'))}
+            disabled={!resources.canGoBack()}
+            onPress={resources.goBack}
+            style={{
+              ...controlStyle,
+              width: 28,
+              minHeight: 28,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="back" size={14} color={C.secondary} />
+          </Button>
+          <Button
+            accessibilityLabel={tr('Go forward')}
+            tooltip={textTooltip(() => tr('Go forward'))}
+            disabled={!resources.canGoForward()}
+            onPress={resources.goForward}
+            style={{
+              ...controlStyle,
+              width: 28,
+              minHeight: 28,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="right" size={14} color={C.secondary} />
+          </Button>
+        </If>
+
         <Scroll horizontal focusable={false} style={{ flex: 1, minWidth: 0 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Button
+              accessibilityLabel={tr('Review workspace changes')}
+              selected={resources.active() === 'changes'}
+              onPress={inputAction(resources.inventory, {
+                sessionId,
+                kind: 'changes',
+              })}
+              style={{ ...controlStyle, paddingHorizontal: 8 }}
+              selectedStyle={{ backgroundColor: C.raised }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+            >
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  color: resources.active() === 'changes' ? C.text : C.muted,
+                }}
+              >
+                {tr('Changes')}
+              </Text>
+            </Button>
+
             <Button
               accessibilityLabel={tr('Browse files')}
               selected={resources.active() === 'files'}
@@ -105,7 +212,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 }
               }}
               onPress={inputAction(resources.inventory, {
-                sessionId: resources.sessionId()!,
+                sessionId,
                 kind: 'files',
               })}
               style={{ ...controlStyle, paddingHorizontal: 8 }}
@@ -122,6 +229,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 {tr('Files')}
               </Text>
             </Button>
+
             <Button
               accessibilityLabel={tr('Show conversation terminals')}
               selected={personal()}
@@ -143,6 +251,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 {tr('Terminal')}
               </Text>
             </Button>
+
             <Each of={previews()} key={(tab) => tab.instance}>
               {(tab) => (
                 <View
@@ -159,13 +268,26 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       sessionId: tab().sessionId,
                       instance: tab().instance,
                     })}
-                    accessibilityLabel={tr('Preview {name}', { name: tab().title })}
+                    accessibilityLabel={tr('Preview {name}', {
+                      name: tab().title,
+                    })}
                     tooltip={textTooltip(() => tab().title)}
-                    style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                    style={{
+                      ...controlStyle,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
                   >
-                    <Icon name={tab().kind === 'image' ? 'image' : 'file'} color={C.muted} />
+                    <Icon
+                      name={
+                        tab().kind === 'image' ? 'image' : tab().kind === 'diff' ? 'code' : 'file'
+                      }
+                      size={13}
+                      color={C.muted}
+                    />
                     <Text
                       style={[
                         {
@@ -184,7 +306,9 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       sessionId: tab().sessionId,
                       instance: tab().instance,
                     })}
-                    accessibilityLabel={tr('Close {name}', { name: tab().title })}
+                    accessibilityLabel={tr('Close {name}', {
+                      name: tab().title,
+                    })}
                     tooltip={textTooltip(() => tr('Close {name}', { name: tab().title }))}
                     style={{
                       ...controlStyle,
@@ -204,11 +328,17 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             </Each>
           </View>
         </Scroll>
+
         <Button
           accessibilityLabel={tr('Agent terminals')}
           selected={agent()}
           onPress={showTerminals('agent-terminals')}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+          }}
           selectedStyle={{ backgroundColor: C.raised }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
@@ -222,14 +352,12 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           >
             <Text
               accessibilityLabel={tr('{count} running commands', {
-                count: String(resources.runningAgentTerminals().length),
+                count: resources.runningAgentTerminals().length,
               })}
               style={{
                 ...captionTextStyle,
-                color: C.text,
-                paddingHorizontal: 4,
-                borderRadius: 4,
-                backgroundColor: C.cardRaised,
+                color: C.accent,
+                fontWeight: '600',
               }}
             >
               {resources.runningAgentTerminals().length}
@@ -240,13 +368,19 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           accessibilityLabel={tr('Close workspace preview')}
           onPress={inputAction(resources.close, closeTarget)}
           tooltip={textTooltip(() => tr('Close workspace preview · Esc'))}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          style={{
+            ...controlStyle,
+            width: 32,
+            paddingHorizontal: 8,
+            alignItems: 'center',
+          }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
         >
           <Icon name="close" color={C.muted} />
         </Button>
       </View>
+
       <If when={personal()}>
         <PersonalTerminals
           model={resources.terminals}
@@ -264,6 +398,13 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           open={resources.showTerminal}
         />
       </If>
+      <If when={resources.active() === 'changes'}>
+        <WorkspaceChanges
+          sessionId={sessionId}
+          reviewStore={resources.reviewStore}
+          openDiff={(target) => resources.openDiff(target)}
+        />
+      </If>
       <If when={resources.active() === 'files'}>
         <WorkspaceFiles model={resources.files} />
       </If>
@@ -272,16 +413,39 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           const current = tab();
           const openImageViewer: OpenImageViewer = (image, restoreFocus) =>
             resources.openImageViewer(
-              { sessionId: current.sessionId, instance: current.instance, image },
+              {
+                sessionId: current.sessionId,
+                instance: current.instance,
+                image,
+              },
               restoreFocus,
             );
           if (current.kind === 'file')
-            return <CurrentFile model={current.model} openImageViewer={openImageViewer} />;
+            return (
+              <CurrentFile
+                model={current.model}
+                openImageViewer={openImageViewer}
+                navigation={resources.fileNavigation(current.model.target)}
+              />
+            );
+          if (current.kind === 'diff')
+            return (
+              <CurrentDiff
+                model={current.model}
+                review={resources.diffReview(current.model.target)}
+              />
+            );
           if (current.kind === 'terminal')
             return (
               <>
                 <If when={current.model.agentOwned()}>
-                  <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      gap: 4,
+                      alignItems: 'center',
+                    }}
+                  >
                     <Button
                       accessibilityLabel={tr('Back to Agent terminals')}
                       onPress={showTerminals('agent-terminals')}
@@ -314,6 +478,26 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           return <OriginalImage image={current.image} openImageViewer={openImageViewer} />;
         }}
       </Each>
+
+      <If when={symbolBatch() !== null}>
+        <SymbolLocationsDrawer
+          batch={symbolBatch()!}
+          pathLabel={(loc) => resources.pathLabel(loc.path)}
+          onSelect={(loc, idx) => {
+            resources.reviewStore.selectSymbolLocation(sessionId, idx);
+            resources.navigateToLocation(sessionId, loc);
+          }}
+          onClose={() => resources.reviewStore.setSymbolBatch(sessionId, null)}
+        />
+      </If>
+
+      <ReviewBatchBar
+        sessionId={sessionId}
+        store={resources.reviewStore}
+        canPrompt={resources.canPrompt()}
+        onJumpToNote={resources.jumpToNote}
+        onDeliver={(text, mode) => resources.deliverPrompt(sessionId, text, mode)}
+      />
     </View>
   );
 }

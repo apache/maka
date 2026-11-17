@@ -181,6 +181,9 @@ export function createHost(application: UiHost) {
         : {
             path: { bytesBase64: link.path },
             parent: link.parent == null ? null : { bytesBase64: link.parent },
+            ...(typeof link.line === 'number' ? { line: link.line } : {}),
+            ...(typeof link.endLine === 'number' ? { endLine: link.endLine } : {}),
+            ...(typeof link.column === 'number' ? { column: link.column } : {}),
           };
     },
     query,

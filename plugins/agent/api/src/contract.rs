@@ -22,7 +22,9 @@ use HistoryRowAddress as RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 pub use maka_agent_ports::session::history::{HistoryOrder, HistoryRowAddress, HistoryView};
-use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+use maka_plugin_core::contract::{
+    Contract, Interface, Method, MethodMode, ResourceType, Transport,
+};
 pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,10 @@ mod fork;
 pub use fork::*;
 mod git;
 pub use git::*;
+mod github;
+pub use github::*;
+mod symbols;
+pub use symbols::*;
 mod goal;
 mod imports;
 pub use goal::*;
@@ -2266,6 +2272,76 @@ pub fn contract() -> Contract {
                 (
                     "gitDiff".into(),
                     method::<GitDiffRead, Option<GitDiff>>(MethodMode::Query),
+                ),
+                (
+                    "gitWorkspaceDiff".into(),
+                    method::<GitWorkspaceDiffRead, Option<GitWorkspaceDiff>>(MethodMode::Query),
+                ),
+                (
+                    "gitRevisions".into(),
+                    method::<SessionRead, Option<GitRevisions>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompare".into(),
+                    method::<GitCompareRead, Option<GitCompare>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompareDiff".into(),
+                    method::<GitCompareDiffRead, Option<GitDiff>>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequests".into(),
+                    method::<GitHubPullRequestsRead, GitHubPullRequestsResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestDetail".into(),
+                    method::<GitHubPullDetailRead, GitHubPullDetailResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestFileDiff".into(),
+                    method::<GitHubPullFileDiffRead, GitHubPullFileDiff>(MethodMode::Query),
+                ),
+                (
+                    "githubSubmitReview".into(),
+                    method::<GitHubSubmitReviewInput, GitHubSubmitReviewResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "githubReplyComment".into(),
+                    method::<GitHubReplyCommentInput, GitHubReplyCommentResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "saveGitHubToken".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "secret".into(),
+                            ResourceType {
+                                name: "maka.text.utf8".into(),
+                                version: 1,
+                            }
+                            .required(),
+                        )]),
+                        ..method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "deleteGitHubToken".into(),
+                    method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation),
+                ),
+                (
+                    "codeDefinition".into(),
+                    method::<CodeDefinitionRead, CodeDefinitionResult>(MethodMode::Query),
+                ),
+                (
+                    "codeReferences".into(),
+                    method::<CodeReferencesRead, CodeReferencesResult>(MethodMode::Query),
+                ),
+                (
+                    "codeHover".into(),
+                    method::<CodeHoverRead, Option<CodeHoverResult>>(MethodMode::Query),
                 ),
                 (
                     "snapshotPatch".into(),
