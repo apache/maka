@@ -113,11 +113,18 @@ export interface ComposerAttachmentTarget {
   id: string;
 }
 
+/** Native paste payload matching `RichEditorPastedFiles` (`RichEditorFile` entries). */
 export interface ComposerPaste {
   uris: string[];
   files: { name: string; mime: string; data: Uint8Array }[];
 }
 
+/**
+ * Attachment intake request mirrored by `uploads::IntakeInput` (`maka/host` `ComposerIntake`).
+ * For `paste`, non-empty `uris` take precedence over `files`. `clipboard` and `paste` emit
+ * newline-joined path text via `onText` when any resolved path is a directory; `files` requires
+ * regular files.
+ */
 export type ComposerIntake =
   | { kind: 'clipboard' }
   | ({ kind: 'paste' } & ComposerPaste)
@@ -137,7 +144,8 @@ export interface ComposerAttachments<Element = unknown> {
   imageUri(read: AgentAttachmentImageRead): string;
   /** Mount as a component so prop changes retain the native picker owner. */
   renderPicker(input: ComposerAttachmentPickerInput): Element;
-  intake(input: ComposerIntake, onText?: (text: string) => void): void;
+  intake(input: Extract<ComposerIntake, { kind: 'files' }>): void;
+  intake(input: ComposerIntake, onText: (text: string) => void): void;
   open(target: { owner: string; value: boolean }): void;
   remove(target: ComposerAttachmentTarget): void;
   reportError(reason: unknown): void;
@@ -295,7 +303,8 @@ export interface ComposerViewInput<Element = unknown> {
     ready(): boolean;
     files(): { id: string; name: string; bytes: number; imageUri: string | null }[];
     picking(): boolean;
-    intake(input: ComposerIntake, onText?: (text: string) => void): void;
+    intake(input: Extract<ComposerIntake, { kind: 'files' }>): void;
+    intake(input: ComposerIntake, onText: (text: string) => void): void;
     reportError(reason: unknown): void;
     removeFile(id: string): void;
     openPicker(open: boolean): void;

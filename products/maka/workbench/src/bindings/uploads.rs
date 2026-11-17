@@ -36,6 +36,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Native boundary decoder for `@maka-agent/plugin-sdk` `ComposerIntake`.
 pub enum IntakeInput {
     Clipboard,
     Paste {

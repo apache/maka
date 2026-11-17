@@ -19,7 +19,10 @@
 
 import { AttachmentPicker } from 'maka/host';
 import type { JSX } from 'nsh';
-import type { ComposerAttachments } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type {
+  ComposerAttachments,
+  ComposerIntake,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from './attachmentDraft';
 import type { Host } from './host';
 import { immutableAsset } from './immutableAsset';
@@ -57,7 +60,8 @@ export function projectComposerAttachments(
         onStatus={draft.status}
       />
     ),
-    intake: (input, onText) => draft.observeIntake(draft.client.beginIntake(input), onText),
+    intake: (input: ComposerIntake, onText?: (text: string) => void) =>
+      draft.observeIntake(draft.client.beginIntake(input), onText),
     open: draft.open,
     remove: draft.remove,
     reportError: draft.reportError,

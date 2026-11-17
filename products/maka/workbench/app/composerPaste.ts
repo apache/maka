@@ -155,7 +155,7 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
     drop,
     paste(owner: Owner, event: ComposerPaste) {
       const target = capture(owner);
-      if (target) intake(target, { kind: 'paste', ...event });
+      if (target) intake(target, { kind: 'paste', uris: event.uris, files: event.files });
     },
     focus(owner: Owner) {
       if (options.owner() !== owner) return;
