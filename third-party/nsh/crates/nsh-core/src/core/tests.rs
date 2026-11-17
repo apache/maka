@@ -3754,7 +3754,7 @@ fn leaf_styles_are_resolved() {
     apply(
         &mut c,
         vec![
-            // Text with padding: the frame wraps the measured text.
+            // Padding leaves 300pt for text that needs 312pt on one line.
             Op::Create {
                 id: 2,
                 tag: Tag::Text,
@@ -3762,7 +3762,7 @@ fn leaf_styles_are_resolved() {
             style_op(2, &[("padding", StyleValue::Number(10.0))]),
             Op::CreateText {
                 id: 3,
-                text: "abc".into(),
+                text: "a".repeat(39).into(),
             },
             Op::Insert {
                 parent: 2,
@@ -3807,13 +3807,13 @@ fn leaf_styles_are_resolved() {
     let batch = c.commit().unwrap();
     assert_eq!(
         frame_of(&batch, 2).map(|f| f.size.height.0),
-        Some(16.0 + 20.0)
+        Some(32.0 + 20.0)
     );
     let content = batch.items.iter().find_map(|i| match i {
         MountItem::Text { id: 2, content, .. } => Some(*content),
         _ => None,
     });
-    assert_eq!(content, Some(rect(10.0, 10.0, 300.0, 16.0)));
+    assert_eq!(content, Some(rect(10.0, 10.0, 300.0, 32.0)));
     assert_eq!(
         frame_of(&batch, 4).map(|f| (f.size.width.0, f.size.height.0)),
         Some((100.0, 50.0))
