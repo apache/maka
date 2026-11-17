@@ -59,5 +59,5 @@ maka application compose --configuration installation.json --output product-sour
 ```sh
 npm --workspace @maka-agent/product run typecheck
 npm --workspace @maka-agent/product test
-cargo nextest run --locked -p maka-cli --test integration -E 'test(product_composition::)'
+cargo nextest run --locked -p maka-cli --test integration -E 'test(initialize::)'
 ```

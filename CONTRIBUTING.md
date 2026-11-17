@@ -27,7 +27,7 @@ Project direction, governance, and major product changes belong on [dev@maka.apa
 
 ## Local development
 
-Install Rust stable, Node.js 26, npm 12.2.1, `just`, `cargo-nextest`, `cargo-deny`, and Python 3. On Windows, ensure Git for Windows' `sh` is on `PATH`.
+Install Rust stable, Node.js 24+ (CI uses 26), npm, `just`, `cargo-nextest`, `cargo-deny`, and Python 3. On Windows, ensure Git for Windows' `sh` is on `PATH`.
 
 ```sh
 just setup

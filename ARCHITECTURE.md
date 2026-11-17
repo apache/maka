@@ -50,7 +50,7 @@ Side-effecting Host calls use a two-phase ledger that separates caller intent fr
 
 - **Caller intent (`CallerIntent`)** — Before a mutation reaches a provider, the Host records the caller's `RecoveryRef` (target instance, method, operation UUID, request fingerprint, and contract digest). On retry or restart, an owner inspects its own intent journal rather than blindly re-issuing mutations.
 - **Independent `Outcome` and `Cleanup`** — Provider receipts (`application_operations`) track business `Outcome` (`NotExecuted`, `Returned`, `Unknown`) separately from physical resource `Cleanup` (`Unconfirmed`, `Confirmed`, `Failed`). Both advance monotonically.
-- **Honest uncertainty** — Once caller intent is recorded, a missing receipt never proves non-execution. In-flight interruptions settle to `Unknown`, blocking automatic replay while still accepting late authoritative completion (`OperationResolvedLate`) without rewriting historical cuts.
+- **Honest uncertainty** — Once caller intent is recorded, a missing receipt never proves non-execution. In-flight interruptions settle to `Unknown`, blocking automatic replay while still accepting late authoritative completion (`OperationObserved`) without rewriting historical cuts.
 - **Atomic local mutations** — Pure state mutations on the same Root commit in the same SQLite transaction as their `Returned` receipt, with no network or subprocess I/O inside the write lock.
 - **Evidence pinning** — Active runs, `Unknown` operations, unconfirmed cleanups, live Code Mode cells, and history snapshots pin their content-addressed blobs until both outcome and cleanup settle.
 

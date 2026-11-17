@@ -50,12 +50,13 @@ Both debug and release `maka-cli` builds compile and embed the current plugin bu
 Targeted verification commands:
 
 ```sh
-# Workbench unit tests
-npm --workspace @maka-agent/workbench test
+# Workbench UI and Rust binding tests
+node --test products/maka/workbench/tests/*.test.mjs
+cargo nextest run -p maka-workbench
 
-# Terminal shell real-Host integration suite
-cargo nextest run -p maka-cli --no-default-features --test integration -E 'test(terminal::)'
+# Terminal CLI entrypoint checks
+cargo nextest run -p maka-cli --no-default-features --test integration -E 'test(terminal_shell::)'
 
-# Offscreen native desktop integration tests (macOS / Windows)
-cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session::)'
+# Offscreen native desktop integration tests (macOS / Windows, or `just test-desktop`)
+cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test native-desktop -E 'test(terminal::desktop_new_session::)'
 ```

@@ -34,15 +34,15 @@ const app = await cua.getApp("Calculator");
 
 除直接配置 CDP 端点外，Computer Use 支持通过 Chrome / Chromium 原生消息通道接入浏览器扩展（`cua.listBrowsers()`、`cua.getBrowser({ id })`）：
 
-- **ChatGPT 扩展按需接管** — 若本机 Chrome 或 Chromium 已安装 ChatGPT 扩展，Maka 会自动发现并在实际调用时临时租用连接，轮次结束、会话关闭或调用 `await browser.release()` 后自动归还原生宿主注册。异常断电遗留的租约可通过 `maka browser restore` 恢复。
-- **内置 Maka 扩展手动注册** — 将扩展源码导出到空目录并在 Chrome 开发者模式加载后，绑定其扩展 ID：
+- **ChatGPT 扩展按需接管** — 若本机 Chrome 或 Chromium 已安装 ChatGPT 扩展，Maka 会自动发现（默认优先 Chrome）并在实际调用时临时租用连接，轮次结束、会话关闭或调用 `await browser.release()` 后自动归还原生宿主注册。若需显式指定扩展 ID 或切换 Chromium，可执行 `maka browser install --provider chatgpt --extension-id <EXTENSION_ID> --on-demand [--browser chromium]`；异常断电遗留的租约可通过 `maka browser restore` 恢复。
+- **内置 Maka Chrome 扩展注册** — 将扩展源码导出到空目录并在 Google Chrome 开发者模式加载后，绑定其扩展 ID：
 
 ```sh
 maka browser extension --output /absolute/path/maka-browser-extension
 maka browser install --provider maka --extension-id <EXTENSION_ID>
 ```
 
-针对 Chromium 可附加 `--browser chromium`；卸载原生宿主注册使用 `maka browser uninstall --provider maka|chatgpt`。
+卸载原生宿主注册使用 `maka browser uninstall --provider maka|chatgpt`。
 
 会话新建的临时标签页默认在轮次结束时自动关闭；调用 `markDeliverable()` 可留给用户查看，调用 `markHandoff()` 可跨轮次保留。
 

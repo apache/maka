@@ -35,7 +35,7 @@ npm install --global @maka-agent/cli@rust-preview
 
 - `maka` / `maka terminal-shell` — 启动 NSH 终端工作台，默认连接 `~/.maka/application/host`（可用 `--root <path>` 切换目录，`--session <id>` 打开指定会话）。
 - `maka desktop --root <path>` — 针对指定 State Root 打开原生桌面窗口；关闭窗口仅断开前端，后台已接纳的任务会继续跑完。
-- `maka --help` — 查看 `host`、`application`、`sandbox`、`browser` 与 `acp` 等全部子命令。
+- `maka --help` — 查看 `host`、`application`、`code`、`checkpoint`、`inspect`、`sandbox` 与 `acp` 等全部子命令。
 
 壳层结构见 [products/maka](../../products/maka/README.zh-CN.md)，部署与插件组合见 [products/maka/bundle](../../products/maka/bundle/README.zh-CN.md)。
 
@@ -50,5 +50,7 @@ just release-prepare native-preview
 just release-check native-preview
 just publish native-preview
 ```
+
+`release-check` 会在各目标平台上离线安装打包产物并跑通冒烟校验。发布流程按“先上传各平台原生包、再发布启动器”的顺序推进并核验 dist-tag；中途中断可由同一发布者幂等重试同一批产物。
 
 非官方 `rust-preview` 渠道仅在个人仓库 `M4n5ter/maka-agent` 的 `npm-rust-preview` 环境显式开启 `publish=true` 时发布，绝不从 `apache/maka` 仓库直接发包。V8 预编译缓存与第三方许可证审计见 [scripts/rust](../../scripts/rust/README.zh-CN.md)，ASF 源码发布规范见 [.github/ASF_SOURCE_RELEASE.md](../../.github/ASF_SOURCE_RELEASE.md)。

@@ -42,6 +42,10 @@ Workbench clients consume granular RPC methods on [`maka-agent-api`](api/src/con
 - **`SessionSend`** — Posts to a Room (with atomic `@mentions` and `replyTo`) or sends/steers a message to an Agent session. Agent-to-worker sends default to `onComplete: "notify_caller"`, waking the caller with an inline `<worker_result>` summary when the worker finishes.
 - **`SessionRespond` / `SessionStop` / `SessionManage`** — Answer worker questions/approvals, stop active runs, edit queued messages, continue terminal runs, or update/archive/restore/remove sessions.
 
+## Memory records
+
+User-controlled memory endpoints (`memories`, `memory`, `memoryHistory`, `changeMemory`, `memorySource`, and `memoryEvidence` in [`api/src/contract/memory.rs`](api/src/contract/memory.rs)) manage personal and project-scoped memory records on the State Root. Edits use revision CAS; suppressing a record hides matching content from ordinary reads and history while retaining the underlying audit record. Model reads require live execution authority plus both `memory.enabled` and `memory.agentReadEnabled` in settings preferences (disabling model reads leaves user management available). Assertions can bind verified conversation spans via `changeMemory.add_evidence`, and `create.incognito` marks an immutable memory-privacy boundary inherited by derived sessions.
+
 ## Subagent presets
 
 ## Ordinary memory records
@@ -56,7 +60,7 @@ Clients resolve selected conversation text with `memorySource`, page evidence wi
 
 ## MCP servers
 
-`maka-agent-mcp` connects to stdio and Streamable HTTP MCP servers via `rmcp`, surfacing their tools across direct calls, `tool_search`, and JavaScript/Python Code Mode under the same approval and receipt pipeline. Configure global or per-project servers in **Settings → MCP servers** (or portable `.mcp.json` files); ACP clients can also attach ephemeral session-scoped MCP servers on session load.
+`maka-agent-mcp` connects to stdio and Streamable HTTP MCP servers via `rmcp`, surfacing their tools across direct calls, `tool_search`, and JavaScript/Python Code Mode under the same approval and receipt pipeline. Configure global or per-project servers in **Settings → MCP servers** (or `.maka/mcp.json` / `.agents/mcp.json` in the project or home directory); ACP clients can also attach ephemeral session-scoped MCP servers on session load.
 
 Configured MCP servers are trusted extensions: stdio servers execute as the Host OS user outside workspace file sandboxes, receiving a minimal environment plus explicitly configured secrets.
 

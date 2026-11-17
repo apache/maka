@@ -55,16 +55,7 @@ PR 计划根据 Cargo 反向依赖图以及声明的运行时资源（如内置 
 
 ## 性能基准测试
 
-- **长对话引擎延迟对比** — 编译 `maka-agent-engine` 集成测试二进制，对比 250～1,000 轮历史下的请求延迟（附加 `--checkpoint` 可测压缩后表现）：
-
-```sh
-cargo test --release -p maka-agent-engine --test integration --no-run
-python3 scripts/rust/benchmark-long-task.py \
-  --baseline /tmp/engine-before --candidate /tmp/engine-after \
-  --sizes 250,1000 --runs 5 --output /tmp/maka-long-task
-```
-
-- **Host 端到端压测** — 基于本地回环 SSE 模拟器的吞吐与内存对比工具见 [`host-comparison/`](host-comparison/README.md)。
+[`host-comparison/`](host-comparison/README.md) 提供离线 Linux 端到端压测工具，基于本地回环 SSE 模拟器对比不同构建的吞吐量、RSS 内存与 CPU 开销。
 
 ## Windows State Root 目录属主恢复
 

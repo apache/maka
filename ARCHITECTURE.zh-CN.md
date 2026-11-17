@@ -50,7 +50,7 @@ Maka 按职责切分为三层：
 
 - **调用方意图（`CallerIntent`）** — 变更进入目标服务前，Host 先落盘调用方的 `RecoveryRef`（目标实例、方法、操作 UUID、请求指纹与契约摘要）。断线重连或进程重启后，调用方先查意图账本核对原操作，而不是盲目重发。
 - **业务结果与资源清理分离** — 服务回执表（`application_operations`）将业务结果 `Outcome`（`NotExecuted`、`Returned`、`Unknown`）与物理资源清理 `Cleanup`（`Unconfirmed`、`Confirmed`、`Failed`）分开记录，各自单调推进。
-- **显式保留未知态** — 一旦记录了调用意图，缺失回执绝不等同于“未执行”。在途中断会落为 `Unknown`，阻止自动重放，同时允许晚到的权威结算（`OperationResolvedLate`）归档而不篡改已消费的历史切面。
+- **显式保留未知态** — 一旦记录了调用意图，缺失回执绝不等同于“未执行”。在途中断会落为 `Unknown`，阻止自动重放，同时允许晚到的权威结算（`OperationObserved`）归档而不篡改已消费的历史切面。
 - **同库状态原子提交** — 同一 Root 内的纯状态变更与其 `Returned` 回执在同一个 SQLite 写事务内原子提交，锁内不做网络或子进程 I/O。
 - **证据钉住（Pinning）** — 未完结的 Run、`Unknown` 操作、未确认清理的资源、活跃 Code Mode 单元及历史快照各自钉住关联的内容寻址对象，直到业务结果与物理清理双双结清。
 

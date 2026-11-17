@@ -25,7 +25,7 @@ Apache Maka (Incubating) 是一个面向终端与桌面的本地 Agent 工作台
 
 ## 快速上手
 
-环境依赖：Rust stable、Node.js 26、npm 12.2.1 与 [just](https://github.com/casey/just)。启用原生 Computer Use 时，macOS 需安装 Xcode Command Line Tools，Linux 需安装 X11 开发库。
+环境依赖：Rust stable、Node.js 24+（CI 使用 26）、npm 与 [just](https://github.com/casey/just)。启用原生 Computer Use 时，macOS 需安装 Xcode Command Line Tools，Linux 需安装 X11 开发库。
 
 ```sh
 git clone https://github.com/apache/maka.git

@@ -27,7 +27,7 @@ Bug 反馈与具体改进提案请提交 [Issues](https://github.com/apache/maka
 
 ## 本地开发
 
-需要安装 Rust stable、Node.js 26、npm 12.2.1、`just`、`cargo-nextest`、`cargo-deny` 与 Python 3。Windows 环境需将 Git for Windows 自带的 `sh` 加入 `PATH`。
+需要安装 Rust stable、Node.js 24+（CI 使用 26）、npm、`just`、`cargo-nextest`、`cargo-deny` 与 Python 3。Windows 环境需将 Git for Windows 自带的 `sh` 加入 `PATH`。
 
 ```sh
 just setup

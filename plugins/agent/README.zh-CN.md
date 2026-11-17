@@ -42,6 +42,10 @@
 - **`SessionSend`** — 向 Room 发言（原子提交 `@mentions` 与 `replyTo`）或向 Agent 会话发消息/插话引导（Steer）。Agent 派发给子会话的消息默认开启 `onComplete: "notify_caller"`，完工后自动携带 `<worker_result>` 结论摘要唤醒调用方。
 - **`SessionRespond` / `SessionStop` / `SessionManage`** — 回复子会话提问与权限请求、终止运行、编辑待发队列、续跑已结束的原生模型轮次，以及改名/归档/恢复/删除会话。
 
+## 记忆记录（Memory）
+
+用户可控的记忆接口（[`api/src/contract/memory.rs`](api/src/contract/memory.rs) 中的 `memories`、`memory`、`memoryHistory`、`changeMemory`、`memorySource` 与 `memoryEvidence`）在个人或项目作用域内管理持久化记忆。更新采用版本 CAS；抑制（Suppress）记录会将其从常规读取与历史展示中隐藏，同时保留底层审计记录。模型侧读取需同时具备有效执行权限并开启偏好设置中的 `memory.enabled` 与 `memory.agentReadEnabled`（关闭模型读取不影响用户管理）。客户端可通过 `changeMemory.add_evidence` 为断言绑定经校验的会话原文片段；会话创建参数 `create.incognito` 则声明由派生会话继承的不可变记忆隐私边界。
+
 ## 子 Agent 预设（Subagent Presets）
 
 ## 普通记忆记录
@@ -56,7 +60,7 @@ Agent 服务提供 `memories`、`memory`、`memoryHistory` 和 `changeMemory`，
 
 ## MCP 服务接入
 
-`maka-agent-mcp` 基于 `rmcp` 连接本地 stdio 与远端 Streamable HTTP MCP 服务，发现的工具统一接入直接调用、`tool_search` 以及 JS/Python Code Mode，并复用同一套审批与操作回执链路。可在 **Settings → MCP servers**（或项目级 `.mcp.json`）管理配置；ACP 客户端也可在加载会话时挂载当前会话生命周期内的临时 MCP 服务。
+`maka-agent-mcp` 基于 `rmcp` 连接本地 stdio 与远端 Streamable HTTP MCP 服务，发现的工具统一接入直接调用、`tool_search` 以及 JS/Python Code Mode，并复用同一套审批与操作回执链路。可在 **Settings → MCP servers**（或项目目录及主目录下的 `.maka/mcp.json` / `.agents/mcp.json`）管理配置；ACP 客户端也可在加载会话时挂载当前会话生命周期内的临时 MCP 服务。
 
 已配置的 MCP 服务属于受信任扩展：stdio 进程以当前系统用户身份运行在会话文件沙箱之外，仅注入精简基础环境变量与显式配置的密钥。
 

@@ -50,12 +50,13 @@ target/release/maka desktop   # 打开原生桌面端窗口
 常用定向测试命令：
 
 ```sh
-# 工作台前端逻辑单测
-npm --workspace @maka-agent/workbench test
+# 工作台前端逻辑与原生绑定单测
+node --test products/maka/workbench/tests/*.test.mjs
+cargo nextest run -p maka-workbench
 
-# 终端壳层真实 Host 集成测试
-cargo nextest run -p maka-cli --no-default-features --test integration -E 'test(terminal::)'
+# 终端 CLI 入口参数与边界检查
+cargo nextest run -p maka-cli --no-default-features --test integration -E 'test(terminal_shell::)'
 
-# 桌面端离屏原生渲染集成测试（macOS / Windows）
-cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session::)'
+# 桌面端离屏原生渲染集成测试（macOS / Windows，或直接执行 `just test-desktop`）
+cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test native-desktop -E 'test(terminal::desktop_new_session::)'
 ```

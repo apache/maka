@@ -29,11 +29,11 @@ Build the Rust CLI and benchmark client in release mode on an idle Linux machine
 cargo build --release -p maka-cli --bin maka --example host_benchmark_client
 ```
 
-Run a comparison campaign (`compare.py --help` lists workload flags, concurrency settings, and adapter options) and aggregate results into Markdown/JSON summaries:
+Run a comparison campaign (`compare.py --help` lists workload flags, concurrency settings, and adapter options) and aggregate results into a JSON summary:
 
 ```sh
 python3 scripts/rust/host-comparison/compare.py --help
-python3 scripts/rust/host-comparison/summarize.py <results-dir>
+python3 scripts/rust/host-comparison/summarize.py <results-dir> --output <summary.json>
 ```
 
 `compare.py` verifies canonical transcript outputs across runs and records per-process RSS, CPU time, and I/O telemetry via `telemetry.py`.

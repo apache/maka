@@ -25,7 +25,7 @@ Apache Maka (Incubating) is a local-first agent workspace for the terminal and d
 
 ## Quick start
 
-Prerequisites: Rust stable, Node.js 26, npm 12.2.1, and [just](https://github.com/casey/just). Native Computer Use also requires Xcode Command Line Tools on macOS or X11 development libraries on Linux.
+Prerequisites: Rust stable, Node.js 24+ (CI uses 26), npm, and [just](https://github.com/casey/just). Native Computer Use also requires Xcode Command Line Tools on macOS or X11 development libraries on Linux.
 
 ```sh
 git clone https://github.com/apache/maka.git

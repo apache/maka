@@ -55,16 +55,7 @@ PR plans trace reverse Cargo dependencies plus declared runtime assets (`skills/
 
 ## Benchmarks
 
-- **Long-history engine latency** — Compare two `maka-agent-engine` integration test binaries across 250–1,000 turn histories (add `--checkpoint` to measure post-compaction latency):
-
-```sh
-cargo test --release -p maka-agent-engine --test integration --no-run
-python3 scripts/rust/benchmark-long-task.py \
-  --baseline /tmp/engine-before --candidate /tmp/engine-after \
-  --sizes 250,1000 --runs 5 --output /tmp/maka-long-task
-```
-
-- **End-to-end Host comparison** — Offline loopback SSE throughput and memory harness in [`host-comparison/`](host-comparison/README.md).
+[`host-comparison/`](host-comparison/README.md) provides an offline Linux harness for comparing end-to-end Host throughput, RSS, and CPU usage against a local loopback SSE model fixture.
 
 ## Windows State Root ownership recovery
 

@@ -34,15 +34,15 @@ const app = await cua.getApp("Calculator");
 
 Browser control supports configured CDP endpoints as well as Chrome/Chromium extension connectors (`cua.listBrowsers()`, `cua.getBrowser({ id })`):
 
-- **Automatic ChatGPT connector handoff** — When the ChatGPT Chrome/Chromium extension is already installed on the host OS, Maka discovers it automatically and leases the native-messaging channel on demand, restoring the original native host once the session releases the browser (`await browser.release()` or turn/session close). Run `maka browser restore` if an abnormal crash ever leaves a lease behind.
-- **Bundled Maka Chrome extension** — Export the extension source to an empty directory, load it unpacked in Chrome, then register its extension ID:
+- **Automatic ChatGPT connector handoff** — When the ChatGPT Chrome/Chromium extension is already installed on the host OS, Maka discovers it automatically (preferring Chrome) and leases the native-messaging channel on demand, restoring the original native host once the session releases the browser (`await browser.release()` or turn/session close). To explicitly pin an extension ID or target Chromium, run `maka browser install --provider chatgpt --extension-id <EXTENSION_ID> --on-demand [--browser chromium]`; run `maka browser restore` if an abnormal crash ever leaves a lease behind.
+- **Bundled Maka Chrome extension** — Export the extension source to an empty directory, load it unpacked in Google Chrome, then register its extension ID:
 
 ```sh
 maka browser extension --output /absolute/path/maka-browser-extension
 maka browser install --provider maka --extension-id <EXTENSION_ID>
 ```
 
-Pass `--browser chromium` when targeting Chromium, or use `maka browser uninstall --provider maka|chatgpt` to remove native-host registration.
+Use `maka browser uninstall --provider maka|chatgpt` to remove native-host registration.
 
 Temporary tabs opened by a session close at turn end unless marked with `markDeliverable()` (keep open for the user) or `markHandoff()` (retain for subsequent turns).
 
