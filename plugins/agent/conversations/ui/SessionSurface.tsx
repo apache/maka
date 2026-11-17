@@ -1007,37 +1007,40 @@ export function createConversationUi(
     prefills.delete(sessionId);
     submission.set({ kind: 'preparing', attempt });
   };
-  const stagePending = (
-    read: () => Promise<{ files: StagedFile[]; text?: string | null }>,
-    onText?: (text: string) => void,
-  ) => {
+  const stagePending = (input: ComposerIntake, onText?: (text: string) => void) => {
     const workspace = pendingWorkspace();
     if (!workspace || pendingFileBusy() || pendingSending()) return;
-    const intake = read()
-      .then(async ({ files, text }) => {
+    const intake = host
+      .stageIntake(input)
+      .then((staged) => {
         if (!alive || pendingWorkspace() !== workspace) {
-          for (const file of files) file.dispose();
+          if (staged.kind === 'files') {
+            for (const file of staged.files) file.dispose();
+          }
           return;
         }
-        updatePending({
-          files: [
-            ...pendingFiles(),
-            ...files.map((file) => {
-              const metadata = file.metadata() as {
-                name: string;
-                bytes: number;
-              };
-              return {
-                id: file.id,
-                name: metadata.name,
-                bytes: metadata.bytes,
-                imageUri: file.imageUri(),
-                file,
-              };
-            }),
-          ],
-        });
-        if (text) onText?.(text);
+        if (staged.kind === 'text') {
+          if (staged.text) onText?.(staged.text);
+        } else {
+          updatePending({
+            files: [
+              ...pendingFiles(),
+              ...staged.files.map((file) => {
+                const metadata = file.metadata() as {
+                  name: string;
+                  bytes: number;
+                };
+                return {
+                  id: file.id,
+                  name: metadata.name,
+                  bytes: metadata.bytes,
+                  imageUri: file.imageUri(),
+                  file,
+                };
+              }),
+            ],
+          });
+        }
         pendingPicker.set(false);
         if (selected() === null && overlay() === null && (shell()?.visible() ?? false))
           focusComposer();
@@ -1104,15 +1107,7 @@ export function createConversationUi(
         removed.file.dispose();
       },
       intake(input: ComposerIntake, onText?: (text: string) => void) {
-        if (owns())
-          stagePending(async () => {
-            const selection = await host.stageIntake(input);
-            try {
-              return { files: selection.files(), text: selection.text };
-            } finally {
-              selection.dispose();
-            }
-          }, onText);
+        if (owns()) stagePending(input, onText);
       },
       reportError: report,
       submit(text: string, expected?: string) {

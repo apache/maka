@@ -274,7 +274,6 @@ pub fn ui_registry() -> Registry {
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
-    registry.class::<uploads::StagedSelection>();
     registry.class::<ui_services::UiScope>();
     registry
 }
@@ -468,10 +467,10 @@ impl ApplicationHost {
     pub async fn stage_intake(
         this: Instance<Self>,
         input: uploads::IntakeInput,
-    ) -> Result<Instance<uploads::StagedSelection>, String> {
+    ) -> Result<uploads::StagedIntake, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        Ok(Instance::new(uploads::stage_intake(owner, input).await?))
+        uploads::stage_intake(owner, input).await
     }
     pub fn asset_uri(&self, uri: String) -> Result<String, String> {
         self.client.asset_uri(uri)

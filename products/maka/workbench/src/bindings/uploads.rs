@@ -101,26 +101,38 @@ pub struct StagedFile {
     snapshot: Arc<FileSnapshot>,
 }
 
-#[class]
-pub struct StagedSelection {
-    owner: Arc<Owner>,
-    text: Option<String>,
-    files: Vec<Arc<FileSnapshot>>,
-}
+/// Captured pre-session intake: either inserted path text or immutable staged files.
+pub type StagedIntake = Selection<Instance<StagedFile>>;
 
-#[class]
-impl StagedSelection {
-    #[getter]
-    pub fn text(&self) -> Option<String> {
-        self.text.clone()
+impl Ret for StagedIntake {
+    fn ts_type(types: &mut TsTypes) -> String {
+        types.declare("StagedIntake", |types| {
+            let files = <Vec<Instance<StagedFile>> as Ret>::ts_type(types);
+            format!(
+                "export type StagedIntake = {{ kind: 'text'; text: string }} | \
+                 {{ kind: 'files'; files: {files} }};"
+            )
+        })
     }
 
-    pub fn files(&self) -> Vec<Instance<StagedFile>> {
-        self.files
-            .iter()
-            .cloned()
-            .map(|file| staged_file(self.owner.clone(), file))
-            .collect()
+    fn into_js<'a>(self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let owned = JsOwned::new(host, host.new_object()?);
+        let object = owned.get().raw();
+        match self {
+            Self::Text(text) => {
+                host.set_field(object, "kind", host.new_string("text")?)?;
+                host.set_field(object, "text", host.new_string(&text)?)?;
+            }
+            Self::Files(files) => {
+                host.set_field(object, "kind", host.new_string("files")?)?;
+                host.set_field(object, "files", files.into_js(host)?.into_raw())?;
+            }
+        }
+        Ok(owned)
+    }
+
+    fn classes(out: &mut Vec<&'static element::ClassDef>) {
+        <Vec<Instance<StagedFile>> as Ret>::classes(out);
     }
 }
 
@@ -175,24 +187,32 @@ pub(super) fn staged_image(owner: &Owner, id: &str) -> Result<Vec<u8>, String> {
 pub(super) async fn stage_intake(
     owner: Arc<Owner>,
     input: IntakeInput,
-) -> Result<StagedSelection, String> {
-    let (text, files) = execute(owner.clone(), async move {
+) -> Result<StagedIntake, String> {
+    let selection = execute(owner.clone(), async move {
         tokio::task::spawn_blocking(move || stage_selection(input))
             .await
             .map_err(|error| format!("Selected file worker failed: {error}"))?
     })
     .await?;
-    Ok(StagedSelection { owner, text, files })
+    Ok(match selection {
+        Selection::Text(text) => Selection::Text(text),
+        Selection::Files(files) => Selection::Files(
+            files
+                .into_iter()
+                .map(|file| staged_file(owner.clone(), file))
+                .collect(),
+        ),
+    })
 }
 
-fn stage_selection(input: IntakeInput) -> Result<(Option<String>, Vec<Arc<FileSnapshot>>), String> {
+fn stage_selection(input: IntakeInput) -> Result<Selection<Arc<FileSnapshot>>, String> {
     match select(input)? {
-        Selection::Text(text) => Ok((Some(text), vec![])),
+        Selection::Text(text) => Ok(Selection::Text(text)),
         Selection::Files(files) => files
             .into_iter()
             .map(SelectedFile::capture)
             .collect::<Result<Vec<_>, _>>()
-            .map(|files| (None, files)),
+            .map(Selection::Files),
     }
 }
 
@@ -455,9 +475,9 @@ impl Updates {
     }
 }
 
-enum Selection {
+pub enum Selection<T> {
     Text(String),
-    Files(Vec<SelectedFile>),
+    Files(Vec<T>),
 }
 
 enum SelectedFile {
@@ -505,7 +525,7 @@ impl SelectedFile {
 
 /// Interpret the source once, before either staging or uploading its files.
 /// All path checks and system clipboard reads run on a blocking worker.
-fn select(input: IntakeInput) -> Result<Selection, String> {
+fn select(input: IntakeInput) -> Result<Selection<SelectedFile>, String> {
     let pasted_paths = |paths: Vec<String>| {
         if let Some(text) = crate::attachment_paths::pasted_directories(&paths)? {
             Ok(Selection::Text(text))
@@ -777,7 +797,39 @@ fn clean_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::display_name;
+    use super::{IntakeInput, Selection, display_name, stage_selection};
+    use maka_capabilities::call::ReadResource;
+    use nsh_base::rich_editor::view::RichEditorFile;
+
+    #[test]
+    fn staging_preserves_directory_text_and_pasted_file_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = vec![directory.path().to_string_lossy().into_owned()];
+        let Selection::Text(text) = stage_selection(IntakeInput::Paste {
+            uris: paths.clone(),
+            files: vec![],
+        })
+        .unwrap() else {
+            panic!("a pasted directory must remain text");
+        };
+        assert_eq!(text, paths[0]);
+
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff";
+        let mut file = RichEditorFile::default();
+        file.name = "截图.png".into();
+        file.mime = "image/png".into();
+        file.data = bytes.to_vec();
+        let Selection::Files(files) = stage_selection(IntakeInput::Paste {
+            uris: vec![],
+            files: vec![file],
+        })
+        .unwrap() else {
+            panic!("a pasted image must produce file snapshots");
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].metadata()["name"], "截图.png");
+        assert_eq!(files[0].contents(), bytes);
+    }
 
     #[test]
     fn display_name_ignores_trailing_directory_separators() {
