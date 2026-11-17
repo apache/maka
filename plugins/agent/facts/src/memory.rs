@@ -180,6 +180,12 @@ pub enum MemoryEdit {
     deny_unknown_fields
 )]
 pub enum MemoryResult {
+    EvidenceAdded {
+        id: MemoryId,
+        revision: MemoryRevision,
+    },
+    Suppressed,
+
     Saved {
         id: MemoryId,
         revision: MemoryRevision,

@@ -32,6 +32,36 @@ async fn memory_management_cas_sources_deletion_and_restart() {
     assert!(matches!(result, Ok(Ok(Ok(())))), "{result:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
+async fn exact_matching_acceptance(client: &HostClient) -> TestResult<()> {
+    let scope = json!({"kind":"personal"});
+    let create = json!({"scope":scope,"edit":{"kind":"create","body":"Exact matching acceptance"}});
+    let (a, b) = tokio::join!(
+        call(client, "agent", "changeMemory", create.clone()),
+        call(client, "agent", "changeMemory", create.clone()),
+    );
+    let (a, b) = (a?, b?);
+    let (first, duplicate) = if a["kind"] == "saved" { (a, b) } else { (b, a) };
+    assert_eq!(first["kind"], "saved");
+    assert_eq!(duplicate["kind"], "evidence_added");
+    assert_eq!(duplicate["id"], first["id"]);
+    assert_eq!(duplicate["revision"], 2);
+    let deleted = call(client, "agent", "changeMemory", json!({"scope":scope,"edit":{"kind":"delete","id":first["id"],"expectedRevision":duplicate["revision"]}})).await?;
+    assert_eq!(deleted["kind"], "deleted");
+    let blocked = call(client, "agent", "changeMemory", create).await?;
+    assert_eq!(blocked, json!({"kind":"suppressed"}));
+    assert_eq!(
+        call(
+            client,
+            "agent",
+            "memory",
+            json!({"scope":scope,"id":first["id"]})
+        )
+        .await?,
+        Value::Null
+    );
+    Ok(())
+}
+
 async fn exercise(rig: &mut Rig) -> TestResult<()> {
     let base = rig.directory.path().to_path_buf();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -60,6 +90,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
     attach(rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
     git_scope_acceptance(client, &base).await?;
+    exact_matching_acceptance(client).await?;
     let preferences = call(client, "settings", "assistantPreferences", json!({})).await?;
     assert_eq!(
         preferences["memory"],
@@ -417,6 +448,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         call(client, "agent", "memory", read.clone()).await?,
         Value::Null
     );
+    assert_eq!(call(client, "agent", "changeMemory", json!({"scope":{"kind":"personal"},"edit":{"kind":"create","body":"Exact matching acceptance"}})).await?, json!({"kind":"suppressed"}));
     let persisted = call(
         client,
         "agent",

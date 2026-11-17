@@ -2503,6 +2503,14 @@ export interface ServiceMethods {
       };
       output:
         | {
+            kind: 'evidence_added';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'suppressed';
+          }
+        | {
             kind: 'saved';
             id: string;
             revision: number;

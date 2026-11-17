@@ -2178,6 +2178,37 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'evidence_added',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'suppressed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'saved',
                   },
                   id: {
