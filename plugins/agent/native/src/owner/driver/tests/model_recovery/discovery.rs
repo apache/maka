@@ -290,6 +290,41 @@ impl Fixture {
         self.rig.stop_serving = CancellationToken::new();
         attach(&mut self.rig, &self.boot).await.unwrap();
     }
+    async fn change_model_endpoint(&self, listener: &TcpListener) {
+        use maka_agent_facts::configuration::{
+            CatalogMutationResult, ConnectionCatalogEntryUpdate, ConnectionVersionBasis,
+            UpdateCatalogConnectionInput,
+        };
+
+        let owner = self.owner();
+        let catalog = owner.configuration.catalog().await.unwrap();
+        let connection_id = self.model["connectionId"].as_str().unwrap();
+        let connection = catalog
+            .connections
+            .iter()
+            .find(|connection| connection.connection_id == connection_id)
+            .unwrap();
+        let updated = owner
+            .configuration
+            .update_connection(UpdateCatalogConnectionInput {
+                expected: ConnectionVersionBasis {
+                    connection_id: connection_id.to_owned(),
+                    revision: connection.revision,
+                },
+                changes: ConnectionCatalogEntryUpdate {
+                    configuration: Some(json!({
+                        "baseUrl":format!("http://{}/v1", listener.local_addr().unwrap())
+                    })),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(updated, CatalogMutationResult::Committed { .. }),
+            "{updated:?}"
+        );
+    }
     async fn reopen(&mut self) {
         self.close().await;
         self.rig.captured.lock().unwrap().take();
@@ -361,11 +396,36 @@ async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() {
+    use maka_plugin_core::storage::{Data, Mutation, Namespace, Store};
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
+    {
+        let owner = f.owner();
+        let storage = maka_host_runtime::storage::Storage::new(
+            owner.store.clone(),
+            owner.prefix.clone(),
+            Namespace::new("maka.bot", maka_plugin_core::scope::Scope::Profile).unwrap(),
+        );
+        let registration = storage.read("bot".into()).await.unwrap().unwrap();
+        storage
+            .batch(vec![Mutation {
+                key: "bot".into(),
+                expected_revision: Some(registration.revision),
+                data: Data::Present(json!({"sessionId":f.bot})),
+            }])
+            .await
+            .unwrap();
+    }
+    f.change_source(|config| config.tools = Some(vec!["ScheduledTask".into()]))
+        .await;
     let task = f.create("Notification receipt").await;
     f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
+    let (mut socket, request) = next(&listener).await;
+    let tools = request["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|tool| tool["function"]["name"] == "Read"));
+    #[cfg(target_os = "macos")]
+    assert!(tools.iter().any(|tool| tool["function"]["name"] == "Shell"));
     let observation =
         json!({"text":"Evidence remains useful after notification.","references":["source.md"]});
     tool(
@@ -515,6 +575,64 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
+    let original = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let updated = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&original).await;
+    let stale = f.create("Approved before the endpoint changed").await;
+    f.change_model_endpoint(&updated).await;
+    f.change(&stale, "trigger_now").await;
+
+    let assert_requires_approval = |detail: &Value| {
+        assert_eq!(detail["task"]["status"], "paused", "{detail}");
+        assert_eq!(detail["approved"], false, "{detail}");
+        assert!(detail["task"]["nextFireAt"].is_null(), "{detail}");
+        assert_eq!(
+            detail["task"]["lastError"], "scheduler_authorization_changed",
+            "{detail}"
+        );
+        assert_eq!(detail["task"]["runs"][0]["outcome"], "blocked", "{detail}");
+        assert_eq!(
+            detail["task"]["runs"][0]["message"], "background_model_route_changed",
+            "{detail}"
+        );
+    };
+    let blocked = f.settled(&stale, 1).await;
+    assert_requires_approval(&blocked);
+    assert!(blocked["task"]["runs"][0]["runId"].is_null(), "{blocked}");
+
+    let reporting = f.create("Route changes while investigating").await;
+    f.change(&reporting, "trigger_now").await;
+    let (mut socket, _) = next(&updated).await;
+    f.change_model_endpoint(&original).await;
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"report","text":"A finding on the previously approved route"}),
+    )
+    .await;
+    let blocked = f.settled(&reporting, 1).await;
+    assert_requires_approval(&blocked);
+    assert!(blocked["task"]["runs"][0]["runId"].is_string(), "{blocked}");
+    assert_eq!(f.outbox().await, json!([]));
+
+    assert_eq!(f.reapprove(&stale, "session").await["kind"], "committed");
+    f.change(&stale, "trigger_now").await;
+    let (mut socket, _) = next(&original).await;
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Checked after reapproval"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&stale, 2).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_pause_resume_cancels_only_the_original_fire_before_next_worker() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -619,6 +737,14 @@ async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
 async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
+    f.change_source(|config| config.tools = Some(vec!["ScheduledTask".into()]))
+        .await;
+    let effect = f.effect("session").await;
+    let names = f.preview(&effect, None).await;
+    assert!(
+        !names.as_array().unwrap().iter().any(|name| name == "Read"),
+        "{names}"
+    );
     f.change_source(|config| config.tools = Some(vec!["Read".into()]))
         .await;
     let effect = f.effect("session").await;

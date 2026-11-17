@@ -37,11 +37,9 @@ use std::sync::{OnceLock, RwLock, Weak};
 pub(super) const SEND_USER: &str = "SendUser";
 /// Ends the Turn and waits for events; it has no duration.
 pub(super) const SLEEP: &str = "sleep";
-/// Agent-native coordination tools the Bot Session is created with. `SendUser` is
-/// granted by Bot identity rather than by this list.
-pub(super) const COORDINATION_TOOLS: &[&str] = &[
+/// The coordination defaults that older Bot Sessions persisted in their tool list.
+const LEGACY_COORDINATION_TOOLS: &[&str] = &[
     "ScheduledTask",
-    "DiscoveryMemory",
     "CreateGoal",
     "GetGoal",
     "GoalStatus",
@@ -76,7 +74,7 @@ const RECORD_KEY: &str = "bot";
 #[derive(Default)]
 pub(super) struct Registration {
     revision: Option<u64>,
-    session: Option<String>,
+    record: Option<Record>,
 }
 type StorageRecords = Vec<maka_plugin_core::storage::Record>;
 
@@ -92,15 +90,23 @@ impl Registration {
             .transpose()?;
         Ok(Self {
             revision: Some(record.revision),
-            session: current.map(|record| record.session_id),
+            record: current,
         })
+    }
+
+    fn session(&self) -> Option<&str> {
+        self.record
+            .as_ref()
+            .map(|record| record.session_id.as_str())
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Record {
     session_id: String,
+    #[serde(default)]
+    session_tool_ceiling: bool,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -176,10 +182,7 @@ impl Bot {
     /// Read the registered Bot before any queued work is scheduled.
     pub async fn load(&self) -> Result<(), StoreError> {
         let (revision, record) = self.read::<Record>(RECORD_KEY).await?;
-        self.observe(Registration {
-            revision,
-            session: record.map(|record| record.session_id),
-        });
+        self.observe(Registration { revision, record });
         Ok(())
     }
     pub fn bind(&self, owner: &Arc<Owner>) {
@@ -192,12 +195,24 @@ impl Bot {
     }
     /// The single decision of whether a Session is the Bot.
     pub(super) fn is(&self, session: &str) -> bool {
-        self.current
-            .read()
-            .expect("bot identity")
-            .session
-            .as_deref()
-            == Some(session)
+        self.current.read().expect("bot identity").session() == Some(session)
+    }
+
+    pub(super) fn configured_tool_ceiling<'a>(
+        &self,
+        session: &str,
+        configured: Option<&'a [String]>,
+    ) -> Option<&'a [String]> {
+        let tools = configured?;
+        let current = self.current.read().expect("bot identity");
+        let legacy_defaults = current
+            .record
+            .as_ref()
+            .is_some_and(|record| record.session_id == session && !record.session_tool_ceiling)
+            && tools
+                .iter()
+                .all(|tool| LEGACY_COORDINATION_TOOLS.contains(&tool.as_str()));
+        (!legacy_defaults).then_some(tools)
     }
     async fn is_or_was(&self, session: &str) -> Result<bool, String> {
         Ok(self.is(session)
@@ -236,7 +251,7 @@ impl Bot {
         if registration.revision <= current.revision {
             return;
         }
-        let changed = current.session != registration.session;
+        let changed = current.record != registration.record;
         *current = registration;
         drop(current);
         if changed {
@@ -244,7 +259,11 @@ impl Bot {
         }
     }
     pub(super) fn session(&self) -> Option<String> {
-        self.current.read().expect("bot identity").session.clone()
+        self.current
+            .read()
+            .expect("bot identity")
+            .session()
+            .map(str::to_owned)
     }
     pub(super) async fn has_message(&self, session: &str, message: &str) -> Result<bool, String> {
         Ok(self
@@ -762,7 +781,7 @@ impl Owner {
             .map_err(|error| error.to_string())?;
         self.bot.observe(Registration {
             revision,
-            session: record.as_ref().map(|record| record.session_id.clone()),
+            record: record.clone(),
         });
         if let Some(record) = record {
             match self.session(&record.session_id).await {
@@ -798,8 +817,15 @@ impl Owner {
             .map_err(|error| error.to_string())?
             .map(|record| record.revision);
         let mutations = vec![
-            Bot::mutation(RECORD_KEY.into(), revision, &Record { session_id: mine })
-                .map_err(|error| error.to_string())?,
+            Bot::mutation(
+                RECORD_KEY.into(),
+                revision,
+                &Record {
+                    session_id: mine,
+                    session_tool_ceiling: true,
+                },
+            )
+            .map_err(|error| error.to_string())?,
             Mutation {
                 key: marker_key,
                 expected_revision: marker,
@@ -859,16 +885,20 @@ impl Owner {
         configured: &Option<Vec<String>>,
     ) -> Option<Vec<String>> {
         if self.settings.bot && self.bot.is(session) {
+            let configured = self
+                .bot
+                .configured_tool_ceiling(session, configured.as_deref());
             return Some(
-                COORDINATION_TOOLS
+                LEGACY_COORDINATION_TOOLS
                     .iter()
+                    .copied()
+                    .chain(self.settings.scheduled_tasks.then_some(discovery::MEMORY))
                     .filter(|name| {
                         self.tools.contains(name)
                             && configured
-                                .as_ref()
                                 .is_none_or(|allowed| allowed.iter().any(|tool| tool == *name))
                     })
-                    .map(|name| (*name).to_owned())
+                    .map(str::to_owned)
                     .collect(),
             );
         }
@@ -888,12 +918,7 @@ impl Owner {
             return behavior;
         }
         // The instructions name only what the Session really holds.
-        let mut held = held.unwrap_or_default().to_vec();
-        held.retain(|name| name != discovery::MEMORY);
-        if self.settings.scheduled_tasks {
-            held.push(discovery::MEMORY.into());
-        }
-        let text = bot_prompt(language, &held);
+        let text = bot_prompt(language, held.unwrap_or_default());
         Some(match behavior {
             Some(mut prompt) => {
                 prompt.text = format!("{}\n\n{text}", prompt.text);

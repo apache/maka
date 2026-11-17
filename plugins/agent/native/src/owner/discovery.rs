@@ -38,6 +38,7 @@ use std::sync::Weak;
 pub(super) const COMPLETE: &str = "DiscoveryComplete";
 pub(super) const MEMORY: &str = "DiscoveryMemory";
 pub(super) const VISIBLE_TOOLS: &[&str] = &[COMPLETE, MEMORY];
+pub(super) const MODEL_ROUTE_CHANGED: &str = "background_model_route_changed";
 const RECALL_TOOLS: &[&str] = &["Recall", "RecallMore", "RecallMaterial"];
 const ACTIVE: &str = "discovery/active";
 pub(super) mod access;
@@ -648,7 +649,9 @@ impl Owner {
                 let source = self.session(&job.bot).await?;
                 let exclusions = self.scheduler.discovery_exclusions().await?.entries;
                 let restriction = access::run_restriction(job.tools.profile, &exclusions)?;
-                let configured = source.configuration.tools.as_deref();
+                let configured = self
+                    .bot
+                    .configured_tool_ceiling(&source.id, source.configuration.tools.as_deref());
                 let allowed_tools = self.discovery_worker_tools(
                     &job.tools,
                     configured,
@@ -727,7 +730,16 @@ impl Owner {
                 if !job.approval.accepted_model.same_execution_route(
                     basis.model.as_ref().ok_or("discovery_model_unavailable")?,
                 ) {
-                    return Err("background_model_route_changed".into());
+                    return self
+                        .settle_discovery(
+                            fire,
+                            revision,
+                            &job,
+                            Outcome::Blocked,
+                            MODEL_ROUTE_CHANGED,
+                        )
+                        .await
+                        .map(Some);
                 }
                 basis.model = Some(job.approval.accepted_model.clone());
                 basis.allowed_tools = Some(
@@ -939,7 +951,7 @@ impl Owner {
         let at = now();
         let current_time =
             context::local_timestamp(at, timezone).or_else(|| context::timestamp(at));
-        let Some(notification) = self
+        let notification = match self
             .prepare_notification_checked(
                 &job.bot,
                 &route,
@@ -960,9 +972,17 @@ impl Owner {
                 maka_agent_state::queue::Placement::Followup,
                 Some(&job.approval.target),
             )
-            .await?
-        else {
-            return Ok(None);
+            .await
+        {
+            Ok(Some(notification)) => notification,
+            Ok(None) => return Ok(None),
+            Err(error) if error == "notification_route_changed" => {
+                return self
+                    .settle_discovery(fire, revision, job, Outcome::Blocked, MODEL_ROUTE_CHANGED)
+                    .await
+                    .map(Some);
+            }
+            Err(error) => return Err(error),
         };
         let delivery = self
             .durable

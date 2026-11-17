@@ -23,6 +23,13 @@ use maka_agent_facts::durable::{FactId, UnixMillis};
 use maka_agent_state::queue::{MessageResolution, QueueCommand, QueueEdit, RequestId};
 use tokio::time::Instant;
 
+fn require_discovery_approval(plan: &mut Plan, at: i64) {
+    *plan = pause_plan(plan, at, None);
+    plan.authorization = None;
+    plan.task.next_fire_at = None;
+    plan.task.last_error = Some("scheduler_authorization_changed".into());
+}
+
 #[derive(Default)]
 struct ScriptChecks {
     running: BTreeSet<String>,
@@ -501,10 +508,7 @@ impl Owner {
                     None => false,
                 };
                 if source_changed || followup_changed {
-                    plan = pause_plan(&plan, at, None);
-                    plan.authorization = None;
-                    plan.task.next_fire_at = None;
-                    plan.task.last_error = Some("scheduler_authorization_changed".into());
+                    require_discovery_approval(&mut plan, at);
                 }
             }
             if recover && self.settings.scheduled_tasks {
@@ -524,6 +528,13 @@ impl Owner {
             let expired = plan.task.expires_at.is_some_and(|expires| at >= expires);
             match self.dispatch_scheduled(fire, &plan, expired).await {
                 Ok(Some(run)) => {
+                    // This receipt also handles a restart between releasing the slot and saving the plan.
+                    if matches!(fire.effect, ScheduledEffect::Discovery { .. })
+                        && run.outcome == Outcome::Blocked
+                        && run.message == super::super::discovery::MODEL_ROUTE_CHANGED
+                    {
+                        require_discovery_approval(&mut plan, run.at);
+                    }
                     let needs_approval = plan.task.last_error.as_deref()
                         == Some("scheduler_authorization_changed")
                         && plan.authorization.is_none();

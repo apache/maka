@@ -121,13 +121,11 @@ impl Owner {
             .ok_or("discovery_tool_catalog_unavailable")?;
         let exclusions = self.scheduler.discovery_exclusions().await?;
         let editing = basis.model.as_ref().and_then(|model| model.editing_tools);
+        let configured = self
+            .bot
+            .configured_tool_ceiling(&source.id, source.configuration.tools.as_deref());
         let mut names = self
-            .select_catalog_tools(
-                &catalog.tools,
-                None,
-                source.configuration.tools.as_deref(),
-                editing,
-            )
+            .select_catalog_tools(&catalog.tools, None, configured, editing)
             .names();
         names.retain(|name| self.settings.recall || !RECALL_TOOLS.contains(&name.as_str()));
         names.sort_unstable();
