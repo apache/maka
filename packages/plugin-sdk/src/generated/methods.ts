@@ -4510,6 +4510,10 @@ export interface ServiceMethods {
  */
 export interface AgentBotOutboxOutput_AgentBotMessage {
   /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentBotOutboxOutput_AgentDiscoveryPublication | null;
+  /**
    * Monotonic position in the outbox, starting at 1.
    */
   sequence: number;
@@ -4531,6 +4535,11 @@ export interface AgentBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface AgentBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
 }
 export interface AgentChangeMemoryInput_MemoryEvidenceReference {
   sessionId: string;
@@ -4933,6 +4942,10 @@ export interface AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspe
  */
 export interface AgentMarkBotReadOutput_AgentBotMessage {
   /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentMarkBotReadOutput_AgentDiscoveryPublication | null;
+  /**
    * Monotonic position in the outbox, starting at 1.
    */
   sequence: number;
@@ -4954,6 +4967,11 @@ export interface AgentMarkBotReadOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface AgentMarkBotReadOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
 }
 export interface AgentMemoriesOutput_MemoryRecord {
   assertion: number;
@@ -5663,6 +5681,10 @@ export interface AgentUpdatePresetOutput_ModelSelection {
  */
 export interface AgentWatchBotOutboxOutput_AgentBotMessage {
   /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentWatchBotOutboxOutput_AgentDiscoveryPublication | null;
+  /**
    * Monotonic position in the outbox, starting at 1.
    */
   sequence: number;
@@ -5684,6 +5706,11 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface AgentWatchBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
 }
 export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
   enabled: boolean;

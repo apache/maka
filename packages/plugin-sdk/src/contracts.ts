@@ -38779,6 +38779,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },

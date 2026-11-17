@@ -1135,6 +1135,7 @@ impl Owner {
 
         self.create_for_session_tool(
             Create {
+                incognito: false,
                 kind,
                 preset_id: input.preset_id,
                 backend,
