@@ -439,6 +439,10 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
         .route("/missing", axum::routing::get(|| async {
             (axum::http::StatusCode::NOT_FOUND, "missing ".repeat(32 * 1024))
         }))
+        // A POST search backend rejects the query with a large error page.
+        .route("/limited", axum::routing::post(|| async {
+            (axum::http::StatusCode::TOO_MANY_REQUESTS, "limited ".repeat(32 * 1024))
+        }))
         .route("/search", axum::routing::get(move |uri: axum::http::Uri| {
             let search = search.clone();
             async move {
@@ -512,6 +516,18 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 let missing = tool_round(&rig, &mut provider, id, code, "WebFetch", json!({"url":format!("{address}/missing")})).await?;
                 assert!(missing.contains("WebFetch failed with HTTP 404"), "{missing}");
                 assert!(!missing.contains("outcome unknown"), "{missing}");
+                // So is an error page from a search backend that queries with POST.
+                let web = call(client,"web","snapshot",json!({})).await?;
+                assert_eq!(call(client,"web","save",json!({"revision":web["revision"],"settings":{
+                    "enabled":true,"source":"model","backend":{"kind":"custom","endpoint":{
+                        "url":format!("{address}/limited"),"method":"post","urlParameters":{},"body":{},"auth":null,
+                        "query":{"location":"body","name":"query"},"limit":null,
+                        "results":{"list":"/results","url":"/url","title":null,"snippet":null}
+                    }}
+                }})).await?["kind"],"updated");
+                let limited = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
+                assert!(limited.contains("WebSearch rate limit exceeded"), "{limited}");
+                assert!(!limited.contains("outcome unknown"), "{limited}");
             } else {
                 assert!(output.contains("WebSearch network access was denied"), "{output}");
             }
