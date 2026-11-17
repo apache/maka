@@ -1398,6 +1398,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                 disabled={props.switching() || !session()}
                                 style={{
                                   width: 32,
+                                  flexGrow: 1,
                                   alignItems: 'center',
                                   justifyContent: 'center',
                                   borderRadius: 8,
