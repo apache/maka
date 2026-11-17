@@ -34045,6 +34045,17 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  input: {
+                    description: 'Refresh the discovery target and approve it in one operation.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentScheduledInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'taskId', 'revision'],
@@ -34157,6 +34168,14 @@ export const contracts: {
                   },
                   misfire: {
                     $ref: '#/$defs/Misfire',
+                  },
+                  approvedTools: {
+                    description:
+                      'Tool names presented to the user when approving a discovery plan.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
                   },
                 },
                 additionalProperties: false,
@@ -34404,13 +34423,12 @@ export const contracts: {
                         ],
                       },
                       workerTools: {
-                        description: 'Tool and permission profile approved for this plan.',
+                        description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
-                        default: 'read_only',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'target', 'model'],
+                    required: ['kind', 'target', 'model', 'workerTools'],
                   },
                 ],
               },
@@ -34670,6 +34688,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'preview_discovery',
+                  },
+                  effect: {
+                    $ref: '#/$defs/AgentScheduledEffect',
+                  },
+                  taskId: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'effect'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'discovery',
                   },
                   sessionId: {
@@ -34721,11 +34756,323 @@ export const contracts: {
                 required: ['kind', 'taskId'],
               },
             ],
+            $defs: {
+              AgentScheduledEffect: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description: 'Investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      workerTools: {
+                        description: 'Tool and permission profile requested for this plan.',
+                        $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model', 'workerTools'],
+                  },
+                ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
+              },
+              AgentScheduledTarget: {
+                description:
+                  'Exact observed source boundary. This data is checked against the original\nSession; passing it never grants execution by itself.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/AgentWorkspacePermissions',
+                  },
+                  boundaryRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
+              },
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
+              },
+              AgentWorkspacePermissions: {
+                type: 'object',
+                properties: {
+                  access: {
+                    $ref: '#/$defs/AgentWorkspaceAccess',
+                  },
+                  requestPermissions: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['access', 'requestPermissions'],
+              },
+              AgentWorkspaceAccess: {
+                description:
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
+                type: 'string',
+                enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+              DiscoveryWorkerTools: {
+                type: 'string',
+                enum: ['read_only', 'session'],
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentSchedules',
             oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'discovery_tools',
+                  },
+                  names: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'names'],
+              },
               {
                 type: 'object',
                 properties: {
@@ -35204,13 +35551,12 @@ export const contracts: {
                         ],
                       },
                       workerTools: {
-                        description: 'Tool and permission profile approved for this plan.',
+                        description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
-                        default: 'read_only',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'target', 'model'],
+                    required: ['kind', 'target', 'model', 'workerTools'],
                   },
                 ],
               },
@@ -48725,6 +49071,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'preview_discovery',
+                  },
+                  effect: {
+                    $ref: '#/$defs/AgentScheduledEffect',
+                  },
+                  taskId: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'effect'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'discovery',
                   },
                   sessionId: {
@@ -48776,11 +49139,323 @@ export const contracts: {
                 required: ['kind', 'taskId'],
               },
             ],
+            $defs: {
+              AgentScheduledEffect: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description: 'Investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      workerTools: {
+                        description: 'Tool and permission profile requested for this plan.',
+                        $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model', 'workerTools'],
+                  },
+                ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
+              },
+              AgentScheduledTarget: {
+                description:
+                  'Exact observed source boundary. This data is checked against the original\nSession; passing it never grants execution by itself.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/AgentWorkspacePermissions',
+                  },
+                  boundaryRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
+              },
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
+              },
+              AgentWorkspacePermissions: {
+                type: 'object',
+                properties: {
+                  access: {
+                    $ref: '#/$defs/AgentWorkspaceAccess',
+                  },
+                  requestPermissions: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['access', 'requestPermissions'],
+              },
+              AgentWorkspaceAccess: {
+                description:
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
+                type: 'string',
+                enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+              DiscoveryWorkerTools: {
+                type: 'string',
+                enum: ['read_only', 'session'],
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentSchedules',
             oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'discovery_tools',
+                  },
+                  names: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'names'],
+              },
               {
                 type: 'object',
                 properties: {
@@ -49259,13 +49934,12 @@ export const contracts: {
                         ],
                       },
                       workerTools: {
-                        description: 'Tool and permission profile approved for this plan.',
+                        description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
-                        default: 'read_only',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'target', 'model'],
+                    required: ['kind', 'target', 'model', 'workerTools'],
                   },
                 ],
               },

@@ -326,7 +326,11 @@ fn prompt(
         });
     }
     let mut text = content.text.clone();
-    if let Some(quotes) = content.quotes.as_deref().filter(|quotes| !quotes.is_empty()) {
+    if let Some(quotes) = content
+        .quotes
+        .as_deref()
+        .filter(|quotes| !quotes.is_empty())
+    {
         if !text.is_empty() {
             text.push_str("\n\n");
         }

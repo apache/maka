@@ -154,7 +154,9 @@ impl MessageOrigin {
                 };
                 header.push_str(&guidance);
             }
-            Self::SessionCompletion { .. } | Self::BotWorker { .. } => {}
+            Self::SessionCompletion { .. }
+            | Self::BotWorker { .. }
+            | Self::DiscoveryReport { .. } => {}
         }
         header
     }

@@ -1189,6 +1189,7 @@ impl Owner {
                 attachments: input.attachments,
                 mentions: input.mentions,
                 reply_to: input.reply_to,
+                quotes: vec![],
             },
             operation,
             scope,

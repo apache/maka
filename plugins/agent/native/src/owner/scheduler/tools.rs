@@ -85,7 +85,6 @@ impl Scheduler {
         }];
         tools.push(self.discovery_tool());
         tools.push(self.discovery_memory_tool());
-        tools.push(self.discovery_context_tool());
         tools
     }
 }
@@ -95,7 +94,6 @@ impl ToolPreparer for Scheduler {
             "ScheduledTask".into(),
             super::super::discovery::COMPLETE.into(),
             super::super::discovery::MEMORY.into(),
-            super::super::discovery::CONTEXT.into(),
         ]
     }
     fn prepare(
@@ -111,9 +109,6 @@ impl ToolPreparer for Scheduler {
         }
         if name == super::super::discovery::MEMORY {
             return self.prepare_discovery_memory(input, context, cancellation);
-        }
-        if name == super::super::discovery::CONTEXT {
-            return self.prepare_discovery_context(input, context, cancellation);
         }
         Box::pin(async move {
             if name != "ScheduledTask" || owner.is_none() {
@@ -217,8 +212,7 @@ impl Owner {
             let parent = &saved.plan;
             let Some(Approval::Discovery {
                 approval,
-                recall,
-                session_tools,
+                tools: approved,
                 authority: DiscoveryAuthority::User { generation },
             }) = &parent.authorization
             else {
@@ -228,7 +222,7 @@ impl Owner {
                 target: parent_target,
                 model: parent_model,
                 thinking_level: parent_thinking,
-                worker_tools: parent_tools,
+                ..
             } = &parent.task.effect
             else {
                 continue;
@@ -241,19 +235,12 @@ impl Owner {
                     .task
                     .expires_at
                     .is_some_and(|expiry| at.max(*run_at) >= expiry)
-                || *recall != self.discovery_recall_enabled()
             {
                 continue;
             }
-            let approved_tools = if *session_tools && *parent_tools == DiscoveryWorkerTools::Session
-            {
-                DiscoveryWorkerTools::Session
-            } else {
-                DiscoveryWorkerTools::ReadOnly
-            };
-            let tools = requested_tools.unwrap_or(approved_tools);
-            if tools == DiscoveryWorkerTools::Session
-                && approved_tools == DiscoveryWorkerTools::ReadOnly
+            let profile = requested_tools.unwrap_or(approved.profile);
+            if profile == DiscoveryWorkerTools::Session
+                && approved.profile == DiscoveryWorkerTools::ReadOnly
             {
                 continue;
             }
@@ -266,11 +253,17 @@ impl Owner {
                 continue;
             };
             if self.scheduler.completed_report_generation(&fire.id).await? == Some(*generation) {
-                *worker_tools = tools;
+                *worker_tools = profile;
+                let mut tools = approved.clone();
+                tools.profile = profile;
+                if profile == DiscoveryWorkerTools::ReadOnly {
+                    tools
+                        .names
+                        .retain(|name| self.read_only_discovery_tool(name));
+                }
                 return Ok(Some(Approval::Discovery {
                     approval: approval.clone(),
-                    recall: *recall,
-                    session_tools: tools == DiscoveryWorkerTools::Session,
+                    tools,
                     authority: DiscoveryAuthority::Followup {
                         grant: FollowupGrant {
                             task_id: parent.task.id.clone(),
@@ -392,8 +385,7 @@ impl Owner {
                                         target: target.clone(),
                                         model: model.clone(),
                                         thinking_level,
-                                        worker_tools: worker_tools
-                                            .unwrap_or(DiscoveryWorkerTools::Session),
+                                        worker_tools: worker_tools.unwrap_or_default(),
                                     }
                                 }
                                 Target::Session => ScheduledEffect::Session {

@@ -144,13 +144,6 @@ async fn quoted_drafts_and_frozen_sends_survive_restart_without_consuming_newer_
         .await
         .unwrap();
     assert!(cleared.quotes.is_empty());
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM draft_quotes")
-            .fetch_one(&journal.pool)
-            .await
-            .unwrap(),
-        0,
-    );
     assert!(
         journal
             .load_draft(&key)
@@ -160,50 +153,5 @@ async fn quoted_drafts_and_frozen_sends_survive_restart_without_consuming_newer_
             .quotes
             .is_empty()
     );
-    journal.pool.close().await;
-}
-
-#[tokio::test]
-async fn pre_quote_journal_upgrade_preserves_frozen_send_and_current_draft() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("client.db");
-    let (host, key) = owner();
-    let journal = Journal::open(&path).await.unwrap();
-    let draft = journal
-        .save_draft(&key, None, "Original message".into())
-        .await
-        .unwrap();
-    let original = send(&host, &key, draft.clone());
-    journal.reserve_send(&original).await.unwrap();
-    journal
-        .save_draft(&key, Some(draft.revision), "Newer draft".into())
-        .await
-        .unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM draft_quotes")
-            .fetch_one(&journal.pool)
-            .await
-            .unwrap(),
-        0,
-    );
-    // Match the persisted layout written before quoted drafts were supported.
-    sqlx::query("DROP TABLE draft_quotes")
-        .execute(&journal.pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE operations SET context=json_remove(context,'$.correlation.draft.quotes') WHERE id=?")
-        .bind(original.id.to_string()).execute(&journal.pool).await.unwrap();
-    journal.pool.close().await;
-    drop(journal);
-    let journal = Journal::open(&path).await.unwrap();
-    let draft = journal.load_draft(&key).await.unwrap().unwrap();
-    assert_eq!(draft.text, "Newer draft");
-    assert!(draft.quotes.is_empty());
-    let frozen: SendSnapshot =
-        serde_json::from_value(journal.load(&host, original.id).await.unwrap().correlation)
-            .unwrap();
-    assert_eq!(frozen.draft.text, "Original message");
-    assert!(frozen.draft.quotes.is_empty());
-    assert_eq!(journal.pending(&host, &key).await.unwrap().len(), 1);
     journal.pool.close().await;
 }

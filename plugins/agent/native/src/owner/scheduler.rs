@@ -21,11 +21,8 @@
 mod dispatch;
 mod repository;
 mod scripts;
-#[cfg(test)]
-mod storage_fault;
 mod tools;
 use super::*;
-#[cfg(not(test))]
 use maka_host_runtime::storage::Storage;
 use maka_plugin_core::storage::Data;
 use maka_plugin_core::storage::Mutation;
@@ -37,8 +34,6 @@ use maka_scheduler::{
 };
 use repository::Saved;
 use std::sync::{OnceLock, Weak};
-#[cfg(test)]
-use storage_fault::Storage;
 use tokio::sync::Notify;
 type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
@@ -53,19 +48,20 @@ pub(in crate::owner) enum Approval {
     },
     Discovery {
         approval: super::notifications::BackgroundApproval,
-        recall: bool,
-        // Existing approvals covered only the original read-only tool set.
-        #[serde(default)]
-        session_tools: bool,
-        #[serde(default)]
+        tools: DiscoveryToolGrant,
         authority: DiscoveryAuthority,
     },
     CancelledDiscovery {
         approval: super::notifications::BackgroundApproval,
-        recall: bool,
-        #[serde(default)]
-        session_tools: bool,
+        tools: DiscoveryToolGrant,
     },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::owner) struct DiscoveryToolGrant {
+    pub(super) profile: DiscoveryWorkerTools,
+    pub(super) names: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -73,15 +69,6 @@ pub(in crate::owner) enum Approval {
 pub(in crate::owner) enum DiscoveryAuthority {
     User { generation: uuid::Uuid },
     Followup { grant: FollowupGrant },
-}
-
-impl Default for DiscoveryAuthority {
-    fn default() -> Self {
-        // Plans approved before follow-ups were supported keep their approval.
-        Self::User {
-            generation: uuid::Uuid::nil(),
-        }
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -113,6 +100,15 @@ impl Approval {
                 ..
             } => Some(*generation),
             _ => None,
+        }
+    }
+
+    fn sandbox_ceiling(&self) -> Option<&maka_sandbox::Sandbox> {
+        match self {
+            Self::Execution { approval } => approval.sandbox_ceiling(),
+            Self::Discovery { approval, .. } | Self::CancelledDiscovery { approval, .. } => {
+                approval.sandbox_ceiling.as_ref()
+            }
         }
     }
 
@@ -149,15 +145,8 @@ fn pause_plan(plan: &Plan, at: i64, source: Option<PauseSource>) -> Plan {
     {
         fire.authorization = fire.authorization.take().map(|a| match a {
             Approval::Discovery {
-                approval,
-                recall,
-                session_tools,
-                ..
-            } => Approval::CancelledDiscovery {
-                approval,
-                recall,
-                session_tools,
-            },
+                approval, tools, ..
+            } => Approval::CancelledDiscovery { approval, tools },
             other => other,
         });
     }
@@ -219,13 +208,18 @@ impl BackgroundGrant {
     }
 }
 
+pub(super) struct ActiveInvestigation {
+    pub(super) worker: String,
+    pub(super) profile: DiscoveryWorkerTools,
+}
+
 pub(crate) struct Scheduler {
     pub(super) storage: Arc<Storage>,
     pub(in crate::owner) gate: Arc<Mutex<()>>,
     pub(super) wake: Notify,
     changed: tokio::sync::watch::Sender<u64>,
     pub(super) link: OnceLock<Weak<Owner>>,
-    pub(super) investigation: std::sync::RwLock<Option<String>>,
+    pub(super) investigation: std::sync::RwLock<Option<ActiveInvestigation>>,
 }
 impl Scheduler {
     pub(in crate::owner) async fn followup_is_current(
@@ -264,6 +258,14 @@ impl Scheduler {
             .set(Arc::downgrade(owner))
             .expect("scheduler bound once");
     }
+    pub(super) fn investigation_profile(&self, session: &str) -> Option<DiscoveryWorkerTools> {
+        self.investigation
+            .read()
+            .unwrap()
+            .as_ref()
+            .filter(|active| active.worker == session)
+            .map(|active| active.profile)
+    }
     pub fn execution_changed(&self) {
         self.wake.notify_one();
     }
@@ -277,6 +279,46 @@ impl Owner {
     }
     pub async fn schedules(&self, input: ScheduleRead) -> Result<Schedules, String> {
         let scheduler = &self.scheduler;
+        if let ScheduleRead::PreviewDiscovery { effect, task_id } = input {
+            let ScheduledEffect::Discovery {
+                target,
+                model,
+                thinking_level,
+                worker_tools,
+            } = effect
+            else {
+                return Err("scheduler_discovery_plan_required".into());
+            };
+            if !self.settings.bot
+                || !self.settings.scheduled_tasks
+                || !self.bot.is(&target.session_id)
+            {
+                return Err("discovery_requires_bot".into());
+            }
+            let saved = match &task_id {
+                Some(id) => scheduler.change_basis(id).await?,
+                None => None,
+            };
+            let floor = saved
+                .as_ref()
+                .and_then(|saved| saved.plan.authorization.as_ref())
+                .and_then(Approval::sandbox_ceiling);
+            let basis = self
+                .approve_background(
+                    &target,
+                    model,
+                    thinking_level,
+                    BackgroundKind::Schedule {
+                        task_id: task_id.unwrap_or_default(),
+                    },
+                    floor,
+                )
+                .await?;
+            let tools = self
+                .discovery_tool_grant(&basis, &target, worker_tools)
+                .await?;
+            return Ok(Schedules::DiscoveryTools { names: tools.names });
+        }
         let _gate = scheduler.gate.lock().await;
         let catalog = scheduler.load().await?;
         let discovery_session = match &input {
@@ -287,6 +329,9 @@ impl Owner {
             _ => None,
         };
         match input {
+            ScheduleRead::PreviewDiscovery { .. } => {
+                unreachable!("handled before acquiring the schedule lock")
+            }
             ScheduleRead::List {
                 cursor,
                 expected_revision,
@@ -377,7 +422,7 @@ impl Owner {
                 let saved = owner.scheduler.change_basis(&id).await?;
                 match schedule_candidate(&id, &input, saved.as_ref(), now() as i64) {
                     Ok(Some(plan)) => owner
-                        .capture_schedule_approval(&plan, saved.as_ref(), &writer)
+                        .capture_schedule_approval(&plan, saved.as_ref(), &input, &writer)
                         .await
                         .map(Some),
                     Ok(None) => Err("scheduler_approval_missing".into()),
@@ -408,18 +453,60 @@ impl Owner {
         &self,
         plan: &Plan,
         saved: Option<&Saved>,
+        change: &ScheduleChange,
         writer: &maka_event_log::root_store::DataWriter,
     ) -> Result<PreparedBackgroundGrant, String> {
-        let sandbox_ceiling = saved
-            .and_then(|saved| saved.plan.authorization.as_ref())
-            .and_then(|approval| match approval {
-                Approval::Execution { approval } => approval.sandbox_ceiling(),
-                Approval::Discovery { approval, .. }
-                | Approval::CancelledDiscovery { approval, .. } => {
-                    approval.sandbox_ceiling.as_ref()
-                }
+        let previous = saved.and_then(|saved| saved.plan.authorization.as_ref());
+        let sandbox_ceiling = previous.and_then(Approval::sandbox_ceiling);
+        let expected_tools = match change {
+            ScheduleChange::Create { input }
+            | ScheduleChange::Update { input, .. }
+            | ScheduleChange::Approve {
+                input: Some(input), ..
+            } => input.approved_tools.as_deref(),
+            _ => None,
+        };
+        let is_discovery = matches!(plan.task.effect, ScheduledEffect::Discovery { .. });
+        let retain = is_discovery
+            && !matches!(change, ScheduleChange::Approve { input: Some(_), .. })
+            && saved.is_some_and(|saved| saved.plan.task.effect == plan.task.effect)
+            && expected_tools.is_none_or(|names| {
+                matches!(previous, Some(Approval::Discovery { tools, .. }) if tools.names == names)
             });
-        let authorization = self.approve_schedule(plan, sandbox_ceiling).await?;
+        let authorization = if let Some(previous @ Approval::Discovery { approval, .. }) =
+            previous.filter(|_| retain)
+        {
+            if let Some(grant) = previous.followup_grant()
+                && !self.scheduler.followup_is_current(grant).await?
+            {
+                return Err("scheduler_user_approval_required".into());
+            }
+            self.prepare_approved_background(
+                approval,
+                BackgroundKind::Schedule {
+                    task_id: plan.task.id.clone(),
+                },
+            )
+            .await?;
+            previous.clone()
+        } else {
+            if is_discovery && matches!(change, ScheduleChange::Resume { .. }) {
+                return Err("scheduler_user_approval_required".into());
+            }
+            let authorized = self.approve_schedule(plan, sandbox_ceiling).await?;
+            if let Approval::Discovery { tools, .. } = &authorized {
+                match expected_tools {
+                    Some(expected) if expected != tools.names.as_slice() => {
+                        return Err("scheduler_discovery_tools_changed".into());
+                    }
+                    None if tools.profile == DiscoveryWorkerTools::Session => {
+                        return Err("scheduler_discovery_tools_confirmation_required".into());
+                    }
+                    _ => {}
+                }
+            }
+            authorized
+        };
         let target = match &authorization {
             Approval::Execution { approval } => approval.target(),
             Approval::Discovery { approval, .. }
@@ -500,38 +587,20 @@ fn schedule_candidate(
             plan.misfire = input.misfire;
             plan
         }
-        ScheduleChange::Update { input, .. } => {
+        ScheduleChange::Update { input, .. } => update_schedule(plan()?, input, at)?,
+        ScheduleChange::Approve { input, .. } => {
             let current = plan()?;
-            if current.pending.is_some() {
-                return Err("scheduler_trigger_pending".into());
-            }
-            let mut base = current.clone();
-            base.timezone = input.timezone.clone();
-            base.misfire = input.misfire;
-
-            base.update(
-                maka_scheduler::command::Update {
-                    title: Some(input.task.title.clone()),
-                    intent_body: Some(input.task.intent_body.clone()),
-                    schedule: (current.task.schedule != input.task.schedule
-                        || current.timezone != input.timezone)
-                        .then(|| input.task.schedule.clone()),
-                    effect: Some(input.task.effect.clone()),
-                    max_fires: input.task.max_fires.map_or(
-                        maka_agent_facts::configuration::Patch::Clear,
-                        maka_agent_facts::configuration::Patch::Set,
-                    ),
-                    expires_at: input.task.expires_at.map_or(
-                        maka_agent_facts::configuration::Patch::Clear,
-                        maka_agent_facts::configuration::Patch::Set,
-                    ),
-                },
-                at,
-            )
-            .map_err(reason)?
-        }
-        ScheduleChange::Approve { .. } => {
-            let mut next = plan()?.clone();
+            let mut next = if let Some(input) = input {
+                if !matches!((&current.task.effect, &input.task.effect),
+                    (ScheduledEffect::Discovery { target: old, .. }, ScheduledEffect::Discovery { target: new, .. })
+                    if old.session_id == new.session_id)
+                {
+                    return Err("scheduler_discovery_plan_required".into());
+                }
+                update_schedule(current, input, at)?
+            } else {
+                current.clone()
+            };
             if next.pending.is_some() {
                 return Err("scheduler_trigger_pending".into());
             }
@@ -540,6 +609,9 @@ fn schedule_candidate(
             }
             if next.task.status == Status::Paused {
                 next = next.resume(at).map_err(reason)?;
+            }
+            if next.task.last_error.as_deref() == Some("scheduler_authorization_changed") {
+                next.task.last_error = None;
             }
             next
         }
@@ -567,6 +639,35 @@ fn schedule_candidate(
     };
     candidate.validate().map_err(reason)?;
     Ok(Some(candidate))
+}
+fn update_schedule(current: &Plan, input: &ScheduledInput, at: i64) -> Result<Plan, String> {
+    if current.pending.is_some() {
+        return Err("scheduler_trigger_pending".into());
+    }
+    let mut base = current.clone();
+    base.timezone = input.timezone.clone();
+    base.misfire = input.misfire;
+
+    base.update(
+        maka_scheduler::command::Update {
+            title: Some(input.task.title.clone()),
+            intent_body: Some(input.task.intent_body.clone()),
+            schedule: (current.task.schedule != input.task.schedule
+                || current.timezone != input.timezone)
+                .then(|| input.task.schedule.clone()),
+            effect: Some(input.task.effect.clone()),
+            max_fires: input.task.max_fires.map_or(
+                maka_agent_facts::configuration::Patch::Clear,
+                maka_agent_facts::configuration::Patch::Set,
+            ),
+            expires_at: input.task.expires_at.map_or(
+                maka_agent_facts::configuration::Patch::Clear,
+                maka_agent_facts::configuration::Patch::Set,
+            ),
+        },
+        at,
+    )
+    .map_err(reason)
 }
 fn reason(error: impl std::fmt::Display) -> String {
     error.to_string()

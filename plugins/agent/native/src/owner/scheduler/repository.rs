@@ -175,14 +175,7 @@ impl Scheduler {
         schedule_budget(record, id, message_id).map(|(budget, _)| budget)
     }
     pub(in crate::owner) fn budget_storage(&self) -> Arc<maka_host_runtime::storage::Storage> {
-        #[cfg(not(test))]
-        {
-            self.storage.clone()
-        }
-        #[cfg(test)]
-        {
-            self.storage.inner()
-        }
+        self.storage.clone()
     }
     pub(in crate::owner) fn budget_in_transaction(
         storage: &maka_host_runtime::storage::Storage,

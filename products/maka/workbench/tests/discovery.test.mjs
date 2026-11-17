@@ -36,7 +36,7 @@ const approval = {
 
 test('approval pins the displayed scope and model and rejects invalid intervals', () => {
   const input = discoveryInput(approval, 'Discovery', ' Check new changes ', 30, 1000, 'UTC');
-  assert.deepEqual(input.task.effect, { kind: 'discovery', ...approval, workerTools: 'session' });
+  assert.deepEqual(input.task.effect, { kind: 'discovery', ...approval, workerTools: 'read_only' });
   assert.equal(input.task.intentBody, 'Check new changes');
   const broad = discoveryInput(approval, 'Discovery', '  ', 30, 1000, 'UTC');
   assert.equal(broad.task.intentBody, '');

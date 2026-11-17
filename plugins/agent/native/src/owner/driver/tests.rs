@@ -391,6 +391,7 @@ impl Rig {
         if model_test {
             maka_settings_native::provide(&mut registry, catalog.clone())?;
             maka_files_native::provide(&mut registry)?;
+            maka_processes_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
         }
         let primary_agent = store
@@ -3276,6 +3277,12 @@ mod model_recovery {
             .remove("memoryTestPeer")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let with_processes = configuration["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["target"]["name"] == "processes")
+        });
+
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -3289,7 +3296,7 @@ mod model_recovery {
         let agent = package(
             "maka.tests.model-agent",
             maka_agent_api::native(),
-            BTreeMap::from([
+            [
                 (
                     "files".into(),
                     Import {
@@ -3304,7 +3311,18 @@ mod model_recovery {
                         cardinality: Cardinality::One,
                     },
                 ),
-            ]),
+            ]
+            .into_iter()
+            .chain(with_processes.then(|| {
+                (
+                    "processes".into(),
+                    Import {
+                        contract: maka_workspace_api::processes::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                )
+            }))
+            .collect(),
         )?;
         let files = package(
             "maka.tests.files",
@@ -3401,6 +3419,7 @@ mod model_recovery {
                         configuration,
                         ["files", "web"]
                             .into_iter()
+                            .chain(with_processes.then_some("processes"))
                             .map(|name| {
                                 (
                                     name.into(),
@@ -3474,15 +3493,31 @@ mod model_recovery {
                 }],
             );
         }
+        let mut packages = vec![agent, settings, client, files, web, receipts];
+        if with_processes {
+            let processes = package(
+                "maka.tests.processes",
+                maka_workspace_api::processes::native(),
+                BTreeMap::new(),
+            )?;
+            input.instances.insert(
+                "processes".into(),
+                node(
+                    Uuid::new_v4(),
+                    processes.application_ref(),
+                    json!({
+                        "filesystem": {"default":"write","rules":[],"denyGlobs":[]},
+                        "network":"denied",
+                        "sessionOwner":InstanceId(vec![boot.agent]),
+                    }),
+                    BTreeMap::new(),
+                ),
+            );
+            packages.push(processes);
+        }
         let store = root(base, true).await?;
         store
-            .commit_application(
-                boot.deployment,
-                0,
-                input,
-                vec![],
-                vec![agent, settings, client, files, web, receipts],
-            )
+            .commit_application(boot.deployment, 0, input, vec![], packages)
             .await?;
         let loaded = store
             .load_application(boot.deployment)

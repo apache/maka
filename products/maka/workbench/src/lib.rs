@@ -130,15 +130,24 @@ mod tests {
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("text:/sample-command-code/").unwrap();
         app.wait_for("text:/isolated.sample/").unwrap();
-        app.wait_for("text:/Investigation permissions.*Standard Session tools/")
+        app.wait_for("text:/Investigation permissions.*Read-only tools/")
             .unwrap();
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("text:Read · Shell").unwrap();
         app.press("role:button[Approve and enable]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("text:/Next check.*15:59:58/").unwrap();
         app.wait_for("text:/Last check.*15:49:27/").unwrap();
         app.press("role:button[Pause]").unwrap();
-        app.wait_for("role:button[Approve and resume]").unwrap();
+        app.wait_for("role:button[Resume]").unwrap();
+        app.press("role:button[Resume]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press_key("mod+shift+r").unwrap();
+        app.wait_for("text:Needs renewed approval").unwrap();
+        app.press("role:button[Review permissions]").unwrap();
+        app.wait_for("text:Read · Shell").unwrap();
         app.press("role:button[Approve and resume]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
         app.press("role:button[Fixed interval]").unwrap();
@@ -174,7 +183,9 @@ mod tests {
             .unwrap();
         app.press_key("mod+shift+e").unwrap();
         app.wait_for("text:Completed").unwrap();
-        app.press_key("mod+shift+d").unwrap();
+        app.press("role:button[Delete]").unwrap();
+        app.wait_for("text:Delete this plan?").unwrap();
+        app.press("role:button[Delete] >> nth=1").unwrap();
         app.wait_for("role:button[Approve and enable]").unwrap();
     }
 

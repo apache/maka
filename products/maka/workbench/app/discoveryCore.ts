@@ -64,7 +64,7 @@ export function discoveryInput(
   const originalCadence = discoveryCadence(original);
   const cadence = options.cadence ?? originalCadence;
   const workerTools =
-    options.workerTools ?? (existing ? discoveryWorkerTools(existing.task.effect) : 'session');
+    options.workerTools ?? (existing ? discoveryWorkerTools(existing.task.effect) : 'read_only');
   const preserve = original && (!originalInterval || (sameMinutes && cadence === originalCadence));
   const interval = sameMinutes ? originalInterval.everySeconds : minutes * 60;
   const start = now + interval * 1000;

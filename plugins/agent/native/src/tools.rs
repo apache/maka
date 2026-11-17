@@ -376,7 +376,7 @@ fn catalog_inner(
             };
             let contract = binding.contract();
             if contract == &file_contract
-                && matches!(selection.method.as_str(), "readText" | "readImage" | "glob" | "grep")
+                && selection.method == "read"
             {
                 discovery_reads.push(selection.name.clone());
             }

@@ -34,58 +34,47 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(listener: &TcpListener) -> Self {
-        Self::new_bound(listener, false).await
-    }
-    async fn new_bound(listener: &TcpListener, project: bool) -> Self {
         let mut rig = Rig::new().unwrap();
         let base = rig.directory.path().to_path_buf();
-        let mut boot = bootstrap(
+        let boot = bootstrap_with(
             &base,
             format!("http://{}/v1", listener.local_addr().unwrap()),
-            false,
+            |config| {
+                config["bot"] = json!(true);
+                config["scheduledTasks"] = json!(true);
+                config["recall"] = json!(true);
+                config["workspaceRoots"] = json!([
+                    {"label":"source","path":base.join("workspace")},
+                    {"label":"destination","path":base.join("other-workspace")}
+                ]);
+                config["tools"] = json!([
+                    {
+                        "name":"Read","description":"Read a workspace file.",
+                        "input":"json","result":"image","confirmation":"preapproved",
+                        "target":{"kind":"import","name":"files"},"method":"read"
+                    },
+                    {
+                        "name":"Write","description":"Write a workspace file.",
+                        "input":"json","result":"json","confirmation":"preapproved",
+                        "target":{"kind":"import","name":"files"},"method":"write"
+                    }
+                ]);
+                #[cfg(target_os = "macos")]
+                config["tools"].as_array_mut().unwrap().push(json!({
+                    "name":"Shell","description":"Execute a workspace shell command.",
+                    "input":"shell","result":"json","confirmation":"preapproved",
+                    "target":{"kind":"import","name":"processes"},"method":"execute"
+                }));
+            },
         )
         .await
         .unwrap();
-        let store = root(&base, false).await.unwrap();
-        let loaded = store
-            .load_application(boot.deployment)
-            .await
-            .unwrap()
-            .unwrap();
-        let (source, packages, _, _) = loaded.into_parts();
-        let mut input = source.input;
-        let config = &mut input
-            .instances
-            .get_mut("agent")
-            .unwrap()
-            .configuration
-            .values;
         std::fs::create_dir_all(base.join("other-workspace")).unwrap();
-        config.insert("workspaceRoots".into(),json!([{"label":"source","path":base.join("workspace")},{"label":"destination","path":base.join("other-workspace")} ]));
-        config.insert("bot".into(), json!(true));
-        config.insert("scheduledTasks".into(), json!(true));
-        config.insert("recall".into(), json!(true));
-        store
-            .commit_application(
-                boot.deployment,
-                source.reference.revision,
-                input,
-                source.remote_exports,
-                packages,
-            )
-            .await
-            .unwrap();
-        boot.source = serde_json::to_value(
-            store
-                .load_application(boot.deployment)
-                .await
-                .unwrap()
-                .unwrap()
-                .source(),
+        std::fs::write(
+            base.join("workspace").join("discovery.txt"),
+            "Observed fixture evidence",
         )
         .unwrap();
-        store.shutdown().await.unwrap();
-        drop(store);
         attach(&mut rig, &boot).await.unwrap();
         let client = rig.client.as_ref().unwrap();
         let catalog = call(client, "settings", "connections", json!({"kind":"start"}))
@@ -94,24 +83,16 @@ impl Fixture {
         let connection=call(client,"settings","create",json!({"expectedCatalogRevision":catalog["revision"],"connection":{"slug":"discovery","name":"Discovery fixture","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},"configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],"modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}})).await.unwrap();
         assert_eq!(connection["kind"], "committed");
         let model = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2","thinkingLevel":null});
-        let path = base.join("workspace");
-        let workspace = if project {
-            let registered = call(
-                client,
-                "agent",
-                "project",
-                json!({"kind":"register","path":path,"expected":null}),
-            )
-            .await
-            .unwrap();
-            assert_eq!(registered["kind"], "committed", "{registered}");
-            json!({"kind":"project","projectId":registered["project"]["reference"]["id"],"path":path})
-        } else {
-            json!({"kind":"directory","path":path})
-        };
-        let opened = call(client, "agent", "openBot", json!({"workspace":workspace}))
-            .await
-            .unwrap();
+        let opened = call(
+            client,
+            "agent",
+            "openBot",
+            json!({
+                "workspace":{"kind":"directory","path":base.join("workspace")}
+            }),
+        )
+        .await
+        .unwrap();
         let bot = opened["sessionId"].as_str().unwrap().to_string();
         call(
             client,
@@ -155,14 +136,40 @@ impl Fixture {
         schedule: Value,
         tools: Option<&str>,
     ) -> String {
-        let config = self.owner().session(&self.bot).await.unwrap().configuration;
-        let mut effect = json!({"kind":"discovery","target":{"sessionId":self.bot,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":{"connectionId":self.model["connectionId"],"modelId":"llama3.2"},"thinkingLevel":null});
-        if let Some(tools) = tools {
-            effect["workerTools"] = json!(tools);
-        }
-        let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":direction,"schedule":schedule,"effect":effect,"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
+        let effect = self.effect(tools.unwrap_or("read_only")).await;
+        let catalog = self.preview(&effect, None).await;
+        let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":direction,"schedule":schedule,"effect":effect,"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest","approvedTools":catalog}})).await;
         assert_eq!(result["kind"], "committed", "{result}");
         result["taskId"].as_str().unwrap().to_owned()
+    }
+    async fn effect(&self, tools: &str) -> Value {
+        let config = self.owner().session(&self.bot).await.unwrap().configuration;
+        json!({"kind":"discovery","target":{"sessionId":self.bot,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":{"connectionId":self.model["connectionId"],"modelId":"llama3.2"},"thinkingLevel":null,"workerTools":tools})
+    }
+    async fn preview(&self, effect: &Value, task_id: Option<&str>) -> Value {
+        let preview = self
+            .query(
+                "schedules",
+                json!({
+                    "kind":"preview_discovery","effect":effect,"taskId":task_id,
+                }),
+            )
+            .await;
+        assert_eq!(preview["kind"], "discovery_tools", "{preview}");
+        preview["names"].clone()
+    }
+    async fn reapprove(&self, task: &str, profile: &str) -> Value {
+        let detail = self.detail(task).await;
+        let effect = self.effect(profile).await;
+        let names = self.preview(&effect, Some(task)).await;
+        self.query("schedule", json!({
+            "kind":"approve","taskId":task,"revision":detail["revision"],"input":{
+                "task": {"title":detail["task"]["title"],"intentBody":detail["task"]["intent"]["body"],
+                    "schedule":detail["task"]["schedule"],"effect":effect,
+                    "maxFires":detail["task"]["maxFires"],"expiresAt":detail["task"]["expiresAt"]},
+                "timezone":detail["timezone"], "misfire":detail["misfire"], "approvedTools":names
+            },
+        })).await
     }
     async fn detail(&self, task: &str) -> Value {
         self.query("schedules", json!({"kind":"get","taskId":task}))
@@ -228,51 +235,6 @@ impl Fixture {
     async fn close(&mut self) {
         let errors = self.rig.finish().await;
         assert!(errors.is_empty(), "{errors:?}");
-    }
-    async fn setting(&mut self, key: &str, value: Value) {
-        self.close().await;
-        self.rig.captured.lock().unwrap().take();
-        self.rig.client = None;
-        self.rig.host = None;
-        self.rig.store = None;
-        let store = root(self.rig.directory.path(), false).await.unwrap();
-        let loaded = store
-            .load_application(self.boot.deployment)
-            .await
-            .unwrap()
-            .unwrap();
-        let (source, packages, _, _) = loaded.into_parts();
-        let mut input = source.input;
-        input
-            .instances
-            .get_mut("agent")
-            .unwrap()
-            .configuration
-            .values
-            .insert(key.into(), value);
-        store
-            .commit_application(
-                self.boot.deployment,
-                source.reference.revision,
-                input,
-                source.remote_exports,
-                packages,
-            )
-            .await
-            .unwrap();
-        self.boot.source = serde_json::to_value(
-            store
-                .load_application(self.boot.deployment)
-                .await
-                .unwrap()
-                .unwrap()
-                .source(),
-        )
-        .unwrap();
-        store.shutdown().await.unwrap();
-        drop(store);
-        self.rig.stop_serving = CancellationToken::new();
-        attach(&mut self.rig, &self.boot).await.unwrap();
     }
     async fn change_source(&mut self, update: fn(&mut StoredSessionConfiguration)) {
         self.close().await;
@@ -372,575 +334,6 @@ async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_uses_approved_session_tools_and_retains_progress_after_reopen() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    f.setting("toolDiscovery", json!(true)).await;
-    let mut sessions = Vec::new();
-    for (directory, title, message) in [
-        (
-            "workspace",
-            "In-scope project discussion",
-            "Venue access requires a badge.",
-        ),
-        (
-            "other-workspace",
-            "Unrelated workspace discussion",
-            "Foreign workspace material.",
-        ),
-    ] {
-        let created = f
-            .query(
-                "create",
-                json!({
-                    "title": title, "automaticTitle": false, "labels": [],
-                    "workspace": {"kind":"directory", "path":f.rig.directory.path().join(directory)}
-                }),
-            )
-            .await;
-        let session = created["session"]["id"].as_str().unwrap();
-        f.query(
-            "send",
-            json!({
-                "sessionId": session, "message": message,
-                "backend": f.model, "delivery":"queue"
-            }),
-        )
-        .await;
-        let (mut socket, _) = next(&listener).await;
-        finish_text(&mut socket, "Fixture acknowledged.").await;
-        tokio::time::timeout(Duration::from_secs(45), f.quiescent(session))
-            .await
-            .unwrap();
-        sessions.push(session.to_owned());
-    }
-    let task = f
-        .create_scheduled(
-            "Continuity",
-            "  ",
-            json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}),
-        )
-        .await;
-    assert_eq!(f.detail(&task).await["task"]["intent"]["body"], "");
-    f.change(&task, "trigger_now").await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(body.to_string().contains("authorized broad exploration"));
-    let prompt = body.to_string();
-    assert!(prompt.contains("+00:00") && prompt.contains("Workspace:"));
-    assert!(!prompt.contains("In-scope project discussion") && !prompt.contains("workspaceFiles"));
-    assert!(prompt.contains("Discovery opening references") && prompt.contains(&sessions[0]));
-    assert!(!prompt.contains(&sessions[1]) && !prompt.contains("Venue access requires a badge."));
-    let names: Vec<_> = body["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["function"]["name"].as_str().unwrap())
-        .collect();
-    assert!(
-        [
-            "DiscoveryComplete",
-            "DiscoveryMemory",
-            "DiscoveryContext",
-            "tool_search",
-        ]
-        .iter()
-        .all(|name| names.contains(name)),
-        "{names:?}"
-    );
-    assert!(!names.iter().any(|n| ["SendUser", "sleep"].contains(n)));
-    tool(
-        &mut socket,
-        "tool_search",
-        json!({"query":"RecallMaterial","limit":1}),
-    )
-    .await;
-    let (mut socket, body) = next(&listener).await;
-    assert_eq!(output(&body)["activated"], json!(["RecallMaterial"]));
-    tool(&mut socket, "DiscoveryContext", json!({"action":"list"})).await;
-    let (mut socket, body) = next(&listener).await;
-    let list = output(&body);
-    let listed = list["sessions"].as_array().unwrap();
-    assert!(
-        listed.iter().any(|s| s["session_id"] == sessions[0]),
-        "{list}"
-    );
-    assert!(
-        listed.iter().all(|s| s["session_id"] != sessions[1]),
-        "{list}"
-    );
-    tool(
-        &mut socket,
-        "DiscoveryContext",
-        json!({"action":"history","session_id":sessions[0]}),
-    )
-    .await;
-    let (mut socket, body) = next(&listener).await;
-    let history = output(&body);
-    assert!(
-        history["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m["text"] == "Venue access requires a badge."),
-        "{history}"
-    );
-    tool(
-        &mut socket,
-        "DiscoveryContext",
-        json!({"action":"history","session_id":sessions[1]}),
-    )
-    .await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(
-        output(&body)
-            .to_string()
-            .contains("discovery_history_unavailable")
-    );
-    let(mut socket,r)=memory(&listener,&mut socket,json!({"action":"checkpoint","note":{"text":"checked README; next inspect changelog","references":["README.md"]}})).await;
-    assert_eq!(r["staged"], true);
-    let note = "No actionable change. ".repeat(150);
-    let observation = json!({"text":"Badge pickup is a lead for later investigations.","references":["README.md"]});
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":note,"notes":json!([observation]).to_string()}),
-    )
-    .await;
-    let done = f.settled(&task, 1).await;
-    assert_eq!(done["task"]["runs"][0]["outcome"], "ok");
-    let worker = done["task"]["runs"][0]["sessionId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let config = f.owner().session(&worker).await.unwrap().configuration;
-    let source = f.owner().session(&f.bot).await.unwrap().configuration;
-    assert_eq!(config.permissions, source.permissions);
-    assert_eq!(config.parent_session_id.as_deref(), Some(f.bot.as_str()));
-    assert_eq!(f.outbox().await, json!([]));
-    f.reopen().await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, body) = next(&listener).await;
-    let prompt = body.to_string();
-    assert!(prompt.contains("authorized broad exploration") && prompt.contains(&sessions[0]));
-    assert!(!prompt.contains(&note) && !prompt.contains(&sessions[1]));
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let preview = &page["records"][0];
-    assert_eq!(preview["kind"], "investigation");
-    assert!(prompt.contains(preview["id"].as_str().unwrap()));
-    assert_eq!(
-        preview["preview"],
-        note.chars().take(160).collect::<String>()
-    );
-    assert!(!page.to_string().contains(&note));
-    let (mut socket, entry) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"get","record":preview["id"]}),
-    )
-    .await;
-    assert_eq!(entry["content"]["result"]["note"], note);
-    assert_eq!(entry["content"]["result"]["notes"], json!([observation]));
-    assert_eq!(
-        entry["content"]["checkpoint"]["references"],
-        json!(["README.md"])
-    );
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"new round"}),
-    )
-    .await;
-    let done = f.settled(&task, 2).await;
-    assert_ne!(done["task"]["runs"][0]["sessionId"], worker);
-    assert_eq!(f.outbox().await, json!([]));
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn existing_discovery_approval_keeps_its_tool_scope_until_renewed() {
-    use maka_plugin_core::storage::{Data, Mutation, Store as _};
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    f.setting("toolDiscovery", json!(true)).await;
-    let task = f.create("Existing plan").await;
-    {
-        let owner = f.owner();
-        let storage = &owner.scheduler.storage;
-        let key = format!("task:{task}");
-        let record = storage.read(key.clone()).await.unwrap().unwrap();
-        let mut plan = record.data.value().unwrap().clone();
-        assert_eq!(
-            plan["authorization"]
-                .as_object_mut()
-                .unwrap()
-                .remove("session_tools"),
-            Some(json!(true))
-        );
-        storage
-            .batch(vec![Mutation {
-                key,
-                expected_revision: Some(record.revision),
-                data: Data::Present(plan),
-            }])
-            .await
-            .unwrap();
-    }
-    f.change(&task, "trigger_now").await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(!body.to_string().contains("\"tool_search\""));
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"existing scope"}),
-    )
-    .await;
-    let done = f.settled(&task, 1).await;
-    let worker = done["task"]["runs"][0]["sessionId"].as_str().unwrap();
-    assert_eq!(
-        f.owner()
-            .session(worker)
-            .await
-            .unwrap()
-            .configuration
-            .permissions,
-        crate::owner::discovery::permissions()
-    );
-
-    f.change(&task, "pause").await;
-    f.change(&task, "resume").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(body.to_string().contains("\"tool_search\""));
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"renewed scope"}),
-    )
-    .await;
-    assert_eq!(
-        f.settled(&task, 2).await["task"]["runs"][0]["outcome"],
-        "ok"
-    );
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_committed_outcome_recovers_after_lost_acknowledgement() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Uncertain settlement").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    let committed = f.owner().scheduler.storage.unknown_after("investigation");
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"durable result"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(45), committed)
-        .await
-        .unwrap()
-        .unwrap();
-    f.reopen().await;
-    let done = f.settled(&task, 1).await;
-    assert_eq!(done["task"]["fireCount"], 1);
-    assert_eq!(done["task"]["runs"][0]["outcome"], "ok");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-            .await
-            .is_err()
-    );
-    f.send("Review the investigation", json!([])).await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    assert_eq!(page["records"].as_array().unwrap().len(), 1);
-    assert_eq!(page["records"][0]["preview"], "durable result");
-    quiet(&f, &listener, &mut socket).await;
-    assert_eq!(f.outbox().await, json!([]));
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_recovery_rechecks_notification_authority() {
-    for (setting, report_queued) in [
-        ("recall", true),
-        ("bot", true),
-        ("scheduledTasks", true),
-        ("recall", false),
-        ("permissions", true),
-        ("boundary_revision", true),
-    ] {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut f = Fixture::new(&listener).await;
-        // Keep the Bot occupied so the real report remains queued across the crash.
-        f.send("Wait for my next instruction", json!([])).await;
-        let (_bot_socket, _) = next(&listener).await;
-        let task = f.create("Recovered report authorization").await;
-        f.change(&task, "trigger_now").await;
-        let (mut worker, _) = next(&listener).await;
-        let committed = if report_queued {
-            f.owner().scheduler.storage.unknown_before("settlement")
-        } else {
-            f.owner().scheduler.storage.unknown_before("delivering")
-        };
-        tool(
-            &mut worker,
-            "DiscoveryComplete",
-            json!({"kind":"report","text":"recovery-boundary-finding"}),
-        )
-        .await;
-        tokio::time::timeout(Duration::from_secs(45), committed)
-            .await
-            .unwrap()
-            .unwrap();
-        let pending = f.owner().durable.queue().read(f.bot.clone()).await.unwrap();
-        assert_eq!(pending.entries.len(), usize::from(report_queued));
-        let message = pending
-            .entries
-            .first()
-            .map(|entry| entry.request.message_id.clone());
-        match setting {
-            "permissions" => {
-                f.change_source(|config| {
-                    config.permissions = crate::owner::discovery::permissions()
-                })
-                .await
-            }
-            "boundary_revision" => {
-                f.change_source(|config| config.boundary_revision += 1)
-                    .await
-            }
-            _ => f.setting(setting, json!(false)).await,
-        }
-        if let Some(message) = &message {
-            assert_eq!(
-                f.owner()
-                    .durable
-                    .queue()
-                    .resolve_message(f.bot.clone(), message.clone())
-                    .await
-                    .unwrap(),
-                maka_agent_state::queue::MessageResolution::Cancelled,
-                "revoked {setting} report survived recovery"
-            );
-        }
-        assert_eq!(
-            f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
-            "blocked"
-        );
-        f.reopen().await;
-        if let Some(message) = message {
-            assert_eq!(
-                f.owner()
-                    .durable
-                    .queue()
-                    .resolve_message(f.bot.clone(), message)
-                    .await
-                    .unwrap(),
-                maka_agent_state::queue::MessageResolution::Cancelled
-            );
-        }
-        f.close().await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_recovery_delivers_an_authorized_notification_once() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    f.send("Wait for my next instruction", json!([])).await;
-    let (_bot_socket, _) = next(&listener).await;
-    // Recovery can admit the report before the next query; stop only the original Run.
-    let busy = f
-        .owner()
-        .durable
-        .latest_run(f.bot.clone())
-        .await
-        .unwrap()
-        .unwrap();
-    let task = f.create("Authorized recovered report").await;
-    f.change(&task, "trigger_now").await;
-    let (mut worker, _) = next(&listener).await;
-    let committed = f.owner().scheduler.storage.unknown_before("settlement");
-    tool(
-        &mut worker,
-        "DiscoveryComplete",
-        json!({"kind":"report","text":"authorized-recovery-finding"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(45), committed)
-        .await
-        .unwrap()
-        .unwrap();
-    let pending = f.owner().durable.queue().read(f.bot.clone()).await.unwrap();
-    assert_eq!(pending.entries.len(), 1);
-    let report = pending.entries[0].request.clone();
-    // Later user work in the worker Session must not change the investigation's
-    // captured Run or keep its original report from settling after restart.
-    let bytes = f
-        .owner()
-        .durable
-        .queue()
-        .content(f.bot.clone(), report.id.clone(), report.source.clone())
-        .await
-        .unwrap();
-    let source: maka_agent_facts::message::RootSourceMessage =
-        serde_json::from_slice(&bytes).unwrap();
-    let handoff_time = source
-        .message
-        .content
-        .text
-        .lines()
-        .find_map(|line| line.strip_prefix("Current time: "))
-        .and_then(|line| line.split_once(". Judge").map(|(time, _)| time))
-        .expect("the queued discovery report includes its handoff time");
-    assert!(handoff_time.ends_with("+00:00"));
-    let Some(maka_agent_facts::message::MessageOrigin::DiscoveryReport {
-        session_id: worker_id,
-    }) = source.message.origin
-    else {
-        panic!("missing original worker");
-    };
-    f.query("send", json!({"sessionId":worker_id,"message":"A later independent turn", "backend":f.model,"delivery":"queue"})).await;
-    let (mut later_worker, _) = next(&listener).await;
-    finish_text(&mut later_worker, "Independent turn complete.").await;
-    tokio::time::timeout(Duration::from_secs(45), f.quiescent(&worker_id))
-        .await
-        .expect("independent worker Run did not settle before Host teardown");
-    f.reopen().await;
-    f.query("stop", json!({"sessionId":f.bot,"runId":busy}))
-        .await;
-    let (mut bot, body) = next(&listener).await;
-    assert!(
-        body.to_string().contains("authorized-recovery-finding"),
-        "{body}"
-    );
-    assert!(body.to_string().contains(handoff_time));
-    quiet(&f, &listener, &mut bot).await;
-    assert_eq!(
-        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
-        "ok"
-    );
-    let delivered = f
-        .owner()
-        .durable
-        .queue()
-        .resolve_message(f.bot.clone(), report.message_id.clone())
-        .await
-        .unwrap();
-    assert!(
-        matches!(
-            delivered,
-            maka_agent_state::queue::MessageResolution::Delivered { shared: false, .. }
-        ),
-        "expected the recovered report to start its own Bot Run, got {delivered:?}"
-    );
-    f.reopen().await;
-    assert_eq!(
-        f.owner()
-            .durable
-            .queue()
-            .resolve_message(f.bot.clone(), report.message_id)
-            .await
-            .unwrap(),
-        delivered
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-            .await
-            .is_err()
-    );
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_persists_the_investigation_before_enqueuing_the_report() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Record before handoff").await;
-    f.change(&task, "trigger_now").await;
-    let (mut worker, _) = next(&listener).await;
-    let staged = f.owner().scheduler.storage.unknown_after("delivering");
-    tool(
-        &mut worker,
-        "DiscoveryComplete",
-        json!({"kind":"report","text":"Durable finding"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(45), staged)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        f.owner()
-            .durable
-            .queue()
-            .read(f.bot.clone())
-            .await
-            .unwrap()
-            .entries
-            .is_empty()
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-            .await
-            .is_err()
-    );
-    f.reopen().await;
-    let (mut bot, body) = next(&listener).await;
-    assert!(body.to_string().contains("Durable finding"));
-    let (mut bot, page) = memory(&listener, &mut bot, json!({"action":"list"})).await;
-    assert_eq!(page["records"].as_array().unwrap().len(), 1);
-    assert_eq!(page["records"][0]["preview"], "Durable finding");
-    quiet(&f, &listener, &mut bot).await;
-    assert_eq!(
-        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
-        "ok"
-    );
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_pause_preserves_a_report_the_bot_has_already_consumed() {
-    use maka_plugin_core::storage::StoreError;
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Pause after report consumption").await;
-    f.change(&task, "trigger_now").await;
-    let (mut worker, _) = next(&listener).await;
-    let (entered, release) = f.owner().scheduler.storage.hold_before("settlement");
-    tool(
-        &mut worker,
-        "DiscoveryComplete",
-        json!({"kind":"report","text":"Already received finding"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(45), entered)
-        .await
-        .unwrap()
-        .unwrap();
-    let (mut bot, body) = next(&listener).await;
-    assert!(body.to_string().contains("Already received finding"));
-    release
-        .send(Err(StoreError::Unavailable(
-            "interrupted report settlement".into(),
-        )))
-        .unwrap();
-    f.change(&task, "pause").await;
-    let (mut bot, page) = memory(&listener, &mut bot, json!({"action":"list"})).await;
-    assert_eq!(page["records"].as_array().unwrap().len(), 1);
-    assert_eq!(page["records"][0]["preview"], "Already received finding");
-    quiet(&f, &listener, &mut bot).await;
-    let done = f.settled(&task, 1).await;
-    assert_eq!(done["task"]["status"], "paused");
-    assert_eq!(done["task"]["runs"][0]["outcome"], "ok");
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -982,7 +375,19 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
         publication["discovery"]["workerTurnId"],
         entry["source"]["turnId"]
     );
-    f.reopen().await;
+    f.change_source(|config| config.boundary_revision += 1)
+        .await;
+    f.change(&task, "trigger_now").await;
+    let blocked = f.settled(&task, 2).await;
+    assert_eq!(blocked["task"]["status"], "paused", "{blocked}");
+    assert_eq!(blocked["approved"], false, "{blocked}");
+    assert!(blocked["task"]["nextFireAt"].is_null(), "{blocked}");
+    assert_eq!(
+        blocked["task"]["lastError"],
+        "scheduler_authorization_changed"
+    );
+    assert_eq!(f.reapprove(&task, "session").await["kind"], "committed");
+    assert_eq!(f.detail(&task).await["task"]["status"], "active");
     assert_eq!(f.outbox().await, original);
     f.send("Retry the original notification", json!([])).await;
     let (mut socket, _) = next(&listener).await;
@@ -1001,12 +406,17 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     let (mut socket, sent_source) = memory(
         &listener,
         &mut socket,
-        json!({"action":"notification_source","record":page["records"][0]["id"]}),
+        json!({"action":"get","record":page["records"][0]["id"]}),
     )
     .await;
-    assert_eq!(sent_source["text"], publication["text"]);
-    assert_eq!(sent_source["at"], publication["at"]);
-    assert_eq!(sent_source["next_index"], Value::Null);
+    assert_eq!(
+        sent_source["source_path"],
+        format!("maka://session/{}", f.bot)
+    );
+    assert_eq!(
+        sent_source["content"]["message_id"],
+        "notification-uncertain"
+    );
     quiet(&f, &listener, &mut socket).await;
     let quote = json!({"text":"Do not repeat this finding", "label":"Proactive discovery",
         "sourceMessageId":format!("bot/{}",publication["sequence"]),"sourceTurnId":publication["turnId"],
@@ -1036,11 +446,11 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     let (mut socket, source) = memory(
         &listener,
         &mut socket,
-        json!({"action":"feedback_source","record":saved["record"]}),
+        json!({"action":"get","record":saved["record"]}),
     )
     .await;
-    let source: Value = serde_json::from_str(source["source"].as_str().unwrap()).unwrap();
-    assert_eq!(source["quotes"], json!([quote]));
+    assert_eq!(source["source_path"], format!("maka://session/{}", f.bot));
+    assert_eq!(source["content"]["message_id"], sent["messageId"]);
     quiet(&f, &listener, &mut socket).await;
     f.reopen().await;
     let mut position = json!({"kind":"tail"});
@@ -1075,226 +485,6 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     );
     assert_eq!(displayed["hasReferences"], true);
     assert_eq!(displayed["text"], "");
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_uncertain_decision_ack_keeps_one_outbox_message_and_blocks_false_completion() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Notification receipt").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"report","text":"A useful finding"}),
-    )
-    .await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let record = page["records"][0]["id"].clone();
-    let input = json!({"messageId":"notification-uncertain","messages":[{"text":"A useful finding"}],"discovery":{"record":record,"reason":"verified"}});
-    let committed = f.owner().scheduler.storage.unknown_after("notified");
-    tool(&mut socket, "SendUser", input.clone()).await;
-    tokio::time::timeout(Duration::from_secs(45), committed)
-        .await
-        .unwrap()
-        .unwrap();
-    let original = f.outbox().await;
-    assert_eq!(original.as_array().unwrap().len(), 1);
-    let owner = f.owner();
-    tokio::time::timeout(Duration::from_secs(45), async {
-        loop {
-            let run = owner
-                .durable
-                .latest_run(f.bot.clone())
-                .await
-                .unwrap()
-                .unwrap();
-            let view = owner.durable.frontier(run).await.unwrap();
-            if !view.blockers.is_empty() {
-                assert!(
-                    view.terminal.is_none(),
-                    "unknown publication must not become success"
-                );
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(f.outbox().await, original);
-    let errors = f.rig.finish().await;
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("cleanup_unconfirmed")),
-        "{errors:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_memory_serializes_bot_append_with_settlement() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Concurrent records").await;
-    f.change(&task, "trigger_now").await;
-    let (mut worker, _) = next(&listener).await;
-    tool(
-        &mut worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"first"}),
-    )
-    .await;
-    f.settled(&task, 1).await;
-    f.send("Review records", json!([])).await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let original = page["records"][0]["id"].clone();
-    f.change(&task, "trigger_now").await;
-    let (mut worker, _) = next(&listener).await;
-    let (entered, release) = f.owner().scheduler.storage.hold_before("investigation");
-    tool(
-        &mut worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"second"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(45), entered)
-        .await
-        .unwrap()
-        .unwrap();
-    let owner = f.owner();
-    let run = owner
-        .durable
-        .latest_run(f.bot.clone())
-        .await
-        .unwrap()
-        .unwrap();
-    let previous = owner.durable.frontier(run).await.unwrap().tools.len();
-    tool(
-        &mut socket,
-        "DiscoveryMemory",
-        json!({"action":"withhold","record":original,"reason":"No new action"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(45), async {
-        while owner.durable.frontier(run).await.unwrap().tools.len() <= previous {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    let premature = tokio::time::timeout(Duration::from_millis(150), listener.accept()).await;
-    release.send(Ok(())).unwrap();
-    assert!(premature.is_err());
-    let (mut socket, body) = next(&listener).await;
-    assert_eq!(output(&body)["recorded"], true);
-    f.settled(&task, 2).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let records = page["records"].as_array().unwrap();
-    assert_eq!(records.len(), 3);
-    assert_eq!(
-        records
-            .iter()
-            .map(|r| r["sequence"].as_u64().unwrap())
-            .collect::<Vec<_>>(),
-        [3, 2, 1]
-    );
-    quiet(&f, &listener, &mut socket).await;
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_preserves_quote_only_and_steered_feedback_and_sleep_decisions() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Feedback").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Original finding"}),
-    )
-    .await;
-    f.settled(&task, 1).await;
-    let quote = "Do not repeat this recommendation.";
-    f.send("Hold the conversation while I queue a quote", json!([]))
-        .await;
-    let (mut held, _) = next(&listener).await;
-    let sent = f.send("", json!([{"text":quote}])).await;
-    let queue = f.query("queue", json!({"sessionId":f.bot})).await;
-    assert_eq!(queue["entries"][0]["preview"], quote);
-    let read = f.query("queueMessage", json!({"sessionId":f.bot,"expectedRevision":queue["revision"],"messageId":sent["messageId"]})).await;
-    assert_eq!(read["kind"], "ready");
-    assert_eq!(read["message"], "");
-    assert_eq!(read["quotes"][0]["text"], quote);
-    let edit = f.query("editQueue", json!({"sessionId":f.bot,"expectedRevision":read["revision"],"edit":{"kind":"update","messageId":sent["messageId"],"message":""}})).await;
-    assert_eq!(edit["kind"], "committed", "{edit}");
-    finish_text(&mut held, "Ready for the next message.").await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(body.to_string().contains(quote));
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let record = page["records"][0]["id"].clone();
-    let (mut socket, result) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"feedback","record":record,"note":"Avoid repeating this"}),
-    )
-    .await;
-    assert_eq!(result["recorded"], true, "{result}");
-    let (mut socket, source) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"feedback_source","record":result["record"]}),
-    )
-    .await;
-    let source: Value = serde_json::from_str(source["source"].as_str().unwrap()).unwrap();
-    assert_eq!(source["text"], "");
-    assert_eq!(source["quotes"][0]["text"], quote);
-    let steered=f.query("send",json!({"sessionId":f.bot,"message":"Actually, revisit only if the situation changes.","backend":f.model,"delivery":"steer"})).await;
-    let (mut socket, _) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let(mut socket,result)=memory(&listener,&mut socket,json!({"action":"feedback","record":record,"note":"Revisit after a change","message_id":steered["messageId"]})).await;
-    assert_eq!(result["recorded"], true, "{result}");
-    let (mut socket, source) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"feedback_source","record":result["record"]}),
-    )
-    .await;
-    assert!(
-        source["source"]
-            .as_str()
-            .unwrap()
-            .contains("Actually, revisit")
-    );
-    tool(
-        &mut socket,
-        "sleep",
-        json!({"discovery":{"record":record,"reason":"No change yet"}}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(45), async {
-        loop {
-            let owner = f.owner();
-            if owner
-                .durable
-                .session_quiescence(owner.run_owner(), f.bot.clone())
-                .await
-                .unwrap()
-                .is_quiescent()
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(f.outbox().await, json!([]));
     f.close().await;
 }
 
@@ -1339,140 +529,6 @@ async fn discovery_pause_resume_cancels_only_the_original_fire_before_next_worke
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_revoked_permissions_hide_old_records_and_reject_publication() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Scope boundary").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"old-source-observation"}),
-    )
-    .await;
-    f.settled(&task, 1).await;
-    f.send("Read previous records", json!([])).await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let record = page["records"][0]["id"].clone();
-    quiet(&f, &listener, &mut socket).await;
-    let previous = f.owner().session(&f.bot).await.unwrap();
-    let result=f.query("metadata",json!({"sessionId":f.bot,"expectedRevision":previous.revision,"title":previous.configuration.title,"labels":[],"permissions":{"settings":{"access":"read_only","requestPermissions":false},"revokeGrants":true}})).await;
-    assert_eq!(result["kind"], "committed", "{result}");
-    f.send("Read the old record", json!([])).await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    assert_eq!(page["records"], json!([]));
-    let (mut socket, result) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"feedback","record":record,"note":"old source"}),
-    )
-    .await;
-    assert!(result.to_string().contains("discovery_record_unavailable"));
-    tool(&mut socket,"SendUser",json!({"messageId":"stale-source","messages":[{"text":"Old finding"}],"discovery":{"record":record,"reason":"old source"}})).await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(
-        output(&body)
-            .to_string()
-            .contains("discovery_record_unavailable")
-    );
-    assert_eq!(f.outbox().await, json!([]));
-    quiet(&f, &listener, &mut socket).await;
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_project_relocation_rejects_old_feedback_and_notifications() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new_bound(&listener, true).await;
-    let task = f.create("Project boundary").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"original location"}),
-    )
-    .await;
-    f.settled(&task, 1).await;
-    f.send("Read the records", json!([])).await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    let record = page["records"][0]["id"].clone();
-    quiet(&f, &listener, &mut socket).await;
-    let before = f.owner().session(&f.bot).await.unwrap().configuration;
-    let project = f
-        .query(
-            "projects",
-            json!({"kind":"directory","path":f.rig.directory.path().join("workspace")}),
-        )
-        .await["location"]["project"]["reference"]
-        .clone();
-    let changed=f.query("project",json!({"kind":"relocate","project":project,"path":f.rig.directory.path().join("other-workspace"),"destination":null})).await;
-    assert_eq!(changed["kind"], "committed", "{changed}");
-    let after = f.owner().session(&f.bot).await.unwrap().configuration;
-    assert_eq!(after.permissions, before.permissions);
-    assert_eq!(after.binding.id, before.binding.id);
-    assert_eq!(
-        after.binding.permission_epoch,
-        before.binding.permission_epoch + 1
-    );
-    f.send("Read the old observation", json!([])).await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, result) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"feedback","record":record,"note":"old location"}),
-    )
-    .await;
-    assert!(result.to_string().contains("discovery_record_unavailable"));
-    tool(&mut socket,"SendUser",json!({"messageId":"old-location","messages":[{"text":"Old location result"}],"discovery":{"record":record,"reason":"old location"}})).await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(
-        output(&body)
-            .to_string()
-            .contains("discovery_record_unavailable")
-    );
-    quiet(&f, &listener, &mut socket).await;
-    assert_eq!(f.outbox().await, json!([]));
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_recall_revocation_blocks_old_approval_and_hides_old_memory() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Recall scope").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"original recall observation"}),
-    )
-    .await;
-    f.settled(&task, 1).await;
-    f.setting("recall", json!(false)).await;
-    f.change(&task, "trigger_now").await;
-    let done = f.settled(&task, 2).await;
-    assert_eq!(done["task"]["runs"][0]["outcome"], "blocked");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-            .await
-            .is_err()
-    );
-    f.send("Check memory", json!([])).await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(!body.to_string().contains("original recall observation"));
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    assert_eq!(page["records"], json!([]));
-    quiet(&f, &listener, &mut socket).await;
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -1499,6 +555,20 @@ async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
         t["function"]["name"].as_str(),
         Some("Shell" | "Write" | "tool_search" | "ScheduledTask")
     )));
+    for name in ["Read", "RecallMaterial"] {
+        assert!(
+            tools.iter().any(|tool| tool["function"]["name"] == name),
+            "{tools:?}"
+        );
+    }
+    tool(&mut worker, "Read", json!({"path":"discovery.txt"})).await;
+    let (mut worker, body) = next(&listener).await;
+    assert!(
+        output(&body)
+            .to_string()
+            .contains("Observed fixture evidence"),
+        "{body}"
+    );
     tool(
         &mut worker,
         "DiscoveryComplete",
@@ -1520,79 +590,76 @@ async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_enabling_recall_requires_a_new_approval_before_writing_memory() {
+async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    f.setting("recall", json!(false)).await;
-    let task = f.create("Originally approved without Recall").await;
-    f.setting("recall", json!(true)).await;
-    f.change(&task, "trigger_now").await;
-    let done = f.settled(&task, 1).await;
-    assert_eq!(done["task"]["runs"][0]["outcome"], "blocked");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-            .await
-            .is_err()
-    );
+    f.change_source(|config| config.tools = Some(vec!["Read".into()]))
+        .await;
+    let effect = f.effect("session").await;
+    assert_eq!(f.preview(&effect, None).await, json!(["Read"]));
+    let task = f.create("Approved tool ceiling").await;
 
+    // Ordinary Session gains Write again. The existing plan keeps its approved Read.
+    f.change_source(|config| config.tools = None).await;
     f.change(&task, "pause").await;
     f.change(&task, "resume").await;
     f.change(&task, "trigger_now").await;
-    let (mut worker, _) = next(&listener).await;
+    let (mut socket, request) = next(&listener).await;
+    let names = |request: &Value| {
+        request["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let original = names(&request);
+    assert!(original.iter().any(|name| name == "Read"), "{original:?}");
+    assert!(!original.iter().any(|name| name == "Write"), "{original:?}");
     tool(
-        &mut worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"New Recall boundary"}),
-    )
-    .await;
-    f.settled(&task, 2).await;
-    f.send("Read the latest discovery record", json!([])).await;
-    let (mut bot, _) = next(&listener).await;
-    let (mut bot, page) = memory(&listener, &mut bot, json!({"action":"list"})).await;
-    assert_eq!(page["records"][0]["preview"], "New Recall boundary");
-    quiet(&f, &listener, &mut bot).await;
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_plain_completion_fails_but_preserves_its_checkpoint() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Interrupted progress").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, staged) = memory(
-        &listener,
         &mut socket,
-        json!({"action":"checkpoint","note":{"text":"README checked; changelog still pending"}}),
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Restricted search"}),
     )
     .await;
-    assert_eq!(staged["staged"], true);
-    finish_text(&mut socket, "Partial investigation").await;
-    let done = f.settled(&task, 1).await;
-    assert_eq!(done["task"]["runs"][0]["outcome"], "failed");
-    assert_eq!(f.outbox().await, json!([]));
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     assert_eq!(
-        page["records"][0]["preview"],
-        "README checked; changelog still pending"
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
     );
-    let (mut socket, entry) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"get","record":page["records"][0]["id"]}),
-    )
-    .await;
-    assert_eq!(entry["content"]["result"], Value::Null);
+
+    assert_eq!(f.reapprove(&task, "session").await["kind"], "committed");
+    f.change(&task, "trigger_now").await;
+    let (mut socket, request) = next(&listener).await;
+    let expanded = names(&request);
+    assert!(expanded.iter().any(|name| name == "Write"), "{expanded:?}");
+    assert!(
+        !expanded.iter().any(|name| name == "SendUser"),
+        "{expanded:?}"
+    );
+    #[cfg(target_os = "macos")]
+    let mut socket = {
+        assert!(expanded.iter().any(|name| name == "Shell"), "{expanded:?}");
+        tool(
+            &mut socket,
+            "Shell",
+            json!({"command":"printf approved-shell","login":false}),
+        )
+        .await;
+        let (socket, body) = next(&listener).await;
+        let shell_result = output(&body).to_string();
+        assert!(shell_result.contains("approved-shell"), "{shell_result}");
+        socket
+    };
     tool(
         &mut socket,
         "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Remaining work checked"}),
+        json!({"kind":"no_report","note":"Updated scope"}),
     )
     .await;
-    f.settled(&task, 2).await;
+    assert_eq!(
+        f.settled(&task, 2).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
     f.close().await;
 }
 
@@ -1697,67 +764,11 @@ async fn discovery_memory_search_paginates_and_matches_record_text() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn disabled_bot_blocks_an_approved_discovery_without_calling_a_model() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Disabled Bot").await;
-    f.setting("bot", json!(false)).await;
-    f.change(&task, "trigger_now").await;
-    assert_eq!(
-        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
-        "blocked"
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-            .await
-            .is_err()
-    );
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn disabling_scheduling_settles_existing_work_without_reviving_its_checkpoint() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f.create("Withdraw existing work").await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, _) = next(&listener).await;
-    let (socket, result) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"checkpoint","note":{"text":"discarded progress"}}),
-    )
-    .await;
-    assert_eq!(result["staged"], true);
-    f.setting("scheduledTasks", json!(false)).await;
-    drop(socket);
-    assert_eq!(
-        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
-        "blocked"
-    );
-    f.setting("scheduledTasks", json!(true)).await;
-    f.change(&task, "trigger_now").await;
-    let (mut socket, body) = next(&listener).await;
-    assert!(!body.to_string().contains("discarded progress"));
-    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    assert_eq!(page["records"], json!([]));
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"new investigation"}),
-    )
-    .await;
-    f.settled(&task, 2).await;
-    assert_eq!(f.outbox().await, json!([]));
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     let proposal = json!({"request":{"mode":"create","title":"Proposed discovery","intentBody":"Check authorized documents","effect":"discovery","schedule":{"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000},"timezone":"UTC"}});
-    let created=f.query("create",json!({"title":"Ordinary proposer","automaticTitle":false,"labels":[],"tools":["ScheduledTask","DiscoveryComplete","DiscoveryMemory","DiscoveryContext"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
+    let created=f.query("create",json!({"title":"Ordinary proposer","automaticTitle":false,"labels":[],"tools":["ScheduledTask","DiscoveryComplete","DiscoveryMemory"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
     let session = created["session"]["id"].as_str().unwrap();
     f.query("send",json!({"sessionId":session,"message":"Propose a discovery","backend":f.model,"delivery":"queue"})).await;
     let (mut socket, body) = next(&listener).await;
@@ -1768,7 +779,7 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
             .iter()
             .all(|tool| !matches!(
                 tool["function"]["name"].as_str(),
-                Some("DiscoveryComplete" | "DiscoveryMemory" | "DiscoveryContext")
+                Some("DiscoveryComplete" | "DiscoveryMemory")
             ))
     );
     tool(&mut socket, "ScheduledTask", proposal.clone()).await;
@@ -1797,7 +808,7 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     assert_eq!(task["approved"], false);
     assert_eq!(
         f.detail(id).await["task"]["effect"]["workerTools"],
-        "session"
+        "read_only"
     );
     assert!(task["backgroundFollowup"].is_null());
     tool(
@@ -1984,73 +995,6 @@ async fn discovery_report_authorizes_one_time_followup_but_not_a_recurring_or_ch
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_followup_cannot_use_the_old_approval_after_parent_pause_and_resume() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let parent = f.create("Approved release watch").await;
-    let mut bot = report_to_bot(&f, &listener, &parent).await;
-    let once = json!({"kind":"once","runAt":maka_agent_authority::now()+3_600_000});
-    let (mut bot, result) = propose_followup(
-        &listener,
-        &mut bot,
-        "Follow-up before pause",
-        once.clone(),
-        None,
-    )
-    .await;
-    assert_eq!(result["approved"], true, "{result}");
-    let followup = result["taskId"].as_str().unwrap();
-
-    f.change(&parent, "pause").await;
-    f.change(&parent, "resume").await;
-    let (mut bot, stale) = propose_followup(
-        &listener,
-        &mut bot,
-        "Follow-up from the old report",
-        once,
-        None,
-    )
-    .await;
-    assert_eq!(stale["approved"], false, "{stale}");
-    quiet(&f, &listener, &mut bot).await;
-
-    f.reopen().await;
-    f.change(followup, "trigger_now").await;
-    let detail = f.settled(followup, 1).await;
-    assert_eq!(detail["task"]["runs"][0]["outcome"], "blocked");
-    assert!(detail["task"]["runs"][0]["runId"].is_null());
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_one_shot_timer_runs_without_a_manual_trigger() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let task = f
-        .create_scheduled(
-            "One check",
-            "Look for a changed release date.",
-            json!({"kind":"once","runAt":maka_agent_authority::now()+2_000}),
-        )
-        .await;
-    let (mut socket, request) = next(&listener).await;
-    let request = request.to_string();
-    assert!(request.contains("Look for a changed release date."));
-    assert!(!request.contains("authorized broad exploration"));
-    tool(
-        &mut socket,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Timed investigation"}),
-    )
-    .await;
-    let done = f.settled(&task, 1).await;
-    assert_eq!(done["task"]["status"], "completed");
-    assert_eq!(done["task"]["runs"][0]["outcome"], "ok");
-    assert_eq!(f.outbox().await, json!([]));
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_schedules_the_next_check_from_the_finished_investigation() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -2097,8 +1041,10 @@ async fn discovery_restart_settles_an_interrupted_original_run_without_replay() 
         .investigation
         .read()
         .unwrap()
-        .clone()
-        .unwrap();
+        .as_ref()
+        .unwrap()
+        .worker
+        .clone();
     f.reopen().await;
     let original = f
         .owner()

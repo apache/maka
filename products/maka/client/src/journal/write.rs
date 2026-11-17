@@ -297,14 +297,13 @@ async fn save_draft(
         return Err("invalid draft attachments".into());
     }
     let encoded_key = serde_json::to_string(key).map_err(error)?;
-    let previous: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT d.attachments, q.quotes FROM drafts d LEFT JOIN draft_quotes q ON q.owner=d.owner AND q.revision=d.revision WHERE d.owner=?",
-    )
-    .bind(&encoded_key)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(error)?;
-    let previous_quotes = previous.as_ref().and_then(|(_, quotes)| quotes.as_deref());
+    let previous: Option<(String, String)> =
+        sqlx::query_as("SELECT attachments, quotes FROM drafts WHERE owner=?")
+            .bind(&encoded_key)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(error)?;
+    let previous_quotes = previous.as_ref().map(|(_, quotes)| quotes.as_str());
     let quotes = match (edit.quotes, expected) {
         (Some(quotes), _) => {
             if quotes.len() > 16 || quotes.iter().any(|quote| quote.text.trim().is_empty()) {
@@ -352,16 +351,17 @@ async fn save_draft(
     {
         return Err("draft attachment differs from its original upload receipt".into());
     }
+    let encoded_quotes = serde_json::to_string(&quotes).map_err(error)?;
     let row = if let Some(revision) = expected {
-            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to")
-                .bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(&encoded_key).bind(revision as i64)
+            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,quotes=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_quotes).bind(&encoded_key).bind(revision as i64)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         } else {
-            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to) VALUES (?,1,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to")
-                .bind(&encoded_key).bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to)
+            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to,quotes) VALUES (?,1,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(&encoded_key).bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_quotes)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         }.ok_or("draft revision conflicts with a newer saved value")?;
-    let draft = Draft {
+    Ok(Draft {
         quotes,
         revision: row.try_get::<i64, _>("revision").map_err(error)? as u64,
         text: row.try_get("text").map_err(error)?,
@@ -369,18 +369,7 @@ async fn save_draft(
             .map_err(error)?,
         mentions: serde_json::from_str(row.try_get("mentions").map_err(error)?).map_err(error)?,
         reply_to: row.try_get("reply_to").map_err(error)?,
-    };
-    if !draft.quotes.is_empty() {
-        sqlx::query("INSERT INTO draft_quotes(owner,revision,quotes) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision,quotes=excluded.quotes")
-            .bind(encoded_key).bind(draft.revision as i64).bind(serde_json::to_string(&draft.quotes).map_err(error)?).execute(&mut *connection).await.map_err(error)?;
-    } else if previous_quotes.is_some() {
-        sqlx::query("DELETE FROM draft_quotes WHERE owner=?")
-            .bind(encoded_key)
-            .execute(&mut *connection)
-            .await
-            .map_err(error)?;
-    }
-    Ok(draft)
+    })
 }
 
 async fn reserve(connection: &mut SqliteConnection, reservation: Reservation) -> Result<()> {
@@ -410,7 +399,7 @@ async fn reserve_send(
     let owner = serde_json::to_string(&draft.key).map_err(error)?;
     reserve(connection, reservation).await?;
     let consumed = sqlx::query(
-        "UPDATE drafts SET consumed=1,text='',attachments='[]',mentions='[]',reply_to=NULL WHERE owner=? AND revision=? AND consumed=0",
+        "UPDATE drafts SET consumed=1,text='',attachments='[]',mentions='[]',reply_to=NULL,quotes='[]' WHERE owner=? AND revision=? AND consumed=0",
     )
     .bind(&owner)
     .bind(draft.revision as i64)
@@ -420,12 +409,6 @@ async fn reserve_send(
     if consumed.rows_affected() != 1 {
         return Err("saved draft revision changed before sending".into());
     }
-    sqlx::query("DELETE FROM draft_quotes WHERE owner=? AND revision=?")
-        .bind(&owner)
-        .bind(draft.revision as i64)
-        .execute(&mut *connection)
-        .await
-        .map_err(error)?;
     pending_send(connection, &id, &owner).await?;
     Ok(())
 }

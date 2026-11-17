@@ -264,37 +264,6 @@ impl Bot {
             .map(|(_, message)| message)
             .map_err(|e| e.to_string())
     }
-    pub(super) async fn discovery_message(
-        &self,
-        session: &str,
-        message_id: &str,
-        record: &str,
-        index: u64,
-    ) -> Result<(BotMessage, Option<u64>), String> {
-        let unavailable = || "discovery_notification_unavailable".to_owned();
-        let (_, call) = self
-            .read::<Call>(&call_key(session, message_id))
-            .await
-            .map_err(|e| e.to_string())?;
-        let call = call
-            .filter(|call| call.message_id == message_id && index < call.count)
-            .ok_or_else(unavailable)?;
-        let message = self
-            .outbox_message(
-                session,
-                call.first.checked_add(index).ok_or_else(unavailable)?,
-            )
-            .await?
-            .filter(|message| {
-                message.message_id == message_id
-                    && message
-                        .discovery
-                        .as_ref()
-                        .is_some_and(|publication| publication.record_id == record)
-            })
-            .ok_or_else(unavailable)?;
-        Ok((message, (index + 1 < call.count).then_some(index + 1)))
-    }
     async fn published_discovery(
         &self,
         session: &str,
@@ -843,13 +812,7 @@ impl Owner {
             preset_id: None,
             backend: None,
             automatic_title: false,
-            tools: Some(
-                COORDINATION_TOOLS
-                    .iter()
-                    .filter(|name| self.tools.contains(name))
-                    .map(|name| (*name).to_owned())
-                    .collect(),
-            ),
+            tools: None,
             title: input.title.unwrap_or_else(|| "Bot".into()),
             labels: vec![],
             workspace,
@@ -899,7 +862,12 @@ impl Owner {
             return Some(
                 COORDINATION_TOOLS
                     .iter()
-                    .filter(|name| self.tools.contains(name))
+                    .filter(|name| {
+                        self.tools.contains(name)
+                            && configured
+                                .as_ref()
+                                .is_none_or(|allowed| allowed.iter().any(|tool| tool == *name))
+                    })
                     .map(|name| (*name).to_owned())
                     .collect(),
             );

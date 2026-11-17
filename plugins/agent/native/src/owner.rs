@@ -1272,14 +1272,8 @@ impl Owner {
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> crate::tools::Declarations {
         let bot = session.is_some_and(|session| self.bot.is(session));
-        let investigation = session.is_some_and(|id| {
-            self.scheduler
-                .investigation
-                .read()
-                .unwrap()
-                .as_ref()
-                .is_some_and(|active| active == id)
-        });
+        let investigation =
+            session.is_some_and(|id| self.scheduler.investigation_profile(id).is_some());
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
@@ -1287,7 +1281,6 @@ impl Owner {
                 let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
                 let memory = *name == discovery::MEMORY;
                 (*name == discovery::COMPLETE && !investigation)
-                    || (*name == discovery::CONTEXT && (!investigation || !self.settings.recall))
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
                     || (bot_only && !bot)
                     || (!(bot && (bot_only || memory))

@@ -60,6 +60,11 @@ mount(() => {
           kind: 'ready',
           choice: { label: 'DeepSeek', connectionName: 'sample-command-code' },
         };
+      if (input.kind === 'preview_discovery')
+        return {
+          kind: 'discovery_tools',
+          names: input.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'],
+        };
       if (input.kind === 'get') {
         if (failDetailOnce) {
           failDetailOnce = false;
@@ -99,6 +104,14 @@ mount(() => {
   } as unknown as Host;
   const control = async (_method: string, input: any) => {
     calls.set(input.kind);
+    if (input.kind === 'create' || input.kind === 'approve') {
+      const names =
+        input.input.task.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'];
+      if (JSON.stringify(input.input.approvedTools) !== JSON.stringify(names))
+        return { kind: 'rejected', reason: 'Expected the displayed tool list' };
+      if (input.input.task.effect.target.boundaryRevision !== session.boundaryRevision)
+        return { kind: 'rejected', reason: 'scheduler_authorization_changed' };
+    }
     if (input.kind === 'create') {
       if (input.input.timezone !== systemTimezone)
         return { kind: 'rejected', reason: 'Expected the system time zone' };
@@ -126,6 +139,21 @@ mount(() => {
       if (input.revision !== detail.revision) return { kind: 'conflict' };
       revision++;
       detail = { ...detail, revision };
+      if (input.kind === 'delete') {
+        detail = null;
+        publish();
+        return { kind: 'committed', taskId: 'discovery' };
+      }
+      if (input.kind === 'approve') {
+        detail.task = {
+          ...detail.task,
+          ...input.input.task,
+          intent: { kind: 'text', body: input.input.task.intentBody },
+          status: 'active',
+          lastError: null,
+        };
+        detail.approved = true;
+      }
       if (input.kind === 'update') {
         detail.task = {
           ...detail.task,
@@ -184,10 +212,16 @@ mount(() => {
     { when: 'always' },
   );
   keymap.bind(
-    'mod+shift+d',
+    'mod+shift+r',
     () => {
       revision++;
-      detail = null;
+      session.boundaryRevision++;
+      detail = {
+        ...detail,
+        revision,
+        approved: false,
+        task: { ...detail.task, status: 'paused', lastError: 'scheduler_authorization_changed' },
+      };
       publish();
     },
     { when: 'always' },

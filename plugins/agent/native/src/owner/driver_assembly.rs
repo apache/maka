@@ -91,11 +91,10 @@ impl Owner {
                 .into());
             }
         };
-        let legacy_discovery = self.scheduler.investigation.read().unwrap().as_deref()
-            == Some(view.spec.session_id.as_str())
-            && super::discovery::legacy_tools(view.spec.allowed_tools.as_deref());
+        let read_only_discovery = self.scheduler.investigation_profile(&view.spec.session_id)
+            == Some(DiscoveryWorkerTools::ReadOnly);
         let external_bridge = matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external");
-        let host_tools = !legacy_discovery && (model.is_some() || external_bridge);
+        let host_tools = !read_only_discovery && (model.is_some() || external_bridge);
         let catalog = if !host_tools {
             self.mcp_projects.base.clone()
         } else {

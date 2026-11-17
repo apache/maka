@@ -417,11 +417,9 @@ impl Journal {
                 sqlx::query(index).execute(&mut *transaction).await
                     .map_err(|error| format!("client journal creating recovery index: {error}"))?;
             }
-            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', reply_to TEXT)")
+            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', reply_to TEXT, quotes TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
-                .execute(&mut *transaction).await.map_err(error)?;
-            sqlx::query(include_str!("../migrations/202611100001_draft_quotes.sql"))
                 .execute(&mut *transaction).await.map_err(error)?;
             transaction
                 .commit()
@@ -446,7 +444,7 @@ impl Journal {
         })
     }
     pub(crate) async fn load_draft(&self, key: &DraftKey) -> Result<Option<Draft>> {
-        let row = sqlx::query("SELECT d.revision,CASE WHEN d.consumed=1 THEN '' ELSE d.text END AS text,CASE WHEN d.consumed=1 THEN '[]' ELSE d.attachments END AS attachments,CASE WHEN d.consumed=1 THEN '[]' ELSE d.mentions END AS mentions,CASE WHEN d.consumed=1 THEN NULL ELSE d.reply_to END AS reply_to,CASE WHEN d.consumed=1 THEN '[]' ELSE COALESCE(q.quotes,'[]') END AS quotes FROM drafts d LEFT JOIN draft_quotes q ON q.owner=d.owner AND q.revision=d.revision WHERE d.owner=?")
+        let row = sqlx::query("SELECT d.revision,CASE WHEN d.consumed=1 THEN '' ELSE d.text END AS text,CASE WHEN d.consumed=1 THEN '[]' ELSE d.attachments END AS attachments,CASE WHEN d.consumed=1 THEN '[]' ELSE d.mentions END AS mentions,CASE WHEN d.consumed=1 THEN NULL ELSE d.reply_to END AS reply_to,CASE WHEN d.consumed=1 THEN '[]' ELSE d.quotes END AS quotes FROM drafts d WHERE d.owner=?")
             .bind(serde_json::to_string(key).map_err(error)?)
             .fetch_optional(&self.pool)
             .await

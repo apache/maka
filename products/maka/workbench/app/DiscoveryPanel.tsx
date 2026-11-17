@@ -104,7 +104,12 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   const minutes = signal('30'),
     intent = signal('');
   const cadence = signal<IntervalCadence>(discoveryCadence());
-  const workerTools = signal<DiscoveryWorkerTools>('session');
+  const workerTools = signal<DiscoveryWorkerTools>('read_only');
+  const approvedTools = signal<string[] | null>(null);
+  const reapproving = signal(false);
+  const deleting = signal(false);
+  const needsRenewedApproval = (plan = detail()) =>
+    !!plan && !plan.approved && plan.task.lastError === 'scheduler_authorization_changed';
   const resolvedWorkerTools = () =>
     editing() ? workerTools() : discoveryWorkerTools(detail()?.task.effect);
   const error = createText();
@@ -170,6 +175,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     formGeneration++;
     selected.set(id);
     editing.set(false);
+    deleting.set(false);
     detail.set(null);
     error.set('');
     try {
@@ -178,12 +184,48 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
     }
   };
-  const edit = async (fresh: boolean) => {
+  const previewTools = async (
+    captured: DiscoveryApproval,
+    profile: DiscoveryWorkerTools,
+    ticket: number,
+  ) => {
+    approvedTools.set(null);
+    try {
+      const result = await props.host.query('agent', 'schedules', {
+        kind: 'preview_discovery',
+        effect: { kind: 'discovery', ...captured, workerTools: profile },
+        taskId: editingPlan()?.task.id ?? null,
+      });
+      if (!alive || ticket !== formGeneration) return;
+      if (result.kind !== 'discovery_tools') throw new UiError('Discovery plan changed');
+      approvedTools.set(result.names);
+    } catch (reason) {
+      if (alive && ticket === formGeneration)
+        error.set(errorText(reason, 'Could not load the discovery plan.'));
+    }
+  };
+  const changeWorkerTools = (value: string) => {
+    const profile = value === 'session' ? 'session' : 'read_only';
+    workerTools.set(profile);
+    const captured = basis();
+    if (captured) {
+      error.set('');
+      void previewTools(captured, profile, ++formGeneration);
+    }
+  };
+  const edit = async (fresh: boolean, approve = false) => {
     const plan = fresh ? null : detail();
     if (busy() || (!fresh && !plan)) return;
     const ticket = ++formGeneration;
     editingPlan.set(plan);
-    workerTools.set(fresh ? 'session' : discoveryWorkerTools(plan?.task.effect));
+    reapproving.set(approve);
+    deleting.set(false);
+    const profile =
+      plan?.approved || needsRenewedApproval(plan)
+        ? discoveryWorkerTools(plan?.task.effect)
+        : 'read_only';
+    workerTools.set(profile);
+    approvedTools.set(null);
     intent.set(plan?.task.intent.body ?? '');
     const schedule = plan?.task.schedule;
     minutes.set(schedule?.kind === 'interval' ? String(schedule.everySeconds / 60) : '30');
@@ -193,7 +235,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     error.set('');
     try {
       const captured = await capture();
-      if (alive && ticket === formGeneration) basis.set(captured);
+      if (alive && ticket === formGeneration) {
+        basis.set(captured);
+        await previewTools(captured, profile, ticket);
+      }
     } catch (reason) {
       if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
     }
@@ -233,7 +278,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           } else if (!editing() && !busy()) {
             const plans = visibleTasks();
             const first =
-              plans.find((plan) => !plan.approved && plan.status === 'paused') ?? plans[0];
+              plans.find((plan) => plan.approved && plan.status === 'active') ?? plans[0];
             if (first) await select(first.id);
             else await edit(true);
           } else if (id) {
@@ -259,11 +304,12 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     }
   };
   void watch();
-  const change = async (action: 'pause' | 'resume' | 'approve' | 'trigger_now') => {
+  const change = async (action: 'pause' | 'resume' | 'trigger_now' | 'delete') => {
     const current = detail();
     if (!current || busy()) return;
     busy.set(true);
     error.set('');
+    let deleted = false;
     try {
       const result = await props.control('schedule', {
         kind: action,
@@ -271,17 +317,46 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         revision: current.revision,
       });
       if (result.kind === 'conflict') throw new UiError('Discovery plan changed');
-      if (result.kind === 'rejected') throw new Error(result.reason);
-      if (alive) await readDetail(current.task.id);
+      if (result.kind === 'rejected') {
+        if (
+          alive &&
+          action === 'resume' &&
+          [
+            'scheduler_authorization_changed',
+            'background_model_route_changed',
+            'scheduler_user_approval_required',
+          ].includes(result.reason)
+        ) {
+          busy.set(false);
+          await edit(false, true);
+          return;
+        }
+        throw new Error(result.reason);
+      }
+      if (alive && action === 'delete') {
+        tasks.set(tasks().filter((task) => task.id !== current.task.id));
+        selected.set(null);
+        detail.set(null);
+        deleting.set(false);
+        deleted = true;
+      } else if (alive) {
+        await readDetail(current.task.id);
+      }
     } catch (reason) {
       if (alive) error.set(errorText(reason, 'Could not update the discovery plan.'));
     } finally {
       if (alive) busy.set(false);
     }
+    if (deleted && alive) {
+      const next = visibleTasks()[0];
+      if (next) await select(next.id);
+      else await edit(true);
+    }
   };
   const save = async () => {
-    const captured = basis();
-    if (!captured || busy() || unavailableEditTarget()) return;
+    const captured = basis(),
+      tools = approvedTools();
+    if (!captured || !tools || busy() || unavailableEditTarget()) return;
     const current = editingPlan(),
       id = current?.task.id;
     let input;
@@ -296,6 +371,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         current,
         { cadence: cadence(), workerTools: workerTools() },
       );
+      input.approvedTools = tools;
     } catch {
       error.set(message('Discovery invalid settings'));
       return;
@@ -307,16 +383,28 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (!alive) return;
       if (!sameValue(latest, captured)) {
         basis.set(latest);
+        await previewTools(latest, workerTools(), ++formGeneration);
         throw new UiError('Discovery settings changed');
       }
       const result = await props.control(
         'schedule',
         id && current
-          ? { kind: 'update', taskId: id, revision: current.revision, input }
+          ? {
+              kind: reapproving() ? 'approve' : 'update',
+              taskId: id,
+              revision: current.revision,
+              input,
+            }
           : { kind: 'create', input },
       );
       if (result.kind === 'conflict') throw new UiError('Discovery plan changed');
-      if (result.kind === 'rejected') throw new Error(result.reason);
+      if (result.kind === 'rejected') {
+        if (result.reason === 'scheduler_discovery_tools_changed') {
+          await previewTools(latest, workerTools(), ++formGeneration);
+          throw new UiError('Discovery settings changed');
+        }
+        throw new Error(result.reason);
+      }
       if (alive) {
         if (selected() !== result.taskId) detail.set(null);
         selected.set(result.taskId);
@@ -342,6 +430,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     if (current.pendingFire) return 'Discovery queued';
     if (current.task.status === 'completed') return 'Discovery plan completed';
     if (current.task.status === 'expired') return 'Discovery plan expired';
+    if (needsRenewedApproval(current)) return 'Discovery needs renewed approval';
     if (!current.approved) return 'Discovery needs approval';
     return current.task.status === 'active' ? 'Discovery active' : 'Discovery paused';
   };
@@ -460,7 +549,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
               {tr('Discovery last check')}:{' '}
               {last() ? time(last()?.at) + ' · ' + tr(outcome()) : tr('Discovery no history')}
             </Text>
-            <If when={detail()!.task.lastError}>
+            <If when={detail()!.task.lastError && !needsRenewedApproval()}>
               <Text style={{ ...captionTextStyle, color: C.danger, userSelect: 'text' }}>
                 {detail()!.task.lastError}
               </Text>
@@ -477,8 +566,13 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                 }
               </If>
               <If when={editablePlan()}>
-                {action('Edit discovery plan', () => void edit(false), !!detail()!.pendingFire)}
+                {action(
+                  'Edit discovery plan',
+                  () => void edit(false, !detail()!.approved),
+                  !!detail()!.pendingFire,
+                )}
               </If>
+              {action('Delete', () => deleting.set(true), !!detail()!.pendingFire)}
               <If when={detail()!.task.status === 'active'}>
                 {action('Pause discovery', () => void change('pause'))}
               </If>
@@ -552,9 +646,14 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
               { value: 'session', title: tr('Use standard Session tools') },
               { value: 'read_only', title: tr('Use read-only investigation tools') },
             ]}
-            change={(value) => workerTools.set(value === 'session' ? 'session' : 'read_only')}
-            disabled={busy()}
+            change={changeWorkerTools}
+            disabled={busy() || !basis()}
           />
+          <If when={approvedTools()?.length}>
+            <Text style={{ ...captionTextStyle, color: C.secondary, userSelect: 'text' }}>
+              {approvedTools()!.join(' · ')}
+            </Text>
+          </If>
           <If when={unavailableEditTarget()}>
             <Text style={{ ...captionTextStyle, color: C.danger }}>
               {tr('Discovery plan changed')}
@@ -579,43 +678,64 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         <Text style={{ ...captionTextStyle, color: C.danger }}>{renderText(watchError())}</Text>
       </If>
       <DialogFooter>
-        <If when={!watching()}>{action('Refresh', () => void watch())}</If>
-        <SettingsButton
-          label={tr(editing() ? 'Cancel' : 'Close')}
-          onPress={cancel}
-          disabled={busy()}
-        />
-        <If when={editing()}>
+        <If when={deleting()}>
+          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Delete discovery plan?')}</Text>
           <SettingsButton
-            label={tr(
-              editingPlan() ? 'Approve and save discovery' : 'Approve and enable discovery',
-            )}
-            tone="primary"
-            onPress={() => void save()}
-            disabled={
-              busy() ||
-              loading() ||
-              !basis() ||
-              (!!editingPlan() && !!detail()?.pendingFire) ||
-              unavailableEditTarget()
-            }
+            label={tr('Cancel')}
+            disabled={busy()}
+            onPress={() => deleting.set(false)}
+          />
+          <SettingsButton
+            label={tr('Delete')}
+            tone="danger"
+            disabled={busy() || !!detail()?.pendingFire}
+            onPress={() => void change('delete')}
           />
         </If>
-        <If when={!editing() && detail()?.task.status === 'paused'}>
+        <If when={!deleting()}>
+          <If when={!watching()}>{action('Refresh', () => void watch())}</If>
           <SettingsButton
-            label={tr(detail()!.approved ? 'Resume discovery' : 'Approve and enable discovery')}
-            tone="primary"
-            onPress={() => void change(detail()!.approved ? 'resume' : 'approve')}
-            disabled={busy() || !!detail()!.pendingFire}
+            label={tr(editing() ? 'Cancel' : 'Close')}
+            onPress={cancel}
+            disabled={busy()}
           />
-        </If>
-        <If when={!editing() && detail()?.task.status === 'active'}>
-          <SettingsButton
-            label={tr('Run discovery now')}
-            tone="primary"
-            onPress={() => void change('trigger_now')}
-            disabled={busy() || !!detail()!.pendingFire || !detail()!.approved}
-          />
+          <If when={editing()}>
+            <SettingsButton
+              label={tr(
+                reapproving() && needsRenewedApproval(editingPlan())
+                  ? 'Approve and resume discovery'
+                  : editingPlan() && !reapproving()
+                    ? 'Approve and save discovery'
+                    : 'Approve and enable discovery',
+              )}
+              tone="primary"
+              onPress={() => void save()}
+              disabled={
+                busy() ||
+                loading() ||
+                !basis() ||
+                !approvedTools() ||
+                (!!editingPlan() && !!detail()?.pendingFire) ||
+                unavailableEditTarget()
+              }
+            />
+          </If>
+          <If when={!editing() && detail()?.task.status === 'paused'}>
+            <SettingsButton
+              label={tr(detail()!.approved ? 'Resume discovery' : 'Review discovery permissions')}
+              tone="primary"
+              onPress={() => (detail()!.approved ? void change('resume') : void edit(false, true))}
+              disabled={busy() || !!detail()!.pendingFire}
+            />
+          </If>
+          <If when={!editing() && detail()?.task.status === 'active'}>
+            <SettingsButton
+              label={tr('Run discovery now')}
+              tone="primary"
+              onPress={() => void change('trigger_now')}
+              disabled={busy() || !!detail()!.pendingFire || !detail()!.approved}
+            />
+          </If>
         </If>
       </DialogFooter>
     </ModalDialog>

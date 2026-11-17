@@ -2468,6 +2468,11 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'preview_discovery';
+      effect: AgentScheduledEffect;
+      taskId?: string | null;
+    }
+  | {
       kind: 'discovery';
       sessionId: string;
       cursor?: string | null;
@@ -2482,7 +2487,42 @@ export type AgentScheduleRead =
       kind: 'get';
       taskId: string;
     };
+export type AgentScheduledEffect =
+  | {
+      kind: 'session';
+      delivery?: AutomationDelivery & string;
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor_session';
+      target: AgentScheduledTarget;
+      selection: AgentExecutorSelection;
+    }
+  | {
+      kind: 'agent_run';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'discovery';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
+      /**
+       * Tool and permission profile requested for this plan.
+       */
+      workerTools: DiscoveryWorkerTools;
+    };
+export type AutomationDelivery = 'steering' | 'followup';
+export type DiscoveryWorkerTools = 'read_only' | 'session';
 export type AgentSchedules =
+  | {
+      kind: 'discovery_tools';
+      names: string[];
+    }
   | {
       kind: 'page';
       revision: number;
@@ -2532,37 +2572,6 @@ export type Schedule =
     };
 export type IntervalCadence = 'fixed' | 'after_completion';
 export type Recurrence = 'daily' | 'weekly' | 'monthly';
-export type AgentScheduledEffect =
-  | {
-      kind: 'session';
-      delivery?: AutomationDelivery & string;
-      target: AgentScheduledTarget;
-      model: ModelSelection;
-      thinkingLevel?: ThinkingLevel | null;
-    }
-  | {
-      kind: 'executor_session';
-      target: AgentScheduledTarget;
-      selection: AgentExecutorSelection;
-    }
-  | {
-      kind: 'agent_run';
-      target: AgentScheduledTarget;
-      model: ModelSelection;
-      thinkingLevel?: ThinkingLevel | null;
-    }
-  | {
-      kind: 'discovery';
-      target: AgentScheduledTarget;
-      model: ModelSelection;
-      thinkingLevel?: ThinkingLevel | null;
-      /**
-       * Tool and permission profile approved for this plan.
-       */
-      workerTools?: DiscoveryWorkerTools & string;
-    };
-export type AutomationDelivery = 'steering' | 'followup';
-export type DiscoveryWorkerTools = 'read_only' | 'session';
 export type Creator =
   | {
       kind: 'user';
@@ -2591,6 +2600,10 @@ export type AgentScheduleChange =
       kind: 'approve';
       taskId: string;
       revision: number;
+      /**
+       * Refresh the discovery target and approve it in one operation.
+       */
+      input?: AgentScheduledInput | null;
     }
   | {
       kind: 'pause';
@@ -7395,6 +7408,10 @@ export interface AgentScheduledInput {
   task: Create;
   timezone: string;
   misfire: Misfire;
+  /**
+   * Tool names presented to the user when approving a discovery plan.
+   */
+  approvedTools?: string[] | null;
 }
 export interface Create {
   title: string;

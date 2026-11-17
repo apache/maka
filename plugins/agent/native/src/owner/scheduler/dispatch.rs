@@ -61,12 +61,13 @@ impl CapturedRun {
     pub(in crate::owner) fn validate_background_target(
         &self,
         session: &SessionRecord<ResolvedConfiguration>,
+        discovery_profile: Option<DiscoveryWorkerTools>,
     ) -> Result<(), String> {
         if let Some(boundary) = &self.background
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
                 || session.configuration.permissions
-                    != if super::super::discovery::legacy_tools(self.allowed_tools.as_deref()) {
+                    != if discovery_profile == Some(DiscoveryWorkerTools::ReadOnly) {
                         super::super::discovery::permissions()
                     } else {
                         boundary.permissions.clone()
@@ -178,6 +179,13 @@ impl Owner {
                 sandbox_ceiling,
             )
             .await?;
+        let discovery_tools = match &plan.task.effect {
+            ScheduledEffect::Discovery { worker_tools, .. } => Some(
+                self.discovery_tool_grant(&basis, target, *worker_tools)
+                    .await?,
+            ),
+            _ => None,
+        };
         let approval = super::super::notifications::BackgroundApproval {
             target: target.clone(),
             model: model.clone(),
@@ -186,22 +194,19 @@ impl Owner {
             language: basis.language,
             sandbox_ceiling: basis.background_sandbox_ceiling,
         };
-        Ok(
-            if let ScheduledEffect::Discovery { worker_tools, .. } = &plan.task.effect {
-                Approval::Discovery {
-                    approval,
-                    recall: self.discovery_recall_enabled(),
-                    session_tools: *worker_tools == DiscoveryWorkerTools::Session,
-                    authority: DiscoveryAuthority::User {
-                        generation: uuid::Uuid::new_v4(),
-                    },
-                }
-            } else {
-                Approval::Execution {
-                    approval: BackgroundGrant::Model(approval),
-                }
-            },
-        )
+        Ok(if let Some(tools) = discovery_tools {
+            Approval::Discovery {
+                approval,
+                tools,
+                authority: DiscoveryAuthority::User {
+                    generation: uuid::Uuid::new_v4(),
+                },
+            }
+        } else {
+            Approval::Execution {
+                approval: BackgroundGrant::Model(approval),
+            }
+        })
     }
 
     pub(in crate::owner) async fn approve_background(
@@ -472,14 +477,30 @@ impl Owner {
             let mut plan = plan.clone();
             let before = serde_json::to_value(&plan).map_err(reason)?;
             let at = now() as i64;
-            if let Some(grant) = plan
-                .authorization
-                .as_ref()
-                .and_then(Approval::followup_grant)
-                && !self.scheduler.followup_is_current(grant).await?
+            if plan.task.status == Status::Active
+                && let Some(
+                    approval @ Approval::Discovery {
+                        approval: grant, ..
+                    },
+                ) = &plan.authorization
             {
-                plan = pause_plan(&plan, at, None);
-                plan.authorization = None;
+                let source_changed = match self.session(&grant.target.session_id).await {
+                    Ok(source) => {
+                        super::super::discovery::check_target(&source, &grant.target).is_err()
+                    }
+                    Err(error) if error == "agent_session_unavailable" => true,
+                    Err(error) => return Err(error),
+                };
+                let followup_changed = match approval.followup_grant() {
+                    Some(followup) => !self.scheduler.followup_is_current(followup).await?,
+                    None => false,
+                };
+                if source_changed || followup_changed {
+                    plan = pause_plan(&plan, at, None);
+                    plan.authorization = None;
+                    plan.task.next_fire_at = None;
+                    plan.task.last_error = Some("scheduler_authorization_changed".into());
+                }
             }
             if recover && self.settings.scheduled_tasks {
                 plan.recover(at).map_err(reason)?;
@@ -498,7 +519,14 @@ impl Owner {
             let expired = plan.task.expires_at.is_some_and(|expires| at >= expires);
             match self.dispatch_scheduled(fire, &plan, expired).await {
                 Ok(Some(run)) => {
+                    let needs_approval = plan.task.last_error.as_deref()
+                        == Some("scheduler_authorization_changed")
+                        && plan.authorization.is_none();
                     plan.settle(run).map_err(reason)?;
+                    if needs_approval {
+                        plan.task.next_fire_at = None;
+                        plan.task.last_error = Some("scheduler_authorization_changed".into());
+                    }
                     self.scheduler
                         .commit(&mut catalog, &id, Some(plan), None)
                         .await?;

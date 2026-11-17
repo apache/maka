@@ -134,10 +134,10 @@ non-empty direction focuses the investigation on that topic.
 Each fire creates a fresh worker Session using the approved workspace and model.
 The approved plan chooses read-only investigation tools or ordinary Session tools and
 permissions, including configured Shell, web and MCP tools. Both profiles include
-`DiscoveryMemory` and `DiscoveryComplete`. New proposals preselect standard Session
-tools. Only the user can resume a plan they paused.
-An existing plan with no profile stays read-only until the user selects and approves
-the Session profile.
+`DiscoveryMemory` and `DiscoveryComplete`. New plans preselect read-only tools.
+In Session mode, the panel previews the available tools and Host records the approved
+list. Later runs use that list under the current tool and workspace limits. Users may
+approve an expanded scope in the panel. Only the user can resume a plan they paused.
 While handling an approved plan's report, the Bot can schedule a one-time follow-up
 under the original workspace, model and tool authority. A wider scope or a new
 recurring plan waits for approval. Pausing the parent ends that follow-up authority.
@@ -164,9 +164,9 @@ the investigation slot. Result-write uncertainty remains an unknown tool outcome
 Plans, the active job and completed receipts use the existing scheduler KV namespace;
 no separate database or lease is introduced. `DiscoveryMemory` shares investigation
 results, progress, corrections, notification decisions and user feedback across fresh
-workers with the same Bot source boundary. A changed Bot, workspace, permission revision
-or Recall grant requires renewed approval and uses a different record scope. References
-never grant source access.
+workers with the same Bot and stable workspace binding. An invalid execution approval
+pauses the schedule for renewed approval. Permission revisions and Recall settings
+do not change the record identity. Source access follows the current permissions.
 
 The investigation opens with references to the previous record and up to six conversations
 from the authorized workspace catalog, when available. It includes IDs and times only.
@@ -189,7 +189,8 @@ the Agent's original reconciliation and risk-decision rules still apply.
 `DiscoveryMemory` also supports explicit decisions and corrections. `feedback`
 links a Bot interpretation to an actual human input in the current Turn; it cannot use
 worker notifications as user feedback. Exact text and quotes stay in the original
-message and are readable through paginated `feedback_source`. `send` accepts optional
+message. Records point to the original Session and message for standard history
+reading. `send` accepts optional
 immutable `quotes`, including a quote-only message, through ordinary and steering
 admission. Queued text can be edited while retaining its excerpts. Native, external and
 ACP executors receive those excerpts as quoted prompt text. A quote grants no access

@@ -386,7 +386,10 @@ impl Owner {
         }
         self.validate_background(basis).await?;
         let current = self.session(session).await?;
-        basis.validate_background_target(&current)?;
+        basis.validate_background_target(
+            &current,
+            self.scheduler.investigation_profile(&current.id),
+        )?;
         if let Some(boundary) = boundary {
             discovery::check_target(&current, boundary)?;
         }

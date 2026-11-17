@@ -50,8 +50,7 @@ pub enum ScheduledEffect {
         target: ScheduledTarget,
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-        /// Tool and permission profile approved for this plan.
-        #[serde(default)]
+        /// Tool and permission profile requested for this plan.
         worker_tools: DiscoveryWorkerTools,
     },
 }
@@ -123,6 +122,9 @@ pub struct ScheduledInput {
     pub task: maka_scheduler::task::Create<ScheduledEffect>,
     pub timezone: String,
     pub misfire: TaskMisfire,
+    /// Tool names presented to the user when approving a discovery plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved_tools: Option<Vec<String>>,
 }
 #[derive(Clone, Deserialize, JsonSchema)]
 #[serde(
@@ -133,6 +135,10 @@ pub struct ScheduledInput {
 )]
 #[schemars(rename = "AgentScheduleRead")]
 pub enum ScheduleRead {
+    PreviewDiscovery {
+        effect: ScheduledEffect,
+        task_id: Option<String>,
+    },
     Discovery {
         session_id: String,
         cursor: Option<String>,
@@ -204,6 +210,9 @@ pub enum InvestigationPhase {
 )]
 #[schemars(rename = "AgentSchedules")]
 pub enum Schedules {
+    DiscoveryTools {
+        names: Vec<String>,
+    },
     Page {
         revision: u64,
         tasks: Vec<ScheduledSummary>,
@@ -236,6 +245,8 @@ pub enum ScheduleChange {
     Approve {
         task_id: String,
         revision: u64,
+        /// Refresh the discovery target and approve it in one operation.
+        input: Option<ScheduledInput>,
     },
     Pause {
         task_id: String,
