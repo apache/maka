@@ -435,6 +435,10 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
         .route("/page",axum::routing::get(move || {let calls = web.clone(); async move {
             calls.fetch_add(1,Ordering::SeqCst); "web-acceptance-marker"
         }}))
+        // Larger than the response channel, so WebFetch closes the body unread.
+        .route("/missing", axum::routing::get(|| async {
+            (axum::http::StatusCode::NOT_FOUND, "missing ".repeat(32 * 1024))
+        }))
         .route("/search", axum::routing::get(move |uri: axum::http::Uri| {
             let search = search.clone();
             async move {
@@ -504,6 +508,10 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
             let output = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
             if requests {
                 assert!(output.contains("https://www.rust-lang.org/"), "{output}");
+                // An HTTP error page is an ordinary result, not an unknown effect.
+                let missing = tool_round(&rig, &mut provider, id, code, "WebFetch", json!({"url":format!("{address}/missing")})).await?;
+                assert!(missing.contains("WebFetch failed with HTTP 404"), "{missing}");
+                assert!(!missing.contains("outcome unknown"), "{missing}");
             } else {
                 assert!(output.contains("WebSearch network access was denied"), "{output}");
             }

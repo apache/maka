@@ -24,7 +24,9 @@ use maka_agent_facts::interaction::PermissionRequest;
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call::Scope;
 use maka_capabilities::http::Error;
+use maka_event_log::effects::Operation;
 use maka_host_runtime::http::{Authority, Worker};
+use maka_plugin_core::http::Method;
 use maka_sandbox::{Destination, Network, Sandbox};
 use std::panic::AssertUnwindSafe;
 
@@ -42,6 +44,22 @@ impl Failure {
                 .lock()
                 .expect("Web call failure")
                 .get_or_insert_with(|| error.clone());
+        }
+    }
+    /// A body-less GET or HEAD only reads. Losing its response (an error page
+    /// or unsupported document closed unread, or a dropped connection) leaves
+    /// no remote effect to reconcile, so the call fails like any Web error.
+    fn observe_effect(&self, operation: &Operation, error: &ToolError) {
+        let read = matches!(
+            operation,
+            Operation::Http {
+                method: Method::Get | Method::Head,
+                body_length: Some(0),
+                ..
+            }
+        );
+        if !(read && matches!(error, ToolError::OutcomeUnknown(_))) {
+            self.observe(error);
         }
     }
     pub(super) fn is_uncertain(&self) -> bool {
@@ -333,7 +351,7 @@ impl Authority for Access {
     fn record(
         &self,
         call: Scope,
-        _operation: maka_event_log::effects::Operation,
+        operation: Operation,
         destination: Destination,
         effect: BoxFuture<'static, Result<Value, ToolError>>,
     ) -> BoxFuture<'static, Result<Value, ToolError>> {
@@ -345,7 +363,7 @@ impl Authority for Access {
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
             let result = effect.await;
             if let Err(error) = &result {
-                owner.failure.observe(error);
+                owner.failure.observe_effect(&operation, error);
             }
             if matches!(
                 result,
@@ -454,7 +472,7 @@ impl Authority for CredentialCheck {
     fn record(
         &self,
         call: Scope,
-        _operation: maka_event_log::effects::Operation,
+        operation: Operation,
         destination: Destination,
         effect: BoxFuture<'static, Result<Value, ToolError>>,
     ) -> BoxFuture<'static, Result<Value, ToolError>> {
@@ -468,7 +486,7 @@ impl Authority for CredentialCheck {
             // The shared worker owns socket settlement, even after observer loss.
             let result = effect.await;
             if let Err(error) = &result {
-                authority.failure.observe(error);
+                authority.failure.observe_effect(&operation, error);
             }
             result
         })
