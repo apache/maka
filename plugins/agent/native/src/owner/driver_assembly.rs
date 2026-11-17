@@ -175,7 +175,7 @@ impl Owner {
         Ok((basis, selection))
     }
 
-    pub(super) async fn run_catalog(
+    pub(super) fn run_catalog(
         &self,
         access: Arc<RunAccess>,
         mcp: &crate::mcp::Catalog,
@@ -190,28 +190,13 @@ impl Owner {
             access.clone(),
         )
         .map_err(RunError::InvalidInput)?;
+        // Keep Goal tool visibility static across turns so starting or completing a Goal
+        // never mutates the tool catalog or exec.description prefix cache.
         if self.settings.goals {
-            let has_unfinished_goal = matches!(
-                access.spec().trigger,
-                maka_agent_facts::durable::Trigger::Goal { .. }
-            ) || self
-                .goals
-                .repository
-                .read(&access.execution().session_id)
-                .await
-                .map_err(|error| RunError::InvalidInput(error.to_string()))?
-                .is_some_and(|saved| {
-                    matches!(
-                        saved.goal.status,
-                        GoalStatus::Active | GoalStatus::Paused | GoalStatus::Blocked
-                    )
-                });
-            if has_unfinished_goal {
-                live.tools = live
-                    .tools
-                    .with_always_visible(&["GetGoal", "GoalStatus"])
-                    .map_err(|error| RunError::InvalidInput(error.to_string()))?;
-            }
+            live.tools = live
+                .tools
+                .with_always_visible(super::goal::tools::NAMES)
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
         }
         let live_tools = mcp
             .for_run(access, live.tools)
@@ -315,7 +300,7 @@ impl Owner {
                 preflight_stage = Some(AuthorityStage::InputCodec);
                 let (basis, selection) = self.restored_data(&view).await.map_err(|failure| { preflight_stage = Some(failure.stage); failure.cause })?;
                 preflight_stage = Some(AuthorityStage::ToolBindings);
-                let catalog = self.run_catalog(access.clone(), basis.mcp_catalog.as_ref().ok_or_else(|| RunError::InvalidInput("current MCP capability is unavailable".into()))?, &selection).await?;
+                let catalog = self.run_catalog(access.clone(), basis.mcp_catalog.as_ref().ok_or_else(|| RunError::InvalidInput("current MCP capability is unavailable".into()))?, &selection)?;
                 preflight_stage = Some(AuthorityStage::BackendScope);
                 let cleanup = Evidence::default();
                 let workers = TaskTracker::new();

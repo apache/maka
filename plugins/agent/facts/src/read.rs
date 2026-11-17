@@ -35,7 +35,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroUsize;
 
-pub const MAX_PAGE_CHARS: usize = 24_000;
+pub const MAX_PAGE_CHARS: usize = 7_500;
 pub const DESCRIPTION: &str = "Read UTF-8 text, a PNG/JPEG/GIF/WebP image, or a Maka resource by path. Supported Maka resources: maka://session/<id> or session:<id> (reads a Room or Conversation transcript), maka://session/<id>/tool-results/<event-id>, attachment:<id>, and archive:<event-id> (short unique ID prefixes are accepted for attachment/archive). Background shell tasks use ProcessRead, not Read. offset is a 0-based line index and limit is a positive line count; symlinks and parent (..) path components are rejected for workspace files. If next is non-null, pass page.next unchanged to Read to continue; restart with the original path if content changed.";
 const PREFIX: &str = "maka://read/";
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;

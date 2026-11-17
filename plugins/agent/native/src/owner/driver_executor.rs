@@ -888,12 +888,6 @@ impl ExternalPorts for DriverExecutor {
             .map_err(|error| RunError::InvalidInput(error.to_string()))?;
             let mut skill_prompt = None;
             super::driver_model::merge_input_skills(&mut skill_prompt, &input)?;
-            let instructions = match (&self.instructions, skill_prompt) {
-                (Some(base), Some(skill)) => Some(format!("{base}\n\n{}", skill.text)),
-                (Some(base), None) => Some(base.clone()),
-                (None, Some(skill)) => Some(skill.text),
-                (None, None) => None,
-            };
             let RunInput::Message {
                 content,
                 source_messages,
@@ -904,7 +898,7 @@ impl ExternalPorts for DriverExecutor {
                     "external runtime requires original message input".into(),
                 ));
             };
-            let content = if source_messages
+            let mut content = if source_messages
                 .iter()
                 .any(|source| source.message.origin.is_some())
             {
@@ -916,6 +910,15 @@ impl ExternalPorts for DriverExecutor {
             } else {
                 content
             };
+            // Append per-turn skill instructions to the turn message rather than mutating
+            // request.instructions, preserving the external thread's instructions_digest and prefix cache.
+            if let Some(skill) = skill_prompt {
+                if content.text.is_empty() {
+                    content.text = skill.text;
+                } else {
+                    content.text = format!("{}\n\n{}", content.text, skill.text);
+                }
+            }
             let live_workspace = self.backend.service_binding().is_none();
             let request = Request {
                 task_id: task,
@@ -924,7 +927,7 @@ impl ExternalPorts for DriverExecutor {
                 conversation_key: view.spec.session_id.clone(),
                 content,
                 cwd: view.spec.workspace.clone(),
-                instructions,
+                instructions: self.instructions.clone(),
                 settings: selection.settings.clone(),
             };
             let actual = self.fresh_authority(&request, &self.cancellation).await?;

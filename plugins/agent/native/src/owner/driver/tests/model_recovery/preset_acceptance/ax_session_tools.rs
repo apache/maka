@@ -118,12 +118,6 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
             .filter_map(|t| t["function"]["name"].as_str())
             .collect();
         assert!(direct_tool_names.contains(&"Read"), "{direct_tool_names:?}");
-        assert!(
-            !direct_tool_names.contains(&"CreateGoal")
-                && !direct_tool_names.contains(&"GetGoal")
-                && !direct_tool_names.contains(&"GoalStatus"),
-            "Goal tools must stay deferred when session has no active Goal: {direct_tool_names:?}"
-        );
         let user_prompt = text_messages(&req1);
         assert!(user_prompt.contains("<session_references>"), "{user_prompt}");
         assert!(
