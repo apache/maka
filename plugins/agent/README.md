@@ -48,15 +48,7 @@ User-controlled memory endpoints (`memories`, `memory`, `memoryHistory`, `change
 
 ## Subagent presets
 
-## Ordinary memory records
-
-The Agent service exposes `memories`, `memory`, `memoryHistory` and `changeMemory`; see the [contract](api/src/contract/memory.rs). Trusted management callers can create, correct, mark as always-used, suppress and explicitly restore records in a personal or Host-resolved project scope. Updates use revision CAS; content versions, user-operation sources and body-free receipts commit on the original Root. Suppression retains matching content but hides it from normal reads and history.
-
-The existing settings preferences API controls `memory.enabled` and `memory.agentReadEnabled`. Model reads require current execution authority and both switches; user management remains available when model reading is disabled. This stage does not expose a model write tool, inject always-used records, or perform semantic deduplication. Those consumers must use the same records and suppression boundary.
-
-Clients resolve selected conversation text with `memorySource`, page evidence with `memoryEvidence`, and attach it to a specific assertion with `changeMemory.add_evidence`. The Host verifies the owned conversation, immutable message identity, fingerprint and text span at commit. Assertion metadata records kind, statement and temporal validity. `create.incognito` establishes an immutable memory privacy boundary inherited by derived sessions; it does not erase conversation history.
-
-## Subagent preset management
+Reusable subagent roles (`presets`, `preset`, `createPreset`, `updatePreset`, `deletePreset` in [`api/src/preset.rs`](api/src/preset.rs), exposed to agents as `SubagentPreset*` tools) store a name, selection description, system instruction, model target, and thinking level inside the Host's Agent scope. Mutations require `expectedRevision` and commit through the Host operation journal. Pass a preset ID to `SessionCreate.presetId` to spawn a worker prebound to that role.
 
 ## MCP servers
 
