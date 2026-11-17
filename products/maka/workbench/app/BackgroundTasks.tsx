@@ -183,7 +183,13 @@ export function createBackgroundTaskPanel(tasks: ComposerBackgroundTasks, height
                 accessibilityLabel={tr('Finished commands')}
                 selected={finishedOpen()}
                 onPress={() => finishedOpen.set(!finishedOpen())}
-                style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                style={{
+                  ...controlStyle,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'flex-start',
+                  gap: 8,
+                }}
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
               >
