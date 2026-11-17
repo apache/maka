@@ -10406,15 +10406,19 @@ fn measure_leaf_size<M: TextEngine>(
                 let max_width = if cx.text.no_wrap {
                     None
                 } else {
-                    known.width.or(match (available.width, field) {
-                        (AvailableSpace::Definite(w), Some(field)) => Some(field.min(w)),
-                        (AvailableSpace::Definite(w), None) => Some(w),
+                    // The available width excludes padding and borders.
+                    match (available.width, field) {
+                        (AvailableSpace::Definite(w), Some(field)) if known.width.is_none() => {
+                            Some(field.min(w))
+                        }
+                        (AvailableSpace::Definite(w), _) => Some(w),
                         (_, Some(field)) => Some(field),
                         (AvailableSpace::MinContent, None) => {
                             Some(min_content_width(engine, cache, cx).0)
                         }
                         (AvailableSpace::MaxContent, None) => None,
-                    })
+                    }
+                    .map(|width| width.max(0.0))
                 };
                 let measured = measure_text(engine, cache, cx, max_width);
                 taffy::Size {
