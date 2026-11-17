@@ -21,13 +21,11 @@
 
 [English](README.md)
 
-Apache Maka (Incubating) 是一个高性能 Agent 工作台，完整记录它做过的每一件事。
+Apache Maka (Incubating) 是一个面向终端与桌面的本地 Agent 工作台。后台由 Rust 实现的 Runtime Host 统一承载模型调用、沙箱隔离、权限控制与 SQLite 持久化，完整留存每次运行、审批与工具调用回执。
 
-Maka 提供终端工作台和原生桌面 shell。Runtime Host 统一管理执行、权限和持久状态，模型提供商、工具与业务能力通过公共插件接口接入。
+## 快速上手
 
-## 从源码运行
-
-需要 Rust stable、Node.js 26、npm 12.2.1 和 [just](https://github.com/casey/just)。原生 Computer Use 在 macOS 需要 Xcode Command Line Tools，在 Linux 需要 X11 开发库。
+环境依赖：Rust stable、Node.js 26、npm 12.2.1 与 [just](https://github.com/casey/just)。启用原生 Computer Use 时，macOS 需安装 Xcode Command Line Tools，Linux 需安装 X11 开发库。
 
 ```sh
 git clone https://github.com/apache/maka.git
@@ -36,29 +34,36 @@ just setup
 just run
 ```
 
-`just run` 打开 [NSH 终端工作台](products/maka/terminal-shell/README.zh-CN.md)，即 `maka` 的默认界面。它自动发现或启动 `~/.maka/application/host` 的 Host；`--root PATH` 指定其他 Host，`--session ID` 打开已有会话。`just run --help` 查看 CLI 命令。`just build --release` 生成 `target/release/maka` 和 `maka-desktop-shell`，Windows 可执行文件使用 `.exe` 后缀，macOS 上桌面 shell 放在 `Maka.app` 中。构建入口支持 `--release` 和 `--target`。模型协议由 Rust 执行。Node.js 打包产品代码，CLI 在 V8 中执行插件与 Code Mode JavaScript。桌面 shell 在窗口中运行与终端相同的 NSH 工作台。编写和安装方式见[产品指南](products/maka/bundle/README.zh-CN.md)。
+`just run` 默认启动终端工作台，并自动连接或拉起 `~/.maka/application/host` 下的本地 Host。可通过 `--root <path>` 切换 State Root，`--session <id>` 打开指定会话，或用 `just run --help` 查看全部 CLI 子命令。
 
-在 WSL 中，`just run` 构建不含本地 `native-desktop` 能力及其 Linux X11 依赖的 CLI，Computer Use 默认选择 Windows 桌面。源码构建需通过 `MAKA_CUA_WINDOWS_EXECUTABLE` 指定匹配的 Windows `maka.exe`，使用 WSL 可见的绝对路径。`MAKA_CUA_BUILD_MODE=auto|native|bridge` 控制开发构建选择，设置方法见 [Computer Use](platform/computer-use/README.zh-CN.md)。`just build` 和发布打包仍构建完整原生产品，包含桌面 shell 及其 Linux GUI 依赖。
+构建 Release 版 CLI 与原生桌面端：
 
-通过 `target/release/maka desktop` 启动桌面，默认使用 `~/.maka/application/host`；`--root HOST_ROOT` 可指定其他业务 Host Root。启动器初始化或重开 Host，并在 shell 运行期间保留其客户端；关闭窗口只断开连接，Host 会完成已接受的工作。产物布局见 [desktop-shell](products/maka/desktop-shell/README.zh-CN.md)。
+```sh
+just build --release
+target/release/maka desktop
+```
 
-## 目录
+macOS 构建会在 `maka` 同级目录生成 `Maka.app`，Windows 产物带 `.exe` 后缀。终端与桌面壳层共用同一套 NSH 工作台并连接同一个 Host——关闭窗口只是断开前端，已接纳的后台任务会继续跑完。
 
-| 目录 | 用途 |
+在 WSL 环境下，`just run` 默认不编译 Linux 本地 `native-desktop` 驱动，Computer Use 会桥接到宿主机 Windows 桌面。源码运行时需通过 `MAKA_CUA_WINDOWS_EXECUTABLE` 指定同版本 Windows `maka.exe` 的 WSL 绝对路径，详见 [Computer Use](platform/computer-use/README.zh-CN.md)。
+
+## 目录结构
+
+| 目录 | 职责 |
 | --- | --- |
-| [platform/](platform/README.zh-CN.md) | 应用内核、Host/UI owner、JavaScript 执行适配器和原生渲染器 |
-| [plugins/](plugins/README.zh-CN.md) | 插件声明、业务实现及共享领域契约 |
-| [products/maka/](products/maka/README.zh-CN.md) | 原生工厂选择、产品组合、CLI 和桌面入口 |
-| `tools/schema/` | 无需构建完整产品的契约与 schema 导出 |
-| `packages/plugin-sdk/` | JavaScript 插件的 Host、组件与原生呈现契约，由规范定义生成 |
-| `packages/cli/` | 启动各平台 Rust 可执行文件的 npm 薄封装 |
-| `scripts/rust/` | 原生打包与绑定源码的 npm 分发 |
+| [platform/](platform/README.zh-CN.md) | 插件内核、SQLite 事件存储、Host 运行时、V8/Python 执行环境、系统沙箱与 Computer Use |
+| [plugins/](plugins/README.zh-CN.md) | Agent 核心引擎、工作区工具、技能、设置、交互及领域契约 |
+| [products/maka/](products/maka/README.zh-CN.md) | 产品组装、NSH 工作台、CLI、ACP 服务及终端/桌面壳层 |
+| [products/eval/](products/eval/README.zh-CN.md) | 基于 Harbor 容器环境的评测运行器 |
+| [packages/plugin-sdk/](packages/plugin-sdk/README.zh-CN.md) | 供 Host 与 NSH UI 插件使用的 TypeScript 类型契约与辅助库 |
+| [packages/cli/](packages/cli/README.zh-CN.md) | 分发各平台原生二进制的 `@maka-agent/cli` npm 启动器 |
+| [scripts/rust/](scripts/rust/README.zh-CN.md) | 原生打包、V8 预编译缓存、许可证审计与 CI 调度脚本 |
 | `website/` | 独立构建的项目官网 |
 
-通过 `just --list` 查看开发命令。参阅[贡献指南](CONTRIBUTING.zh-CN.md)、[架构](ARCHITECTURE.zh-CN.md)和[安全策略](SECURITY.md)。
+常用开发命令可通过 `just --list` 查看。延伸阅读：[系统架构](ARCHITECTURE.zh-CN.md)、[界面设计规范](DESIGN.md)、[贡献指南](CONTRIBUTING.zh-CN.md)与[安全策略](SECURITY.md)。
 
-## 分发
+## 分发方式
 
-npm 启动器选择匹配的原生平台包，自身不包含 Agent 运行时。原生预览包从同一份源码归档构建并验证，流程见 [packages/cli](packages/cli/README.zh-CN.md)。
+`@maka-agent/cli` 只做按平台分发并启动原生二进制的薄封装，本身不包含运行时逻辑；各平台二进制由同一份经校验的源码归档构建，发布流程见 [packages/cli](packages/cli/README.zh-CN.md)。
 
-Apache Maka 正在 Apache 软件基金会孵化。参见 [DISCLAIMER](DISCLAIMER)、[LICENSE](LICENSE) 和 [NOTICE](NOTICE)。
+Apache Maka 正在 Apache 软件基金会（ASF）孵化，详见 [DISCLAIMER](DISCLAIMER)、[LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

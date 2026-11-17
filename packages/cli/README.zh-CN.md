@@ -17,44 +17,38 @@
   under the License.
 -->
 
-# Maka npm launcher
+# `@maka-agent/cli`
 
 [English](README.md)
 
-**`rust-preview` 是独立的实验性预览分发，不是 Apache 软件基金会正式发行版，也未经 ASF 批准、背书或支持。**
+**`rust-preview` 为独立发布的实验性预览渠道，并非 Apache 软件基金会（ASF）官方发行版，未经 ASF 批准、背书或支持。**
 
 ```sh
 npm install --global @maka-agent/cli@rust-preview
 ```
 
-启动器选择匹配的原生可执行文件，转发参数、标准 I/O 和退出状态。精确版本的可选依赖携带 CLI（内置 `maka terminal-shell`）和桌面 shell。macOS 上桌面 shell 位于 `Maka.app` 内；其他平台携带 `maka-desktop-shell`。预览版支持 macOS arm64、使用 glibc 的 Linux x64 和 Windows x64。WSL 使用 Linux 可执行文件，通过匹配的 Windows helper 提供 Computer Use。
+`@maka-agent/cli` 是平台分发薄封装：通过精确版本号的 `optionalDependencies` 拉取对应平台原生包（`darwin-arm64`、`linux-x64-gnu`、`win32-x64`），并将命令行参数、标准输入输出与退出码直接透传给 Rust `maka` 可执行文件（macOS 附带 `Maka.app`，Linux/Windows 附带 `maka-desktop-shell`）。WSL 下使用 Linux 二进制配合同版本 Windows Computer Use 辅助进程。
 
-`latest` 标签仍为空占位包，包括独立的 `maka-agent` 包；它们没有 CLI、运行时、依赖或安装脚本。占位源码见 [placeholder](placeholder/README.md)，预览产物必须使用 `rust-preview`。
+`latest` 标签（含独立的 `maka-agent` 包）保持为空占位包，不含 CLI、运行时、依赖或安装脚本；占位包源码见 [`placeholder/`](placeholder/README.md)，预览构建仅发布到 `rust-preview`。
 
-运行 `maka` 打开 NSH 终端工作台，自动发现或启动 `~/.maka/application/host` 的 Host。`--root HOST_ROOT` 指定其他 Host，`--session SESSION_ID` 打开已有会话。`maka --help` 列出自动化命令。组合和安装方式见[产品指南](../../products/maka/bundle/README.zh-CN.md)。
+## 常用命令
 
-通过 `maka desktop --root HOST_ROOT` 启动桌面。这个必填路径选择业务 Host：缺失的 Root 初始化为标准只读 Host，已有 Root 使用已保存的部署。启动器在 shell 退出前保留经过校验的 Host 客户端，随后断开连接：Host 会完成已接受的工作，在没有客户端后停止。桌面的产物布局和生命周期见 [desktop-shell](../../products/maka/desktop-shell/README.zh-CN.md)。
+- `maka` / `maka terminal-shell` — 启动 NSH 终端工作台，默认连接 `~/.maka/application/host`（可用 `--root <path>` 切换目录，`--session <id>` 打开指定会话）。
+- `maka desktop --root <path>` — 针对指定 State Root 打开原生桌面窗口；关闭窗口仅断开前端，后台已接纳的任务会继续跑完。
+- `maka --help` — 查看 `host`、`application`、`sandbox`、`browser` 与 `acp` 等全部子命令。
 
-通过 `maka terminal-shell` 启动 NSH 终端工作台，自动发现或启动 `~/.maka/application/host` 的 Host。`--root HOST_ROOT` 可指定其他 Root，`--session SESSION_ID` 可打开已有会话。`maka terminal-shell --help` 可查看参数。源码构建见 [terminal-shell](../../products/maka/terminal-shell/README.zh-CN.md)。
+壳层结构见 [products/maka](../../products/maka/README.zh-CN.md)，部署与插件组合见 [products/maka/bundle](../../products/maka/bundle/README.zh-CN.md)。
 
-## 构建与发布
+## 构建与发布预览包
 
-通过 `just source <version>` 从已提交修订创建源码候选包。各平台使用同一归档构建：
+先从已提交版本生成源码归档（`just source <version>`），基于同一份归档分别构建三个平台的原生包后执行汇总、离线验收与发布：
 
 ```sh
 just package <source.tar.gz> <target> <build-id> native-preview
-```
 
-收集三个平台的原生包与回执，以及源码归档和 SHA-512 文件，然后执行：
-
-```sh
 just release-prepare native-preview
 just release-check native-preview
 just publish native-preview
 ```
 
-`release-check` 离线安装并运行已准备产物，每个目标平台都要执行。发布先上传原生组件，再上传启动器，并验证频道标签。中断后重试相同产物。npm 标签不支持条件更新，每个频道同时只运行一个发布者。
-
-[发布工作流](../../.github/workflows/npm-publication.yml)以 `publish=false` 构建和验证。非官方发布在 `M4n5ter/maka-agent` 的 `feat/runtime-host-rust` 分支运行，需要显式 `publish=true`，使用独立 `npm-rust-preview` 环境，不从 ASF 仓库发布。
-
-依赖、V8 缓存和 notices 见[原生构建工具](../../scripts/rust/README.zh-CN.md)；归档校验与签名见[源码发布](../../.github/ASF_SOURCE_RELEASE.md)。
+非官方 `rust-preview` 渠道仅在个人仓库 `M4n5ter/maka-agent` 的 `npm-rust-preview` 环境显式开启 `publish=true` 时发布，绝不从 `apache/maka` 仓库直接发包。V8 预编译缓存与第三方许可证审计见 [scripts/rust](../../scripts/rust/README.zh-CN.md)，ASF 源码发布规范见 [.github/ASF_SOURCE_RELEASE.md](../../.github/ASF_SOURCE_RELEASE.md)。

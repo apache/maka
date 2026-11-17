@@ -21,13 +21,11 @@
 
 [简体中文](README.zh-CN.md)
 
-Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.
+Apache Maka (Incubating) is a local-first agent workspace for the terminal and desktop. A background Rust Runtime Host owns model execution, sandboxing, permissions, and SQLite state, keeping an auditable record of every run, approval, and tool receipt.
 
-Maka provides a terminal workbench and a native desktop shell. A Runtime Host owns execution, permissions and durable state. Model providers, tools and business capabilities use public plugin interfaces.
+## Quick start
 
-## Run from source
-
-Install Rust stable, Node.js 26, npm 12.2.1 and [just](https://github.com/casey/just). Native Computer Use additionally needs Xcode Command Line Tools on macOS or the X11 development libraries on Linux.
+Prerequisites: Rust stable, Node.js 26, npm 12.2.1, and [just](https://github.com/casey/just). Native Computer Use also requires Xcode Command Line Tools on macOS or X11 development libraries on Linux.
 
 ```sh
 git clone https://github.com/apache/maka.git
@@ -36,29 +34,36 @@ just setup
 just run
 ```
 
-`just run` opens the [NSH terminal workbench](products/maka/terminal-shell/README.md), the default `maka` interface. It discovers or starts the Host at `~/.maka/application/host`; `--root PATH` selects another Host and `--session ID` opens an existing conversation. Use `just run --help` for CLI commands. `just build --release` produces `target/release/maka` and `maka-desktop-shell` (executables use `.exe` on Windows; on macOS the desktop shell is staged in `Maka.app`). The build entry supports `--release` and `--target`. Model protocols run in Rust. Node.js bundles the authored product; the CLI runs plugin and Code Mode JavaScript in V8. The desktop shell runs the same NSH workbench as the terminal, in a window. Product authoring and installation are described in [the product guide](products/maka/bundle/README.md).
+`just run` launches the terminal workbench and connects to (or starts) the local Host at `~/.maka/application/host`. Pass `--root <path>` to use a different State Root, `--session <id>` to open an existing conversation, or `--help` to inspect CLI subcommands.
 
-In WSL, `just run` builds the CLI without the local `native-desktop` capability or its Linux X11 dependencies; Computer Use selects the Windows desktop by default. Source builds need `MAKA_CUA_WINDOWS_EXECUTABLE` set to the absolute WSL-visible path of a matching Windows `maka.exe`. `MAKA_CUA_BUILD_MODE=auto|native|bridge` controls this development build selection. See [Computer Use](platform/computer-use/README.md) for setup. `just build` and release packaging still build the full native product, including the desktop shell and its Linux GUI dependencies.
+To build release binaries for both the CLI and the native desktop window:
 
-Launch the desktop with `target/release/maka desktop`, using `~/.maka/application/host` by default; `--root HOST_ROOT` selects another business Host Root. The launcher initializes or reopens that Host and keeps its client alive while the shell runs; closing the window detaches, and the Host finishes the work it accepted. See [desktop-shell](products/maka/desktop-shell/README.md) for the packaged layout.
+```sh
+just build --release
+target/release/maka desktop
+```
 
-## Repository
+On macOS, `just build` stages `Maka.app` alongside `maka`; on Windows, binaries carry `.exe`. Both the terminal and desktop shells run the same NSH workbench UI against the same Host process—closing the window detaches the UI while in-flight work finishes in the background.
 
-| Directory | Purpose |
+In WSL, `just run` skips the Linux `native-desktop` feature and bridges Computer Use to the Windows desktop by default. Point `MAKA_CUA_WINDOWS_EXECUTABLE` to a matching Windows `maka.exe` when running from source; see [Computer Use](platform/computer-use/README.md).
+
+## Repository layout
+
+| Directory | Role |
 | --- | --- |
-| [platform/](platform/README.md) | Application kernel, Host/UI owners, JavaScript execution adapters and native renderers |
-| [plugins/](plugins/README.md) | Authored plugin declarations, business implementations and shared domain contracts |
-| [products/maka/](products/maka/README.md) | Native factory selection, product composition, CLI and desktop entry points |
-| `tools/schema/` | Contract/schema export without building the product |
-| `packages/plugin-sdk/` | Generated Host, component and native presentation contracts for JavaScript plugins |
-| `packages/cli/` | npm launcher for platform-specific Rust executables |
-| `scripts/rust/` | Native packaging and source-bound npm distribution |
-| `website/` | Independently built project website |
+| [platform/](platform/README.md) | Plugin kernel, SQLite event log, Host runtime, V8/Python sandboxes, OS isolation, and Computer Use |
+| [plugins/](plugins/README.md) | Agent runtime, workspace tools, skills, settings, interactions, and shared domain contracts |
+| [products/maka/](products/maka/README.md) | Product composition, NSH workbench, CLI, ACP server, and terminal/desktop shells |
+| [products/eval/](products/eval/README.md) | Containerized Harbor evaluation runner against the native Host |
+| [packages/plugin-sdk/](packages/plugin-sdk/README.md) | Generated TypeScript contracts and helpers for Host and NSH UI plugins |
+| [packages/cli/](packages/cli/README.md) | `@maka-agent/cli` npm launcher for platform-native binaries |
+| [scripts/rust/](scripts/rust/README.md) | Native packaging, V8 prebuilt management, license checks, and CI suite runner |
+| `website/` | Project website (independent package manifest and lockfile) |
 
-Use `just --list` for development commands. See [Contributing](CONTRIBUTING.md), [Architecture](ARCHITECTURE.md) and [Security](SECURITY.md).
+Run `just --list` to see common development recipes. Further reading: [Architecture](ARCHITECTURE.md), [UI Design](DESIGN.md), [Contributing](CONTRIBUTING.md), and [Security](SECURITY.md).
 
 ## Distribution
 
-The npm launcher selects a matching native package; it contains no agent runtime. Native preview artifacts are built and verified from one source archive. Packaging and publication are documented in [packages/cli](packages/cli/README.md).
+`@maka-agent/cli` is a thin npm wrapper that dispatches to a platform-specific native binary package built from a single verified source archive; see [packages/cli](packages/cli/README.md).
 
-Apache Maka is undergoing incubation at the Apache Software Foundation. See [DISCLAIMER](DISCLAIMER), [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF). See [DISCLAIMER](DISCLAIMER), [LICENSE](LICENSE), and [NOTICE](NOTICE).

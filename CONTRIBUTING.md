@@ -21,13 +21,13 @@
 
 [简体中文](CONTRIBUTING.zh-CN.md)
 
-Use [issues](https://github.com/apache/maka/issues) for bugs and concrete proposals, and [Discussions](https://github.com/apache/maka/discussions) for questions. Report vulnerabilities through [SECURITY.md](SECURITY.md). Comment exactly `take` to claim an unassigned issue, or `untake` to release it.
+Use [Issues](https://github.com/apache/maka/issues) for bugs and concrete proposals, [Discussions](https://github.com/apache/maka/discussions) for open-ended questions, and [SECURITY.md](SECURITY.md) for private vulnerability reports. Comment `take` alone to claim an unassigned issue, or `untake` to release it.
 
-Discuss project direction, governance and material product decisions on [dev@maka.apache.org](https://lists.apache.org/list.html?dev@maka.apache.org). Implementation details can be discussed in the pull request.
+Project direction, governance, and major product changes belong on [dev@maka.apache.org](https://lists.apache.org/list.html?dev@maka.apache.org). Implementation details can stay on the pull request.
 
-## Develop
+## Local development
 
-Install Rust stable, Node.js 26, npm 12.2.1, just, cargo-nextest and Python 3. License checks also use cargo-deny. On Windows, put Git for Windows' `sh` on `PATH`.
+Install Rust stable, Node.js 26, npm 12.2.1, `just`, `cargo-nextest`, `cargo-deny`, and Python 3. On Windows, ensure Git for Windows' `sh` is on `PATH`.
 
 ```sh
 just setup
@@ -35,27 +35,29 @@ just run --help
 just check
 ```
 
-`just check` runs formatting, type checks, tests and license checks. For a focused Rust change, use `cargo nextest run -p CRATE`; `--lib` or `--test NAME` limits which test targets are built. Run the checks relevant to the changed behavior before the full repository check.
+`just check` runs formatting, typechecks, tests, and license checks across the workspace. While iterating on a single Rust crate, run focused tests first:
 
-The [product guide](products/maka/README.md) explains TypeScript development. The [plugin guide](plugins/README.md) covers declarations and composition. Native packaging and V8 requirements live in [scripts/rust](scripts/rust/README.md). The [website](website/README.md) has a separate manifest and lockfile.
+```sh
+cargo nextest run -p <crate> --lib
+```
 
-`just` and CI share [suite definitions and commands](scripts/ci.mjs). See the [CI commands](scripts/rust/README.md#ci) to inspect an affected-change plan or reproduce a suite locally.
+`just` and GitHub Actions share suite definitions in [`scripts/ci.mjs`](scripts/ci.mjs). See [scripts/rust](scripts/rust/README.md#ci) for change-plan inspection, V8 prebuilt caching, and native packaging. The [website](website/README.md) maintains its own `package.json` and lockfile.
 
-## Code and documentation
+## Engineering conventions
 
-- Use `name.rs` with `name/` for child modules. Keep unit tests with their implementation and integration tests under `tests/`.
-- Test observable behavior and meaningful failure boundaries. Avoid duplicate fixtures, source-text assertions and fixed sleeps.
-- Keep domain policy in plugins. Host owns admission and resource settlement; services receive explicit capabilities.
-- Model closed states with types and generate schemas with `schemars`. Put database changes in SQLx migrations.
-- Keep protocol fields separate from localized copy. Preserve full `en`, `zh-CN` and `zh-TW` locale tags.
-- Maintain concise English and Chinese README counterparts. Explain responsibilities and useful entrypoints; link to schemas for field-level detail.
+- Use `name.rs` + `name/` for submodules (avoid `mod.rs` in new code). Keep unit tests next to the implementation and integration tests under `tests/`.
+- Test observable behavior and real failure boundaries—avoid brittle source-text assertions, redundant fixtures, and fixed sleeps.
+- Validate inputs at system boundaries and trust typed internal contracts. Represent closed state machines with enums and derive wire schemas with `schemars`.
+- Keep domain policy in plugins; the Host owns admission, capabilities, and resource cleanup. Put schema changes in SQLx migrations.
+- Keep wire fields separate from UI copy, and maintain all three product locales (`en`, `zh-CN`, `zh-TW`) when adding UI strings.
+- Write documentation only where it saves reader time. Keep maintained English and Chinese guides aligned, and link to types/schemas instead of duplicating field lists.
 
-## Submit and review
+## Pull requests and provenance
 
-Use Conventional Commit titles and `<type>/<description>` branches. Fill in the [pull request template](.github/pull_request_template.md), describe the result and relevant verification. Attach screenshots or a recording to the PR for UI changes. Squash merging makes the PR title the final commit title.
+Use Conventional Commit PR titles and `<type>/<description>` branch names. Because the repository squash-merges PRs, the PR title becomes the final commit subject. Fill out the [PR template](.github/pull_request_template.md) with verification evidence, and attach screenshots or recordings for UI changes.
 
-Each contribution has a human owner responsible for its accuracy, provenance and licensing. Submit only work you have the right to contribute, under [Apache-2.0](LICENSE), and preserve third-party attribution. See the [source records](docs/code-origin-audit.md) and [header policy](.github/ASF_SOURCE_HEADERS.md).
+Every contribution requires a human owner accountable for its correctness, provenance, and licensing under [Apache-2.0](LICENSE). Preserve third-party notices and review [source provenance](docs/code-origin-audit.md) and the [license header policy](.github/ASF_SOURCE_HEADERS.md) when adapting external code.
 
-Disclose substantive generative-tool use in the PR and name the tool. Translation, wording edits, autocomplete and spelling correction do not count. Material AI-authored commits carry `Generated-by: <tool>`, preserved through squash or amend. Automated messages identify themselves.
+Disclose substantive AI assistance in the PR description (routine autocomplete, typo fixes, and translation polish do not require disclosure). Commits with material AI-authored code or prose must carry a `Generated-by: <tool>` trailer preserved through squash merge.
 
-Agents may commit and push. Merging to `main` requires approval from another committer and a passing `test` check. AI review does not replace independent human judgment. Approval remains valid after later pushes; ask for another look when the change grows beyond what was reviewed. A maintainer decides whether the review is sufficient.
+Agents may commit and push branches. Merging into protected branches requires passing CI checks and independent human committer approval.

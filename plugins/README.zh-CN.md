@@ -17,60 +17,37 @@
   under the License.
 -->
 
-# Plugins
+# 插件层（Plugins）
 
 [English](README.md)
 
-叶目录中的 `package.ts` 声明一个插件，列出可执行入口、配置、导入和导出。Cargo crate 是编译单元：一个插件可以使用多个 crate，相关插件也可以共用实现 crate。
+`plugins/` 下每个叶子 `package.ts` 声明一个可部署插件包（`application.host`、`application.ui` 或 `application.composition`），定义其配置 schema、依赖导入与服务导出。Cargo crate 仅代表 Rust 编译单元：复杂领域可拆成多个 crate，而一组轻量插件也可以共用同一个原生 crate。
 
-| 插件族 | 职责 |
+| 目录 | 负责范围 |
 | --- | --- |
-| [agent](agent/README.zh-CN.md) | 会话、模型执行、工具、目标和调度 |
-| [workspace](workspace/README.zh-CN.md) | 文件、进程、Web 和 Decisions API 服务 |
-| [settings](settings/native/README.zh-CN.md) | 连接、凭据和偏好 |
-| [skills](skills/native/README.zh-CN.md) | 技能发现、读取和发布 |
-| [interactions](interactions/native/README.zh-CN.md) | 问题和表单 |
-| `application/` | 部署管理、插件安装与 UI 编写 |
-| `shared/` | 共用 TypeScript 契约与开发辅助函数 |
+| [`agent/`](agent/README.zh-CN.md) | 会话与 Room、模型协议适配、持久化执行引擎、Code Mode、MCP 客户端、Goal 与定时调度 |
+| `workspace/` | 受沙箱约束的文件工具（`Read`、`Write`、`Edit`、`ApplyPatch`、`Glob`、`List`）、后台进程/PTY、网页抓取与搜索、Computer Use 绑定及 Decisions API |
+| `settings/` | 模型连接、凭据管理、Token 用量统计与全局偏好设置 |
+| `skills/` | 本地、远端与内置 `SKILL.md` 的发现、分页读取与安装 |
+| `interactions/` | 向用户发起的结构化提问（`AskUserQuestion`）与权限审批交互 |
+| `application/` | 运行时插件安装、部署检视与在线组合编辑 |
+| `shared/` | 跨包共享的 TypeScript 契约辅助工具 |
 
-修改已有插件时，从声明入手，沿所选实现查找代码。原生入口选择可执行文件提供的实现；JavaScript 入口指定打包后的本地模块。插件族目录和已链接 crate 都不会自动激活插件。
+## Host 与 UI 插件机制
 
-包可以声明 `application.host`、`application.ui` 或组合模板。部署中的实例通过 `usePackage: host / ui / composition` 明确选择所用入口，纯 UI 插件不需要伪造 Host 服务。[终端 shell](../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../products/maka/desktop-shell/README.zh-CN.md) 运行同一个 [NSH 工作台](../products/maka/workbench/README.zh-CN.md)，共享动态 UI 模块与公共 Host 能力。包可声明 `root` 贡献来提供整个应用，部署来源通过 `ui: { path, id }` 选择入口。Maka 默认工作台也是普通 UI 包，缺少根入口时不会自动回退到它。安装表示用户信任，UI 插件可直接使用工作台现有能力。
+- **Host 服务（`usePackage: "host"`）** — 可绑定可执行文件内置的 Rust 工厂，或在后台 V8 运行时加载打包好的 JavaScript `HostService`，仅持有组合图中显式授予的能力句柄。
+- **UI 扩展（`usePackage: "ui"`）** — 在终端与桌面共用的 NSH 工作台 VM 中运行。模块入口 `activate(context)` 返回 `{ exports, prepareReload? }`，可贡献完整应用根节点（`root`）、带类型契约的嵌入式视图（`UiRuntime.renderView`）、命令、面板、设置页或工具结果卡片。`context.services` 与 `context.operations` 自动绑定该实例声明的后端服务与操作回执账本。
+- **组合模板（`usePackage: "composition"` / `base.package`）** — 封装可复用的实例拓扑。默认安装通过 `base.package` 锁定产品基线，再叠加用户的增量 `overrides`（如 `configurationFields`、`remove`）与独立 `instances`，升级基线时不会破坏既有实例的状态命名空间；详见 [products/maka/bundle](../products/maka/bundle/README.zh-CN.md)。
 
-部署也可以通过 `base.package` 选择不可变的根级 composition，以同一套 overrides 修改继承的子实例，并在 `instances` 中保留独立根。它不同于结构组合实例，不增加父实例或身份命名空间。`remove` 记录删除；`configurationFields` 记录精确对象字段编辑，省略值表示删除字段，显式 null 仍是一个值。整字段 `configuration` 覆盖保持原有替换语义。模板的 `ui` 默认继承，除非源显式选择其他根或清空 `base.ui`。详见[产品基线模型](../products/maka/bundle/README.zh-CN.md#安装与升级)和[规范类型](../platform/plugin-core/src/composition.rs)。
+## 单独构建与接入产品
 
-UI 入口可以声明服务导入，并绑定到 Host 导出，包括同一个包的后台服务。`UiContext.application` 是绑定到这些导入的原生应用客户端，保留 Client、journal 和原始 receipt。`UiContext.services[importName][index]` 选择具体的提供者，也支持有多个提供者的导入；`UiContext.operations` 恢复该实例的原始 mutation receipt。业务控制器由所属激活实例持有，使用该实例的应用客户端。可信 UI 代码仍可使用完整的 `UiContext.host` 和 `maka/host`，包括根界面与目录集成。详见 [UI 开发指南](../skills/maka-plugin-authoring/references/ui-plugins.md)。
-
-业务 UI 可以声明带命名契约的正式 `view` 贡献。消费方通过配置选择其 `UiTarget`（`{ path, id }`），使用 `UiRuntime.renderView(target, contract, input)` 渲染；运行时检查目标贡献的种类与契约。会话导航、会话界面、输入区、设置和工作区预览使用这些共享契约，其提供者可以独立于根应用选择。命令声明 `title`，以及可选的 `description`、`shortcut`、`order`、`trigger`、`takesArgument` 和 `hint`；实现还可以报告命令当前是否可用。
-
-每个 UI 模块同步执行 `activate(context)`，返回 `{ exports, prepareReload? }`。激活实例持有各项渲染贡献共用的业务状态与资源，通过 `nsh.cleanup` 清理资源。可选的 `prepareReload()` 在替换共享 VM 前保存所拥有的编辑并返回 JSON。同一实例身份和包 ID 可通过 `context.restored` 收到该状态，包括同一包的新修订。根界面接收 `{ context, runtime }`，负责布局和导航；业务视图负责自身状态及重载交接。
-
-在仓库根目录构建单个包：
+在仓库根目录单独打包并检查某个插件：
 
 ```sh
-node scripts/plugins/build.mjs   --plugin plugins/workspace/workspace-web --output /tmp/maka-web-bundle
+node scripts/plugins/build.mjs --plugin plugins/workspace/workspace-web --output /tmp/maka-web-bundle
+maka application inspect-package --package /tmp/maka-web-bundle/packages/workspace-web
 ```
 
-构建器会替换输出目录，包内容位于 `packages/`。可运行 `maka application inspect-package --package /tmp/maka-web-bundle/packages/workspace-web` 检查结果。
+若要将插件纳入默认 Maka 发行包：将路径加入 [`products/maka/bundle/package-inputs.json`](../products/maka/bundle/package-inputs.json)，在 [`products/maka/bundle/src/composition.ts`](../products/maka/bundle/src/composition.ts) 中声明实例与绑定；若包含新的原生 Rust 服务，还需在 [`products/maka/native/src/lib.rs`](../products/maka/native/src/lib.rs) 注册工厂。
 
-将插件加入 Maka 时，在[产品选择](../products/maka/bundle/package-inputs.json)中添加路径，再在[组合](../products/maka/bundle/src/composition.ts)中添加实例和绑定。新增原生实现还需在[产品注册表](../products/maka/native/README.zh-CN.md)中加入工厂。导入声明依赖，Host 授权决定可以执行哪些调用。
-
-[插件开发 skill](../skills/maka-plugin-authoring/SKILL.md)提供可运行的独立示例，以及服务、UI、状态和原生扩展指南。[SDK](../packages/plugin-sdk/README.zh-CN.md)提供精确契约。
-
-插件列表使用作者在 `package.ts` 中提供的 `displayName` 和 `description`；用一句话说明用户能做什么。包 ID 继续作为稳定技术标识。可选的 `localizations` 按语言标签提供翻译，例如：
-
-```ts
-{
-  id: 'example.notes',
-  displayName: 'Notes',
-  description: 'Write and find your notes.',
-  localizations: {
-    'zh-CN': { displayName: '笔记', description: '记录和查找笔记。' },
-  },
-  // application: ...
-}
-```
-
-插件管理会展示并搜索这些说明，添加应用时也会展示。缺少翻译时使用默认文案，最后回退到实例名或包 ID。名称应让人预知操作结果或目的地，参照 [Apple 的清晰命名指南](https://developer.apple.com/videos/play/wwdc2026/290/)。常见操作使用带无障碍名称和提示的图标；重要或不熟悉的操作保留明确文字。shell 列表使用原生虚拟列表并保留可见行，数据游标不暴露为手动翻页。
-
-配置给 Agent 的服务工具会捕获原绑定上所选方法的精确调用能力，不应再在 Host 的 `native` 中重复声明直接工具调用。独立后台准备、执行器回调和跨组件委托仍需显式授权；工具确认、文件系统/网络权限及资源检查继续独立生效。已有工具配置在新的原生实现启动后直接获得该行为，无需重写部署源或启动器授权。
+编写独立插件可参考 [`@maka-agent/plugin-sdk`](../packages/plugin-sdk/README.zh-CN.md) 及内置技能 [`maka-plugin-authoring`](../skills/maka-plugin-authoring/SKILL.md)。
