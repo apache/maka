@@ -586,6 +586,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   })
                 : null;
               if (local && paste) {
+                paste.bindClipboard();
                 const drop = (event: { uris: string[] }) => paste.drop(local, event);
                 pendingDrop = drop;
                 cleanup(() => {

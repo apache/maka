@@ -230,6 +230,7 @@ export function createComposerCompletion(options: Options) {
     composing,
     dismiss: close,
   });
+  paste.bindClipboard();
   const row = <T extends Omit<Row, 'action'>>(read: Read, value: T): Row =>
     Object.assign(value, {
       action: { read: read.serial, id: value.id },
