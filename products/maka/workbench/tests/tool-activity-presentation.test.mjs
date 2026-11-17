@@ -90,18 +90,23 @@ test('a rejected send shows its reason and a Host error shows a readable diagnos
     rejected.sections.map(({ text, tone }) => [text, tone]),
     [['Selected model is unavailable', 'error']],
   );
-  assert.deepEqual(
-    activityFailure({
-      receipt: {
-        kind: 'recorded',
-        outcome: {
-          kind: 'returned',
-          result: { kind: 'failure', diagnostic: 'agent_session_unavailable' },
+  for (const diagnostic of [
+    'agent_session_unavailable',
+    'Session or Room was not found or is archived; check the ID with SessionList',
+  ]) {
+    assert.deepEqual(
+      activityFailure({
+        receipt: {
+          kind: 'recorded',
+          outcome: {
+            kind: 'returned',
+            result: { kind: 'failure', diagnostic },
+          },
         },
-      },
-    }),
-    { kind: 'failure', message: 'Conversation is unavailable' },
-  );
+      }),
+      { kind: 'failure', message: 'Conversation is unavailable' },
+    );
+  }
 });
 
 test('checking work shows the captured wait or the final response', () => {

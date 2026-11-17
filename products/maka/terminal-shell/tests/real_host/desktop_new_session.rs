@@ -1983,10 +1983,9 @@ async fn desktop_presents_session_tools_in_chat_and_trajectory() {
         .await;
     let answer = desktop.request(&mut fixture).await;
     assert!(
-        answer
-            .body
-            .to_string()
-            .contains("agent_session_unavailable"),
+        answer.body.to_string().contains(
+            "Session or Room was not found or is archived; check the ID with SessionList"
+        ),
         "{}",
         answer.body
     );

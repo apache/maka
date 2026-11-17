@@ -118,8 +118,17 @@ export function activityFailure(original: unknown): ToolProjection | null {
   if (typeof message !== 'string' || !message.trim()) return null;
   return {
     kind: 'failure',
-    message: message === 'agent_session_unavailable' ? tr('Conversation is unavailable') : message,
+    message: readableFailureMessage(message),
   };
+}
+
+const SESSION_UNAVAILABLE_DIAGNOSTIC =
+  'Session or Room was not found or is archived; check the ID with SessionList';
+
+function readableFailureMessage(message: string): string {
+  return message === 'agent_session_unavailable' || message === SESSION_UNAVAILABLE_DIAGNOSTIC
+    ? tr('Conversation is unavailable')
+    : message;
 }
 
 export function activityProjection(
@@ -132,7 +141,7 @@ export function activityProjection(
   if (field === 'result') {
     const envelope = record(original);
     if (envelope?.kind === 'failed' && typeof envelope.message === 'string')
-      return { kind: 'failure', message: envelope.message };
+      return { kind: 'failure', message: readableFailureMessage(envelope.message) };
     if (envelope?.kind === 'completed' && 'value' in envelope) value = envelope.value;
   }
   const projected = presentation[field]?.(value, context);
