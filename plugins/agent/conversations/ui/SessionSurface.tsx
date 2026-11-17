@@ -41,6 +41,7 @@ import { CompactComposer } from './CompactComposer';
 import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
+import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type {
   AgentCompletionTarget,
   AgentInteractionResult,
@@ -1102,25 +1103,10 @@ export function createConversationUi(
         });
         removed.file.dispose();
       },
-      selectFiles(files: string[]) {
-        if (owns() && files.length)
-          stagePending(async () => ({ files: await host.stageFiles(files) }));
-      },
-      dropFiles(files: string[], onText: (text: string) => void) {
-        if (owns() && files.length)
-          stagePending(async () => {
-            const selection = await host.stageDroppedFiles(files);
-            try {
-              return { files: selection.files(), text: selection.text };
-            } finally {
-              selection.dispose();
-            }
-          }, onText);
-      },
-      pasteClipboard(onText: (text: string) => void) {
+      intake(input: ComposerIntake, onText?: (text: string) => void) {
         if (owns())
           stagePending(async () => {
-            const selection = await host.stageClipboard();
+            const selection = await host.stageIntake(input);
             try {
               return { files: selection.files(), text: selection.text };
             } finally {

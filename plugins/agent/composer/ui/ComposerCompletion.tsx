@@ -54,7 +54,7 @@ import {
   menuSeparatorStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
-import { createComposerPaste } from './composerPaste';
+import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import {
   inputEditor,
   type ComposerEditor,

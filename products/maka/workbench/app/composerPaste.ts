@@ -19,16 +19,21 @@
 
 import { effect, keymap, platform } from 'nsh';
 import { currentWindow, isAvailable } from 'nsh/desktop';
-import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
+import type { ComposerEditor } from './ComposerEditor';
 import type {
+  ComposerIntake,
+  ComposerPaste,
   ComposerSession,
   ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
-import type { Selection } from './composerCompletionSyntax';
-import { UiError } from '../../../../products/maka/workbench/app/text';
+import { UiError } from './text';
+
+type Selection = { start: number; end: number };
 
 type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput['pending']>>>;
-type PasteOwner = ComposerSession | Pending;
+type PasteOwner =
+  | Pick<ComposerSession, 'sessionId' | 'editable' | 'draft' | 'attachments'>
+  | Pending;
 const editable = (owner: PasteOwner) =>
   'sessionId' in owner ? owner.editable() : !owner.sending();
 const report = (owner: PasteOwner, reason: unknown) => {
@@ -96,13 +101,17 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
       expectedSelection: target.selection,
     });
   };
-  const clipboard = (target: Target<Owner>) => {
+  const intake = (
+    target: Target<Owner>,
+    input: ComposerIntake,
+    onText = (text: string) => insert(target, text),
+  ) => {
     options.dismiss();
     try {
       if ('sessionId' in target.owner) {
         target.owner.attachments.clearNotice();
-        target.owner.attachments.pasteClipboard((text) => insert(target, text));
-      } else target.owner.pasteClipboard((text) => insert(target, text));
+        target.owner.attachments.intake(input, onText);
+      } else target.owner.intake(input, onText);
     } catch (reason) {
       report(target.owner, reason);
     }
@@ -117,35 +126,21 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
     const unbind = keys.map((key) =>
       node.bindKey(key, () => {
         const target = capture(owner);
-        if (target) clipboard(target);
+        if (target) intake(target, { kind: 'clipboard' });
       }),
     );
     return () => unbind.forEach((remove) => remove());
   });
-  const paths = (
-    target: Target<Owner>,
-    uris: string[],
-    onText = (text: string) => insert(target, text),
-  ) => {
-    try {
-      if ('sessionId' in target.owner) {
-        target.owner.attachments.clearNotice();
-        target.owner.attachments.dropFiles(uris, onText);
-      } else target.owner.dropFiles(uris, onText);
-    } catch (reason) {
-      report(target.owner, reason);
-    }
-  };
   const drop = (owner: Owner, event: { uris: string[] }) => {
     const target = capture(owner);
     if (!target) return;
-    options.dismiss();
+    const input: ComposerIntake = { kind: 'paste', uris: event.uris, files: [] };
     if (platform.idiom === 'terminal') {
-      paths(target, event.uris);
+      intake(target, input);
       return;
     }
     win?.focus();
-    paths(target, event.uris, (text) => {
+    intake(target, input, (text) => {
       if (!unchanged(target)) {
         insert(target, text);
         return;
@@ -158,18 +153,9 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
   };
   return {
     drop,
-    paste(owner: Owner, event: { text: string; uris: string[]; files: unknown[] }) {
-      if ('sessionId' in owner) owner.attachments.clearNotice();
-      if (event.uris.length) {
-        const target = capture(owner);
-        if (target) {
-          options.dismiss();
-          paths(target, event.uris);
-        }
-      } else if (!event.text && !event.files.length) {
-        const target = capture(owner);
-        if (target) clipboard(target);
-      }
+    paste(owner: Owner, event: ComposerPaste) {
+      const target = capture(owner);
+      if (target) intake(target, { kind: 'paste', ...event });
     },
     focus(owner: Owner) {
       if (options.owner() !== owner) return;

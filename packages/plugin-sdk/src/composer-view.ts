@@ -113,6 +113,16 @@ export interface ComposerAttachmentTarget {
   id: string;
 }
 
+export interface ComposerPaste {
+  uris: string[];
+  files: { name: string; mime: string; data: Uint8Array }[];
+}
+
+export type ComposerIntake =
+  | { kind: 'clipboard' }
+  | ({ kind: 'paste' } & ComposerPaste)
+  | { kind: 'files'; paths: string[] };
+
 /** The session owns uploads and receipts; a composer owns their presentation. */
 export interface ComposerAttachments<Element = unknown> {
   readonly sessionId: string;
@@ -127,8 +137,7 @@ export interface ComposerAttachments<Element = unknown> {
   imageUri(read: AgentAttachmentImageRead): string;
   /** Mount as a component so prop changes retain the native picker owner. */
   renderPicker(input: ComposerAttachmentPickerInput): Element;
-  pasteClipboard(onText: (text: string) => void): void;
-  dropFiles(uris: string[], onText: (text: string) => void): void;
+  intake(input: ComposerIntake, onText?: (text: string) => void): void;
   open(target: { owner: string; value: boolean }): void;
   remove(target: ComposerAttachmentTarget): void;
   reportError(reason: unknown): void;
@@ -286,9 +295,7 @@ export interface ComposerViewInput<Element = unknown> {
     ready(): boolean;
     files(): { id: string; name: string; bytes: number; imageUri: string | null }[];
     picking(): boolean;
-    selectFiles(files: string[]): void;
-    dropFiles(uris: string[], onText: (text: string) => void): void;
-    pasteClipboard(onText: (text: string) => void): void;
+    intake(input: ComposerIntake, onText?: (text: string) => void): void;
     reportError(reason: unknown): void;
     removeFile(id: string): void;
     openPicker(open: boolean): void;

@@ -57,8 +57,7 @@ export function projectComposerAttachments(
         onStatus={draft.status}
       />
     ),
-    pasteClipboard: (onText) => draft.observeIntake(draft.client.beginClipboardPaste(), onText),
-    dropFiles: (uris, onText) => draft.observeIntake(draft.client.beginFileDrop(uris), onText),
+    intake: (input, onText) => draft.observeIntake(draft.client.beginIntake(input), onText),
     open: draft.open,
     remove: draft.remove,
     reportError: draft.reportError,
