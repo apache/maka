@@ -1119,6 +1119,8 @@ pub struct Observation {
     pub remembered_backend: Option<BackendPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<SessionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_run_id: Option<maka_agent_facts::durable::RunId>,
     pub through: u64,
     pub run: Option<Run>,
     pub parts: Vec<Part>,

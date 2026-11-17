@@ -349,17 +349,6 @@ impl DriverModel {
             (bound.definitions, Some(bound.catalog))
         };
         let definitions: Vec<_> = definitions.into_iter().map(Arc::new).collect();
-        let ProjectedStepInput {
-            mut system,
-            mut messages,
-            source_evidence,
-            reader,
-            previous_checkpoint_id,
-            recovered_cells,
-        } = self
-            .project_step_input(view, &input, &model, summary)
-            .await?;
-        let reader = &reader;
         let queue = self.state.queue();
         let cut = if summary {
             None
@@ -370,6 +359,26 @@ impl DriverModel {
                     .await?,
             )
         };
+        let prefix_attempt = match &mode {
+            Preparation::Prefix { attempt, .. }
+                if !view.model_steered(*attempt)
+                    && cut.as_ref().is_none_or(|cut| cut.entries.is_empty()) =>
+            {
+                Some(*attempt)
+            }
+            _ => None,
+        };
+        let ProjectedStepInput {
+            mut system,
+            mut messages,
+            source_evidence,
+            reader,
+            previous_checkpoint_id,
+            recovered_cells,
+        } = self
+            .project_step_input(view, &input, &model, summary, prefix_attempt)
+            .await?;
+        let reader = &reader;
         let mut steering_refs = Vec::new();
         let mut steering_contents = Vec::new();
         let mut steering_evidence = Vec::new();
@@ -796,6 +805,7 @@ impl DriverModel {
         input: &'a RunInput,
         model: &'a maka_agent_engine::PreparedModel,
         summary: bool,
+        prefix_attempt: Option<ModelAttemptId>,
     ) -> BoxFuture<'a, Result<ProjectedStepInput<'a>, RunError>> {
         Box::pin(async move {
             let target = ReplayTarget::new(
@@ -813,7 +823,7 @@ impl DriverModel {
             let history = self
                 .state
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
-            let root = self.ancestry_root(view.run, input).await?;
+            let root = history.ancestry_root(view.run).await?;
             let mut current = history.capture().await?;
             let mut summary_view = None;
             if summary && !matches!(input, RunInput::ContextCompact { .. }) {
@@ -912,6 +922,7 @@ impl DriverModel {
                     .project_history(
                         target,
                         reader,
+                        prefix_attempt,
                         model.supports_vision,
                         view.spec.language,
                         &mut messages,
@@ -930,6 +941,7 @@ impl DriverModel {
                         target,
                         reader,
                         view,
+                        prefix_attempt,
                         model.supports_vision,
                         &mut system,
                         &mut messages,
@@ -975,6 +987,7 @@ impl DriverModel {
                         target,
                         reader,
                         view,
+                        prefix_attempt,
                         model.supports_vision,
                         &mut system,
                         &mut messages,
@@ -1340,40 +1353,17 @@ impl DriverModel {
                 "continuation requires a sealed source and fresh target in the same Session".into(),
             ));
         }
-        let mut history = Vec::new();
-        let mut after = 0;
-        loop {
-            let page = self.state.history(source_run, after, 256).await?;
-            if page.is_empty() {
-                break;
-            }
-            after = page.last().expect("nonempty history").revision;
-            history.extend(page);
-        }
-        let cut = match history.iter().find_map(|item| match item.fact {
-            Fact::StepPrepared { step, .. } => Some(step),
-            _ => None,
-        }) {
-            Some(first_step) => {
-                let first = self.state.request(source_run, first_step).await?;
-                let capture: RequestSource = self.decode(source_run, &first.source_capture).await?;
-                capture.cut
-            }
-            None => {
-                let source_input: RunInput = self.decode(source_run, &original.spec.input).await?;
-                let root = self.ancestry_root(source_run, &source_input).await?;
-                self.state
-                    .session_history(
-                        original.spec.owner.clone(),
-                        original.spec.session_id.clone(),
-                    )
-                    .capture_before(root)
-                    .await?
-            }
-        };
+        let resolved = self
+            .state
+            .session_history(
+                original.spec.owner.clone(),
+                original.spec.session_id.clone(),
+            )
+            .continuation_source(source_run, original.revision)
+            .await?;
         let base = SessionBase {
-            high_water: cut.through_sequence,
-            digest: cut.digest,
+            high_water: resolved.base.through_sequence,
+            digest: resolved.base.digest,
         };
         let model = self.source.capture().await?;
         let target = ReplayTarget::new(&model, ModelOperation::Inference);
@@ -1460,7 +1450,7 @@ impl DriverModel {
                         run_id: source_run,
                     },
                     high_water: original.revision,
-                    digest: maka_agent_engine::digest(&history)?,
+                    digest: resolved.digest,
                 },
                 base,
                 replay: ReplayEvidence {
@@ -1478,26 +1468,6 @@ impl DriverModel {
         result
     }
 
-    async fn ancestry_root(&self, mut run: RunId, input: &RunInput) -> Result<RunId, RunError> {
-        let mut prior = input
-            .inherited_claim()
-            .map(|claim| claim.source.execution.run_id);
-        let mut seen = std::collections::BTreeSet::new();
-        while let Some(source) = prior {
-            if !seen.insert(source) {
-                return Err(RunError::InvalidInput(
-                    "cyclic continuation ancestry".into(),
-                ));
-            }
-            run = source;
-            let view = self.state.frontier(run).await?;
-            let input: RunInput = self.decode(run, &view.spec.input).await?;
-            prior = input
-                .inherited_claim()
-                .map(|claim| claim.source.execution.run_id);
-        }
-        Ok(run)
-    }
     fn canonical_messages<'a>(
         &'a self,
         target: ReplayTarget<'a>,
@@ -1508,7 +1478,7 @@ impl DriverModel {
     ) -> BoxFuture<'a, Result<Option<String>, RunError>> {
         Box::pin(async move {
             let reader = HistorySource::live(&self.state, cut);
-            self.project_history(target, &reader, vision, language, messages)
+            self.project_history(target, &reader, None, vision, language, messages)
                 .await
                 .map(|(previous, _)| previous)
         })
@@ -1518,6 +1488,7 @@ impl DriverModel {
         &'a self,
         target: ReplayTarget<'a>,
         reader: &'a HistorySource<'_>,
+        prefix_attempt: Option<ModelAttemptId>,
         vision: bool,
         language: maka_agent_facts::language::Language,
         messages: &'a mut preparation::PromptBuilder,
@@ -1676,8 +1647,13 @@ impl DriverModel {
                         self.project_message_input(reader, &view, &input, vision, false, messages)
                             .await?;
                     }
+                    let attempt = (run == self.execution.run_id)
+                        .then_some(prefix_attempt)
+                        .flatten();
                     let knowledge = self
-                        .semantic_tail(target, reader, &view, vision, &mut None, messages, after)
+                        .semantic_tail(
+                            target, reader, &view, attempt, vision, &mut None, messages, after,
+                        )
                         .await?;
                     if run == self.execution.run_id {
                         recovered_cells = knowledge;
@@ -1857,7 +1833,9 @@ impl DriverModel {
                             .await?;
                     }
                     let _ = self
-                        .semantic_tail(target, reader, &prior, vision, system, messages, after)
+                        .semantic_tail(
+                            target, reader, &prior, None, vision, system, messages, after,
+                        )
                         .await?;
                 }
                 Ok(previous)
@@ -1875,7 +1853,7 @@ impl DriverModel {
                     self.project_message_input(reader, &prior, &input, vision, false, messages)
                         .await?;
                     let _ = self
-                        .semantic_tail(target, reader, &prior, vision, system, messages, 0)
+                        .semantic_tail(target, reader, &prior, None, vision, system, messages, 0)
                         .await?;
                 }
                 Ok(previous)
@@ -1892,6 +1870,7 @@ impl DriverModel {
         target: ReplayTarget<'a>,
         reader: &'a HistorySource<'_>,
         view: &'a RunView,
+        prefix_attempt: Option<ModelAttemptId>,
         vision: bool,
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
@@ -1900,7 +1879,15 @@ impl DriverModel {
         Box::pin(async move {
             let recorded = self.recorded_inputs(reader, view, after_revision).await?;
             let mut replay = replay::TailReplay::new(
-                self, target, reader, view, vision, system, messages, recorded,
+                self,
+                target,
+                reader,
+                view,
+                prefix_attempt,
+                vision,
+                system,
+                messages,
+                recorded,
             );
             let mut after = after_revision;
             loop {
@@ -3626,7 +3613,7 @@ fn recovery_for_failure(
     Ok(blocked())
 }
 
-async fn append_continuation_cue(
+pub(crate) async fn append_continuation_cue(
     language: maka_agent_facts::language::Language,
     messages: &mut preparation::PromptBuilder,
 ) -> Result<(), RunError> {

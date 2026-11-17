@@ -193,6 +193,7 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
     };
 
     let mut rig = Rig::new()?;
+    rig.model_overrides = json!({"llama3.2": {"codeMode": false, "vision": true, "apiProtocol": "openai-chat-completions"}});
     let (request, mut captured) = tokio::sync::mpsc::channel(1);
     let app = axum::Router::new().route(
         "/v1/chat/completions",
@@ -220,9 +221,26 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
         let session = rig.start().await?;
         rig.assemble(&session).await?;
         let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+        let (img_tool, _) = rig.tool(attempt, "ordinary", "snap-1", json!({})).await?;
         let (tool, _) = rig.tool(attempt, "computer", "click-1", json!({})).await?;
         rig.finish_model_request(attempt, None).await?;
         let driver = rig.driver.as_ref().unwrap();
+        super::super::effects::publish_return_for_test(
+            &driver.state,
+            &driver.access,
+            &img_tool,
+            maka_agent_facts::tool_output::ToolSuccess::from(ToolOutput::Mcp(
+                maka_agent_facts::capability::CallResult {
+                    content: vec![maka_agent_facts::capability::ContentBlock::Image {
+                        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=".into(),
+                        mime_type: "image/png".into(),
+                    }],
+                    structured_content: None,
+                },
+            )),
+            None,
+        )
+        .await?;
         let run = driver.access.execution().run_id;
         let owner = driver.state.frontier(run).await?.spec.owner;
         let digest = format!("sha256-{}", "a".repeat(64));
@@ -335,6 +353,7 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
             })
             .collect();
         assert_eq!(exchange, ["call", "failure"]);
+        assert!(request.to_string().contains("image/png"), "unaccepted tool image lost: {request}");
         model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
@@ -1911,410 +1930,272 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()> {
-    use maka_agent_engine::ports::Preparation;
-    use maka_agent_facts::tool_output::{DurableToolProjection, ToolSuccess};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-    #[derive(Clone, Copy)]
-    enum Scenario {
-        SettledToolThenOrphanThinking,
-        PartialAssistantText,
-        LateReceiptUnacceptedToolCall,
-        StoppedBeforeFirstStep,
-    }
+    const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
-    for scenario in [
-        Scenario::SettledToolThenOrphanThinking,
-        Scenario::PartialAssistantText,
-        Scenario::LateReceiptUnacceptedToolCall,
-        Scenario::StoppedBeforeFirstStep,
-    ] {
-        let mut rig = Rig::new()?;
-        let (request_tx, mut captured) = tokio::sync::mpsc::channel(2);
-        let app = axum::Router::new().route(
-            "/v1/chat/completions",
-            axum::routing::post(move |body: axum::body::Bytes| {
-                let request_tx = request_tx.clone();
-                async move {
-                    let _ = request_tx.try_send(
-                        serde_json::from_slice::<Value>(&body).expect("model request JSON"),
-                    );
-                    let sse = format!(
-                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                        json!({"id":"cont","choices":[{"index":0,"delta":{"role":"assistant","content":"Continued cleanly."},"finish_reason":null}]}),
-                        json!({"id":"cont","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
-                    );
-                    ([("content-type", "text/event-stream")], sse)
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
-        let stop = CancellationToken::new();
-        let server_stop = stop.clone();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(server_stop.cancelled_owned())
-                .await
-        });
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let mut boot = model_recovery::bootstrap(
+        &base,
+        format!("http://{}/v1", listener.local_addr()?),
+        false,
+    )
+    .await?;
+    boot.replay = true;
+    model_recovery::attach(&mut rig, &boot).await?;
 
-        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
-            let session = rig.start().await?;
-            rig.assemble(&session).await?;
-            let driver = rig.driver.as_ref().unwrap().clone();
-            let run = driver.access.execution().run_id;
-
-            match scenario {
-                Scenario::SettledToolThenOrphanThinking => {
-                    let (_, first_attempt, _) =
-                        rig.record_model_request(Preparation::Initial).await?;
-                    let (tool, _) = rig
-                        .tool(first_attempt, "ordinary", "call-settled", json!({}))
-                        .await?;
-                    rig.finish_model_request(first_attempt, None).await?;
-                    let returned = super::super::effects::publish_return_for_test(
-                        &driver.state,
-                        &driver.access,
-                        &tool,
-                        ToolSuccess::projected(
-                            ToolOutput::Json(json!({"status": "ok"})),
-                            DurableToolProjection::Text {
-                                text: "settled tool output".into(),
-                            },
-                        ),
-                        None,
-                    )
-                    .await?;
-                    let Fact::LocalToolReturned {
-                        result: local_ref, ..
-                    } = returned
-                    else {
-                        return Err("missing local tool return".into());
-                    };
-                    let accepted =
-                        ContentBlob::json(&AcceptedToolResult::Local { result: local_ref })?;
-                    rig.append(
-                        vec![Fact::ToolResultAccepted {
-                            tool,
-                            result: accepted.reference().clone(),
-                            outcome: AcceptedResult::Succeeded,
-                        }],
-                        vec![accepted],
-                    )
-                    .await?;
-
-                    let (_, timed_out_attempt, _) =
-                        rig.record_model_request(Preparation::Initial).await?;
-                    rig.append(
-                        vec![
-                            Fact::ModelObserved {
-                                attempt: timed_out_attempt,
-                                index: 0,
-                                part: ModelPart::Text {
-                                    text_kind: maka_agent_facts::model::TextKind::Thinking,
-                                    text: "unfinished orphan reasoning".to_string().into(),
-                                    provider_options: None,
-                                },
-                                continuation: None,
-                            },
-                            Fact::ModelCleanupObserved {
-                                attempt: timed_out_attempt,
-                                cleanup: OperationCleanup::Confirmed,
-                            },
-                            Fact::ModelInterrupted {
-                                attempt: timed_out_attempt,
-                                diagnostic:
-                                    "provider failed (TimedOut): model stream idle timeout exceeded"
-                                        .into(),
-                            },
-                            Fact::RunTerminated {
-                                terminal: Terminal::Failed,
-                                diagnostic: Some(
-                                    "provider failed (TimedOut): model stream idle timeout exceeded"
-                                        .into(),
-                                ),
-                            },
-                        ],
-                        vec![],
-                    )
-                    .await?;
-                }
-                Scenario::PartialAssistantText => {
-                    let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
-                    rig.append(
-                        vec![
-                            Fact::ModelObserved {
-                                attempt,
-                                index: 0,
-                                part: ModelPart::Text {
-                                    text_kind: maka_agent_facts::model::TextKind::Text,
-                                    text: "First half of answer.".to_string().into(),
-                                    provider_options: None,
-                                },
-                                continuation: None,
-                            },
-                            Fact::ModelCleanupObserved {
-                                attempt,
-                                cleanup: OperationCleanup::Confirmed,
-                            },
-                            Fact::ModelInterrupted {
-                                attempt,
-                                diagnostic: "stream idle timeout".into(),
-                            },
-                            Fact::RunTerminated {
-                                terminal: Terminal::Failed,
-                                diagnostic: Some("stream idle timeout".into()),
-                            },
-                        ],
-                        vec![],
-                    )
-                    .await?;
-                }
-                Scenario::LateReceiptUnacceptedToolCall => {
-                    use maka_agent_facts::operation::inline_reply;
-                    use maka_plugin_core::operation::{
-                        OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
-                    };
-
-                    let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
-                    let (tool, _) = rig
-                        .tool(attempt, "ordinary", "call-late", json!({}))
-                        .await?;
-                    rig.finish_model_request(attempt, None).await?;
-                    let owner = driver.state.frontier(run).await?.spec.owner;
-                    let digest = format!("sha256-{}", "a".repeat(64));
-                    let reference = RecoveryRef {
-                        source: maka_plugin_core::deployment::DeploymentRef {
-                            state_domain: "b".repeat(64),
-                            deployment: owner.deployment,
-                            revision: 1,
-                        },
-                        namespace: owner.namespace,
-                        export: "computer".into(),
-                        method: "evaluate".into(),
-                        operation: Uuid::new_v4(),
-                        fingerprint: digest.clone(),
-                        contract: RecoveryContract {
-                            name: "maka.workspace.Computer".into(),
-                            version: 1,
-                            transport: maka_plugin_core::contract::Transport::Remote,
-                            digest,
-                        },
-                        recovery: RecoveryProtocol::JournalV1,
-                    };
-                    let observed = |outcome| Fact::OperationObserved {
-                        tool: tool.clone(),
-                        reply: inline_reply(OperationReply {
-                            reference: reference.clone(),
-                            receipt: Receipt::Recorded {
-                                outcome,
-                                cleanup: OperationCleanup::Confirmed,
-                            },
-                        }),
-                    };
-                    rig.append(
-                        vec![
-                            Fact::ToolOriginalBound {
-                                tool: tool.clone(),
-                                reference: reference.clone(),
-                            },
-                            observed(OperationOutcome::Unknown {
-                                diagnostic: "Launch outcome unknown".into(),
-                            }),
-                            Fact::Blocked {
-                                blocker: BlockerId::new(),
-                                reason: BlockerKind::OperationUnknown {
-                                    tool: tool.clone(),
-                                    reference: reference.clone(),
-                                },
-                            },
-                            Fact::RunTerminated {
-                                terminal: Terminal::Failed,
-                                diagnostic: Some("Launch outcome unknown".into()),
-                            },
-                        ],
-                        vec![],
-                    )
-                    .await?;
-
-                    // While the unknown operation is unresolved, continuationAvailability rejects cleanly.
-                    let before_receipt = query(
-                        &rig,
-                        "continuationAvailability",
-                        json!({ "sessionId": session, "runId": run }),
-                    )
-                    .await?;
-                    assert_eq!(
-                        before_receipt,
-                        json!({ "kind": "rejected", "reason": "safety_check_failed" })
-                    );
-
-                    // Late authoritative receipt settles the operation after termination.
-                    driver
-                        .state
-                        .observe(
-                            run,
-                            vec![Change::new(
-                                observed(OperationOutcome::Returned {
-                                    result: OperationResult::Failure {
-                                        diagnostic: "Window launch did not match app identity."
-                                            .into(),
-                                    },
-                                }),
-                                at(),
-                            )],
-                            vec![],
-                        )
-                        .await?;
-                }
-                Scenario::StoppedBeforeFirstStep => {
-                    rig.append(
-                        vec![Fact::RunTerminated {
-                            terminal: Terminal::Cancelled,
-                            diagnostic: Some("user_requested_stop".into()),
-                        }],
-                        vec![],
-                    )
-                    .await?;
-                }
-            }
-
-            let frontier = driver.state.frontier(run).await?;
-            let BackendSpec::Model { binding, .. } = frontier.spec.backend else {
-                return Err("fixture model binding missing".into());
+    let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<Value>(8);
+    let steer_ready = Arc::new(tokio::sync::Notify::new());
+    let steer_signal = steer_ready.clone();
+    let stop = CancellationToken::new();
+    let ws_stop = stop.clone();
+    let server = tokio::spawn(async move {
+        let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut conns = tokio::task::JoinSet::<TestResult<()>>::new();
+        loop {
+            let (tcp, _) = tokio::select! {
+                _ = ws_stop.cancelled() => break,
+                accepted = listener.accept() => accepted?,
             };
-            let client = rig.client.as_ref().unwrap();
-            let availability = query(
-                &rig,
-                "continuationAvailability",
-                json!({ "sessionId": session, "runId": run }),
-            )
-            .await
-            .map_err(|e| format!("availability failed: {e}"))?;
-            assert_eq!(availability["kind"], "ready", "{availability}");
-
-            let continued = model_recovery::call(
-                client,
-                "agent",
-                "continueRun",
-                json!({
-                    "sessionId": session,
-                    "sourceRunId": run,
-                    "sourceHighWater": frontier.revision,
-                    "model": { "connectionId": binding.connection_id, "modelId": binding.model },
-                }),
-            )
-            .await
-            .map_err(|e| format!("continueRun failed: {e}"))?;
-            assert_eq!(continued["kind"], "started", "{continued}");
-            assert_ne!(continued["execution"]["runId"], json!(run));
-
-            let request = captured
-                .recv()
-                .await
-                .ok_or("continuation did not reach the model")?;
-            let messages = request["messages"]
-                .as_array()
-                .ok_or("model messages missing")?;
-
-            match scenario {
-                Scenario::SettledToolThenOrphanThinking => {
-                    assert!(
-                        messages.iter().any(|msg| msg["tool_calls"]
-                            .as_array()
-                            .is_some_and(|calls| calls
-                                .iter()
-                                .any(|call| call["id"] == "call-settled"))),
-                        "settled tool call must remain in history: {request}"
-                    );
-                    assert_eq!(
-                        messages.last().and_then(|msg| msg["role"].as_str()),
-                        Some("tool"),
-                        "orphan reasoning attempt must not dangle after settled tool output: {request}"
-                    );
-                    assert!(
-                        messages
-                            .last()
-                            .and_then(|msg| msg["content"].as_str())
-                            .unwrap_or_default()
-                            .contains("settled tool output"),
-                        "{request}"
-                    );
-                    assert!(!request.to_string().contains("unfinished orphan reasoning"));
-                }
-                Scenario::PartialAssistantText => {
-                    assert!(
-                        messages.iter().any(|msg| msg["role"] == "assistant"
-                            && msg["content"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .contains("First half of answer.")),
-                        "partial assistant text must remain in context: {request}"
-                    );
-                    assert_eq!(
-                        messages.last().and_then(|msg| msg["role"].as_str()),
-                        Some("user"),
-                        "partial assistant continuation must end with user cue: {request}"
-                    );
-                }
-                Scenario::LateReceiptUnacceptedToolCall => {
-                    let idx = messages
-                        .iter()
-                        .position(|msg| {
-                            msg["tool_calls"].as_array().is_some_and(|calls| {
-                                calls.iter().any(|call| call["id"] == "call-late")
-                            })
-                        })
-                        .ok_or_else(|| format!("late-settled tool call missing: {request}"))?;
-                    assert_eq!(messages[idx + 1]["role"], "tool", "{request}");
-                    assert_eq!(messages[idx + 1]["tool_call_id"], "call-late");
-                    assert!(
-                        messages[idx + 1]["content"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .contains("Window launch did not match app identity."),
-                        "{request}"
-                    );
-                }
-                Scenario::StoppedBeforeFirstStep => {
-                    assert_eq!(
-                        messages.last().and_then(|msg| msg["role"].as_str()),
-                        Some("user"),
-                        "{request}"
-                    );
-                    assert!(
-                        request
-                            .to_string()
-                            .contains("native wait original read failure"),
-                        "{request}"
-                    );
-                }
-            }
-
-            let target = json!({ "kind": "run", "runId": continued["execution"]["runId"] });
-            loop {
-                let work = model_recovery::call(
-                    client,
-                    "agent",
-                    "work",
-                    json!({ "sessionId": session, "target": target }),
-                )
-                .await?;
-                match work["execution"]["state"]["kind"].as_str() {
-                    Some("completed") => break,
-                    Some("failed" | "cancelled") => {
-                        return Err(format!("continuation failed: {work}").into());
+            let (req_tx, steer_signal, ws_stop, step) = (
+                req_tx.clone(),
+                steer_signal.clone(),
+                ws_stop.clone(),
+                step.clone(),
+            );
+            conns.spawn(async move {
+                let mut ws = tokio_tungstenite::accept_async(tcp).await?;
+                loop {
+                    let frame = tokio::select! {
+                        _ = ws_stop.cancelled() => return Ok(()),
+                        frame = ws.next() => frame,
+                    };
+                    let text = match frame {
+                        Some(Ok(WsMessage::Text(text))) => text,
+                        Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                        _ => return Ok(()),
+                    };
+                    let idx = step.fetch_add(1, Ordering::SeqCst);
+                    req_tx.send(serde_json::from_str(&text)?).await?;
+                    let events = match idx {
+                        0 => {
+                            for ev in [
+                                json!({"type":"response.created","response":{"id":"resp-0"}}),
+                                json!({
+                                    "type": "response.output_item.done",
+                                    "item": {"type":"reasoning","id":"rs-steer","encrypted_content":"enc-steer","summary":[{"type":"summary_text","text":"thinking"}]}
+                                }),
+                            ] {
+                                ws.send(WsMessage::text(ev.to_string())).await?;
+                            }
+                            steer_signal.notify_one();
+                            continue;
+                        }
+                        1 => {
+                            let hold_call = json!({
+                                "type": "custom_tool_call",
+                                "id": "fc-hold",
+                                "call_id": "call-2-hold",
+                                "name": "exec",
+                                "input": format!(
+                                    r#"// @exec: {{"yield_time_ms": 30000}}
+image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control(); await new Promise((r) => setTimeout(r, 30000));"#
+                                )
+                            });
+                            vec![
+                                json!({"type":"response.created","response":{"id":"r-1"}}),
+                                json!({"type":"response.output_item.done","item":hold_call}),
+                                json!({"type":"response.completed","response":{"id":"r-1","model":"llama3.2","output":[hold_call],"usage":{"input_tokens":50,"output_tokens":10}}}),
+                            ]
+                        }
+                        2..=4 => continue,
+                        5 => vec![
+                            json!({"type":"response.created","response":{"id":"r-5"}}),
+                            json!({"type":"response.output_item.done","item":{"type":"reasoning","id":"rs-orphan","encrypted_content":"enc-orphan","summary":[{"type":"summary_text","text":"orphan"}]}}),
+                            json!({"type":"response.incomplete","response":{"id":"r-5","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
+                        ],
+                        6 => vec![
+                            json!({"type":"response.created","response":{"id":"r-6"}}),
+                            json!({"type":"response.output_item.done","item":{"type":"message","id":"m-half","role":"assistant","content":[{"type":"output_text","text":"First half."}]}}),
+                            json!({"type":"response.incomplete","response":{"id":"r-6","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
+                        ],
+                        _ => {
+                            let msg = json!({"type":"message","id":"m-done","role":"assistant","content":[{"type":"output_text","text":"Second half."}]});
+                            vec![
+                                json!({"type":"response.created","response":{"id":"r-done"}}),
+                                json!({"type":"response.output_item.done","item":msg}),
+                                json!({"type":"response.completed","response":{"id":"r-done","model":"llama3.2","output":[msg],"usage":{"input_tokens":60,"output_tokens":10}}}),
+                            ]
+                        }
+                    };
+                    for event in events {
+                        ws.send(WsMessage::text(event.to_string())).await?;
                     }
-                    _ => tokio::task::yield_now().await,
                 }
+            });
+        }
+        while let Some(joined) = conns.join_next().await {
+            let _ = joined?;
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    });
+
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(20), async {
+        let client = rig.client.as_ref().ok_or("client missing")?;
+        let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
+        let catalog = model_recovery::call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let created_conn = model_recovery::call(client, "settings", "create", json!({
+            "expectedCatalogRevision": catalog["revision"],
+            "connection": {
+                "slug": "replay-same",
+                "name": "Replay Same",
+                "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration": {"baseUrl": boot.base_url},
+                "enabled": true,
+                "enabledModelIds": ["llama3.2"],
+                "modelOverrides": {"llama3.2": {"codeMode": true, "vision": true, "apiProtocol": "openai-chat-completions"}}
             }
-            Ok::<_, Box<dyn Error + Send + Sync>>(())
-        }))
-        .catch_unwind()
-        .await;
-        stop.cancel();
-        server.await??;
-        let cleanup = rig.finish().await;
-        assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
-        assert!(cleanup.is_empty(), "{cleanup:?}");
-    }
+        })).await?;
+        let conn_id = created_conn["connection"]["connectionId"].clone();
+        let session_resp = model_recovery::call(client, "agent", "create", json!({
+            "title": "Resilient continuation",
+            "automaticTitle": false,
+            "labels": [],
+            "workspace": {"kind": "directory", "path": base.join("workspace")}
+        })).await?;
+        let session = session_resp["session"]["id"].as_str().ok_or("session missing")?.to_owned();
+        let backend = json!({"kind":"model","connectionId":conn_id,"modelId":"llama3.2"});
+
+        model_recovery::call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Inspect pixel.",
+            "backend": backend
+        })).await?;
+        let _ = req_rx.recv().await.ok_or("initial request missing")?;
+        steer_ready.notified().await;
+        let r1: RunId = loop {
+            let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId":session})).await?;
+            if !obs["run"]["runId"].is_null() {
+                break serde_json::from_value(obs["run"]["runId"].clone())?;
+            }
+            tokio::task::yield_now().await;
+        };
+        loop {
+            let view = owner.durable.frontier(r1).await?;
+            if view.attempts.values().any(|a| a.observed > 0) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        model_recovery::call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Also verify.",
+            "delivery": "steer",
+            "backend": backend
+        })).await?;
+        let steered_req = req_rx.recv().await.ok_or("steered request missing")?;
+        assert!(!steered_req.to_string().contains("rs-steer"), "{steered_req}");
+        let step3_req = req_rx.recv().await.ok_or("post-yield request missing")?;
+        assert!(step3_req.to_string().contains("input_image"), "{step3_req}");
+        model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":r1})).await?;
+        let r1_exec = wait_terminal(client, &session, json!(r1)).await?;
+        assert_eq!(r1_exec["state"]["kind"], "cancelled");
+
+        let mut source = r1_exec;
+        for _ in 0..2 {
+            let avail = model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":source["runId"]})).await?;
+            assert_eq!(avail["kind"], "ready", "avail={avail} frontier={:?}", owner.durable.frontier(serde_json::from_value(source["runId"].clone())?).await?);
+            let started = model_recovery::call(client, "agent", "continueRun", json!({
+                "sessionId": session,
+                "sourceRunId": source["runId"],
+                "sourceHighWater": source["highWater"],
+                "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+            })).await?;
+            assert_eq!(started["kind"], "started", "started={started}");
+            let next_id = started["execution"]["runId"].clone();
+            let _ = req_rx.recv().await.ok_or("held continuation request missing")?;
+            model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":next_id})).await?;
+            source = wait_terminal(client, &session, next_id.clone()).await?;
+            assert_eq!(source["state"]["kind"], "cancelled");
+            let observed = model_recovery::call(client, "agent", "observe", json!({"sessionId":session})).await?;
+            assert_eq!(observed["latestRunId"], next_id);
+        }
+        assert_eq!(
+            model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":r1})).await?["kind"],
+            "rejected"
+        );
+        assert_eq!(
+            model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":source["runId"]})).await?["kind"],
+            "ready"
+        );
+
+        let r4 = model_recovery::call(client, "agent", "continueRun", json!({
+            "sessionId": session,
+            "sourceRunId": source["runId"],
+            "sourceHighWater": source["highWater"],
+            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+        })).await?;
+        let req2 = req_rx.recv().await.ok_or("r4 request missing")?;
+        let req2_text = req2.to_string();
+        assert!(req2_text.contains("input_image"), "unaccepted tool image lost: {req2_text}");
+        assert!(req2_text.contains("call-2-hold"), "unaccepted interrupted cell lost: {req2_text}");
+        let r4_exec = wait_terminal(client, &session, r4["execution"]["runId"].clone()).await?;
+
+        let r5 = model_recovery::call(client, "agent", "continueRun", json!({
+            "sessionId": session,
+            "sourceRunId": r4_exec["runId"],
+            "sourceHighWater": r4_exec["highWater"],
+            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+        })).await?;
+        let req3 = req_rx.recv().await.ok_or("r5 request missing")?;
+        let req3_text = req3.to_string();
+        assert!(!req3_text.contains("rs-orphan"), "orphan reasoning leaked: {req3_text}");
+        assert!(!req3_text.contains("Continue from where"), "unexpected cue: {req3_text}");
+        let r5_exec = wait_terminal(client, &session, r5["execution"]["runId"].clone()).await?;
+
+        let r6 = model_recovery::call(client, "agent", "continueRun", json!({
+            "sessionId": session,
+            "sourceRunId": r5_exec["runId"],
+            "sourceHighWater": r5_exec["highWater"],
+            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+        })).await?;
+        let req4 = req_rx.recv().await.ok_or("r6 request missing")?;
+        let req4_text = req4.to_string();
+        assert!(req4_text.contains("First half."), "{req4_text}");
+        assert!(req4_text.contains("Continue from where"), "{req4_text}");
+        let r6_exec = wait_terminal(client, &session, r6["execution"]["runId"].clone()).await?;
+        assert_eq!(r6_exec["state"]["kind"], "completed");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    server.await??;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
+}
+
+async fn wait_terminal(client: &HostClient, session: &str, run_id: Value) -> TestResult<Value> {
+    let target = json!({"kind": "run", "runId": run_id});
+    loop {
+        let work = model_recovery::call(
+            client,
+            "agent",
+            "work",
+            json!({"sessionId": session, "target": target}),
+        )
+        .await?;
+        if matches!(
+            work["execution"]["state"]["kind"].as_str(),
+            Some("completed" | "failed" | "cancelled")
+        ) {
+            return Ok(work["execution"].clone());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

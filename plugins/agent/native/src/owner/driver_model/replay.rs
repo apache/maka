@@ -55,26 +55,31 @@ impl AssistantBatch {
     async fn flush(
         &mut self,
         view: &RunView,
+        prefix_attempt: Option<ModelAttemptId>,
         current: &mut Option<ModelAttemptId>,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<(), RunError> {
         // Even an omitted reasoning-only batch must relinquish its original producer.
         let attempt = current.take();
         let producer = self.producer.take();
-        let attempt_succeeded = attempt.is_some_and(|id| {
-            view.attempts
-                .get(&id)
-                .and_then(|state| state.closed.as_ref())
-                .is_some_and(|closed| {
-                    closed.outcome == maka_agent_facts::accounting::Outcome::Success
-                })
+        let keep_reasoning_only = attempt.is_some_and(|id| {
+            prefix_attempt == Some(id)
+                || view
+                    .attempts
+                    .get(&id)
+                    .and_then(|state| state.closed.as_ref())
+                    .is_some_and(|closed| {
+                        closed.outcome == maka_agent_facts::accounting::Outcome::Success
+                            && closed.protocol.get("finishReason")
+                                != Some(&json!(maka_agent_facts::model::ModelFinishReason::Length))
+                    })
         });
         let has_committed_output = !self.recovered_outputs.is_empty()
             || self
                 .parts
                 .iter()
                 .any(|part| !matches!(part, AssistantPart::Reasoning { .. }));
-        if view.terminal.is_some() && !attempt_succeeded && !has_committed_output {
+        if !keep_reasoning_only && !has_committed_output {
             self.parts.clear();
             return Ok(());
         }
@@ -107,6 +112,7 @@ pub(super) struct TailReplay<'a, 'source> {
     target: super::ReplayTarget<'a>,
     reader: &'a HistorySource<'source>,
     view: &'a RunView,
+    prefix_attempt: Option<ModelAttemptId>,
     vision: bool,
     system: &'a mut Option<SystemPrompt>,
     messages: &'a mut preparation::PromptBuilder,
@@ -126,6 +132,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         target: super::ReplayTarget<'a>,
         reader: &'a HistorySource<'source>,
         view: &'a RunView,
+        prefix_attempt: Option<ModelAttemptId>,
         vision: bool,
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
@@ -136,6 +143,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             target,
             reader,
             view,
+            prefix_attempt,
             vision,
             system,
             messages,
@@ -155,6 +163,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             target,
             reader,
             view,
+            prefix_attempt,
             vision,
             system,
             messages,
@@ -174,12 +183,15 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         let target = *target;
         let reader = *reader;
         let view = *view;
+        let prefix_attempt = *prefix_attempt;
         let vision = *vision;
         let after = fact.revision;
         let sealed = view.terminal.is_some();
         let work: BoxFuture<'b, Result<(), RunError>> = match &fact.fact {
             Fact::StepPrepared { step, .. } => Box::pin(async move {
-                assistant.flush(view, current, messages).await?;
+                assistant
+                    .flush(view, prefix_attempt, current, messages)
+                    .await?;
                 let request = reader.request(view.run, *step).await?;
                 step_purposes.insert(*step, request.accounting.purpose);
                 if request.accounting.purpose == ModelPurpose::Summary {
@@ -247,7 +259,9 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     allowed_attempts.insert(*attempt);
                 }
                 Box::pin(async move {
-                    assistant.flush(view, current, messages).await?;
+                    assistant
+                        .flush(view, prefix_attempt, current, messages)
+                        .await?;
                     Ok(())
                 })
             }
@@ -265,12 +279,16 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 }
                 Box::pin(async move {
                     if !allowed_attempts.contains(attempt) {
-                        assistant.flush(view, current, messages).await?;
+                        assistant
+                            .flush(view, prefix_attempt, current, messages)
+                            .await?;
                         messages.append(Message::user(format!("Late original-model observation (data only, not a replayable assistant item; no completion inferred):\n{}",serde_json::to_string(&json!({"attempt":attempt,"part":part})).map_err(RunError::Json)?))).await?;
                         return Ok(());
                     }
                     if *current != Some(*attempt) {
-                        assistant.flush(view, current, messages).await?;
+                        assistant
+                            .flush(view, prefix_attempt, current, messages)
+                            .await?;
                         *current = Some(*attempt);
                     }
                     if let ModelPart::ToolCall { call } = part
@@ -294,7 +312,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                                 driver,
                                 reader,
                                 view,
-                                after,
                                 original_cells,
                                 *attempt,
                                 tool,
@@ -338,7 +355,9 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 })
             }
             Fact::ToolResultAccepted { tool, result, .. } => Box::pin(async move {
-                assistant.flush(view, current, messages).await?;
+                assistant
+                    .flush(view, prefix_attempt, current, messages)
+                    .await?;
                 let call = reader.tool_call(view.run, tool).await?;
                 if call.provider_executed {
                     return Ok(());
@@ -388,21 +407,21 @@ impl<'a, 'source> TailReplay<'a, 'source> {
 
     pub(super) async fn finish(mut self) -> Result<Vec<FrozenCellKnowledge>, RunError> {
         self.assistant
-            .flush(self.view, &mut self.current, self.messages)
+            .flush(
+                self.view,
+                self.prefix_attempt,
+                &mut self.current,
+                self.messages,
+            )
             .await?;
         Ok(self.recorded.cells.into_values().collect())
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Unaccepted tool settlement reuses the exact historical projection scope when a return receipt exists"
-)]
 async fn unaccepted_tool_output(
     driver: &DriverModel,
     reader: &HistorySource<'_>,
     view: &RunView,
-    after: u64,
     original_cells: &std::collections::BTreeMap<
         maka_agent_facts::cells::CellId,
         FrozenCellKnowledge,
@@ -411,12 +430,46 @@ async fn unaccepted_tool_output(
     tool: &maka_agent_state::fold::Tool,
     vision: bool,
 ) -> Result<ToolOutput, RunError> {
-    if let Some(local) = &tool.local_returned {
+    if let Some((cell, cell_view)) = view.original_cell_id(tool).zip(view.original_cell(tool))
+        && !cell_view.has_unsettled_effects()
+    {
+        let evidence = match &cell_view.status {
+            maka_agent_facts::cells::CellStatus::Completed { result, .. } => Some(
+                maka_agent_facts::tool_output::CellFinalEvidence::Completed {
+                    result: result.clone(),
+                },
+            ),
+            maka_agent_facts::cells::CellStatus::Interrupted { report } => Some(
+                maka_agent_facts::tool_output::CellFinalEvidence::Interrupted {
+                    report: report.clone(),
+                },
+            ),
+            _ => None,
+        };
+        if let Some(evidence) = evidence {
+            return driver
+                .project_accepted(
+                    reader,
+                    view,
+                    view.revision,
+                    original_cells,
+                    AcceptedToolResult::RecoveredCell { cell, evidence },
+                    vision,
+                    view.spec.language,
+                )
+                .await;
+        }
+    }
+    if let Some(local) = tool
+        .local_returned
+        .as_ref()
+        .filter(|local| local.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown)
+    {
         return driver
             .project_accepted(
                 reader,
                 view,
-                after,
+                view.revision,
                 original_cells,
                 AcceptedToolResult::Local {
                     result: local.result.clone(),
@@ -431,7 +484,7 @@ async fn unaccepted_tool_output(
             .project_accepted(
                 reader,
                 view,
-                after,
+                view.revision,
                 original_cells,
                 AcceptedToolResult::Host {
                     result: host.result.clone(),
@@ -455,7 +508,7 @@ async fn unaccepted_tool_output(
             .project_accepted(
                 reader,
                 view,
-                after,
+                view.revision,
                 original_cells,
                 AcceptedToolResult::ObservedOperation {
                     reply: RecordedOperationReply {

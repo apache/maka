@@ -440,6 +440,7 @@ export function Conversation(props: ConversationProps) {
   );
   const toolProgress = (id: string) => toolProgressById().get(id) ?? null;
   const compacting = signal<AgentCompactionProgress | null>(null);
+  const latestRunId = signal<RunId | null>(null);
   const execution = signal<AgentExecution | null>(null);
   const continuing = signal(false);
   const confirmingContinuation = () => continuing() || props.continuationPending();
@@ -1123,7 +1124,7 @@ export function Conversation(props: ConversationProps) {
           (row?.role === 'compaction' && turn.foldedWork) ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
-          (row?.role === 'failure' && (turn.active || outcome === 'completed' || foldedWork))) &&
+          (row?.role === 'failure' && (outcome === 'completed' || foldedWork))) &&
         !summaries.has(turn.turnKey) &&
         (platform.idiom !== 'terminal' || outcome !== null || foldedWork)
       ) {
@@ -1897,6 +1898,7 @@ export function Conversation(props: ConversationProps) {
       });
       if (trigger === 'live') predictionTriggerTurn = completedTurn;
       metrics.set(observed.metrics ?? null);
+      latestRunId.set(observed.latestRunId ?? observed.run?.runId ?? null);
       if (observed.run) {
         run.set(observed.run.state);
         runId.set(observed.run.runId);
@@ -1905,7 +1907,7 @@ export function Conversation(props: ConversationProps) {
       } else if (runId() === null) {
         // Exact execution reads below distinguish terminal history from a Run
         // whose current activation is simply absent.
-        run.set(rows().length === 0 ? 'idle' : 'loading');
+        run.set(rows().length === 0 && !observed.latestRunId ? 'idle' : 'loading');
       }
       compacting.set(observed.compacting);
       messagePrediction.source(
@@ -2063,6 +2065,7 @@ export function Conversation(props: ConversationProps) {
             lastCompletedTurn.set(null);
             messagePrediction.source(null, 'live');
             run.set('admitted');
+            latestRunId.set(event.runId);
             runId.set(event.runId);
             runBackend.set(null);
             runTurn.set(event.turnId);
@@ -2092,6 +2095,7 @@ export function Conversation(props: ConversationProps) {
             predictionTriggerTurn = completedTurn;
             lastCompletedTurn.set(completedTurn);
             run.set('loading');
+            latestRunId.set(event.runId);
             runId.set(null);
             runBackend.set(null);
             compacting.set(null);
@@ -2694,7 +2698,7 @@ export function Conversation(props: ConversationProps) {
     const active = runId();
     if (active !== null) return active;
     if (!atHistoryTail() || (historyWindow()?.through ?? -1) < readState().through) return null;
-    return rows().findLast((row) => row.runId !== undefined)?.runId ?? null;
+    return latestRunId() ?? rows().findLast((row) => row.runId !== undefined)?.runId ?? null;
   });
   const acceptExecution = (value: AgentExecution) => {
     if (value.sessionId !== sessionId) throw new UiError('Host observed a different session.');
@@ -2712,6 +2716,7 @@ export function Conversation(props: ConversationProps) {
       }
     } else {
       // No live handle does not prove failure: a durable wait/blocker remains active.
+      latestRunId.set(value.runId);
       runId.set(value.runId);
       runTurn.set(value.turnId);
       switch (value.state.kind) {

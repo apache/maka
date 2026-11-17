@@ -325,10 +325,12 @@ impl Builder {
         if message_role != MessageRole::System {
             self.last_non_system_stable = Some(
                 matches!(message_role, MessageRole::User | MessageRole::Tool)
-                    || (message_role == MessageRole::Assistant && description.last_is_tool_result),
+                    || (message_role == MessageRole::Assistant
+                        && (description.last_is_tool_result || description.is_native_checkpoint)),
             );
         }
-        record[10] = u64::from(description.last_is_tool_result);
+        record[10] = u64::from(description.last_is_tool_result)
+            | (u64::from(description.is_native_checkpoint) << 1);
         put_digest(&mut record[11..15], description.commitment);
         self.prefix.update(description.commitment);
         put_digest(&mut record[15..19], self.prefix.clone().finalize().into());
@@ -502,7 +504,8 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
                 message_index: self.index,
                 logical_identity: hex::encode(digest(&record[11..15])).into(),
                 role: role(record[2])?,
-                last_is_tool_result: record[10] != 0,
+                last_is_tool_result: (record[10] & 1) != 0,
+                is_native_checkpoint: (record[10] & 2) != 0,
                 local_tool_names: self.store.list(List {
                     offset: record[6],
                     len: record[7] as usize,

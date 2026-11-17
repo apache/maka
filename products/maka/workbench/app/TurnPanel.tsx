@@ -217,7 +217,7 @@ export function TurnSummary(props: {
     const usage = turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
     return (
       [status, counts, usage ? executorUsageLabel(usage) : ''].filter(Boolean).join(' · ') ||
-      tr('Completed')
+      (outcome === 'failed' ? tr('Turn work details') : tr('Completed'))
     );
   };
   const choose = (action: { turnKey: string; open: boolean }) => {
