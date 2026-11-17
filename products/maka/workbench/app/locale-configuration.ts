@@ -26,6 +26,7 @@ export const configurationMessages = {
   'Add skills': ['Add skills', '添加技能', '新增技能'],
   'Delete skill directory?': ['Delete skill directory?', '删除此技能目录？', '刪除此技能目錄？'],
   'Invalid skill': ['Invalid skill', '无效技能', '無效技能'],
+  Warning: ['Warning', '警告', '警告'],
   Overridden: ['Overridden', '已被覆盖', '已被覆寫'],
   Effective: ['Effective', '当前生效', '目前生效'],
   'Skill details': ['Skill details', '技能详情', '技能詳細資訊'],

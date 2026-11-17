@@ -47,7 +47,6 @@ pub enum SkillValidationCode {
     CompatibilityTooLong,
     InvalidMetadata,
     InvalidCategory,
-    UnsupportedField,
     DuplicateId,
     DuplicateName,
     BlockedPath,
