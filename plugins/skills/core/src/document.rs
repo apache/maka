@@ -87,35 +87,14 @@ pub fn parse(text: &str) -> Result<SkillDocument, Box<InvalidDocument>> {
             "SKILL.md frontmatter is not valid YAML.",
         );
     };
-    let Some(mapping) = raw.as_hash() else {
+    if raw.as_hash().is_none() {
         return fail(
             result,
             MalformedFrontmatter,
             "SKILL.md frontmatter must be a YAML mapping.",
         );
-    };
-    let issues = &mut result.issues;
-    for key in mapping.keys() {
-        if !matches!(
-            key.as_str(),
-            "name"
-                | "description"
-                | "allowed-tools"
-                | "required-tools"
-                | "required-capabilities"
-                | "license"
-                | "compatibility"
-                | "metadata"
-                | "category"
-        ) {
-            issues.push(Issue::new(
-                UnsupportedField,
-                Severity::Warning,
-                key,
-                format!("Unsupported SKILL.md frontmatter field \"{key}\" is ignored."),
-            ));
-        }
     }
+    let issues = &mut result.issues;
     let name = fields::required(&raw["name"], "name", MissingName, InvalidName, issues);
     recommend(name.as_deref(), 64, NameTooLong, "name", issues);
     let description = fields::required(
