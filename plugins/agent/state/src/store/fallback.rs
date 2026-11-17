@@ -1161,6 +1161,7 @@ fn message_progress(
                 Some(
                     maka_agent_facts::message::MessageOrigin::Goal { .. }
                         | maka_agent_facts::message::MessageOrigin::BotWorker { .. }
+                        | maka_agent_facts::message::MessageOrigin::DiscoveryReport { .. }
                 )
             ) {
                 continue;

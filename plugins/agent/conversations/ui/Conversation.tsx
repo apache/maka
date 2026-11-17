@@ -145,6 +145,7 @@ import type {
   ComposerSendAction as SendAction,
   ComposerSendStatus,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
 import {
   selectionForChoice,
@@ -172,6 +173,10 @@ import {
   BotWorking,
 } from '../../../../products/maka/workbench/app/BotReply';
 import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
+import { sameValue } from '../../../shared/value';
+import { DiscoveryPanel } from '../../../../products/maka/workbench/app/DiscoveryPanel';
+import { quoteBotMessage } from '../../../../products/maka/workbench/app/botTranscriptCore';
+import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   MessageRow,
   type MessageViewState,
@@ -352,6 +357,7 @@ type ConversationProps = {
   stopAction(): () => void;
   /** Starts the Bot over; offered only on the Bot's own conversation. */
   restartBot?(): Promise<void>;
+  chooseModel?(): void;
   /** Shows only the latest exchange, as tall as its content, with no header. */
   compact?: boolean;
 };
@@ -492,6 +498,7 @@ export function Conversation(props: ConversationProps) {
   const attachmentMetadataFailed = signal(false);
   const attachmentMetadataReads = new Set<string>();
   const draft = signal('');
+  const quotes = signal<QuoteRef[]>([]);
   const draftReady = signal(false);
   const savingFailed = signal(false);
   const unresolved = signal<SendOperation[]>([]);
@@ -499,7 +506,7 @@ export function Conversation(props: ConversationProps) {
     id: string;
     text: string;
     files: DraftAttachment[];
-    edit: AttachmentEdit & { text: string };
+    edit: AttachmentEdit & { text: string; quotes: QuoteRef[] };
     selection: ReturnType<typeof sendSelection>;
     revision?: number;
   };
@@ -1514,12 +1521,12 @@ export function Conversation(props: ConversationProps) {
   } | null = null;
   let landmarksReadingThrough = -1;
   let draftRevision = 0;
-  let pendingDraft: (AttachmentEdit & { text: string }) | null = null;
+  let pendingDraft: (AttachmentEdit & { text: string; quotes: QuoteRef[] }) | null = null;
   let saveTask: Promise<void> | null = null;
   // From Enter until the send is reserved, the saved draft must stay the
   // revision being sent. Edits made meanwhile show at once and are saved after.
   let holding = false;
-  let heldDraft: (AttachmentEdit & { text: string }) | null = null;
+  let heldDraft: (AttachmentEdit & { text: string; quotes: QuoteRef[] }) | null = null;
   const autoSend = signal<{ text: string; first?: boolean } | null>(null);
   const attachments = createAttachmentDraft({
     sessionId,
@@ -1527,7 +1534,7 @@ export function Conversation(props: ConversationProps) {
     focus: props.focusComposer,
     changed() {
       if (!alive || !draftReady()) return;
-      queueDraft({ text: draft(), ...attachments.snapshot() });
+      queueDraft({ text: draft(), quotes: quotes(), ...attachments.snapshot() });
     },
   });
 
@@ -2554,7 +2561,7 @@ export function Conversation(props: ConversationProps) {
       await saveTask;
     }
   };
-  const queueDraft = (edit: AttachmentEdit & { text: string }) => {
+  const queueDraft = (edit: AttachmentEdit & { text: string; quotes: QuoteRef[] }) => {
     if (holding) {
       heldDraft = edit;
       return;
@@ -2573,7 +2580,7 @@ export function Conversation(props: ConversationProps) {
   const changeDraft = (text: string) => {
     if (!alive || !draftReady()) return;
     draft.set(text);
-    queueDraft({ text, ...attachments.snapshot() });
+    queueDraft({ text, quotes: quotes(), ...attachments.snapshot() });
   };
   // Save edits held while a send was being reserved.
   const releaseHeld = () => {
@@ -2776,6 +2783,7 @@ export function Conversation(props: ConversationProps) {
       runId() !== null ||
       draft().trim() ||
       attachments.files().length ||
+      quotes().length ||
       sendBlockedReason() ||
       observed === null ||
       observed.source.sessionId !== source.sessionId ||
@@ -2788,7 +2796,8 @@ export function Conversation(props: ConversationProps) {
     continuing.set(true);
     try {
       const model = await selection(expectedBackend);
-      if (!alive || !model || draft().trim() || attachments.files().length) return;
+      if (!alive || !model || draft().trim() || attachments.files().length || quotes().length)
+        return;
       // Re-read the exact source after model resolution; never reopen the old Run
       // merely because the current activation/handle is missing.
       const latest = await host.query('agent', 'execution', { sessionId, runId: source.runId });
@@ -2802,6 +2811,7 @@ export function Conversation(props: ConversationProps) {
         runId() !== null ||
         draft().trim() ||
         attachments.files().length ||
+        quotes().length ||
         !sameBackend(backend(), expectedBackend)
       )
         return;
@@ -2836,6 +2846,7 @@ export function Conversation(props: ConversationProps) {
     reply: any,
     text?: string,
     files: DraftAttachment[] = [],
+    quoted: QuoteRef[] = [],
     immediate = false,
   ) => {
     const accepted = acceptedSend(reply, sessionId);
@@ -2853,6 +2864,7 @@ export function Conversation(props: ConversationProps) {
         ...pendingMessages().filter((row) => row.messageId !== accepted.messageId),
         {
           key: `pending/${accepted.messageId}`,
+          quotes: quoted,
           messageId: accepted.messageId,
           field: 'body',
           role: 'user',
@@ -2962,6 +2974,7 @@ export function Conversation(props: ConversationProps) {
           sent.reply,
           frozen.text,
           frozen.files,
+          frozen.edit.quotes,
           frozen.selection.expectedRunId === undefined,
         );
     } catch (reason) {
@@ -3028,7 +3041,7 @@ export function Conversation(props: ConversationProps) {
     delivery: 'steer' | 'queue' = 'steer',
   ) => {
     if (!alive) return;
-    if (!text.trim() && attachments.files().length === 0) {
+    if (!hasComposerContent(text.trim(), attachments.files(), quotes())) {
       return;
     }
     if (sendBlockedReason()) {
@@ -3040,6 +3053,7 @@ export function Conversation(props: ConversationProps) {
       return;
     }
     try {
+      const capturedQuotes = quotes();
       let targetBackend = expectedBackend;
       if (modelLoading(delivery)) {
         const capturedBackend = expectedBackend ?? backend() ?? undefined;
@@ -3059,13 +3073,18 @@ export function Conversation(props: ConversationProps) {
           );
           return;
         }
-        if (!first && (draft() !== text || !attachments.same(capturedAttachments))) {
+        if (
+          !first &&
+          (draft() !== text ||
+            !attachments.same(capturedAttachments) ||
+            !sameValue(quotes(), capturedQuotes))
+        ) {
           throw new UiError('The draft changed before confirmation. Send again to confirm it.');
         }
         targetBackend = capturedBackend;
       }
       const selected = sendSelection(delivery, targetBackend);
-      const edit = { text, ...attachments.snapshot() };
+      const edit = { text, quotes: capturedQuotes, ...attachments.snapshot() };
       const frozen: FrozenSend = {
         id: `draft-send-${++sendSequence}`,
         text,
@@ -3077,6 +3096,7 @@ export function Conversation(props: ConversationProps) {
       pendingDraft = edit;
       holding = true;
       error.set('');
+      quotes.set([]);
       changeDraft(nextText);
       attachments.sent(edit.attachments.map((file) => file.id));
       await freezeSend(frozen);
@@ -3110,6 +3130,7 @@ export function Conversation(props: ConversationProps) {
             reply,
             original.correlation.draft.text,
             original.correlation.draft.attachments,
+            original.correlation.draft.quotes ?? [],
             original.correlation.selection.expectedRunId === undefined,
           );
       }
@@ -3155,6 +3176,7 @@ export function Conversation(props: ConversationProps) {
         text: snapshot.draft.text,
         files: snapshot.draft.attachments,
         edit: {
+          quotes: snapshot.draft.quotes ?? [],
           text: snapshot.draft.text,
           attachments: snapshot.draft.attachments,
           settledUploads: [],
@@ -3223,6 +3245,7 @@ export function Conversation(props: ConversationProps) {
         id: original.id,
         text: original.correlation.draft.text,
         attachments: original.correlation.draft.attachments,
+        quotes: original.correlation.draft.quotes ?? [],
         state: failed
           ? 'failed'
           : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
@@ -3250,6 +3273,7 @@ export function Conversation(props: ConversationProps) {
         id,
         text: frozen.text,
         attachments: frozen.files,
+        quotes: frozen.edit.quotes,
         state: 'sending',
         detail: tr('Sending…'),
         retryable: false,
@@ -3262,6 +3286,7 @@ export function Conversation(props: ConversationProps) {
         id: freezing.frozen.id,
         text: freezing.frozen.text,
         attachments: freezing.frozen.files,
+        quotes: freezing.frozen.edit.quotes,
         state: freezing.kind === 'reserving' ? 'sending' : 'failed',
         detail: freezing.kind === 'reserving' ? tr('Saving message…') : renderText(freezing.error),
         retryable: freezing.kind === 'failed',
@@ -3370,6 +3395,7 @@ export function Conversation(props: ConversationProps) {
     text,
     backend: expectedBackend,
     attachments: files,
+    quotes: selectedQuotes,
     delivery = 'steer',
   }: SendAction) => {
     if (
@@ -3377,6 +3403,7 @@ export function Conversation(props: ConversationProps) {
       owner !== sessionId ||
       draft() !== text ||
       !attachments.same(files) ||
+      !sameValue(quotes(), selectedQuotes ?? []) ||
       (!nativeSteer(delivery) && !sameBackend(backend(), expectedBackend))
     )
       return;
@@ -3409,7 +3436,7 @@ export function Conversation(props: ConversationProps) {
     const composer =
       !draftReady() || attachments.restoring()
         ? 'restoring'
-        : draft() !== '' || attachments.files().length > 0 || attachments.blocked() !== ''
+        : hasComposerContent(draft(), attachments.files(), quotes()) || attachments.blocked() !== ''
           ? 'occupied'
           : 'empty';
     untracked(() => messagePrediction.eligible(eligible, composer));
@@ -3484,6 +3511,12 @@ export function Conversation(props: ConversationProps) {
       },
     },
     draft,
+    quotes,
+    removeQuote(index) {
+      if (!draftReady() || savingFailed()) return;
+      quotes.set(quotes().filter((_, i) => i !== index));
+      changeDraft(draft());
+    },
     attachments,
     previewImage: props.previewImage,
     editable: () => draftReady() && !savingFailed(),
@@ -3863,13 +3896,14 @@ export function Conversation(props: ConversationProps) {
         if (!alive) return;
         draftRevision = stored.revision;
         draft.set(stored.text);
+        quotes.set(stored.quotes ?? []);
         attachments.restore(stored.attachments);
         draftReady.set(true);
-        const prefill =
-          props.takePrefill?.(stored.text === '' && stored.attachments.length === 0) ?? null;
+        const empty = !hasComposerContent(stored.text, stored.attachments, stored.quotes);
+        const prefill = props.takePrefill?.(empty) ?? null;
         if (prefill) {
           try {
-            if (stored.text === '' && stored.attachments.length === 0) {
+            if (empty) {
               changeDraft(prefill.text);
               for (const file of prefill.files ?? [])
                 attachments.observeIntake(client.beginStagedUpload(file), () => {});
@@ -4169,6 +4203,26 @@ export function Conversation(props: ConversationProps) {
             };
             return (
               <BotReply
+                quote={(message, text) => {
+                  if (!draftReady() || savingFailed() || !text.trim()) return;
+                  if (quotes().length >= 16) {
+                    notice.set(tr('Too many quotes'));
+                    return;
+                  }
+                  quotes.set([
+                    ...quotes(),
+                    quoteBotMessage(
+                      message,
+                      sessionId,
+                      message.discovery ? tr('Proactive discovery') : title(),
+                      text,
+                      Date.now(),
+                    ),
+                  ]);
+                  changeDraft(draft());
+                  props.focusComposer();
+                }}
+                openInvestigation={openWorker}
                 worker={
                   worker() !== undefined && canOpenWorker()
                     ? {
@@ -4263,7 +4317,7 @@ export function Conversation(props: ConversationProps) {
                           sessionId={sessionId}
                           through={() => latestKnown}
                           blocked={() =>
-                            draft().trim() || attachments.files().length > 0
+                            hasComposerContent(draft().trim(), attachments.files(), quotes())
                               ? tr('Send or clear the draft first.')
                               : sendBlockedReason()
                           }
@@ -4372,7 +4426,17 @@ export function Conversation(props: ConversationProps) {
         filesOpener={props.filesOpener}
         actions={
           bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
-            <BotRestart restart={props.restartBot} />
+            <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
+              <DiscoveryPanel
+                host={host}
+                sessionId={sessionId}
+                control={props.control}
+                selection={() => selection()}
+                openWorker={openWorker}
+                chooseModel={() => props.chooseModel?.()}
+              />
+              <BotRestart restart={props.restartBot} />
+            </View>
           ) : undefined
         }
         views={

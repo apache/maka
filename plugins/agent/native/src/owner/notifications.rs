@@ -198,11 +198,38 @@ impl Owner {
         render: impl FnOnce(Language) -> String,
         origin: MessageOrigin,
     ) -> Result<Option<PreparedRequest>, String> {
-        let session_id = &source.session_id;
+        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. }) {
+            QueuePlacement::Completion {
+                caller: source.run_id,
+            }
+        } else {
+            QueuePlacement::Followup
+        };
+        self.prepare_notification_checked(
+            &source.session_id,
+            route,
+            identity,
+            render,
+            origin,
+            placement,
+            None,
+        )
+        .await
+    }
+    pub(super) async fn prepare_notification_checked(
+        &self,
+        session_id: &str,
+        route: &ReturnRoute,
+        identity: &str,
+        render: impl FnOnce(Language) -> String,
+        origin: MessageOrigin,
+        placement: QueuePlacement,
+        boundary: Option<&ScheduledTarget>,
+    ) -> Result<Option<PreparedRequest>, String> {
         if let Some(original) = self
             .durable
             .queue()
-            .entry(session_id.clone(), RequestId(identity.into()))
+            .entry(session_id.to_owned(), RequestId(identity.into()))
             .await
             .map_err(|e| e.to_string())?
         {
@@ -256,13 +283,6 @@ impl Owner {
             }
             basis.model = Some(model.clone());
         }
-        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. }) {
-            QueuePlacement::Completion {
-                caller: source.run_id,
-            }
-        } else {
-            QueuePlacement::Followup
-        };
         let message: MessageInput = render(basis.language).into();
         let source = RootSourceMessage {
             message: DeliveredMessage {
@@ -276,7 +296,7 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        self.enqueue_background(
+        self.enqueue_background_checked(
             session_id,
             source,
             &basis,
@@ -284,6 +304,7 @@ impl Owner {
             Default::default(),
             placement,
             false,
+            boundary,
         )
         .await
         .map(Some)
@@ -328,8 +349,31 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
+        placement: QueuePlacement,
+        steer: bool,
+    ) -> Result<PreparedRequest, String> {
+        self.enqueue_background_checked(
+            session,
+            source,
+            basis,
+            key,
+            required_tools,
+            placement,
+            steer,
+            None,
+        )
+        .await
+    }
+    async fn enqueue_background_checked(
+        &self,
+        session: &str,
+        source: RootSourceMessage,
+        basis: &CapturedRun,
+        key: &str,
+        required_tools: BTreeSet<String>,
         mut placement: QueuePlacement,
         steer: bool,
+        boundary: Option<&ScheduledTarget>,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
         let queue = self.durable.queue();
@@ -343,6 +387,9 @@ impl Owner {
         self.validate_background(basis).await?;
         let current = self.session(session).await?;
         basis.validate_background_target(&current)?;
+        if let Some(boundary) = boundary {
+            discovery::check_target(&current, boundary)?;
+        }
         let native = self
             .services
             .request(

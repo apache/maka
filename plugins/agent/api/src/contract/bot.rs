@@ -93,6 +93,9 @@ fn default_limit() -> u32 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentBotMessage")]
 pub struct BotMessage {
+    /// Original investigation behind this publication, independent of later Bot Turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryPublication>,
     /// Monotonic position in the outbox, starting at 1.
     pub sequence: u64,
     /// The model-chosen idempotency key of the `SendUser` call.
@@ -106,6 +109,15 @@ pub struct BotMessage {
     /// Turn's reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentDiscoveryPublication")]
+pub struct DiscoveryPublication {
+    pub record_id: String,
+    pub worker_session_id: String,
+    pub worker_turn_id: String,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

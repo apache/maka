@@ -215,7 +215,9 @@ impl Owner {
         let mcp_floor = self
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
-        let selected_catalog = if external && !host_bridge {
+        let legacy_discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id)
+            && super::discovery::legacy_tools(session.configuration.tools.as_deref());
+        let selected_catalog = if legacy_discovery || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -229,7 +231,11 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
+        let selected_catalog = if legacy_discovery {
+            selected_catalog
+        } else {
+            self.mcp_projects.with_client(id, selected_catalog)?
+        };
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
@@ -259,7 +265,9 @@ impl Owner {
             )),
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
-            tool_discovery: (!external || host_bridge) && self.settings.tool_discovery,
+            tool_discovery: (!external || host_bridge)
+                && !legacy_discovery
+                && self.settings.tool_discovery,
             allowed_tools,
             background: None,
             background_sandbox_ceiling: None,
@@ -285,10 +293,13 @@ impl Owner {
 
     pub async fn send(
         self: &Arc<Self>,
-        input: Send,
+        mut input: Send,
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<SendResult>, String> {
+        if input.quotes.len() > 16 || input.quotes.iter().any(|q| q.text.trim().is_empty()) {
+            return Err("agent_message_invalid".into());
+        }
         if self
             .rooms()?
             .exists(&input.session_id)
@@ -302,6 +313,7 @@ impl Owner {
         }
         let key = self.send_key(operation, &input.session_id);
         let mut message: MessageInput = input.message.clone().into();
+        message.quotes = (!input.quotes.is_empty()).then(|| std::mem::take(&mut input.quotes));
         message.attachments = self
             .attachment_refs(&input.session_id, input.attachments.clone(), parent)
             .await?;
@@ -352,6 +364,7 @@ impl Owner {
         let Send {
             session_id: id,
             message: _,
+            quotes: _,
             backend,
             attachments: _,
             delivery,
@@ -360,9 +373,7 @@ impl Owner {
             mentions: _,
             reply_to: _,
         } = input;
-        if unprepared.text.trim().is_empty()
-            && unprepared.attachments.as_ref().is_none_or(Vec::is_empty)
-        {
+        if !unprepared.has_content() {
             return Err("agent_message_invalid".into());
         }
         let admission = self.runs.session(&id).await;

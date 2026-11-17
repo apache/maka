@@ -50,6 +50,7 @@ import {
 import { matchOf } from '../../../../plugins/shared/quick-search';
 import { Icon } from './Icon';
 import { loadDraft, saveDraft, type Output } from './host';
+import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import {
   MakaMark,
   QUICK_BAR_SLOT,
@@ -566,13 +567,17 @@ function Launcher(
       const session = host.session(sessionId);
       const draft = await loadDraft(session);
       // A saved draft is unfinished work and a slash command needs the composer: neither is sent.
-      if (draft.text === '' && draft.attachments.length === 0 && !text.startsWith('/')) {
+      if (
+        !hasComposerContent(draft.text, draft.attachments, draft.quotes) &&
+        !text.startsWith('/')
+      ) {
         props.open(sessionId, text);
         return;
       }
       await saveDraft(session, draft.revision, {
         text: draft.text.trim() ? `${draft.text}\n\n${text}` : text,
         attachments: draft.attachments,
+        quotes: draft.quotes,
       });
       // The draft holds it now; a retry after refused navigation must not append it again.
       if (query().startsWith(submitted)) query.set(query().slice(submitted.length));

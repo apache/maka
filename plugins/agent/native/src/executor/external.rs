@@ -905,6 +905,7 @@ impl Call {
             cancellation.clone(),
             inputs.clone(),
             request.task_id,
+            request.language,
             material_root.clone(),
         );
         let bridge = owner

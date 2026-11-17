@@ -466,6 +466,7 @@ impl Rig {
                 "respond",
                 "create",
                 "continueRun",
+                "history",
                 "models",
                 "observe",
                 "history",
@@ -481,6 +482,8 @@ impl Rig {
                 "work",
                 "workReadiness",
                 "queue",
+                "queueMessage",
+                "editQueue",
                 "openBot",
                 "botOutbox",
                 "sessionList",
@@ -489,6 +492,12 @@ impl Rig {
                 "sessionSend",
                 "sessionStop",
                 "sessionManage",
+                "schedule",
+                "schedules",
+                "metadata",
+                "project",
+                "projects",
+                "stop",
             ]
         } else {
             &[
@@ -3172,6 +3181,7 @@ mod source_recovery {
 
 mod model_recovery {
     mod bot_tools;
+    mod discovery;
     mod memory;
     mod predictions;
     mod preset_acceptance;

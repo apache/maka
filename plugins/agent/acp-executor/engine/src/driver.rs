@@ -326,10 +326,14 @@ fn prompt(
         });
     }
     let mut text = content.text.clone();
-    for quote in content.quotes.iter().flatten() {
-        text.push_str("\n\n<quoted_context>\n");
-        text.push_str(&quote.text);
-        text.push_str("\n</quoted_context>");
+    if let Some(quotes) = content.quotes.as_deref().filter(|quotes| !quotes.is_empty()) {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(
+            &maka_agent_facts::input::render_quotes(quotes, language)
+                .map_err(|_| Error::Invalid("invalid quoted excerpt"))?,
+        );
     }
     for directory in content.directory_references.iter().flatten() {
         text.push_str(match language {

@@ -712,6 +712,10 @@ pub struct Send {
     /// check the completion field of the send receipt.
     #[serde(default)]
     pub on_complete: Option<OnComplete>,
+    /// Immutable user-selected excerpts; source metadata grants no read authority.
+    #[serde(default)]
+    #[schemars(length(max = 16))]
+    pub quotes: Vec<maka_agent_facts::input::QuoteRef>,
     /// Defaults to steer. Omit or use steer for updates to ongoing work;
     /// use queue only when this message should wait until the current turn ends.
     #[serde(default)]
@@ -1344,8 +1348,8 @@ pub enum QueueMessageResult {
     Ready {
         revision: u64,
         has_attachments: bool,
-
         message: String,
+        quotes: Vec<maka_agent_facts::input::QuoteRef>,
     },
     RevisionConflict {
         expected: u64,
@@ -1436,6 +1440,9 @@ pub struct HistoryChunk {
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_references: bool,
+    /// Bounded quote display, present only on the first message fragment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<maka_agent_ports::session::history::HistoryQuote>,
     /// Part of the successfully completed native Turn's final output at `through`.
     /// Includes body text and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1772,6 +1779,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     run_id: chunk.run_id,
                     model_part: chunk.model_part,
                     has_references: chunk.has_references,
+                    quotes: chunk.quotes,
                     final_output: chunk.final_output,
                     final_answer: chunk.final_answer,
                     model: chunk.model,

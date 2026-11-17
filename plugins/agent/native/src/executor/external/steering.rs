@@ -19,6 +19,7 @@
 
 //! The durable Host queue is the only input authority; native writes never create messages.
 use super::*;
+use maka_agent_facts::language::Language;
 use maka_agent_state::artifacts::{ArtifactStore, SessionScope};
 
 pub(super) struct Steering {
@@ -27,6 +28,7 @@ pub(super) struct Steering {
     language: maka_agent_facts::language::Language,
     inputs: Arc<dyn Inputs>,
     task: maka_agent_facts::durable::ExternalTaskId,
+    language: Language,
     cancellation: CancellationToken,
     material_root: PathBuf,
 }
@@ -38,6 +40,7 @@ impl Steering {
         cancellation: CancellationToken,
         inputs: Arc<dyn Inputs>,
         task: maka_agent_facts::durable::ExternalTaskId,
+        language: Language,
         material_root: PathBuf,
     ) -> Self {
         Self {
@@ -46,6 +49,7 @@ impl Steering {
             language,
             inputs,
             task,
+            language,
             cancellation,
             material_root,
         }
