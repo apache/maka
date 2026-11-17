@@ -26,6 +26,11 @@ import {
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import { SessionInspector } from '../../../../products/maka/workbench/app/SessionInspector';
+import type {
+  WorkspacePullRequestTarget,
+  WorkspaceSourceItem,
+} from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
@@ -294,6 +299,8 @@ export type ConversationHandle = Omit<
   focusActivity(turnId: string | null): void;
   /** The title its header shows. */
   title(): string;
+  /** Latest user/assistant messages for the fullscreen floating mini-preview. */
+  recentMessages?(): readonly { id: string; role: 'user' | 'assistant'; text: string }[];
 };
 // What the user can do about each reason the Host declined to continue.
 const continuationRejected: Record<AgentContinuationRejection, MessageKey> = {
@@ -340,6 +347,14 @@ type ConversationProps = {
   browser(): BrowserHeader;
   files?(): void;
   changes?(): void;
+  stage?(): { open: boolean; toggle(): void } | undefined;
+  activeWorktree?(): string | null;
+  selectWorktree?(worktreePath: string | null): void;
+  sources?(): readonly WorkspaceSourceItem[];
+  childSessions?(): readonly AgentSession[];
+  openChangesWithWorktree?(worktreePath?: string | null): void;
+  openLaunchpad?(): void;
+  openPullRequest?(target: Omit<WorkspacePullRequestTarget, 'sessionId'>): void;
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
@@ -3573,10 +3588,29 @@ export function Conversation(props: ConversationProps) {
       return tr('Waiting for access to be restored');
     return '';
   });
+  const inspectorOpen = signal(false);
+  const inspectorSideBySide = signal(false);
   const ownHandle: ConversationHandle = {
     sessionId,
     prediction,
     title: () => title() || tr('Untitled conversation'),
+    recentMessages() {
+      const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
+      for (const row of [...rows(), ...live()]) {
+        if (
+          (row.role === 'user' || row.role === 'assistant') &&
+          row.field === 'body' &&
+          !row.origin &&
+          row.text.trim().length > 0
+        ) {
+          const prev = merged.at(-1);
+          const id = stableRowId(row);
+          if (prev && prev.id === id) prev.text = row.text;
+          else merged.push({ id, role: row.role, text: row.text });
+        }
+      }
+      return merged.slice(-6);
+    },
     queue: queueSession,
     interactions,
     executionWaitMessage,
@@ -4477,8 +4511,16 @@ export function Conversation(props: ConversationProps) {
         commands={props.commands}
         browser={props.browser()}
         files={props.files}
-        changes={props.changes}
         filesOpener={props.filesOpener}
+        inspector={
+          platform.idiom === 'terminal' || ownHandle.empty()
+            ? undefined
+            : {
+                open: inspectorOpen(),
+                toggle: () => inspectorOpen.set(!inspectorOpen()),
+              }
+        }
+        stage={platform.idiom === 'terminal' || ownHandle.empty() ? undefined : props.stage?.()}
         actions={
           bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
             <BotRestart restart={props.restartBot} />
@@ -4560,13 +4602,18 @@ export function Conversation(props: ConversationProps) {
         </Button>
       </View>
       <View
-        onLayout={({ bounds }) =>
-          trajectorySideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 760)
-        }
+        onLayout={({ bounds }) => {
+          trajectorySideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 760);
+          inspectorSideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 860);
+        }}
         style={{
           display: ownHandle.empty() ? 'none' : 'flex',
           flex: 1,
-          flexDirection: selectedTrajectory() !== null && trajectorySideBySide() ? 'row' : 'column',
+          flexDirection:
+            (selectedTrajectory() !== null && trajectorySideBySide()) ||
+            (inspectorOpen() && inspectorSideBySide())
+              ? 'row'
+              : 'column',
           minHeight: 0,
           width: '100%',
         }}
@@ -4576,6 +4623,7 @@ export function Conversation(props: ConversationProps) {
             flex: 1,
             flexDirection: 'column',
             minHeight: 0,
+            minWidth: 0,
             width: '100%',
           }}
         >
@@ -4846,6 +4894,40 @@ export function Conversation(props: ConversationProps) {
             );
           }}
         </Each>
+        <If when={inspectorOpen() && !ownHandle.empty() && platform.idiom !== 'terminal'}>
+          <View
+            style={
+              inspectorSideBySide()
+                ? { height: '100%', flexShrink: 0, minHeight: 0 }
+                : [
+                    { position: 'absolute', top: 0, bottom: 0, right: 0 },
+                    { pointerEvents: 'box-none' },
+                  ]
+            }
+          >
+            <SessionInspector
+              sessionId={sessionId}
+              workspacePath={workspace() || undefined}
+              floating={!inspectorSideBySide()}
+              activeWorktree={props.activeWorktree}
+              selectWorktree={props.selectWorktree}
+              sources={props.sources}
+              childSessions={() => props.childSessions?.() ?? []}
+              openChanges={
+                props.openChangesWithWorktree ??
+                (props.changes ? () => props.changes!() : undefined)
+              }
+              openFiles={props.files}
+              openLaunchpad={props.openLaunchpad}
+              openPullRequest={props.openPullRequest}
+              openChildSession={(childId) =>
+                props.openSessionBeside
+                  ? props.openSessionBeside(childId)
+                  : props.openSessionHere?.(childId)
+              }
+            />
+          </View>
+        </If>
       </View>
     </View>
   );

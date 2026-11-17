@@ -7956,6 +7956,7 @@ export interface AgentGitDiffRead {
   sessionId: string;
   area: GitArea;
   path: WorkspacePath;
+  worktreePath?: string | null;
 }
 export interface TerminalList {
   sessionId: string;

@@ -127,6 +127,19 @@ pub struct GitRemoteRepo {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitWorktreeEntry")]
+pub struct GitWorktreeEntry {
+    pub path: String,
+    pub name: String,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub branch: Option<String>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub head_oid: Option<String>,
+    pub is_current: bool,
+    pub is_main: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentGitRevisions")]
 pub struct GitRevisions {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
@@ -138,6 +151,7 @@ pub struct GitRevisions {
     pub branches: Vec<GitBranchEntry>,
     pub commits: Vec<GitCommitSummary>,
     pub remotes: Vec<GitRemoteRepo>,
+    pub worktrees: Vec<GitWorktreeEntry>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
@@ -374,6 +388,10 @@ pub fn merge_base_file_diff(
         repo.finish()?;
         Ok(Some(result))
     })())
+}
+
+pub fn same_repository(first: &Path, second: &Path) -> bool {
+    revisions::same_common_git_dir(first, second)
 }
 
 #[derive(Debug)]

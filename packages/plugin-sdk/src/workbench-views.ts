@@ -52,6 +52,8 @@ export interface ConversationSessionHandle {
   leave(): Promise<boolean>;
   /** Finds or creates the Maka Bot conversation and returns its id. */
   openBot(): Promise<string>;
+  /** Floating mini-conversation and composer overlaid when the workspace stage is fullscreen. */
+  floatingComposer?(): unknown;
 }
 
 export type QuickIcon =
@@ -133,6 +135,8 @@ export interface QuickToolInput {
 
 export interface ConversationPreviewHandle {
   shown(): boolean;
+  fullscreen?(): boolean;
+  setFullscreen?(value: boolean): void;
   modalSuppressed(): boolean;
   close(): void;
   focused(): boolean;

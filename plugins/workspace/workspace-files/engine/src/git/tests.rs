@@ -1040,4 +1040,26 @@ fn status_digest_invalidates_on_same_length_rewrite_and_pr_merge_base_handles_re
     assert!(patch.contains("rename from \"orig.rs\""), "{patch}");
     assert!(patch.contains("rename to \"renamed.rs\""), "{patch}");
     assert!(patch.contains("-    10\n+    20\n"), "{patch}");
+
+    // Linked git worktrees are discovered with branch names and share same_repository.
+    let wt_path = f.root.parent().unwrap().join("linked-wt");
+    git(
+        &f.root,
+        &["worktree", "add", wt_path.to_str().unwrap(), "feat-rename"],
+    );
+    assert!(same_repository(&f.root, &wt_path));
+    let rev = revisions(&f.root, &f.identity, &f.private, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert_eq!(rev.worktrees.len(), 2);
+    assert!(
+        rev.worktrees
+            .iter()
+            .any(|w| w.is_main && w.is_current && w.branch.as_deref() == Some("main"))
+    );
+    assert!(
+        rev.worktrees
+            .iter()
+            .any(|w| !w.is_main && !w.is_current && w.branch.as_deref() == Some("feat-rename"))
+    );
 }

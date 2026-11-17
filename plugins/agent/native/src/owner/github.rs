@@ -500,6 +500,7 @@ impl Owner {
                     owner.fetch_pull_files(&client, &repo, input.number, &auth, &scope),
                     owner.fetch_pull_comments(&client, &repo, input.number, &auth, &scope),
                     owner.fetch_pull_reviews(&client, &repo, input.number, &auth, &scope),
+                    owner.fetch_issue_comments(&client, &repo, input.number, &auth, &scope),
                 )
                 .map_err(|failure| match failure {
                     ApiFailure::Unauthorized(m)
@@ -508,7 +509,7 @@ impl Owner {
                     ApiFailure::NotFound => "Pull request resource not found.".into(),
                 });
 
-                let (cached_files, raw_comments, raw_reviews) = match joined {
+                let (cached_files, raw_comments, raw_reviews, raw_issue_comments) = match joined {
                     Ok(tuple) => tuple,
                     Err(message) => {
                         return Ok(GitHubPullDetailResult::Error {
@@ -563,6 +564,16 @@ impl Owner {
                         submitted_at: r.submitted_at.unwrap_or_default(),
                     })
                     .collect();
+                let issue_comments = raw_issue_comments
+                    .into_iter()
+                    .map(|c| GitHubReviewComment {
+                        id: c.id,
+                        author: c.user.map_or_else(|| "ghost".into(), |u| u.login),
+                        body: c.body.unwrap_or_default(),
+                        created_at: c.created_at.unwrap_or_default(),
+                        html_url: c.html_url.unwrap_or_default(),
+                    })
+                    .collect();
 
                 Ok(GitHubPullDetailResult::Ready {
                     detail: GitHubPullDetail {
@@ -586,6 +597,7 @@ impl Owner {
                         files,
                         threads,
                         reviews,
+                        issue_comments,
                         patch,
                     },
                 })
@@ -964,6 +976,70 @@ impl Owner {
         .await
     }
 
+    pub async fn github_comment_pull_request(
+        self: &Arc<Self>,
+        input: GitHubIssueCommentInput,
+        scope: &Scope,
+    ) -> Result<GitHubReplyCommentResult, String> {
+        let trimmed = input.body.trim().to_owned();
+        if input.number == 0 || trimmed.is_empty() {
+            return Err("agent_github_invalid_input".into());
+        }
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                let repo = owner
+                    .resolve_target_repo(&input.session_id, input.repo, &scope)
+                    .await?;
+                let auth = owner
+                    .github
+                    .resolve_auth(&repo.host, Some(&owner.configuration), owner.home.clone())
+                    .await;
+                if !auth.status().authenticated {
+                    return Ok(GitHubReplyCommentResult::Unauthorized {
+                        message: "Configure a GitHub token to comment on pull requests.".into(),
+                    });
+                }
+                let client = owner.github_http_client().await?;
+                let num_str = input.number.to_string();
+                let url = owner
+                    .github_repo_url(&repo, &["issues", &num_str, "comments"], &[])
+                    .await?;
+                let payload = WireReplyBody { body: trimmed };
+                match owner
+                    .github_json::<RawPullComment, WireReplyBody>(
+                        &client,
+                        HttpMethod::POST,
+                        url,
+                        &auth,
+                        Some(&payload),
+                        &scope,
+                    )
+                    .await
+                {
+                    Ok(raw) => Ok(GitHubReplyCommentResult::Replied {
+                        comment: GitHubReviewComment {
+                            id: raw.id,
+                            author: raw.user.map_or_else(|| "ghost".into(), |u| u.login),
+                            body: raw.body.unwrap_or_default(),
+                            created_at: raw.created_at.unwrap_or_default(),
+                            html_url: raw.html_url.unwrap_or_default(),
+                        },
+                    }),
+                    Err(ApiFailure::Unauthorized(message)) => {
+                        Ok(GitHubReplyCommentResult::Unauthorized { message })
+                    }
+                    Err(ApiFailure::NotFound) => Ok(GitHubReplyCommentResult::Rejected {
+                        message: "Pull request not found or lacks write permission.".into(),
+                    }),
+                    Err(ApiFailure::Unprocessable(message) | ApiFailure::Other(message)) => {
+                        Ok(GitHubReplyCommentResult::Rejected { message })
+                    }
+                }
+            })
+        })
+        .await
+    }
+
     async fn discover_session_remotes(
         &self,
         session_id: &str,
@@ -1294,6 +1370,33 @@ impl Owner {
             .map_err(ApiFailure::Other)?;
         self.github_json::<Vec<RawPullReview>, ()>(client, HttpMethod::GET, url, auth, None, scope)
             .await
+    }
+
+    async fn fetch_issue_comments(
+        &self,
+        client: &reqwest::Client,
+        repo: &GitHubRepoRef,
+        number: u64,
+        auth: &ResolvedAuth,
+        scope: &Scope,
+    ) -> Result<Vec<RawPullComment>, ApiFailure> {
+        let num_str = number.to_string();
+        let url = self
+            .github_repo_url(
+                repo,
+                &["issues", &num_str, "comments"],
+                &[("per_page", "50")],
+            )
+            .await
+            .map_err(ApiFailure::Other)?;
+        match self
+            .github_json::<Vec<RawPullComment>, ()>(client, HttpMethod::GET, url, auth, None, scope)
+            .await
+        {
+            Ok(list) => Ok(list),
+            Err(ApiFailure::NotFound) => Ok(Vec::new()),
+            Err(other) => Err(other),
+        }
     }
 }
 

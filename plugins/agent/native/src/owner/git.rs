@@ -21,18 +21,18 @@
 use super::*;
 use maka_capabilities::call::Scope;
 use std::{io, path::Path, sync::atomic::AtomicBool};
-
 impl Owner {
     pub async fn git_status(
         self: &Arc<Self>,
-        input: SessionRead,
+        input: GitSessionRead,
         scope: &Scope,
     ) -> Result<Option<GitStatus>, String> {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
                 owner
-                    .read_git(
+                    .read_git_in_worktree(
                         &input.session_id,
+                        input.worktree_path.as_deref(),
                         &scope,
                         |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::status(
@@ -61,9 +61,11 @@ impl Owner {
             .map_err(|_| "agent_git_input_invalid")?;
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
+                let wt = input.worktree_path.clone();
                 owner
-                    .read_git(
+                    .read_git_in_worktree(
                         &input.session_id,
+                        wt.as_deref(),
                         &scope,
                         move |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::diff(
@@ -90,9 +92,11 @@ impl Owner {
     ) -> Result<Option<GitWorkspaceDiff>, String> {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
+                let wt = input.worktree_path.clone();
                 owner
-                    .read_git(
+                    .read_git_in_worktree(
                         &input.session_id,
+                        wt.as_deref(),
                         &scope,
                         move |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::workspace_diff(
@@ -113,14 +117,15 @@ impl Owner {
 
     pub async fn git_revisions(
         self: &Arc<Self>,
-        input: SessionRead,
+        input: GitSessionRead,
         scope: &Scope,
     ) -> Result<Option<GitRevisions>, String> {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
-                owner
-                    .read_git(
+                let mut rev = owner
+                    .read_git_in_worktree(
                         &input.session_id,
+                        input.worktree_path.as_deref(),
                         &scope,
                         |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::revisions(
@@ -132,7 +137,33 @@ impl Owner {
                             )
                         },
                     )
-                    .await
+                    .await?;
+                if let Some(ref mut r) = rev {
+                    let mut allowed = Vec::with_capacity(r.worktrees.len());
+                    for wt in r.worktrees.drain(..) {
+                        if wt.is_current {
+                            allowed.push(wt);
+                            continue;
+                        }
+                        let probe = Workspace {
+                            path: wt.path.clone(),
+                            worktree: None,
+                            project_id: None,
+                        };
+                        if workspace::open_workspace_observation(
+                            &owner.workspace_roots,
+                            &probe,
+                            &owner.managed_worktrees,
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            allowed.push(wt);
+                        }
+                    }
+                    r.worktrees = allowed;
+                }
+                Ok(rev)
             })
         })
         .await
@@ -145,9 +176,11 @@ impl Owner {
     ) -> Result<Option<GitCompare>, String> {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
+                let wt = input.worktree_path.clone();
                 owner
-                    .read_git(
+                    .read_git_in_worktree(
                         &input.session_id,
+                        wt.as_deref(),
                         &scope,
                         move |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::compare(
@@ -178,9 +211,11 @@ impl Owner {
             .map_err(|_| "agent_git_input_invalid")?;
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
+                let wt = input.worktree_path.clone();
                 owner
-                    .read_git(
+                    .read_git_in_worktree(
                         &input.session_id,
+                        wt.as_deref(),
                         &scope,
                         move |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::compare_diff(
@@ -213,10 +248,37 @@ impl Owner {
         + std::marker::Send
         + 'static,
     ) -> Result<T, String> {
+        self.read_git_in_worktree(session_id, None, scope, read)
+            .await
+    }
+
+    pub(super) async fn read_git_in_worktree<T: std::marker::Send + 'static>(
+        &self,
+        session_id: &str,
+        worktree_path: Option<&str>,
+        scope: &Scope,
+        read: impl FnOnce(
+            &Workspace,
+            &maka_fs_tools::directory::Observation,
+            &Path,
+            Arc<AtomicBool>,
+        ) -> io::Result<T>
+        + std::marker::Send
+        + 'static,
+    ) -> Result<T, String> {
         let original = self.session(session_id).await?.configuration;
+        let override_ws = worktree_path
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && *p != original.workspace.path)
+            .map(|p| Workspace {
+                path: p.to_owned(),
+                worktree: None,
+                project_id: None,
+            });
+        let effective_ws = override_ws.as_ref().unwrap_or(&original.workspace).clone();
         let (_, _, observed) = workspace::open_workspace_observation(
             &self.workspace_roots,
-            &original.workspace,
+            &effective_ws,
             &self.managed_worktrees,
         )
         .await?;
@@ -235,10 +297,17 @@ impl Owner {
             .map_err(|_| "agent_root_unavailable")?
             .canonical_path()
             .to_owned();
-        let selected = original.workspace.clone();
+        let base_path = original.workspace.path.clone();
+        let check_same_repo = override_ws.is_some();
+        let selected = effective_ws.clone();
         let session = session_id.to_owned();
         let observed_for_read = observed.clone();
         let result = worktrees::blocking(scope, &self.stop, move |cancel| {
+            if check_same_repo
+                && !maka_fs_tools::git::same_repository(Path::new(&base_path), Path::new(&selected.path))
+            {
+                return Err("agent_git_worktree_not_in_repository".to_owned());
+            }
             read(&selected, &observed_for_read, &private_root, cancel).map_err(|error| {
                 let cause = git_failure(&error);
                 if cause != "agent_git_cancelled" {
@@ -259,7 +328,7 @@ impl Owner {
         }
         let (_, _, after) = workspace::open_workspace_observation(
             &self.workspace_roots,
-            &original.workspace,
+            &effective_ws,
             &self.managed_worktrees,
         )
         .await?;

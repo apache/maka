@@ -2827,6 +2827,7 @@ export interface ServiceMethods {
         sessionId: string;
         spec: AgentGitCompareInput_AgentGitCompareSpec;
         includePatch?: boolean;
+        worktreePath?: string | null;
       };
       output: AgentGitCompareOutput_AgentGitCompare | null;
     };
@@ -2836,6 +2837,7 @@ export interface ServiceMethods {
         sessionId: string;
         spec: AgentGitCompareDiffInput_AgentGitCompareSpec;
         path: AgentGitCompareDiffInput_WorkspacePath;
+        worktreePath?: string | null;
       };
       output: Runtime.GitDiff | null;
     };
@@ -2846,12 +2848,18 @@ export interface ServiceMethods {
     };
     gitRevisions: {
       mode: 'query';
-      input: Runtime.AgentSessionRead;
+      input: {
+        sessionId: string;
+        worktreePath?: string | null;
+      };
       output: AgentGitRevisionsOutput_AgentGitRevisions | null;
     };
     gitStatus: {
       mode: 'query';
-      input: Runtime.AgentSessionRead;
+      input: {
+        sessionId: string;
+        worktreePath?: string | null;
+      };
       output: Runtime.GitStatus | null;
     };
     gitWorkspaceDiff: {
@@ -2859,8 +2867,31 @@ export interface ServiceMethods {
       input: {
         sessionId: string;
         area?: Runtime.GitArea | null;
+        worktreePath?: string | null;
       };
       output: AgentGitWorkspaceDiffOutput_GitWorkspaceDiff | null;
+    };
+    githubCommentPullRequest: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubCommentPullRequestInput_AgentGitHubRepoRef | null;
+        number: number;
+        body: string;
+      };
+      output:
+        | {
+            kind: 'replied';
+            comment: AgentGithubCommentPullRequestOutput_AgentGitHubReviewComment;
+          }
+        | {
+            kind: 'unauthorized';
+            message: string;
+          }
+        | {
+            kind: 'rejected';
+            message: string;
+          };
     };
     githubPullRequestDetail: {
       mode: 'query';
@@ -5199,6 +5230,7 @@ export interface AgentGitRevisionsOutput_AgentGitRevisions {
   branches: AgentGitRevisionsOutput_AgentGitBranchEntry[];
   commits: AgentGitRevisionsOutput_AgentGitCommitSummary[];
   remotes: AgentGitRevisionsOutput_AgentGitRemoteRepo[];
+  worktrees: AgentGitRevisionsOutput_AgentGitWorktreeEntry[];
 }
 export interface AgentGitRevisionsOutput_AgentGitBranchEntry {
   name: string;
@@ -5218,10 +5250,30 @@ export interface AgentGitRevisionsOutput_AgentGitRemoteRepo {
   owner: string;
   repo: string;
 }
+export interface AgentGitRevisionsOutput_AgentGitWorktreeEntry {
+  path: string;
+  name: string;
+  branch: string | null;
+  headOid: string | null;
+  isCurrent: boolean;
+  isMain: boolean;
+}
 export interface AgentGitWorkspaceDiffOutput_GitWorkspaceDiff {
   patch: string;
   truncated: boolean;
   skippedFiles: number;
+}
+export interface AgentGithubCommentPullRequestInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubCommentPullRequestOutput_AgentGitHubReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  htmlUrl: string;
 }
 export interface AgentGithubPullRequestDetailInput_AgentGitHubRepoRef {
   host: string;
@@ -5249,6 +5301,7 @@ export interface AgentGithubPullRequestDetailOutput_AgentGitHubPullDetail {
   files: AgentGithubPullRequestDetailOutput_AgentGitHubPullFile[];
   threads: AgentGithubPullRequestDetailOutput_AgentGitHubReviewThread[];
   reviews: AgentGithubPullRequestDetailOutput_AgentGitHubReviewSummary[];
+  issueComments: AgentGithubPullRequestDetailOutput_AgentGitHubReviewComment[];
   patch: AgentGithubPullRequestDetailOutput_GitWorkspaceDiff | null;
 }
 export interface AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef {

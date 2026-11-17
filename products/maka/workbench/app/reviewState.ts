@@ -34,6 +34,7 @@ export type CodeLocation = CodeDefinitionResult['locations'][number];
 export type GitWorkspaceDiff = NonNullable<ServiceMethods['agent']['gitWorkspaceDiff']['output']>;
 
 export type GitRevisions = NonNullable<ServiceMethods['agent']['gitRevisions']['output']>;
+export type GitWorktreeEntry = GitRevisions['worktrees'][number];
 export type GitCompareSpec = ServiceMethods['agent']['gitCompare']['input']['spec'];
 export type GitCompare = NonNullable<ServiceMethods['agent']['gitCompare']['output']>;
 export type GitCompareEntry = GitCompare['entries'][number];
@@ -127,6 +128,44 @@ export type ChangesViewCache = {
     result: GitHubPullDetailResult;
   };
 };
+
+export type StudioViewState = {
+  collapsedPaths: Record<string, boolean>;
+  scrollOffset: number;
+  filterQuery: string;
+  fileTreeOpen?: boolean;
+  diffLayout: 'unified' | 'split';
+  softWrap: boolean;
+  singleFileOverride: boolean | null;
+  activeFileIndex: number;
+};
+
+const AUTO_COLLAPSED_BASENAMES = new Set([
+  'Cargo.lock',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lockb',
+  'bun.lock',
+  'composer.lock',
+  'Gemfile.lock',
+  'poetry.lock',
+  'uv.lock',
+  'go.sum',
+]);
+
+export function basenameLabel(pathOrTitle: string): string {
+  const normalized = pathOrTitle.trim();
+  if (!normalized) return pathOrTitle;
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? normalized;
+}
+
+export function isAutoCollapsedPath(path: string): boolean {
+  const base = basenameLabel(path);
+  if (AUTO_COLLAPSED_BASENAMES.has(base)) return true;
+  return base.endsWith('.min.js') || base.endsWith('.min.css') || base.endsWith('.snap');
+}
 
 export type SymbolLocationBatch = {
   kind: 'definitions' | 'references';
@@ -313,6 +352,12 @@ export type ReviewStore = {
   reviewQueue(sessionId: string): ReviewNavItem[];
   setReviewQueue(sessionId: string, items: ReviewNavItem[]): void;
 
+  activeWorktree(sessionId: string): string | null;
+  setActiveWorktree(sessionId: string, worktreePath: string | null): void;
+
+  studioViewState(sessionId: string, scopeKey: string): StudioViewState;
+  patchStudioViewState(sessionId: string, scopeKey: string, patch: Partial<StudioViewState>): void;
+
   changesViewCache(sessionId: string): ChangesViewCache | undefined;
   patchChangesViewCache(sessionId: string, patch: Partial<ChangesViewCache>): void;
 
@@ -338,6 +383,8 @@ export function createReviewStore(): ReviewStore {
   const prDraftsBySession = signal<Record<string, Record<string, PendingPrComment[]>>>({});
   const viewedBySession = signal<Record<string, Record<string, string>>>({});
   const queueBySession = signal<Record<string, ReviewNavItem[]>>({});
+  const worktreeBySession = signal<Record<string, string | null>>({});
+  const studioBySession = signal<Record<string, Record<string, StudioViewState>>>({});
   const changesCacheBySession = signal<Record<string, ChangesViewCache>>({});
   const threadsBySession = signal<Record<string, Record<string, AgentGitHubReviewThread[]>>>({});
   const symbolsBySession = signal<Record<string, SymbolLocationBatch | null>>({});
@@ -481,6 +528,35 @@ export function createReviewStore(): ReviewStore {
       queueBySession.set({ ...queueBySession(), [sessionId]: items });
     },
 
+    activeWorktree(sessionId) {
+      return worktreeBySession()[sessionId] ?? null;
+    },
+    setActiveWorktree(sessionId, worktreePath) {
+      worktreeBySession.set({ ...worktreeBySession(), [sessionId]: worktreePath });
+    },
+
+    studioViewState(sessionId, scopeKey) {
+      return (
+        studioBySession()[sessionId]?.[scopeKey] ?? {
+          collapsedPaths: {},
+          scrollOffset: 0,
+          filterQuery: '',
+          diffLayout: 'unified',
+          softWrap: false,
+          singleFileOverride: null,
+          activeFileIndex: 0,
+        }
+      );
+    },
+    patchStudioViewState(sessionId, scopeKey, patch) {
+      const sessionMap = studioBySession()[sessionId] ?? {};
+      const current = this.studioViewState(sessionId, scopeKey);
+      studioBySession.set({
+        ...studioBySession(),
+        [sessionId]: { ...sessionMap, [scopeKey]: { ...current, ...patch } },
+      });
+    },
+
     changesViewCache(sessionId) {
       return changesCacheBySession()[sessionId];
     },
@@ -573,6 +649,10 @@ export function createReviewStore(): ReviewStore {
       if (c7) statusBySession.set(nextStatus);
       const [nextChangesCache, c8] = filterMap(changesCacheBySession());
       if (c8) changesCacheBySession.set(nextChangesCache);
+      const [nextWt, c9] = filterMap(worktreeBySession());
+      if (c9) worktreeBySession.set(nextWt);
+      const [nextStudio, c10] = filterMap(studioBySession());
+      if (c10) studioBySession.set(nextStudio);
     },
   };
 }

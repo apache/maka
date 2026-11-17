@@ -12856,6 +12856,10 @@ export const contracts: {
                 type: 'boolean',
                 default: false,
               },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'spec'],
@@ -13020,6 +13024,10 @@ export const contracts: {
               path: {
                 $ref: '#/$defs/WorkspacePath',
               },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'spec', 'path'],
@@ -13177,6 +13185,10 @@ export const contracts: {
               path: {
                 $ref: '#/$defs/WorkspacePath',
               },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'area', 'path'],
@@ -13277,12 +13289,15 @@ export const contracts: {
           mode: 'query',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentSessionRead',
+            title: 'AgentGitSessionRead',
             type: 'object',
             properties: {
               sessionId: {
                 type: 'string',
-                minLength: 1,
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
               },
             },
             additionalProperties: false,
@@ -13330,6 +13345,12 @@ export const contracts: {
                       $ref: '#/$defs/AgentGitRemoteRepo',
                     },
                   },
+                  worktrees: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitWorktreeEntry',
+                    },
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -13339,6 +13360,7 @@ export const contracts: {
                   'branches',
                   'commits',
                   'remotes',
+                  'worktrees',
                 ],
               },
               AgentGitBranchEntry: {
@@ -13399,6 +13421,31 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['remote', 'host', 'owner', 'repo'],
               },
+              AgentGitWorktreeEntry: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  branch: {
+                    type: ['string', 'null'],
+                  },
+                  headOid: {
+                    type: ['string', 'null'],
+                  },
+                  isCurrent: {
+                    type: 'boolean',
+                  },
+                  isMain: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'name', 'branch', 'headOid', 'isCurrent', 'isMain'],
+              },
             },
           },
           resources: {},
@@ -13407,12 +13454,15 @@ export const contracts: {
           mode: 'query',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentSessionRead',
+            title: 'AgentGitSessionRead',
             type: 'object',
             properties: {
               sessionId: {
                 type: 'string',
-                minLength: 1,
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
               },
             },
             additionalProperties: false,
@@ -13508,6 +13558,10 @@ export const contracts: {
                 ],
                 default: null,
               },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
             },
             additionalProperties: false,
             required: ['sessionId'],
@@ -13547,6 +13601,133 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['patch', 'truncated', 'skippedFiles'],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubCommentPullRequest: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubIssueCommentInput',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              body: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'body'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubReplyCommentResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'replied',
+                  },
+                  comment: {
+                    $ref: '#/$defs/AgentGitHubReviewComment',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'comment'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubReviewComment: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  createdAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'body', 'createdAt', 'htmlUrl'],
               },
             },
           },
@@ -13773,6 +13954,12 @@ export const contracts: {
                       $ref: '#/$defs/AgentGitHubReviewSummary',
                     },
                   },
+                  issueComments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewComment',
+                    },
+                  },
                   patch: {
                     anyOf: [
                       {
@@ -13806,6 +13993,7 @@ export const contracts: {
                   'files',
                   'threads',
                   'reviews',
+                  'issueComments',
                   'patch',
                 ],
               },
