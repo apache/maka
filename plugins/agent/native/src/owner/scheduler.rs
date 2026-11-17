@@ -32,7 +32,7 @@ use maka_plugin_core::storage::Mutation;
 use maka_plugin_core::storage::Namespace;
 use maka_plugin_core::storage::Store;
 use maka_scheduler::{
-    plan::TaskPlan,
+    plan::{PauseSource, TaskPlan},
     task::{Creator, Outcome, Run, Status},
 };
 use repository::Saved;
@@ -60,8 +60,14 @@ pub(in crate::owner) enum Approval {
         recall: bool,
     },
 }
-fn pause_plan(plan: &Plan, at: i64) -> Plan {
+fn pause_plan(plan: &Plan, at: i64, source: PauseSource) -> Plan {
     let mut paused = plan.pause(at);
+    if matches!(paused.task.effect, ScheduledEffect::Discovery { .. })
+        && paused.task.status == Status::Paused
+        && (plan.task.status == Status::Active || source == PauseSource::User)
+    {
+        paused.pause_source = Some(source);
+    }
     if let Some(fire) = &mut paused.pending
         && matches!(fire.effect, ScheduledEffect::Discovery { .. })
     {
@@ -437,7 +443,7 @@ fn schedule_candidate(
             }
             next
         }
-        ScheduleChange::Pause { .. } => pause_plan(plan()?, at),
+        ScheduleChange::Pause { .. } => pause_plan(plan()?, at, PauseSource::User),
         ScheduleChange::Resume { .. } => plan()?.resume(at).map_err(reason)?,
         ScheduleChange::TriggerNow { .. } => {
             let mut next = plan()?.clone();

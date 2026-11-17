@@ -381,7 +381,9 @@ impl Owner {
                     return Err("scheduler_task_outside_conversation".into());
                 }
                 let plan = match input {
-                    Input::Pause { .. } => Some(pause_plan(&saved.plan, now() as i64)),
+                    Input::Pause { .. } => {
+                        Some(pause_plan(&saved.plan, now() as i64, PauseSource::Bot))
+                    }
                     Input::Resume { .. } => {
                         let Some(approval) = &saved.plan.authorization else {
                             if matches!(saved.plan.task.effect, ScheduledEffect::Discovery { .. }) {
@@ -395,6 +397,9 @@ impl Owner {
                                     .await?
                             }
                             Approval::Discovery { approval, .. } => {
+                                if saved.plan.pause_source != Some(PauseSource::Bot) {
+                                    return Err("scheduler_user_resume_required".into());
+                                }
                                 self.prepare_approved_background(
                                     approval,
                                     BackgroundKind::Schedule {

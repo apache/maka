@@ -143,6 +143,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             }
             next.check_expiry()?;
         }
+        next.pause_source = None;
         next.task.updated_at = next.task.updated_at.max(now);
         Ok(next)
     }
