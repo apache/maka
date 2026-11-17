@@ -77,7 +77,7 @@ Menus, selects, context menus, popovers, and modal dialogs are the only surfaces
 
 - **Menus and popovers** — `floating` surface with `4 pt` inset and `32 pt` concentric rows (`radius 8`, hover/focus `floatingRaised`). Rows use three lanes: `16 pt` icon at `12 pt`, label at `36 pt`, and trailing check/switch/shortcut/chevron. Every command in a menu uses a distinct icon; destructive actions sit last in `danger`; commands that open a prompt end with `…`. Active choices show an `accent` checkmark (never radio buttons). Press outside or `Escape` dismisses; menus carry neither title bars nor close buttons.
 - **Dialogs** — `ModalDialog` centers over a scrim on `surface` fill (`inset 16`). Titles state the concrete action and target (`Delete “Roadmap”?`, weight `600`); body text adds only scope or consequence. Primary actions sit bottom-right (`Cancel` followed by a specific verb like `Delete` or `Save`—never generic `OK`/`Confirm`), with initial focus on `Cancel` for destructive prompts. `Escape` cancels; clicking the scrim dismisses lightweight launchers (command palette, search) but never discards form edits or active work.
-- **Tooltips** — `tooltipStyle` / `richTooltipStyle` in floating tokens without shadow or color inversion. Menu rows never carry tooltips; essential context belongs inline.
+- **Tooltips** — `tooltipStyle` / `richTooltipStyle` in floating tokens without shadow or color inversion, the narrowest floating surface at `280 pt` and four lines of text at most: a hint folds, and what a longer one cannot say belongs inline. Menu rows never carry tooltips.
 
 ## Settings pages
 
