@@ -25,12 +25,15 @@ use futures_util::future::BoxFuture;
 use maka_agent_engine::{RunError, preparation};
 use maka_agent_facts::{
     context::{CodexRequestProvenance, ModelPurpose},
-    durable::{Fact, ModelAttemptId, RecordedFact},
+    durable::{Fact, ModelAttemptId, RecordedFact, ToolKey},
     execution::SystemPrompt,
-    model::{prompt::Message, prompt_source::source::ReplayOrigin},
+    model::{ModelPart, ModelToolCall, prompt::Message, prompt_source::source::ReplayOrigin},
+    operation::RecordedOperationReply,
+    tool_output::AcceptedToolResult,
 };
 use maka_agent_state::fold::RunView;
-use maka_model::prompt::AssistantPart;
+use maka_model::prompt::{AssistantPart, ToolOutput};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
 use serde_json::json;
 use std::collections::BTreeSet;
 
@@ -38,6 +41,7 @@ use std::collections::BTreeSet;
 struct AssistantBatch {
     parts: Vec<AssistantPart>,
     producer: Option<Producer>,
+    recovered_outputs: Vec<Message>,
 }
 
 struct Producer {
@@ -65,7 +69,11 @@ impl AssistantBatch {
                 .await
             }
             None => flush_assistant(messages, &mut self.parts).await,
+        }?;
+        for output in self.recovered_outputs.drain(..) {
+            messages.append(output).await?;
         }
+        Ok(())
     }
 }
 
@@ -242,6 +250,59 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         assistant.flush(messages).await?;
                         *current = Some(*attempt);
                     }
+                    if let ModelPart::ToolCall { call } = part
+                        && !call.provider_executed
+                        && view.terminal.is_some()
+                    {
+                        let key = ToolKey {
+                            attempt: *attempt,
+                            call: call.id.clone(),
+                        };
+                        let tool = view
+                            .tools
+                            .get(&maka_agent_state::fold::tool_key(&key))
+                            .ok_or_else(|| {
+                                RunError::ReconciliationRequired(
+                                    "historical tool call lost its original state".into(),
+                                )
+                            })?;
+                        if tool.accepted.is_none() {
+                            // A sealed Run can acquire original evidence after its driver exits.
+                            // Only replay a call when we can pair it with an authoritative output.
+                            let (
+                                Some(reference),
+                                Some(
+                                    receipt @ Receipt::Recorded {
+                                        outcome:
+                                            OperationOutcome::Returned { .. }
+                                            | OperationOutcome::NotExecuted { .. },
+                                        cleanup: OperationCleanup::Confirmed,
+                                    },
+                                ),
+                            ) = (&tool.original, &tool.receipt)
+                            else {
+                                return Ok(());
+                            };
+                            let evidence = AcceptedToolResult::ObservedOperation {
+                                reply: RecordedOperationReply {
+                                    reference: reference.clone(),
+                                    receipt: receipt.clone(),
+                                },
+                            };
+                            let output = driver
+                                .project_accepted(
+                                    reader,
+                                    view,
+                                    after,
+                                    original_cells,
+                                    evidence,
+                                    vision,
+                                    view.spec.language,
+                                )
+                                .await?;
+                            assistant.recovered_outputs.push(tool_message(call, output));
+                        }
+                    }
                     if matches!(
                         part,
                         maka_agent_facts::model::ModelPart::Text {
@@ -300,10 +361,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         )
                         .await?
                 };
-                let mut message = Message::tool(tool.call.clone(), call.name.clone(), output);
-                if let Message::Tool { content, .. } = &mut message {
-                    content[0].provider_options = call.provider_options.clone();
-                }
+                let message = tool_message(&call, output);
                 if allowed_attempts.contains(&tool.attempt) {
                     messages.append(message).await?;
                 } else if let Message::Tool { mut content, .. } = message {
@@ -331,4 +389,12 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         self.assistant.flush(self.messages).await?;
         Ok(self.recorded.cells.into_values().collect())
     }
+}
+
+fn tool_message(call: &ModelToolCall, output: ToolOutput) -> Message {
+    let mut message = Message::tool(call.id.clone(), call.name.clone(), output);
+    if let Message::Tool { content, .. } = &mut message {
+        content[0].provider_options = call.provider_options.clone();
+    }
+    message
 }
