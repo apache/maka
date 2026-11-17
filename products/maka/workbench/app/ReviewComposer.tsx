@@ -103,6 +103,7 @@ export function InlineReviewComposer(props: {
   initialComment?: string;
   canPrompt: boolean;
   prCommentMode?: boolean;
+  prHunkNotice?: string;
   onAddPrComment?(comment: string): void;
   onSave(comment: string): void;
   onInsertPrompt(comment: string): void;
@@ -216,6 +217,11 @@ export function InlineReviewComposer(props: {
           color: C.text,
         }}
       />
+      <If when={props.prHunkNotice !== undefined}>
+        <Text style={{ ...captionTextStyle, fontSize: 11, color: C.muted }}>
+          {props.prHunkNotice}
+        </Text>
+      </If>
       <View
         style={{
           flexDirection: 'row',

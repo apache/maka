@@ -55,6 +55,7 @@ import {
   formatPrKey,
   type GitHubRepoRef,
   type GitHubReviewThread,
+  isRangeInSinglePatchHunk,
   type PatchLineMap,
   type PendingPrComment,
   type ReviewNote,
@@ -410,11 +411,26 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
     comment,
   });
 
+  const prHunkMap = computed<PatchLineMap | null>(() => {
+    if (source().kind !== 'pr') return null;
+    const cur = renderableState();
+    if (!cur) return null;
+    return cur.patchMap ?? buildPatchLineMap(cur.patch);
+  });
+
+  const canPrCommentRange = (draft: DraftAnnotation): boolean => {
+    const map = prHunkMap();
+    if (!map) return false;
+    const realStart = virtualToReal(draft.side, draft.startLine);
+    const realEnd = virtualToReal(draft.side, draft.endLine);
+    return isRangeInSinglePatchHunk(map, draft.side, realStart, realEnd);
+  };
+
   const savePrDraftComment = (draft: DraftAnnotation, body: string) => {
     const src = source();
     const key = prKey();
     const store = props.review?.store;
-    if (src.kind !== 'pr' || !key || !store) return;
+    if (src.kind !== 'pr' || !key || !store || !canPrCommentRange(draft)) return;
     const side = draft.side === 'old' ? ('LEFT' as const) : ('RIGHT' as const);
     const realStart = virtualToReal(draft.side, draft.startLine);
     const realEnd = virtualToReal(draft.side, draft.endLine);
@@ -1162,6 +1178,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                     const draft = draftNote();
                     const isPr = source().kind === 'pr';
                     if (ann.id === '__draft__' && draft) {
+                      const prAllowed = isPr && canPrCommentRange(draft);
                       return (
                         <InlineReviewComposer
                           startLine={draft.startLine}
@@ -1169,8 +1186,15 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                           realStartLine={virtualToReal(draft.side, draft.startLine)}
                           realEndLine={virtualToReal(draft.side, draft.endLine)}
                           canPrompt={props.review!.canPrompt}
+                          prHunkNotice={
+                            isPr && !prAllowed
+                              ? tr(
+                                  'Outside PR diff hunks — GitHub only accepts comments on changed hunk lines. Use local review actions below.',
+                                )
+                              : undefined
+                          }
                           onAddPrComment={
-                            isPr ? (comment) => savePrDraftComment(draft, comment) : undefined
+                            prAllowed ? (comment) => savePrDraftComment(draft, comment) : undefined
                           }
                           onSave={(comment) => {
                             props.review!.store.upsertNote(buildNoteInput(draft, comment));

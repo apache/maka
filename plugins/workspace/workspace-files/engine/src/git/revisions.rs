@@ -373,7 +373,8 @@ fn valid_hostname(host: &str) -> bool {
         && !host.ends_with('.')
         && !host.starts_with('-')
         && !host.ends_with('-')
-        && (host.contains('.') || host == "localhost")
+        && host.contains('.')
+        && !host.bytes().all(|b| b.is_ascii_digit() || b == b'.')
         && host
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
@@ -546,6 +547,24 @@ pub(super) fn compare_diff(
     let before = lookup_tree_image(repo, resolved.base_tree, name)?;
     let after = lookup_tree_image(repo, resolved.head_tree, name)?;
     diff::diff_images(repo, name, before, after)
+}
+
+pub(super) fn merge_base_file_diff(
+    repo: &repository::Repository,
+    base_oid: &str,
+    head_oid: &str,
+    name: &[u8],
+    previous_name: Option<&[u8]>,
+) -> io::Result<GitDiff> {
+    let target_base = resolve_commit_oid(repo, base_oid)?;
+    let head = resolve_commit_oid(repo, head_oid)?;
+    let lca = merge_base(repo, target_base, head)?;
+    let base_tree = commit_tree_id(repo, lca)?;
+    let head_tree = commit_tree_id(repo, head)?;
+    let old_name = previous_name.unwrap_or(name);
+    let before = lookup_tree_image(repo, base_tree, old_name)?;
+    let after = lookup_tree_image(repo, head_tree, name)?;
+    diff::diff_images_pair(repo, old_name, name, before, after)
 }
 
 fn lookup_tree_image(

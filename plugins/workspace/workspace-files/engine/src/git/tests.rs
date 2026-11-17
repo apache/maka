@@ -141,14 +141,24 @@ fn staged_worktree_and_untracked_are_distinct_and_diff_literal_images() {
             ),
         ]
     );
+    let st = f.status();
+    let find_digest = |area: GitArea, name: &[u8]| {
+        st.entries
+            .iter()
+            .find(|e| e.area == area && e.path.bytes().unwrap() == name)
+            .map(|e| e.digest.clone())
+            .expect("status entry digest")
+    };
     let GitDiff::Text {
         patch,
         before,
         after,
+        digest: staged_digest,
     } = f.diff(GitArea::Staged, b"file.txt")
     else {
         panic!("expected staged text")
     };
+    assert_eq!(staged_digest, find_digest(GitArea::Staged, b"file.txt"));
     assert_eq!(before, "original\n");
     assert_eq!(after, "staged\n");
     assert!(
@@ -160,10 +170,12 @@ fn staged_worktree_and_untracked_are_distinct_and_diff_literal_images() {
         patch,
         before,
         after,
+        digest: worktree_digest,
     } = f.diff(GitArea::Worktree, b"file.txt")
     else {
         panic!("expected working text")
     };
+    assert_eq!(worktree_digest, find_digest(GitArea::Worktree, b"file.txt"));
     assert_eq!(before, "staged\n");
     assert_eq!(after, "working\n");
     assert!(
@@ -175,10 +187,15 @@ fn staged_worktree_and_untracked_are_distinct_and_diff_literal_images() {
         patch,
         before,
         after,
+        digest: untracked_digest,
     } = f.diff(GitArea::Untracked, b"untracked.txt")
     else {
         panic!("expected untracked text")
     };
+    assert_eq!(
+        untracked_digest,
+        find_digest(GitArea::Untracked, b"untracked.txt")
+    );
     assert_eq!(before, "");
     assert_eq!(after, "new content\n");
     assert!(
@@ -855,7 +872,16 @@ fn revisions_and_merge_base_compare_across_diverged_branches_and_commits() {
             patch,
             before,
             after,
+            digest,
         } => {
+            let cmp_digest = branch_cmp
+                .entries
+                .iter()
+                .find(|e| e.path.bytes().unwrap() == b"shared.rs")
+                .unwrap()
+                .digest
+                .clone();
+            assert_eq!(digest, cmp_digest);
             assert_eq!(
                 before,
                 "pub fn v() -> i32 { 1 }
@@ -916,4 +942,102 @@ fn parses_ssh_https_and_enterprise_remotes_safely() {
         parse_remote_repo("origin", "https://github.com/../escape.git"),
         None
     );
+    assert_eq!(
+        parse_remote_repo("origin", "https://localhost/owner/repo.git"),
+        None
+    );
+    assert_eq!(
+        parse_remote_repo("origin", "https://127.0.0.1/owner/repo.git"),
+        None
+    );
+}
+
+#[test]
+fn status_digest_invalidates_on_same_length_rewrite_and_pr_merge_base_handles_renames() {
+    let f = Fixture::new();
+    git(&f.root, &["checkout", "-b", "main"]);
+    fs::write(
+        f.root.join("orig.rs"),
+        b"pub fn alpha() -> i32 {\n    10\n}\n",
+    )
+    .unwrap();
+    fs::write(f.root.join("other.txt"), b"aaaa\n").unwrap();
+    f.commit();
+
+    // Rewrite working tree file with identical byte length: digest must change immediately.
+    fs::write(f.root.join("other.txt"), b"bbbb\n").unwrap();
+    let d1 = f.status().entries[0].digest.clone();
+    fs::write(f.root.join("other.txt"), b"cccc\n").unwrap();
+    let d2 = f.status().entries[0].digest.clone();
+    assert_ne!(
+        d1, d2,
+        "same-length content edit must invalidate Viewed digest"
+    );
+    git(&f.root, &["checkout", "--", "other.txt"]);
+
+    // Feature branch renames orig.rs -> renamed.rs and modifies it.
+    git(&f.root, &["checkout", "-b", "feat-rename"]);
+    git(&f.root, &["mv", "orig.rs", "renamed.rs"]);
+    fs::write(
+        f.root.join("renamed.rs"),
+        b"pub fn alpha() -> i32 {\n    20\n}\n",
+    )
+    .unwrap();
+    f.commit();
+    let head_sha = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    // Base branch advances independently (three-dot merge-base must ignore this commit).
+    git(&f.root, &["checkout", "main"]);
+    fs::write(f.root.join("other.txt"), b"main-diverged\n").unwrap();
+    f.commit();
+    let base_tip_sha = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    let untouched_in_pr = merge_base_file_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &base_tip_sha,
+        &head_sha,
+        &WorkspacePath::from_bytes(b"other.txt").unwrap(),
+        None,
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(untouched_in_pr, GitDiff::Unchanged);
+
+    let renamed_diff = merge_base_file_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &base_tip_sha,
+        &head_sha,
+        &WorkspacePath::from_bytes(b"renamed.rs").unwrap(),
+        Some(&WorkspacePath::from_bytes(b"orig.rs").unwrap()),
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+        ..
+    } = renamed_diff
+    else {
+        panic!("expected renamed text diff");
+    };
+    assert_eq!(before, "pub fn alpha() -> i32 {\n    10\n}\n");
+    assert_eq!(after, "pub fn alpha() -> i32 {\n    20\n}\n");
+    assert!(patch.contains("rename from \"orig.rs\""), "{patch}");
+    assert!(patch.contains("rename to \"renamed.rs\""), "{patch}");
+    assert!(patch.contains("-    10\n+    20\n"), "{patch}");
 }

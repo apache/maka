@@ -446,14 +446,12 @@ export function WorkspaceChanges(props: {
         if (!selectedCommitOid() && rev.commits[0]) {
           selectedCommitOid.set(rev.commits[0].oid);
         }
-        if (rev.remotes.length > 0 && prListState().kind === 'idle') {
-          const initialRepo = selectedRepo() ?? {
+        if (!selectedRepo() && rev.remotes.length > 0) {
+          selectedRepo.set({
             host: rev.remotes[0]!.host,
             owner: rev.remotes[0]!.owner,
             repo: rev.remotes[0]!.repo,
-          };
-          selectedRepo.set(initialRepo);
-          void loadPrList(sessionId, initialRepo, prStateFilter(), rev.headBranch);
+          });
         }
       }
 
@@ -647,14 +645,14 @@ export function WorkspaceChanges(props: {
     const tab = sourceTab();
     const sessionId = props.sessionId;
     if (tab === 'working') {
-      const head = status()?.head ?? 'unborn';
       return filteredWorkingEntries().map((entry) => {
         const pathLabel = host.pathLabel(entry.path);
-        const digest = `${head}:${entry.area}:${entry.kind}`;
+        const digest = entry.digest;
         const target: CurrentDiffTarget = {
           sessionId,
           area: entry.area,
           source: { kind: 'working', area: entry.area },
+          digest,
           path: entry.path,
           title: pathLabel,
         };
@@ -1760,6 +1758,9 @@ export function WorkspaceChanges(props: {
                 {tokenSourceLabel(activePrAuth())}
               </Text>
               <Input
+                masked
+                autoCapitalize="none"
+                autoCorrect={false}
                 value={tokenDraft()}
                 onChange={({ value }) => tokenDraft.set(value)}
                 onSubmit={() => void saveToken()}

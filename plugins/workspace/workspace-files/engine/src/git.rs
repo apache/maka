@@ -69,6 +69,7 @@ pub struct GitStatusEntry {
     pub area: GitArea,
     pub path: WorkspacePath,
     pub kind: GitChangeKind,
+    pub digest: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -84,6 +85,7 @@ pub enum GitDiff {
         patch: String,
         before: String,
         after: String,
+        digest: String,
     },
     Binary,
     Unchanged,
@@ -336,6 +338,39 @@ pub fn compare_diff(
             return Ok(None);
         };
         let result = revisions::compare_diff(&repo, spec, &bytes)?;
+        repo.finish()?;
+        Ok(Some(result))
+    })())
+}
+#[allow(clippy::too_many_arguments)]
+pub fn merge_base_file_diff(
+    workspace: &Path,
+    identity: &Observation,
+    private_root: &Path,
+    binding: Option<&Binding>,
+    base_oid: &str,
+    head_oid: &str,
+    path: &WorkspacePath,
+    previous_path: Option<&WorkspacePath>,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<Option<GitDiff>> {
+    expose((|| {
+        let bytes = path.bytes().map_err(|_| failure("git_invalid_path"))?;
+        let prev_bytes = previous_path
+            .map(|p| p.bytes().map_err(|_| failure("git_invalid_path")))
+            .transpose()?;
+        let Some(repo) =
+            repository::Repository::open(workspace, identity, private_root, binding, cancel)?
+        else {
+            return Ok(None);
+        };
+        let result = revisions::merge_base_file_diff(
+            &repo,
+            base_oid,
+            head_oid,
+            &bytes,
+            prev_bytes.as_deref(),
+        )?;
         repo.finish()?;
         Ok(Some(result))
     })())

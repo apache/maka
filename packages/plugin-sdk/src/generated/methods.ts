@@ -2910,10 +2910,12 @@ export interface ServiceMethods {
             patch: string;
             before: string;
             after: string;
+            digest: string;
           }
         | {
             kind: 'patch_only';
             patch: string;
+            digest: string;
           }
         | {
             kind: 'binary';

@@ -299,9 +299,11 @@ pub enum GitHubPullFileDiff {
         patch: String,
         before: String,
         after: String,
+        digest: String,
     },
     PatchOnly {
         patch: String,
+        digest: String,
     },
     Binary,
     Large,

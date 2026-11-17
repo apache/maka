@@ -884,10 +884,16 @@ export const workspaceMessages = {
     '未驗證（僅支援公開儲存庫唯讀）',
   ],
   'Authenticated via personal token': [
-    'Authenticated via personal token',
-    '已通过个人令牌认证',
-    '已透過個人權杖驗證',
+    'Authenticated via stored personal token (encrypted vault)',
+    '已通过已存个人令牌认证（私有凭据库）',
+    '已透過已存個人權杖驗證（私有憑據庫）',
   ],
+  'Outside PR diff hunks — GitHub only accepts comments on changed hunk lines. Use local review actions below.':
+    [
+      'Outside PR diff hunks — GitHub only accepts comments on changed hunk lines. Use local review actions below.',
+      '当前行不在 PR 变更块（hunk）内——GitHub 仅接收变更行评论，可使用下方本地批注或发送给 Agent。',
+      '目前行不在 PR 變更區塊（hunk）內——GitHub 僅接收變更行評論，可使用下方本機批註或傳送給 Agent。',
+    ],
   'Authenticated via environment token': [
     'Authenticated via environment token',
     '已通过环境变量令牌认证',

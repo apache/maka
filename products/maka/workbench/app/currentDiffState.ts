@@ -154,7 +154,7 @@ export function createCurrentDiff(
             patch: prDiff.patch,
             before: prDiff.before,
             after: prDiff.after,
-            digest: target.digest || computeTextDigest(prDiff.patch),
+            digest: prDiff.digest || target.digest || computeTextDigest(prDiff.patch),
           });
         } else if (prDiff.kind === 'patch_only') {
           if (previousPatch !== undefined && previousPatch !== prDiff.patch) {
@@ -164,7 +164,7 @@ export function createCurrentDiff(
           state.set({
             kind: 'patch_only',
             patch: prDiff.patch,
-            digest: target.digest || computeTextDigest(prDiff.patch),
+            digest: prDiff.digest || target.digest || computeTextDigest(prDiff.patch),
           });
         } else if (prDiff.kind === 'binary') {
           state.set({ kind: 'binary' });
@@ -204,7 +204,7 @@ export function createCurrentDiff(
           patch: result.patch,
           before: result.before,
           after: result.after,
-          digest: target.digest || computeTextDigest(result.patch),
+          digest: result.digest || target.digest || computeTextDigest(result.patch),
         });
       } else {
         previousPatch = undefined;

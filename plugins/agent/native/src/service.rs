@@ -640,21 +640,36 @@ impl Handler for Agent {
                         .git_compare_diff(decode(input)?, context.scope())
                         .await?,
                 ),
-                "githubPullRequests" => encode(
-                    owner
-                        .github_pull_requests(decode(input)?, context.scope())
-                        .await?,
-                ),
-                "githubPullRequestDetail" => encode(
-                    owner
-                        .github_pull_request_detail(decode(input)?, context.scope())
-                        .await?,
-                ),
-                "githubPullRequestFileDiff" => encode(
-                    owner
-                        .github_pull_request_file_diff(decode(input)?, context.scope())
-                        .await?,
-                ),
+                "githubPullRequests" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_requests(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "githubPullRequestDetail" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_request_detail(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "githubPullRequestFileDiff" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_request_file_diff(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
                 "githubSubmitReview" => {
                     context.operation().ok_or("agent_mutation_required")?;
                     if context.scope().identity.agent().is_some() {

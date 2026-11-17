@@ -3842,6 +3842,7 @@ export type GitDiff =
       patch: string;
       before: string;
       after: string;
+      digest: string;
     }
   | {
       kind: 'binary';
@@ -7944,6 +7945,7 @@ export interface GitStatusEntry {
   area: GitArea;
   path: WorkspacePath;
   kind: GitChangeKind;
+  digest: string;
 }
 export interface GitStatus {
   head: string | null;

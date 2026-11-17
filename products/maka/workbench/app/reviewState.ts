@@ -164,13 +164,16 @@ export type PatchLineMap = {
   /** 1-based real file line -> 0-based DiffView virtual line. */
   oldRealToVirtual: Map<number, number>;
   newRealToVirtual: Map<number, number>;
+  /** 1-based real file line -> 0-based hunk index (for GitHub PR hunk validation). */
+  oldRealToHunk: Map<number, number>;
+  newRealToHunk: Map<number, number>;
 };
 
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 /**
- * Mirrors NSH `FilePatch::texts` / `text_starts` so patch-only GitHub PR diffs
- * map 1-to-1 between 0-based DiffView virtual lines and 1-based GitHub line numbers.
+ * Mirrors NSH parse_patch + FilePatch::texts using exact hunk line counts
+ * so lines starting with '-- ' ('--- ...') or '++ ' ('+++ ...') never truncate hunks.
  */
 export function buildPatchLineMap(patch: string): PatchLineMap {
   const oldLines: string[] = [];
@@ -179,26 +182,67 @@ export function buildPatchLineMap(patch: string): PatchLineMap {
   const newVirtualToReal: number[] = [];
   const oldRealToVirtual = new Map<number, number>();
   const newRealToVirtual = new Map<number, number>();
+  const oldRealToHunk = new Map<number, number>();
+  const newRealToHunk = new Map<number, number>();
 
   const rawLines = patch.split('\n');
   if (patch.endsWith('\n')) rawLines.pop();
 
-  let inHunk = false;
+  let oldLeft = 0;
+  let newLeft = 0;
   let realOld = 1;
   let realNew = 1;
+  let hunkIndex = -1;
 
   for (const raw of rawLines) {
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-    if (
-      line.startsWith('diff --git ') ||
-      line.startsWith('--- ') ||
-      line.startsWith('+++ ') ||
-      line.startsWith('index ') ||
-      line.startsWith('rename ')
-    ) {
-      inHunk = false;
-      continue;
+    if (oldLeft > 0 || newLeft > 0) {
+      if (raw.startsWith('\\')) {
+        continue;
+      }
+      const prefix = raw.length === 0 || raw === '\r' ? ' ' : raw[0];
+      const content = raw.length === 0 ? '' : raw === '\r' ? raw : raw.slice(1);
+      if (prefix === ' ' && oldLeft > 0 && newLeft > 0) {
+        const vOld = oldVirtualToReal.length;
+        const vNew = newVirtualToReal.length;
+        oldVirtualToReal.push(realOld);
+        newVirtualToReal.push(realNew);
+        oldRealToVirtual.set(realOld, vOld);
+        newRealToVirtual.set(realNew, vNew);
+        oldRealToHunk.set(realOld, hunkIndex);
+        newRealToHunk.set(realNew, hunkIndex);
+        oldLines.push(content);
+        newLines.push(content);
+        realOld += 1;
+        realNew += 1;
+        oldLeft -= 1;
+        newLeft -= 1;
+        continue;
+      }
+      if (prefix === '-' && oldLeft > 0) {
+        const vOld = oldVirtualToReal.length;
+        oldVirtualToReal.push(realOld);
+        oldRealToVirtual.set(realOld, vOld);
+        oldRealToHunk.set(realOld, hunkIndex);
+        oldLines.push(content);
+        realOld += 1;
+        oldLeft -= 1;
+        continue;
+      }
+      if (prefix === '+' && newLeft > 0) {
+        const vNew = newVirtualToReal.length;
+        newVirtualToReal.push(realNew);
+        newRealToVirtual.set(realNew, vNew);
+        newRealToHunk.set(realNew, hunkIndex);
+        newLines.push(content);
+        realNew += 1;
+        newLeft -= 1;
+        continue;
+      }
+      oldLeft = 0;
+      newLeft = 0;
     }
+
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
     const header = HUNK_HEADER_RE.exec(line);
     if (header) {
       const oldStart = Number(header[1]);
@@ -207,35 +251,9 @@ export function buildPatchLineMap(patch: string): PatchLineMap {
       const newCount = header[4] === undefined ? 1 : Number(header[4]);
       realOld = oldCount === 0 ? oldStart : Math.max(1, oldStart);
       realNew = newCount === 0 ? newStart : Math.max(1, newStart);
-      inHunk = true;
-      continue;
-    }
-    if (!inHunk || line.length === 0) continue;
-    const prefix = line[0];
-    const content = raw.slice(1);
-    if (prefix === ' ') {
-      const vOld = oldVirtualToReal.length;
-      const vNew = newVirtualToReal.length;
-      oldVirtualToReal.push(realOld);
-      newVirtualToReal.push(realNew);
-      oldRealToVirtual.set(realOld, vOld);
-      newRealToVirtual.set(realNew, vNew);
-      oldLines.push(content);
-      newLines.push(content);
-      realOld += 1;
-      realNew += 1;
-    } else if (prefix === '-') {
-      const vOld = oldVirtualToReal.length;
-      oldVirtualToReal.push(realOld);
-      oldRealToVirtual.set(realOld, vOld);
-      oldLines.push(content);
-      realOld += 1;
-    } else if (prefix === '+') {
-      const vNew = newVirtualToReal.length;
-      newVirtualToReal.push(realNew);
-      newRealToVirtual.set(realNew, vNew);
-      newLines.push(content);
-      realNew += 1;
+      oldLeft = oldCount;
+      newLeft = newCount;
+      hunkIndex += 1;
     }
   }
 
@@ -246,7 +264,26 @@ export function buildPatchLineMap(patch: string): PatchLineMap {
     newVirtualToReal,
     oldRealToVirtual,
     newRealToVirtual,
+    oldRealToHunk,
+    newRealToHunk,
   };
+}
+
+export function isRangeInSinglePatchHunk(
+  map: PatchLineMap,
+  side: 'old' | 'new',
+  realStart1: number,
+  realEnd1: number,
+): boolean {
+  const lo = Math.min(realStart1, realEnd1);
+  const hi = Math.max(realStart1, realEnd1);
+  const lookup = side === 'old' ? map.oldRealToHunk : map.newRealToHunk;
+  const startHunk = lookup.get(lo);
+  if (startHunk === undefined) return false;
+  for (let line = lo + 1; line <= hi; line += 1) {
+    if (lookup.get(line) !== startHunk) return false;
+  }
+  return true;
 }
 
 export type ReviewStore = {

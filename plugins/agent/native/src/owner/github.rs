@@ -41,10 +41,11 @@ const CLI_TOKEN_TTL: Duration = Duration::from_secs(600);
 const MAX_CONFIG_FILE_BYTES: u64 = 64 * 1024;
 const MAX_PR_CACHE_ENTRIES: usize = 8;
 const MAX_PR_PATCH_BYTES: usize = 2 * 1024 * 1024;
+const MAX_GITHUB_JSON_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
 pub(crate) struct GitHubHub {
-    manual_tokens: Mutex<BTreeMap<String, String>>,
+    manual_tokens: Mutex<BTreeMap<String, Option<String>>>,
     cli_tokens: Mutex<BTreeMap<String, CachedCliToken>>,
     pr_files: Mutex<Vec<CachedPrFiles>>,
     #[cfg(test)]
@@ -122,24 +123,77 @@ impl GitHubHub {
         Url::parse(&raw).map_err(|_| "agent_github_invalid_host".into())
     }
 
-    async fn set_manual_token(&self, host: String, token: Option<String>) {
-        let mut guard = self.manual_tokens.lock().await;
-        match token {
-            Some(secret) => {
-                guard.insert(host, secret);
-            }
-            None => {
-                guard.remove(&host);
+    async fn write_manual_token(
+        &self,
+        configuration: Option<&ConfigurationStore>,
+        host: &str,
+        token: Option<String>,
+    ) -> Result<(), String> {
+        if let Some(store) = configuration {
+            let ns = credential_namespace()?;
+            let key = credential_key(host);
+            for _ in 0..2 {
+                let actual = store
+                    .plugin_credential(ns.clone(), key.clone())
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map(|record| record.revision);
+                let result = store
+                    .write_plugin_credential(
+                        ns.clone(),
+                        maka_capabilities::credentials::Write {
+                            key: key.clone(),
+                            expected_revision: actual,
+                            secret: token.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if matches!(
+                    result,
+                    maka_capabilities::credentials::WriteResult::Written { .. }
+                ) {
+                    break;
+                }
             }
         }
+        self.manual_tokens
+            .lock()
+            .await
+            .insert(host.to_owned(), token);
+        Ok(())
     }
 
     async fn invalidate_cli_token(&self, host: &str) {
         self.cli_tokens.lock().await.remove(host);
     }
 
-    async fn resolve_auth(&self, host: &str, home: Option<PathBuf>) -> ResolvedAuth {
-        if let Some(token) = self.manual_tokens.lock().await.get(host).cloned() {
+    async fn resolve_auth(
+        &self,
+        host: &str,
+        configuration: Option<&ConfigurationStore>,
+        home: Option<PathBuf>,
+    ) -> ResolvedAuth {
+        let cached_manual = self.manual_tokens.lock().await.get(host).cloned();
+        let manual = match cached_manual {
+            Some(value) => value,
+            None => {
+                let loaded = if let Some(store) = configuration
+                    && let Ok(ns) = credential_namespace()
+                    && let Ok(record) = store.plugin_credential(ns, credential_key(host)).await
+                {
+                    record.and_then(|r| r.secret)
+                } else {
+                    None
+                };
+                self.manual_tokens
+                    .lock()
+                    .await
+                    .insert(host.to_owned(), loaded.clone());
+                loaded
+            }
+        };
+        if let Some(token) = manual {
             return ResolvedAuth {
                 host: host.to_owned(),
                 token: Some(token),
@@ -240,9 +294,12 @@ impl Owner {
             return Ok(GitHubTokenResult::InvalidToken);
         }
         self.github
-            .set_manual_token(host.clone(), Some(trimmed))
+            .write_manual_token(Some(&self.configuration), &host, Some(trimmed))
+            .await?;
+        let auth = self
+            .github
+            .resolve_auth(&host, Some(&self.configuration), self.home.clone())
             .await;
-        let auth = self.github.resolve_auth(&host, self.home.clone()).await;
         Ok(GitHubTokenResult::Updated {
             auth: auth.status(),
         })
@@ -255,8 +312,13 @@ impl Owner {
         let Some(host) = normalize_host(&input.host) else {
             return Err("agent_github_invalid_host".into());
         };
-        self.github.set_manual_token(host.clone(), None).await;
-        let auth = self.github.resolve_auth(&host, self.home.clone()).await;
+        self.github
+            .write_manual_token(Some(&self.configuration), &host, None)
+            .await?;
+        let auth = self
+            .github
+            .resolve_auth(&host, Some(&self.configuration), self.home.clone())
+            .await;
         Ok(GitHubTokenResult::Updated {
             auth: auth.status(),
         })
@@ -274,7 +336,7 @@ impl Owner {
                     .await?;
                 let effective_branch = input.head_branch.or(head_branch);
                 let selected_repo = match input.repo {
-                    Some(explicit) => Some(validate_repo_ref(explicit)?),
+                    Some(explicit) => Some(match_remote_allowlist(explicit, &remotes)?),
                     None => choose_default_remote(&remotes),
                 };
                 let Some(repo) = selected_repo else {
@@ -282,7 +344,7 @@ impl Owner {
                 };
                 let auth = owner
                     .github
-                    .resolve_auth(&repo.host, owner.home.clone())
+                    .resolve_auth(&repo.host, Some(&owner.configuration), owner.home.clone())
                     .await;
                 let client = owner.github_http_client().await?;
 
@@ -384,7 +446,7 @@ impl Owner {
                     .await?;
                 let auth = owner
                     .github
-                    .resolve_auth(&repo.host, owner.home.clone())
+                    .resolve_auth(&repo.host, Some(&owner.configuration), owner.home.clone())
                     .await;
                 let client = owner.github_http_client().await?;
                 let num_str = input.number.to_string();
@@ -542,54 +604,6 @@ impl Owner {
         }
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
-                // Fast-path: if both commits exist in the local Git repository, produce full
-                // before/after text + unified patch directly from local objects without network I/O.
-                if let (Some(base_sha), Some(head_sha)) =
-                    (input.base_sha.as_deref(), input.head_sha.as_deref())
-                    && is_hex_oid(base_sha)
-                    && is_hex_oid(head_sha)
-                    && let Ok(ws_path) = WorkspacePath::from_bytes(input.path.as_bytes())
-                {
-                    let spec = GitCompareSpec::Range {
-                        base: base_sha.to_owned(),
-                        head: head_sha.to_owned(),
-                    };
-                    if let Ok(Some(local_diff)) = owner
-                        .read_git(
-                            &input.session_id,
-                            &scope,
-                            move |workspace, observed, private_root, cancel| {
-                                maka_fs_tools::git::compare_diff(
-                                    Path::new(&workspace.path),
-                                    observed,
-                                    private_root,
-                                    workspace.worktree.as_deref(),
-                                    &spec,
-                                    &ws_path,
-                                    cancel,
-                                )
-                            },
-                        )
-                        .await
-                    {
-                        match local_diff {
-                            GitDiff::Text {
-                                patch,
-                                before,
-                                after,
-                            } => {
-                                return Ok(GitHubPullFileDiff::Full {
-                                    patch,
-                                    before,
-                                    after,
-                                });
-                            }
-                            GitDiff::Binary => return Ok(GitHubPullFileDiff::Binary),
-                            GitDiff::Unchanged | GitDiff::Unsupported => {}
-                        }
-                    }
-                }
-
                 let repo = owner
                     .resolve_target_repo(&input.session_id, input.repo, &scope)
                     .await?;
@@ -602,7 +616,7 @@ impl Owner {
                 } else {
                     let auth = owner
                         .github
-                        .resolve_auth(&repo.host, owner.home.clone())
+                        .resolve_auth(&repo.host, Some(&owner.configuration), owner.home.clone())
                         .await;
                     let client = owner.github_http_client().await?;
                     match owner
@@ -630,6 +644,74 @@ impl Owner {
                 let Some(entry) = files.into_iter().find(|f| f.path == input.path) else {
                     return Ok(GitHubPullFileDiff::NotFound);
                 };
+
+                // Fast-path: when both base.sha and head.sha exist in the local Git object store,
+                // compute three-dot merge-base(base.sha, head.sha)..head.sha and resolve previous_path
+                // on renames so full before/after texts match GitHub's PR diff semantics.
+                if let (Some(base_sha), Some(head_sha)) =
+                    (input.base_sha.as_deref(), input.head_sha.as_deref())
+                    && is_hex_oid(base_sha)
+                    && is_hex_oid(head_sha)
+                    && let Ok(ws_path) = WorkspacePath::from_bytes(entry.path.as_bytes())
+                {
+                    let ws_prev = match entry.previous_path.as_deref() {
+                        Some(prev) => WorkspacePath::from_bytes(prev.as_bytes()).ok(),
+                        None => None,
+                    };
+                    let prev_ok = entry.previous_path.is_none() || ws_prev.is_some();
+                    if prev_ok {
+                        let base_owned = base_sha.to_owned();
+                        let head_owned = head_sha.to_owned();
+                        if let Ok(Some(local_diff)) = owner
+                            .read_git(
+                                &input.session_id,
+                                &scope,
+                                move |workspace, observed, private_root, cancel| {
+                                    maka_fs_tools::git::merge_base_file_diff(
+                                        Path::new(&workspace.path),
+                                        observed,
+                                        private_root,
+                                        workspace.worktree.as_deref(),
+                                        &base_owned,
+                                        &head_owned,
+                                        &ws_path,
+                                        ws_prev.as_ref(),
+                                        cancel,
+                                    )
+                                },
+                            )
+                            .await
+                        {
+                            match local_diff {
+                                GitDiff::Text {
+                                    patch: local_patch,
+                                    before,
+                                    after,
+                                    ..
+                                } => {
+                                    let patch = match entry.patch.as_deref() {
+                                        Some(raw_hunks) => format_github_file_patch(
+                                            &entry.path,
+                                            entry.previous_path.as_deref(),
+                                            entry.status,
+                                            Some(raw_hunks),
+                                        ),
+                                        None => local_patch,
+                                    };
+                                    return Ok(GitHubPullFileDiff::Full {
+                                        patch,
+                                        before,
+                                        after,
+                                        digest: entry.digest,
+                                    });
+                                }
+                                GitDiff::Binary => return Ok(GitHubPullFileDiff::Binary),
+                                GitDiff::Unchanged | GitDiff::Unsupported => {}
+                            }
+                        }
+                    }
+                }
+
                 match entry.patch.as_deref() {
                     Some(raw_hunks) => Ok(GitHubPullFileDiff::PatchOnly {
                         patch: format_github_file_patch(
@@ -638,6 +720,7 @@ impl Owner {
                             entry.status,
                             Some(raw_hunks),
                         ),
+                        digest: entry.digest,
                     }),
                     None if entry.status == GitHubPullFileStatus::Renamed
                         && entry.additions == 0
@@ -650,6 +733,7 @@ impl Owner {
                                 entry.status,
                                 None,
                             ),
+                            digest: entry.digest,
                         })
                     }
                     None if entry.additions == 0 && entry.deletions == 0 => {
@@ -693,7 +777,7 @@ impl Owner {
                     .await?;
                 let auth = owner
                     .github
-                    .resolve_auth(&repo.host, owner.home.clone())
+                    .resolve_auth(&repo.host, Some(&owner.configuration), owner.home.clone())
                     .await;
                 if !auth.status().authenticated {
                     return Ok(GitHubSubmitReviewResult::Unauthorized {
@@ -827,7 +911,7 @@ impl Owner {
                     .await?;
                 let auth = owner
                     .github
-                    .resolve_auth(&repo.host, owner.home.clone())
+                    .resolve_auth(&repo.host, Some(&owner.configuration), owner.home.clone())
                     .await;
                 if !auth.status().authenticated {
                     return Ok(GitHubReplyCommentResult::Unauthorized {
@@ -921,10 +1005,10 @@ impl Owner {
         explicit: Option<GitHubRepoRef>,
         scope: &Scope,
     ) -> Result<GitHubRepoRef, String> {
-        if let Some(repo) = explicit {
-            return validate_repo_ref(repo);
-        }
         let (remotes, _) = self.discover_session_remotes(session_id, scope).await?;
+        if let Some(repo) = explicit {
+            return match_remote_allowlist(repo, &remotes);
+        }
         choose_default_remote(&remotes).ok_or_else(|| "agent_github_no_remote".into())
     }
 
@@ -939,6 +1023,23 @@ impl Owner {
                 .map_err(|_| "agent_github_network_invalid".to_owned())?;
         policy
             .client_builder()
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    return attempt.stop();
+                }
+                let Some(origin) = attempt.previous().first() else {
+                    return attempt.stop();
+                };
+                let target = attempt.url();
+                if target.scheme() == origin.scheme()
+                    && target.host_str() == origin.host_str()
+                    && target.port_or_known_default() == origin.port_or_known_default()
+                {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
             .timeout(Duration::from_secs(20))
             .user_agent("Maka-Workbench")
             .build()
@@ -1010,13 +1111,35 @@ impl Owner {
         };
 
         let status = response.status();
-        let bytes = tokio::select! {
-            biased;
-            () = scope.cancellation.cancelled() => {
-                return Err(ApiFailure::Other("Request cancelled.".into()));
+        if response
+            .content_length()
+            .is_some_and(|len| len > MAX_GITHUB_JSON_BYTES as u64)
+        {
+            return Err(ApiFailure::Other(
+                "GitHub API response exceeded size limit.".into(),
+            ));
+        }
+        let mut response = response;
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                () = scope.cancellation.cancelled() => {
+                    return Err(ApiFailure::Other("Request cancelled.".into()));
+                }
+                () = self.stop.cancelled() => {
+                    return Err(ApiFailure::Other("Host shutting down.".into()));
+                }
+                res = response.chunk() => res.map_err(|e| ApiFailure::Other(format!("Failed reading response: {e}")))?,
+            };
+            let Some(chunk) = chunk else { break };
+            if bytes.len().saturating_add(chunk.len()) > MAX_GITHUB_JSON_BYTES {
+                return Err(ApiFailure::Other(
+                    "GitHub API response exceeded size limit.".into(),
+                ));
             }
-            res = response.bytes() => res.map_err(|e| ApiFailure::Other(format!("Failed reading response: {e}")))?,
-        };
+            bytes.extend_from_slice(&chunk);
+        }
 
         if status.is_success() {
             return serde_json::from_slice::<T>(&bytes)
@@ -1182,6 +1305,34 @@ fn choose_default_remote(remotes: &[GitHubRepoRef]) -> Option<GitHubRepoRef> {
         .cloned()
 }
 
+fn credential_namespace() -> Result<maka_plugin_core::storage::Namespace, String> {
+    maka_plugin_core::storage::Namespace::new(
+        crate::IMPLEMENTATION,
+        maka_plugin_core::scope::Scope::Profile,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn credential_key(host: &str) -> String {
+    format!("github/token/{host}")
+}
+
+fn match_remote_allowlist(
+    explicit: GitHubRepoRef,
+    remotes: &[GitHubRepoRef],
+) -> Result<GitHubRepoRef, String> {
+    let validated = validate_repo_ref(explicit)?;
+    remotes
+        .iter()
+        .find(|r| {
+            r.host.eq_ignore_ascii_case(&validated.host)
+                && r.owner.eq_ignore_ascii_case(&validated.owner)
+                && r.repo.eq_ignore_ascii_case(&validated.repo)
+        })
+        .cloned()
+        .ok_or_else(|| "agent_github_repo_not_in_remotes".into())
+}
+
 fn normalize_host(raw: &str) -> Option<String> {
     let host = raw.trim().to_ascii_lowercase();
     if !host.is_empty()
@@ -1189,7 +1340,8 @@ fn normalize_host(raw: &str) -> Option<String> {
         && !host.ends_with('.')
         && !host.starts_with('-')
         && !host.ends_with('-')
-        && (host.contains('.') || host == "localhost")
+        && host.contains('.')
+        && !host.bytes().all(|b| b.is_ascii_digit() || b == b'.')
         && host
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
@@ -1227,22 +1379,42 @@ fn is_hex_oid(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+pub(crate) fn resolve_env_token_with(
+    host: &str,
+    get_env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if host == "github.com" {
+        for key in ["GH_TOKEN", "GITHUB_TOKEN"] {
+            if let Some(raw) = get_env(key) {
+                let trimmed = raw.trim();
+                if !trimmed.is_empty() && !trimmed.chars().any(char::is_control) {
+                    return Some(trimmed.to_owned());
+                }
+            }
+        }
+        return None;
+    }
+    let gh_host = get_env("GH_HOST").and_then(|v| normalize_host(&v))?;
+    if gh_host != host {
+        return None;
+    }
+    for key in ["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] {
+        if let Some(raw) = get_env(key) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() && !trimmed.chars().any(char::is_control) {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
+
 fn resolve_env_or_file_token(
     host: &str,
     home: Option<&Path>,
 ) -> Option<(String, GitHubTokenSource)> {
-    let env_vars: &[&str] = if host == "github.com" {
-        &["GH_TOKEN", "GITHUB_TOKEN"]
-    } else {
-        &["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_TOKEN"]
-    };
-    for key in env_vars {
-        if let Ok(raw) = std::env::var(key) {
-            let trimmed = raw.trim();
-            if !trimmed.is_empty() && !trimmed.chars().any(char::is_control) {
-                return Some((trimmed.to_owned(), GitHubTokenSource::Env));
-            }
-        }
+    if let Some(token) = resolve_env_token_with(host, |key| std::env::var(key).ok()) {
+        return Some((token, GitHubTokenSource::Env));
     }
 
     for candidate in gh_hosts_paths(home) {
@@ -1871,22 +2043,122 @@ machine api.github.com
         );
     }
 
+    #[test]
+    fn env_tokens_never_leak_github_pat_to_non_github_or_unmatched_hosts() {
+        let env = |vars: &[(&str, &str)]| {
+            let map: BTreeMap<String, String> = vars
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            move |key: &str| map.get(key).cloned()
+        };
+
+        // GH_TOKEN / GITHUB_TOKEN apply strictly to github.com and NEVER to gitlab.com, GHE, or untrusted remotes.
+        let with_pat = env(&[
+            ("GH_TOKEN", "ghp_secret_pat"),
+            ("GITHUB_TOKEN", "ghp_backup"),
+        ]);
+        assert_eq!(
+            resolve_env_token_with("github.com", &with_pat).as_deref(),
+            Some("ghp_secret_pat")
+        );
+        assert_eq!(resolve_env_token_with("gitlab.com", &with_pat), None);
+        assert_eq!(resolve_env_token_with("attacker.example", &with_pat), None);
+        assert_eq!(resolve_env_token_with("ghe.corp.internal", &with_pat), None);
+
+        // GH_ENTERPRISE_TOKEN applies ONLY when GH_HOST explicitly matches that enterprise host.
+        let with_ghe_no_host = env(&[("GH_ENTERPRISE_TOKEN", "ghp_ent_secret")]);
+        assert_eq!(
+            resolve_env_token_with("ghe.corp.internal", &with_ghe_no_host),
+            None
+        );
+
+        let with_ghe_matched = env(&[
+            ("GH_HOST", "GHE.CORP.INTERNAL"),
+            ("GH_ENTERPRISE_TOKEN", "ghp_ent_secret"),
+        ]);
+        assert_eq!(
+            resolve_env_token_with("ghe.corp.internal", &with_ghe_matched).as_deref(),
+            Some("ghp_ent_secret")
+        );
+        assert_eq!(
+            resolve_env_token_with("other.enterprise.internal", &with_ghe_matched),
+            None
+        );
+    }
+
+    #[test]
+    fn remote_allowlist_and_host_validation_block_unconfigured_or_local_targets() {
+        assert_eq!(normalize_host("localhost"), None);
+        assert_eq!(normalize_host("127.0.0.1"), None);
+        assert_eq!(normalize_host("github.com").as_deref(), Some("github.com"));
+
+        let remotes = vec![GitHubRepoRef {
+            host: "github.com".into(),
+            owner: "apache".into(),
+            repo: "maka".into(),
+        }];
+        assert!(
+            match_remote_allowlist(
+                GitHubRepoRef {
+                    host: "GITHUB.COM".into(),
+                    owner: "Apache".into(),
+                    repo: "maka".into(),
+                },
+                &remotes,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            match_remote_allowlist(
+                GitHubRepoRef {
+                    host: "attacker.example".into(),
+                    owner: "apache".into(),
+                    repo: "maka".into(),
+                },
+                &remotes,
+            ),
+            Err("agent_github_repo_not_in_remotes".into())
+        );
+    }
+
     #[tokio::test]
-    async fn manual_token_override_and_base_url_routing_work_end_to_end() {
-        let hub = GitHubHub::default();
-        hub.set_base_url_override("ghe.local", "http://127.0.0.1:18080/api/v3/".into())
+    async fn manual_token_persists_across_hub_restarts_in_configuration_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("root");
+        let namespaces = maka_event_log::root::RootNamespaces {
+            ownership: dir.path().join("owners"),
+            control: dir.path().join("control"),
+        };
+        let root_owner =
+            Arc::new(maka_event_log::root::RootOwner::create(&root_path, &namespaces).unwrap());
+        let config = ConfigurationStore::for_root(root_owner).await.unwrap();
+
+        let hub1 = GitHubHub::default();
+        hub1.set_base_url_override("ghe.local", "http://127.0.0.1:18080/api/v3/".into())
             .await;
-        let base = hub.api_base_url("ghe.local").await.unwrap();
+        let base = hub1.api_base_url("ghe.local").await.unwrap();
         assert_eq!(base.as_str(), "http://127.0.0.1:18080/api/v3/");
 
-        hub.set_manual_token("ghe.local".into(), Some("ghp_manual_tok".into()))
-            .await;
-        let auth = hub.resolve_auth("ghe.local", None).await;
-        assert_eq!(auth.token.as_deref(), Some("ghp_manual_tok"));
-        assert_eq!(auth.source, Some(GitHubTokenSource::Manual));
+        hub1.write_manual_token(Some(&config), "ghe.local", Some("ghp_manual_tok".into()))
+            .await
+            .unwrap();
+        let auth1 = hub1.resolve_auth("ghe.local", Some(&config), None).await;
+        assert_eq!(auth1.token.as_deref(), Some("ghp_manual_tok"));
+        assert_eq!(auth1.source, Some(GitHubTokenSource::Manual));
 
-        hub.set_manual_token("ghe.local".into(), None).await;
-        let cleared = hub.resolve_auth("ghe.local", None).await;
+        // Simulate Host restart with a brand-new empty in-memory GitHubHub: token must reload from vault.
+        let hub2 = GitHubHub::default();
+        let auth2 = hub2.resolve_auth("ghe.local", Some(&config), None).await;
+        assert_eq!(auth2.token.as_deref(), Some("ghp_manual_tok"));
+        assert_eq!(auth2.source, Some(GitHubTokenSource::Manual));
+
+        // Deleting writes a tombstone so subsequent restarts see it removed.
+        hub2.write_manual_token(Some(&config), "ghe.local", None)
+            .await
+            .unwrap();
+        let hub3 = GitHubHub::default();
+        let cleared = hub3.resolve_auth("ghe.local", Some(&config), None).await;
         assert_ne!(cleared.source, Some(GitHubTokenSource::Manual));
     }
 }

@@ -849,10 +849,10 @@ impl LspClient {
         if let Ok(mut stdin_guard) = self.io.stdin.try_lock() {
             let _ = stdin_guard.take();
         }
-        if let Some(pid) = self.child_pid {
-            kill_process_tree(pid);
-        }
         if let Some(mut child) = self.child.lock().expect("lsp child mutex").take() {
+            if let Some(pid) = self.child_pid {
+                kill_process_tree(pid);
+            }
             let _ = child.start_kill();
         }
     }

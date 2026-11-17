@@ -351,34 +351,40 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
 });
 
 test('patch line bijection, viewed digest invalidation, and GitHub PR review state', async (t) => {
-  const { buildPatchLineMap, formatGitHubThreadPrompt, formatPrKey } = await import(
-    new URL('reviewState.ts', appRoot)
-  );
+  const { buildPatchLineMap, formatGitHubThreadPrompt, formatPrKey, isRangeInSinglePatchHunk } =
+    await import(new URL('reviewState.ts', appRoot));
   const { resources } = setup(t);
 
   const patch = [
-    'diff --git a/src/lib.rs b/src/lib.rs',
-    '--- a/src/lib.rs',
-    '+++ b/src/lib.rs',
+    'diff --git a/src/lib.sql b/src/lib.sql',
+    '--- a/src/lib.sql',
+    '+++ b/src/lib.sql',
     '@@ -10,3 +10,4 @@',
-    ' fn keep() {}',
-    '-fn old_call() {}',
-    '+fn new_call() {}',
-    '+fn extra_call() {}',
-    ' fn end_first() {}',
-    '@@ -40,2 +41,2 @@',
-    ' fn second_hunk() {',
-    '+    added_in_second();',
+    ' SELECT 1;',
+    '--- old sql comment that starts with triple minus in unified diff',
+    '+++ new increment-like line that starts with triple plus',
+    '+SELECT 2;',
+    ' SELECT 3;',
+    '@@ -40,1 +41,2 @@',
+    ' SELECT 40;',
+    '+SELECT 42;',
+    '\\ No newline at end of file',
     '',
   ].join('\n');
 
   const map = buildPatchLineMap(patch);
   assert.deepEqual(map.oldVirtualToReal, [10, 11, 12, 40]);
   assert.deepEqual(map.newVirtualToReal, [10, 11, 12, 13, 41, 42]);
+  assert.equal(map.oldLines[1], '-- old sql comment that starts with triple minus in unified diff');
+  assert.equal(map.newLines[1], '++ new increment-like line that starts with triple plus');
   assert.equal(map.oldRealToVirtual.get(11), 1);
   assert.equal(map.newRealToVirtual.get(12), 2);
   assert.equal(map.newRealToVirtual.get(42), 5);
-  assert.equal(map.newLines[5], '    added_in_second();');
+  assert.equal(map.newLines[5], 'SELECT 42;');
+  assert.equal(isRangeInSinglePatchHunk(map, 'new', 10, 13), true);
+  assert.equal(isRangeInSinglePatchHunk(map, 'new', 41, 42), true);
+  assert.equal(isRangeInSinglePatchHunk(map, 'new', 1, 1), false);
+  assert.equal(isRangeInSinglePatchHunk(map, 'new', 12, 41), false);
 
   assert.equal(
     resources.reviewStore.isViewed('A', 'branch:main', path.bytesBase64, 'sha-v1'),

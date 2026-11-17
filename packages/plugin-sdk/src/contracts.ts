@@ -13115,9 +13115,12 @@ export const contracts: {
                       after: {
                         type: 'string',
                       },
+                      digest: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'patch', 'before', 'after'],
+                    required: ['kind', 'patch', 'before', 'after', 'digest'],
                   },
                   {
                     type: 'object',
@@ -13224,9 +13227,12 @@ export const contracts: {
                       after: {
                         type: 'string',
                       },
+                      digest: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'patch', 'before', 'after'],
+                    required: ['kind', 'patch', 'before', 'after', 'digest'],
                   },
                   {
                     type: 'object',
@@ -13452,9 +13458,12 @@ export const contracts: {
                   kind: {
                     $ref: '#/$defs/GitChangeKind',
                   },
+                  digest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['area', 'path', 'kind'],
+                required: ['area', 'path', 'kind', 'digest'],
               },
               GitArea: {
                 type: 'string',
@@ -14089,9 +14098,12 @@ export const contracts: {
                   after: {
                     type: 'string',
                   },
+                  digest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'patch', 'before', 'after'],
+                required: ['kind', 'patch', 'before', 'after', 'digest'],
               },
               {
                 type: 'object',
@@ -14103,9 +14115,12 @@ export const contracts: {
                   patch: {
                     type: 'string',
                   },
+                  digest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'patch'],
+                required: ['kind', 'patch', 'digest'],
               },
               {
                 type: 'object',
