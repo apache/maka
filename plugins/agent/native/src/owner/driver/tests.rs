@@ -495,6 +495,7 @@ impl Rig {
                 "sessionManage",
                 "schedule",
                 "schedules",
+                "changeDiscoveryExclusions",
                 "metadata",
                 "project",
                 "projects",

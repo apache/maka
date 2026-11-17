@@ -72,6 +72,7 @@ const CONTROL_METHODS: &[&str] = &[
     "openBot",
     "changeGoal",
     "schedule",
+    "changeDiscoveryExclusions",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";

@@ -404,6 +404,10 @@ impl Owner {
             Some(ceiling) => native.with_sandbox_floor(ceiling)?,
             None => native,
         };
+        let native = match &basis.discovery_restriction {
+            Some(restriction) => native.with_sandbox_floor(restriction)?,
+            None => native,
+        };
         let frozen = self
             .freeze_background_request(session, source, basis, required_tools, key, native.scope())
             .await;

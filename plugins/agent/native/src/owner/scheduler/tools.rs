@@ -239,9 +239,7 @@ impl Owner {
                 continue;
             }
             let profile = requested_tools.unwrap_or(approved.profile);
-            if profile == DiscoveryWorkerTools::Session
-                && approved.profile == DiscoveryWorkerTools::ReadOnly
-            {
+            if !profile.is_subset_of(approved.profile) {
                 continue;
             }
             let Some(fire) = parent.task.runs.iter().find(|fire| {

@@ -91,10 +91,22 @@ impl Owner {
                 .into());
             }
         };
-        let read_only_discovery = self.scheduler.investigation_profile(&view.spec.session_id)
-            == Some(DiscoveryWorkerTools::ReadOnly);
+        let base_discovery_catalog =
+            if let Some(profile) = self.scheduler.investigation_profile(&view.spec.session_id) {
+                let exclusions = self
+                    .scheduler
+                    .discovery_exclusions()
+                    .await
+                    .map_err(|error| RestorationError {
+                        stage: AuthorityStage::WorkspaceScope,
+                        cause: RunError::InvalidInput(error),
+                    })?;
+                discovery::access::uses_base_catalog(profile, &exclusions.entries)
+            } else {
+                false
+            };
         let external_bridge = matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external");
-        let host_tools = !read_only_discovery && (model.is_some() || external_bridge);
+        let host_tools = !base_discovery_catalog && (model.is_some() || external_bridge);
         let catalog = if !host_tools {
             self.mcp_projects.base.clone()
         } else {
@@ -165,6 +177,7 @@ impl Owner {
             allowed_tools: view.spec.allowed_tools.clone(),
             background: None,
             background_sandbox_ceiling: None,
+            discovery_restriction: None,
             internal_tools: Arc::new(selection.definitions.clone()),
             internal_bindings: Arc::new(selection.internal_bindings.clone()),
             behavior: system,

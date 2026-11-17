@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_api::session::StoredSessionConfiguration;
+use maka_agent_api::{contract::WorkspaceAccess, session::StoredSessionConfiguration};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -137,6 +137,15 @@ impl Fixture {
         tools: Option<&str>,
     ) -> String {
         let effect = self.effect(tools.unwrap_or("read_only")).await;
+        self.create_effect(title, direction, schedule, effect).await
+    }
+    async fn create_effect(
+        &self,
+        title: &str,
+        direction: &str,
+        schedule: Value,
+        effect: Value,
+    ) -> String {
         let catalog = self.preview(&effect, None).await;
         let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":direction,"schedule":schedule,"effect":effect,"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest","approvedTools":catalog}})).await;
         assert_eq!(result["kind"], "committed", "{result}");
@@ -157,6 +166,23 @@ impl Fixture {
             .await;
         assert_eq!(preview["kind"], "discovery_tools", "{preview}");
         preview["names"].clone()
+    }
+    async fn exclusions(&self) -> Value {
+        let result = self
+            .query(
+                "schedules",
+                json!({"kind":"discovery_exclusions","sessionId":self.bot}),
+            )
+            .await;
+        assert_eq!(result["kind"], "discovery_exclusions", "{result}");
+        result["exclusions"].clone()
+    }
+    async fn change_exclusions(&self, revision: Value, entries: Value) -> Value {
+        self.query(
+            "changeDiscoveryExclusions",
+            json!({"sessionId":self.bot,"revision":revision,"entries":entries}),
+        )
+        .await
     }
     async fn reapprove(&self, task: &str, profile: &str) -> Value {
         let detail = self.detail(task).await;
@@ -664,6 +690,153 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_applies_group_scope_and_global_file_exclusions_to_live_tools() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    f.change_source(|config| config.permissions.access = WorkspaceAccess::WorkspaceWrite)
+        .await;
+    let workspace = f
+        .rig
+        .directory
+        .path()
+        .join("workspace")
+        .canonicalize()
+        .unwrap();
+    std::fs::create_dir(workspace.join("private")).unwrap();
+    let protected = [
+        ("private/note.txt", "excluded-folder-content"),
+        ("settings.conf", "excluded-file-content"),
+        ("token.PEM", "excluded-suffix-content"),
+    ];
+    for (path, sentinel) in protected {
+        std::fs::write(workspace.join(path), sentinel).unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(workspace.join("settings.conf"), workspace.join("alias.txt"))
+        .unwrap();
+
+    let mut effect = f.effect("read_only").await;
+    effect["workerTools"] = json!({"custom":{
+        "readFiles":true,"readHistory":false,"modifyFiles":false,
+        "runCommands":true,"network":false,"manageSessions":false,
+        "extensions":false,"desktop":false
+    }});
+    let task = f.create_effect(
+        "Local discovery scope", "Check local files",
+        json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}),
+        effect.clone(),
+    ).await;
+    assert_eq!(f.exclusions().await, json!({"entries":[],"revision":null}));
+    let entries = json!([
+        {"kind":"directory","path":workspace.join("private")},
+        {"kind":"file","path":workspace.join("settings.conf")},
+        {"kind":"suffix","suffix":"PEM"}
+    ]);
+    let saved = f.change_exclusions(Value::Null, entries).await;
+    assert_eq!(saved["kind"], "committed", "{saved}");
+    assert_eq!(saved["exclusions"]["entries"][2]["suffix"], ".pem");
+    assert_eq!(
+        f.change_exclusions(Value::Null, json!([])).await["kind"],
+        "conflict"
+    );
+    f.reopen().await;
+    assert_eq!(f.exclusions().await, saved["exclusions"]);
+    assert_eq!(f.detail(&task).await["approved"], true);
+
+    f.change(&task, "trigger_now").await;
+    let (mut model, request) = next(&listener).await;
+    let names: Vec<_> = request["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"Read") && names.contains(&"DiscoveryComplete"),
+        "{names:?}"
+    );
+    for name in [
+        "Write",
+        "DiscoveryMemory",
+        "SessionRead",
+        "Recall",
+        "ScheduledTask",
+    ] {
+        assert!(!names.contains(&name), "{name}: {names:?}");
+    }
+    assert_eq!(names.contains(&"Shell"), cfg!(target_os = "macos"));
+    let changed = f
+        .change_exclusions(saved["exclusions"]["revision"].clone(), json!([]))
+        .await;
+    assert_eq!(changed["kind"], "investigation_running", "{changed}");
+    assert_eq!(f.exclusions().await, saved["exclusions"]);
+
+    tool(&mut model, "Read", json!({"path":"discovery.txt"})).await;
+    let (mut model, body) = next(&listener).await;
+    assert!(
+        output(&body)
+            .to_string()
+            .contains("Observed fixture evidence")
+    );
+    for (path, sentinel) in protected {
+        tool(&mut model, "Read", json!({"path":path})).await;
+        let (following, body) = next(&listener).await;
+        let result = output(&body).to_string();
+        assert!(!result.contains(sentinel), "{path}: {result}");
+        assert!(result.to_lowercase().contains("deni"), "{path}: {result}");
+        model = following;
+    }
+    #[cfg(unix)]
+    {
+        tool(&mut model, "Read", json!({"path":"alias.txt"})).await;
+        let (following, body) = next(&listener).await;
+        let result = output(&body).to_string();
+        assert!(
+            result.to_lowercase().contains("deni") && !result.contains("excluded-file-content"),
+            "{result}"
+        );
+        model = following;
+    }
+    tool(
+        &mut model,
+        "Read",
+        json!({"path":format!("maka://session/{}",f.bot)}),
+    )
+    .await;
+    let (mut model, body) = next(&listener).await;
+    assert!(
+        output(&body)
+            .to_string()
+            .contains("Discovery history access is disabled"),
+        "{body}"
+    );
+    #[cfg(target_os = "macos")]
+    let mut model = {
+        tool(&mut model, "Shell", json!({
+            "command":"cat discovery.txt; cat private/note.txt settings.conf token.PEM; echo forbidden > write-test.txt",
+            "login": false
+        })).await;
+        let (model, body) = next(&listener).await;
+        let result = output(&body).to_string();
+        assert!(result.contains("Observed fixture evidence"), "{result}");
+        assert!(!result.contains("excluded-"), "{result}");
+        assert!(!workspace.join("write-test.txt").exists(), "{result}");
+        model
+    };
+    tool(
+        &mut model,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Verified scope"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_memory_search_paginates_and_matches_record_text() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -982,7 +1155,25 @@ async fn discovery_report_authorizes_one_time_followup_but_not_a_recurring_or_ch
     assert_eq!(background, vec![&result["taskId"]]);
     quiet(&f, &listener, &mut bot).await;
 
-    let mut bot = report_to_bot(&f, &listener, followup).await;
+    let saved = f
+        .change_exclusions(Value::Null, json!([{"kind":"suffix","suffix":".txt"}]))
+        .await;
+    assert_eq!(saved["kind"], "committed", "{saved}");
+    f.change(followup, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    tool(&mut worker, "Read", json!({"path":"discovery.txt"})).await;
+    let (mut worker, body) = next(&listener).await;
+    assert!(
+        output(&body).to_string().to_lowercase().contains("deni"),
+        "{body}"
+    );
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"report","text":"Release status checked"}),
+    )
+    .await;
+    let (mut bot, _) = next(&listener).await;
     let (mut bot, chained) =
         propose_followup(&listener, &mut bot, "Chained follow-up", once, None).await;
     assert_eq!(chained["approved"], false, "{chained}");

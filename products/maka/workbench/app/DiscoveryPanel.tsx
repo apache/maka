@@ -20,6 +20,7 @@ import { cleanup, signal, Text, View, Scroll, inputAction } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   AgentScheduledDetail,
+  AgentSchedules,
   AgentScheduledSummary,
   IntervalCadence,
   ModelSelection,
@@ -40,6 +41,7 @@ import { Icon } from './Icon';
 import { SettingsField } from './SettingsField';
 import { SettingsButton, SettingsSegmented, SettingsSelect } from './SettingsPage';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { DiscoveryExclusionsEditor, DiscoveryPermissionsEditor } from './DiscoveryAccessSettings';
 import { LoadingIndicator } from './Loading';
 import { accessLabel } from './SessionPermissionsSelect';
 import { C, bodyTextStyle, captionTextStyle, toolbarControlStyle, textTooltip } from './ui';
@@ -105,13 +107,30 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     intent = signal('');
   const cadence = signal<IntervalCadence>(discoveryCadence());
   const workerTools = signal<DiscoveryWorkerTools>('read_only');
-  const approvedTools = signal<string[] | null>(null);
+  const toolPreview = signal<Extract<AgentSchedules, { kind: 'discovery_tools' }> | null>(null);
+  const previewingTools = signal(false);
+  const approvedTools = () => (previewingTools() ? null : (toolPreview()?.names ?? null));
+  const showExclusions = signal(false);
   const reapproving = signal(false);
   const deleting = signal(false);
   const needsRenewedApproval = (plan = detail()) =>
     !!plan && !plan.approved && plan.task.lastError === 'scheduler_authorization_changed';
   const resolvedWorkerTools = () =>
     editing() ? workerTools() : discoveryWorkerTools(detail()?.task.effect);
+  const resolveAccessLabel = () => {
+    const profile = resolvedWorkerTools();
+    if (profile === 'read_only') return tr('Use read-only investigation tools');
+    const custom = typeof profile === 'object';
+    const access =
+      custom && !(profile.custom.readFiles && profile.custom.modifyFiles)
+        ? 'read_only'
+        : snapshot()!.target.permissions.access;
+    return (
+      tr(custom ? 'Discovery custom permissions' : 'Use standard Session tools') +
+      ' · ' +
+      accessLabel(access)
+    );
+  };
   const error = createText();
   const watchError = createText();
   const unavailableEditTarget = () => {
@@ -189,7 +208,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     profile: DiscoveryWorkerTools,
     ticket: number,
   ) => {
-    approvedTools.set(null);
+    previewingTools.set(true);
     try {
       const result = await props.host.query('agent', 'schedules', {
         kind: 'preview_discovery',
@@ -198,14 +217,17 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       });
       if (!alive || ticket !== formGeneration) return;
       if (result.kind !== 'discovery_tools') throw new UiError('Discovery plan changed');
-      approvedTools.set(result.names);
+      toolPreview.set(result);
     } catch (reason) {
-      if (alive && ticket === formGeneration)
+      if (alive && ticket === formGeneration) {
+        toolPreview.set(null);
         error.set(errorText(reason, 'Could not load the discovery plan.'));
+      }
+    } finally {
+      if (alive && ticket === formGeneration) previewingTools.set(false);
     }
   };
-  const changeWorkerTools = (value: string) => {
-    const profile = value === 'session' ? 'session' : 'read_only';
+  const changeWorkerTools = (profile: DiscoveryWorkerTools) => {
     workerTools.set(profile);
     const captured = basis();
     if (captured) {
@@ -225,7 +247,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         ? discoveryWorkerTools(plan?.task.effect)
         : 'read_only';
     workerTools.set(profile);
-    approvedTools.set(null);
+    toolPreview.set(null);
     intent.set(plan?.task.intent.body ?? '');
     const schedule = plan?.task.schedule;
     minutes.set(schedule?.kind === 'interval' ? String(schedule.everySeconds / 60) : '30');
@@ -489,7 +511,12 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       tone="quiet"
     />
   );
-  return (
+  const closeExclusions = () => {
+    showExclusions.set(false);
+    const captured = basis();
+    if (editing() && captured) void previewTools(captured, workerTools(), ++formGeneration);
+  };
+  const renderPlan = () => (
     <ModalDialog size="form" onCancel={cancel}>
       <View
         style={{
@@ -508,15 +535,25 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
               : 'Proactive discovery',
           )}
         />
-        <If when={!editing() && tasks().length > 0}>
+        <View
+          style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end' }}
+        >
           <SettingsButton
-            label={tr('New discovery plan')}
-            icon="plus"
+            label={tr('Discovery exclusions')}
             tone="quiet"
             disabled={busy()}
-            onPress={() => void edit(true)}
+            onPress={() => showExclusions.set(true)}
           />
-        </If>
+          <If when={!editing() && tasks().length > 0}>
+            <SettingsButton
+              label={tr('New discovery plan')}
+              icon="plus"
+              tone="quiet"
+              disabled={busy()}
+              onPress={() => void edit(true)}
+            />
+          </If>
+        </View>
       </View>
       <Scroll style={{ minHeight: 0, flexShrink: 1 }} contentStyle={{ gap: 12, paddingRight: 4 }}>
         <If when={loading()}>
@@ -585,12 +622,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
               {tr('Discovery workspace')}: {snapshot()!.target.workspace.path}
             </Text>
             <Text style={{ ...captionTextStyle, color: C.secondary }}>
-              {tr('Discovery permissions')}:{' '}
-              {resolvedWorkerTools() === 'session'
-                ? tr('Use standard Session tools') +
-                  ' · ' +
-                  accessLabel(snapshot()!.target.permissions.access)
-                : tr('Use read-only investigation tools')}
+              {tr('Discovery permissions')}: {resolveAccessLabel()}
             </Text>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
               <Text style={{ ...captionTextStyle, color: C.secondary, flexShrink: 1 }}>
@@ -639,21 +671,12 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             multiline
             disabled={busy()}
           />
-          <SettingsSegmented
-            label={tr('Discovery tools')}
+          <DiscoveryPermissionsEditor
             value={workerTools()}
-            choices={[
-              { value: 'session', title: tr('Use standard Session tools') },
-              { value: 'read_only', title: tr('Use read-only investigation tools') },
-            ]}
+            preview={toolPreview()}
             change={changeWorkerTools}
             disabled={busy() || !basis()}
           />
-          <If when={approvedTools()?.length}>
-            <Text style={{ ...captionTextStyle, color: C.secondary, userSelect: 'text' }}>
-              {approvedTools()!.join(' · ')}
-            </Text>
-          </If>
           <If when={unavailableEditTarget()}>
             <Text style={{ ...captionTextStyle, color: C.danger }}>
               {tr('Discovery plan changed')}
@@ -663,11 +686,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         </If>
         <If when={editing() || (detail()?.task.status === 'paused' && !detail()?.approved)}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {tr(
-              resolvedWorkerTools() === 'session'
-                ? 'Discovery permission notice'
-                : 'Discovery read-only notice',
-            )}
+            {tr('Discovery permission notice')}
           </Text>
         </If>
       </Scroll>
@@ -739,5 +758,15 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         </If>
       </DialogFooter>
     </ModalDialog>
+  );
+  return (
+    <If when={showExclusions()} else={renderPlan()}>
+      <DiscoveryExclusionsEditor
+        host={props.host}
+        sessionId={props.sessionId}
+        control={props.control}
+        close={closeExclusions}
+      />
+    </If>
   );
 }

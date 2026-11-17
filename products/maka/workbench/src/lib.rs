@@ -133,7 +133,13 @@ mod tests {
         app.wait_for("text:/Investigation permissions.*Read-only tools/")
             .unwrap();
         app.press("role:button[Standard Session tools]").unwrap();
-        app.wait_for("text:Read · Shell").unwrap();
+        app.wait_for("role:button[Run commands: On]").unwrap();
+        app.press("role:button[View tool details]").unwrap();
+        app.wait_for("text:Run commands · Shell").unwrap();
+        app.press("role:button[Read conversations and memory: On]")
+            .unwrap();
+        app.wait_for("role:button[Read conversations and memory: Off]")
+            .unwrap();
         app.press("role:button[Approve and enable]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("text:/Next check.*15:59:58/").unwrap();
@@ -145,11 +151,20 @@ mod tests {
         app.press_key("mod+shift+r").unwrap();
         app.wait_for("text:Needs renewed approval").unwrap();
         app.press("role:button[Review permissions]").unwrap();
-        app.wait_for("text:Read · Shell").unwrap();
+        app.wait_for("role:button[Read conversations and memory: Off]")
+            .unwrap();
         app.press("role:button[Approve and resume]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
+        app.press("role:button[Files to exclude]").unwrap();
+        app.wait_for("text:No exclusions").unwrap();
+        app.press("role:button[File suffix]").unwrap();
+        app.type_text("label:Suffix, such as .pem", ".pem").unwrap();
+        app.press("role:button[Add]").unwrap();
+        app.press("role:button[Save]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("text:Unavailable with these settings")
+            .unwrap();
         app.press("role:button[Fixed interval]").unwrap();
         app.wait_for("role:button[Approve and save]").unwrap();
         app.press("role:button[Approve and save]").unwrap();

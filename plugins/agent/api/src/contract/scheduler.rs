@@ -60,7 +60,110 @@ pub enum DiscoveryWorkerTools {
     #[default]
     ReadOnly,
     Session,
+    Custom(DiscoveryToolGroups),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryToolGroup {
+    ReadFiles,
+    ReadHistory,
+    ModifyFiles,
+    RunCommands,
+    Network,
+    ManageSessions,
+    Extensions,
+    Desktop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscoveryToolGroups {
+    pub read_files: bool,
+    pub read_history: bool,
+    pub modify_files: bool,
+    pub run_commands: bool,
+    pub network: bool,
+    pub manage_sessions: bool,
+    pub extensions: bool,
+    pub desktop: bool,
+}
+
+impl DiscoveryWorkerTools {
+    pub fn allows(self, group: DiscoveryToolGroup) -> bool {
+        use DiscoveryToolGroup::*;
+        match self {
+            Self::ReadOnly => matches!(group, ReadFiles | ReadHistory),
+            Self::Session => true,
+            Self::Custom(groups) => match group {
+                ReadFiles => groups.read_files,
+                ReadHistory => groups.read_history,
+                ModifyFiles => groups.read_files && groups.modify_files,
+                RunCommands => groups.read_files && groups.run_commands,
+                Network => groups.network,
+                ManageSessions => groups.manage_sessions,
+                Extensions => groups.extensions,
+                Desktop => groups.desktop,
+            },
+        }
+    }
+
+    pub fn is_subset_of(self, other: Self) -> bool {
+        use DiscoveryToolGroup::*;
+        [
+            ReadFiles,
+            ReadHistory,
+            ModifyFiles,
+            RunCommands,
+            Network,
+            ManageSessions,
+            Extensions,
+            Desktop,
+        ]
+        .into_iter()
+        .all(|group| !self.allows(group) || other.allows(group))
+    }
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryToolOption {
+    pub name: String,
+    pub group: DiscoveryToolGroup,
+    pub available: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DiscoveryExclusion {
+    Directory { path: String },
+    File { path: String },
+    Suffix { suffix: String },
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscoveryExclusions {
+    pub revision: Option<u64>,
+    pub entries: Vec<DiscoveryExclusion>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangeDiscoveryExclusions {
+    pub session_id: String,
+    pub revision: Option<u64>,
+    pub entries: Vec<DiscoveryExclusion>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DiscoveryExclusionsResult {
+    Committed { exclusions: DiscoveryExclusions },
+    Conflict,
+    InvestigationRunning,
+}
+
 impl ScheduledEffect {
     pub fn target(&self) -> &ScheduledTarget {
         match self {
@@ -139,6 +242,9 @@ pub enum ScheduleRead {
         effect: ScheduledEffect,
         task_id: Option<String>,
     },
+    DiscoveryExclusions {
+        session_id: String,
+    },
     Discovery {
         session_id: String,
         cursor: Option<String>,
@@ -212,6 +318,10 @@ pub enum InvestigationPhase {
 pub enum Schedules {
     DiscoveryTools {
         names: Vec<String>,
+        options: Vec<DiscoveryToolOption>,
+    },
+    DiscoveryExclusions {
+        exclusions: DiscoveryExclusions,
     },
     Page {
         revision: u64,

@@ -98,6 +98,10 @@ export function errorText(reason: unknown, fallback: MessageKey, values?: UiText
       return message(
         'Allow Maka to read Downloads in System Settings > Privacy & Security > Files and Folders.',
       );
+    case 'discovery_invalid_exclusion_path':
+      return message('Discovery invalid exclusion path');
+    case 'discovery_invalid_exclusion_suffix':
+      return message('Discovery invalid exclusion suffix');
     case 'agent_observation_closed':
     case 'agent_closed':
       return message('Connection interrupted. Your draft is kept.');

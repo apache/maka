@@ -40,6 +40,7 @@ pub(super) const MEMORY: &str = "DiscoveryMemory";
 pub(super) const VISIBLE_TOOLS: &[&str] = &[COMPLETE, MEMORY];
 const RECALL_TOOLS: &[&str] = &["Recall", "RecallMore", "RecallMaterial"];
 const ACTIVE: &str = "discovery/active";
+pub(super) mod access;
 mod context;
 mod records;
 
@@ -132,7 +133,7 @@ pub(super) fn permissions() -> WorkspacePermissions {
     }
 }
 
-fn investigation_prompt(language: Language, direction: &str) -> String {
+fn investigation_prompt(language: Language, direction: &str, history_allowed: bool) -> String {
     let direction = direction.trim();
     let (focused, broad, memory, history, finish) = match language {
         Language::ZhCn => (
@@ -162,8 +163,9 @@ fn investigation_prompt(language: Language, direction: &str) -> String {
     } else {
         format!("{focused}\n{direction}")
     };
-    prompt.push_str(&format!("\n\n{memory}"));
-    prompt.push_str(&format!("\n{history}"));
+    if history_allowed {
+        prompt.push_str(&format!("\n\n{memory}\n{history}"));
+    }
     prompt.push_str(&format!("\n\n{finish}"));
     prompt
 }
@@ -421,67 +423,6 @@ impl Owner {
         }
         Ok(delivery)
     }
-    pub(super) async fn discovery_tool_grant(
-        &self,
-        basis: &CapturedRun,
-        target: &ScheduledTarget,
-        profile: DiscoveryWorkerTools,
-    ) -> Result<scheduler::DiscoveryToolGrant, String> {
-        let source = self.session(&target.session_id).await?;
-        check_target(&source, target)?;
-        let catalog = match profile {
-            DiscoveryWorkerTools::ReadOnly => &self.mcp_projects.base.tools,
-            DiscoveryWorkerTools::Session => {
-                &basis
-                    .mcp_catalog
-                    .as_ref()
-                    .ok_or("discovery_tool_catalog_unavailable")?
-                    .tools
-            }
-        };
-        let editing = basis.model.as_ref().and_then(|model| model.editing_tools);
-        let mut names = self
-            .select_catalog_tools(
-                catalog,
-                None,
-                source.configuration.tools.as_deref(),
-                editing,
-            )
-            .names();
-        names.retain(|name| {
-            let recall = RECALL_TOOLS.contains(&name.as_str());
-            (!recall || self.settings.recall)
-                && (profile == DiscoveryWorkerTools::Session
-                    || recall
-                    || self.read_only_discovery_tool(name))
-        });
-        names.sort_unstable();
-        Ok(scheduler::DiscoveryToolGrant { profile, names })
-    }
-
-    pub(super) fn read_only_discovery_tool(&self, name: &str) -> bool {
-        self.discovery_reads.iter().any(|tool| tool == name)
-            || RECALL_TOOLS.contains(&name)
-            || matches!(name, "SessionList" | "SessionRead")
-    }
-
-    fn discovery_worker_tools(
-        &self,
-        granted: &scheduler::DiscoveryToolGrant,
-        configured: Option<&[String]>,
-    ) -> Vec<String> {
-        granted
-            .names
-            .iter()
-            .filter(|name| {
-                (self.settings.recall || !RECALL_TOOLS.contains(&name.as_str()))
-                    && configured.is_none_or(|configured| configured.contains(name))
-            })
-            .cloned()
-            .chain(VISIBLE_TOOLS.iter().map(|name| (*name).into()))
-            .collect()
-    }
-
     async fn discovery_authorized(&self, job: &Job) -> Result<(), String> {
         if !self.settings.bot || !self.settings.scheduled_tasks || !self.bot.is(&job.bot) {
             return Err("discovery_cancelled".into());
@@ -591,7 +532,11 @@ impl Owner {
             };
             let request = hex::encode(Sha256::digest(fire.id.as_bytes()));
             let worker = format!("{}{}", self.prefix, &request[..32]);
-            let mut prompt = investigation_prompt(approval.language, fire.intent.body());
+            let mut prompt = investigation_prompt(
+                approval.language,
+                fire.intent.body(),
+                tools.profile.allows(DiscoveryToolGroup::ReadHistory),
+            );
             prompt.push_str(&context::environment(
                 approval.language,
                 &approval.target.workspace.path,
@@ -701,8 +646,15 @@ impl Owner {
                         .map(Some);
                 }
                 let source = self.session(&job.bot).await?;
-                let allowed_tools =
-                    self.discovery_worker_tools(&job.tools, source.configuration.tools.as_deref());
+                let exclusions = self.scheduler.discovery_exclusions().await?.entries;
+                let restriction = access::run_restriction(job.tools.profile, &exclusions)?;
+                let configured = source.configuration.tools.as_deref();
+                let allowed_tools = self.discovery_worker_tools(
+                    &job.tools,
+                    configured,
+                    &self.mcp_projects.base,
+                    &exclusions,
+                );
                 if self
                     .store
                     .get_session::<StoredSessionConfiguration>(&job.worker)
@@ -735,11 +687,10 @@ impl Owner {
                                     .as_ref()
                                     .ok_or("discovery_workspace_unavailable")?
                                     .reference(),
-                                permissions: if job.tools.profile == DiscoveryWorkerTools::Session {
-                                    job.approval.target.permissions.clone()
-                                } else {
-                                    permissions()
-                                },
+                                permissions: access::worker_permissions(
+                                    job.tools.profile,
+                                    &job.approval.target.permissions,
+                                ),
                                 boundary_revision: 0,
                             },
                             fire.scheduled_at as u64,
@@ -754,6 +705,10 @@ impl Owner {
                         self.stop.child_token(),
                     )
                     .map_err(reason)?;
+                let native = match &restriction {
+                    Some(restriction) => native.with_sandbox_floor(restriction)?,
+                    None => native,
+                };
                 let captured = self
                     .capture_current_run(
                         &job.worker,
@@ -775,7 +730,18 @@ impl Owner {
                     return Err("background_model_route_changed".into());
                 }
                 basis.model = Some(job.approval.accepted_model.clone());
-                basis.allowed_tools = Some(allowed_tools);
+                basis.allowed_tools = Some(
+                    self.discovery_worker_tools(
+                        &job.tools,
+                        configured,
+                        basis
+                            .mcp_catalog
+                            .as_deref()
+                            .ok_or("discovery_tool_catalog_unavailable")?,
+                        &exclusions,
+                    ),
+                );
+                basis.discovery_restriction = restriction;
                 basis.background = Some(job.approval.target.clone());
                 basis.background_sandbox_ceiling = job.approval.sandbox_ceiling.clone();
                 basis.background_kind = BackgroundKind::Schedule {

@@ -105,6 +105,7 @@ impl Handler for Agent {
                 | "openBot"
                 | "changeGoal"
                 | "schedule"
+                | "changeDiscoveryExclusions"
                 | "project"
                 | "sessionCreate"
                 | "sessionSend"
@@ -136,6 +137,10 @@ impl Handler for Agent {
                             .complete(&context),
                         "changeGoal" => owner
                             .goal_change(decode(input)?, operation.clone(), context.scope())
+                            .await?
+                            .complete(&context),
+                        "changeDiscoveryExclusions" => owner
+                            .change_discovery_exclusions(decode(input)?, context.scope())
                             .await?
                             .complete(&context),
                         "schedule" => owner
@@ -481,10 +486,19 @@ impl Handler for Agent {
                         }
                     }
                 }
-                "schedules" => encode(owner.schedules(decode(input)?).await?),
+                "schedules" => {
+                    let query: ScheduleRead = decode(input)?;
+                    if let ScheduleRead::DiscoveryExclusions { session_id } = &query {
+                        owner.check_discovery_settings_access(session_id, context.scope())?;
+                    }
+                    encode(owner.schedules(query).await?)
+                }
                 "watchSchedules" => {
                     let mut changes = owner.schedule_changes();
                     let query: ScheduleRead = decode(input)?;
+                    if let ScheduleRead::DiscoveryExclusions { .. } = &query {
+                        return Err("discovery_settings_require_query".into());
+                    }
                     loop {
                         changes.borrow_and_update();
                         let value = encode(owner.schedules(query.clone()).await?)?;

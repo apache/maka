@@ -928,7 +928,7 @@ export const configurations = {
         },
         required: ['default', 'rules', 'denyGlobs'],
         description:
-          'Longest path wins; at the same path exact wins over subtree, then deny wins\nover write over read. Deny globs are absolute and cannot be reopened by paths.\nMatching directories deny their descendants.\nHost file operations match at access time. Linux and Windows subprocesses\nsnapshot existing glob matches during preparation; macOS enforces them live.\nEmpty restricted policy denies all access, rather than falling back to defaults.',
+          'Longest path wins; at the same path exact wins over subtree, then deny wins\nover write over read. Deny globs address absolute paths or a suffix across all\nroots. Path rules cannot reopen a glob denial.\nMatching directories deny their descendants.\nHost file operations match at access time. Linux and Windows subprocesses\nsnapshot existing glob matches during preparation; macOS enforces them live.\nEmpty restricted policy denies all access, rather than falling back to defaults.',
       },
       Access: {
         type: 'string',
@@ -1084,7 +1084,7 @@ export const configurations = {
         },
         required: ['default', 'rules', 'denyGlobs'],
         description:
-          'Longest path wins; at the same path exact wins over subtree, then deny wins\nover write over read. Deny globs are absolute and cannot be reopened by paths.\nMatching directories deny their descendants.\nHost file operations match at access time. Linux and Windows subprocesses\nsnapshot existing glob matches during preparation; macOS enforces them live.\nEmpty restricted policy denies all access, rather than falling back to defaults.',
+          'Longest path wins; at the same path exact wins over subtree, then deny wins\nover write over read. Deny globs address absolute paths or a suffix across all\nroots. Path rules cannot reopen a glob denial.\nMatching directories deny their descendants.\nHost file operations match at access time. Linux and Windows subprocesses\nsnapshot existing glob matches during preparation; macOS enforces them live.\nEmpty restricted policy denies all access, rather than falling back to defaults.',
       },
       Access: {
         type: 'string',
