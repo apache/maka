@@ -130,6 +130,7 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
                     | "updatePreset"
                     | "deletePreset"
                     | "changeMemory"
+                    | "reconcileMemories"
                     | "saveGitHubToken"
                     | "deleteGitHubToken"
             ))
@@ -1926,6 +1927,7 @@ mod preset_settings_tests {
             "updatePreset",
             "deletePreset",
             "changeMemory",
+            "reconcileMemories",
         ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("client.sqlite");

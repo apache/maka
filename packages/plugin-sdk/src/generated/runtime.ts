@@ -1375,6 +1375,10 @@ export type UsageAuxiliarySource =
       namespace: InstanceId;
       operation: string;
       fingerprint: string;
+      /**
+       * Absent for the initial attempt, preserving existing source identities.
+       */
+      attempt?: number | null;
       [k: string]: unknown | undefined;
     }
   | {

@@ -724,3 +724,38 @@ test('Linux platform and embedded icon inputs reach the display-backed desktop c
     assert.equal(worker.javascript, true);
   }
 });
+
+test('memory resolver prompt changes reach native and product consumers', () => {
+  const path = 'plugins/agent/native/src/owner/memory/resolution-prompt.md';
+  assert.equal(documentation(path), false);
+  const packages = [
+    ['maka-agent-native', 'plugins/agent/native'],
+    ['maka-cli', 'products/maka/cli'],
+  ].map(([name, directory]) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, directory, 'Cargo.toml'),
+  }));
+  const plan = createPlan({
+    root,
+    revision: 'head',
+    baseline: 'base',
+    changes: [path],
+    metadata: {
+      root: {
+        packages,
+        workspace_members: packages.map((pkg) => pkg.id),
+        resolve: {
+          nodes: [
+            { id: 'maka-agent-native', deps: [] },
+            { id: 'maka-cli', deps: [{ pkg: 'maka-agent-native' }] },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(plan.full, false);
+  assert.match(plan.suites.root.filter, /package\(=maka-agent-native\)/);
+  assert.match(plan.suites.root.filter, /package\(=maka-cli\)/);
+});

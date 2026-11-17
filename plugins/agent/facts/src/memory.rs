@@ -104,6 +104,7 @@ pub struct MemoryMetadata {
 #[serde(rename_all = "snake_case")]
 pub enum MemoryGeneration {
     UserInput,
+    Extraction,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -180,6 +181,21 @@ pub enum MemoryEdit {
     deny_unknown_fields
 )]
 pub enum MemoryResult {
+    Created {
+        id: MemoryId,
+        revision: MemoryRevision,
+    },
+    Revised {
+        id: MemoryId,
+        revision: MemoryRevision,
+    },
+    Unresolved {
+        id: MemoryId,
+        revision: MemoryRevision,
+    },
+    Retryable {
+        reason: String,
+    },
     EvidenceAdded {
         id: MemoryId,
         revision: MemoryRevision,
@@ -230,4 +246,23 @@ pub struct MemorySourceSelection {
     pub start: u32,
     pub end: u32,
     pub quote: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryWrite {
+    pub edit: MemoryEdit,
+    /// A verified conversation source grants automatic extraction authority only.
+    pub evidence: Option<MemoryEvidenceReference>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum MemoryBatchResult {
+    Committed { results: Vec<MemoryResult> },
+    Retryable { reason: String },
 }

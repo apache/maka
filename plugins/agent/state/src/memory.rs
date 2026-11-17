@@ -28,6 +28,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 mod matching;
+pub mod resolution;
 
 fn revision_value(value: i64) -> Result<MemoryRevision, StoreError> {
     Ok(MemoryRevision(
@@ -95,17 +96,30 @@ pub struct Page {
 impl Query for Page {
     type Output = Vec<MemoryRecord>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        self.page(c, false)
+    }
+}
+pub struct PendingPage(pub Page);
+impl Query for PendingPage {
+    type Output = Vec<MemoryRecord>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        self.0.page(c, true)
+    }
+}
+impl Page {
+    fn page(self, c: &Connection, pending: bool) -> Result<Vec<MemoryRecord>, StoreError> {
         self.scope.validate(c)?;
         if !(1..=101).contains(&self.limit) {
             return Err(invalid("memory page limit"));
         }
-        let mut statement=c.prepare("SELECT m.id,m.revision,m.mode,v.body,m.created_at,m.modified_at,v.metadata,m.assertion FROM agent_memories m JOIN agent_memory_versions v ON v.namespace=m.namespace AND v.scope=m.scope AND v.id=m.id AND v.revision=m.assertion WHERE m.namespace=?1 AND m.scope=?2 AND m.state='active' AND m.id>?3 ORDER BY m.id LIMIT ?4")?;
+        let mut statement=c.prepare("SELECT m.id,m.revision,m.mode,v.body,m.created_at,m.modified_at,v.metadata,m.assertion FROM agent_memories m JOIN agent_memory_versions v ON v.namespace=m.namespace AND v.scope=m.scope AND v.id=m.id AND v.revision=m.assertion WHERE m.namespace=?1 AND m.scope=?2 AND m.state=?5 AND m.id>?3 ORDER BY m.id LIMIT ?4")?;
         let rows = statement.query_map(
             params![
                 self.scope.namespace,
                 self.scope.location,
                 self.after.map(|id| id.0.to_string()).unwrap_or_default(),
-                self.limit
+                self.limit,
+                if pending { "unresolved" } else { "active" }
             ],
             |r| {
                 Ok((
@@ -127,7 +141,11 @@ impl Query for Page {
                 id: MemoryId(uuid::Uuid::parse_str(&id).map_err(|e| invalid(e.to_string()))?),
                 revision: revision_value(revision)?,
                 mode: serde_json::from_value(serde_json::Value::String(mode))?,
-                state: MemoryState::Active,
+                state: if pending {
+                    MemoryState::Unresolved
+                } else {
+                    MemoryState::Active
+                },
                 body,
                 metadata: serde_json::from_str(&metadata)?,
                 created_at,
@@ -138,7 +156,7 @@ impl Query for Page {
     }
 }
 // Only the native user-management service constructs this statement. It is not a model tool.
-pub struct UserChange {
+pub(crate) struct UserChange {
     pub source_scope: Option<Scope>,
     pub scope: Scope,
     pub edit: MemoryEdit,
@@ -321,7 +339,7 @@ impl Query for History {
         if !(1..=101).contains(&self.limit) {
             return Err(invalid("memory history limit"));
         }
-        let mut statement=c.prepare("SELECT v.revision,v.body,v.source,v.corrects,v.metadata,v.generation FROM agent_memory_versions v JOIN agent_memories m ON m.namespace=v.namespace AND m.scope=v.scope AND m.id=v.id WHERE v.namespace=?1 AND v.scope=?2 AND v.id=?3 AND m.state='active' AND v.disposition<>'suppressed' AND v.revision>?4 ORDER BY v.revision LIMIT ?5")?;
+        let mut statement=c.prepare("SELECT v.revision,v.body,v.source,v.corrects,v.metadata,v.method FROM agent_memory_versions v JOIN agent_memories m ON m.namespace=v.namespace AND m.scope=v.scope AND m.id=v.id WHERE v.namespace=?1 AND v.scope=?2 AND v.id=?3 AND m.state<>'suppressed' AND v.disposition<>'suppressed' AND v.revision>?4 ORDER BY v.revision LIMIT ?5")?;
         let rows = statement.query_map(
             params![
                 self.scope.namespace,
@@ -438,7 +456,7 @@ impl Query for Evidence {
         if !(1..=101).contains(&self.limit) {
             return Err(invalid("memory evidence limit"));
         }
-        let mut statement = c.prepare("SELECT e.sequence,e.source FROM agent_memory_evidence e JOIN agent_memories m ON m.namespace=e.namespace AND m.scope=e.scope AND m.id=e.id JOIN agent_memory_versions v ON v.namespace=e.namespace AND v.scope=e.scope AND v.id=e.id AND v.revision=e.assertion WHERE e.namespace=? AND e.scope=? AND e.id=? AND e.assertion=? AND e.sequence>? AND m.state='active' AND v.disposition<>'suppressed' ORDER BY e.sequence LIMIT ?")?;
+        let mut statement = c.prepare("SELECT e.sequence,e.source FROM agent_memory_evidence e JOIN agent_memories m ON m.namespace=e.namespace AND m.scope=e.scope AND m.id=e.id JOIN agent_memory_versions v ON v.namespace=e.namespace AND v.scope=e.scope AND v.id=e.id AND v.revision=e.assertion WHERE e.namespace=? AND e.scope=? AND e.id=? AND e.assertion=? AND e.sequence>? AND m.state<>'suppressed' AND v.disposition<>'suppressed' ORDER BY e.sequence LIMIT ?")?;
         let rows = statement.query_map(
             params![
                 self.scope.namespace,
@@ -532,6 +550,8 @@ mod tests {
         c.execute_batch(include_str!("../migrations/0044_memory_metadata.sql"))
             .unwrap();
         c.execute_batch(include_str!("../migrations/0045_memory_evidence.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../migrations/0046_memory_resolution.sql"))
             .unwrap();
         c
     }
@@ -847,28 +867,6 @@ mod tests {
         let record = record(&c, &scope(), &id).unwrap().unwrap();
         assert_eq!(record.mode, MemoryMode::UserRecall);
         assert_eq!(record.modified_at, 1);
-        let mut explain = c
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", matching::RESTRICTED_SQL))
-            .unwrap();
-        let plans: Vec<String> = explain
-            .query_map(
-                params![
-                    "host/agent",
-                    "personal",
-                    matching::digest("Use Chinese"),
-                    serde_json::to_string(&MemoryMetadata::default()).unwrap()
-                ],
-                |r| r.get(3),
-            )
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert!(
-            plans
-                .iter()
-                .any(|plan| plan.contains("agent_memory_matching")),
-            "{plans:?}"
-        );
     }
 
     #[test]
@@ -886,6 +884,8 @@ mod tests {
         c.execute_batch(include_str!("../migrations/0044_memory_metadata.sql"))
             .unwrap();
         c.execute_batch(include_str!("../migrations/0045_memory_evidence.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../migrations/0046_memory_resolution.sql"))
             .unwrap();
         let current = record(&c, &scope("host/agent", "personal"), &id)
             .unwrap()

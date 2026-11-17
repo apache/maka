@@ -910,11 +910,43 @@ export type AgentMemoryHistoryOutput_MemorySource =
       operationId: string;
       observedAt: number;
     };
-export type AgentMemoryHistoryOutput_MemoryGeneration = 'user_input';
+export type AgentMemoryHistoryOutput_MemoryGeneration = 'user_input' | 'extraction';
 export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
   | 'no_workspace';
+export type AgentPendingMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentPendingMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
+export type AgentPendingMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentPendingMemoriesOutput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentPendingMemoriesOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentPendingMemoriesOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
 export type AgentPredictNextMessageInput_AgentPredictionTrigger = 'live' | 'catch_up';
 export type AgentPresetOutput_PresetRevision = number;
 export type AgentPresetOutput_ThinkingLevel =
@@ -1059,6 +1091,122 @@ export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency
   | 'unverified';
 export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentReconcileMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentReconcileMemoriesInput_MemoryEdit =
+  | {
+      kind: 'add_evidence';
+      id: string;
+      expectedRevision: number;
+      assertion: number;
+      reference: AgentReconcileMemoriesInput_MemoryEvidenceReference;
+    }
+  | {
+      kind: 'create';
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    }
+  | {
+      kind: 'correct';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    }
+  | {
+      kind: 'set_always';
+      id: string;
+      expectedRevision: number;
+      always: boolean;
+    }
+  | {
+      kind: 'delete';
+      id: string;
+      expectedRevision: number;
+    }
+  | {
+      kind: 'restore';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    };
+export type AgentReconcileMemoriesInput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentReconcileMemoriesInput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentReconcileMemoriesInput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentReconcileMemoriesOutput_MemoryResult =
+  | {
+      kind: 'created';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'revised';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'unresolved';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'retryable';
+      reason: string;
+    }
+  | {
+      kind: 'evidence_added';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'suppressed';
+    }
+  | {
+      kind: 'saved';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'deleted';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'conflict';
+      actual: number;
+    }
+  | {
+      kind: 'not_found';
+    }
+  | {
+      kind: 'invalid_state';
+    };
 export type AgentRequestSystemPermissionOutput_AgentSystemPermissionOutcome =
   | {
       kind: 'system_permission_granted';
@@ -2239,6 +2387,10 @@ export type SettingsUsageOutput_UsageAuxiliarySource =
       namespace: SettingsUsageOutput_InstanceId;
       operation: string;
       fingerprint: string;
+      /**
+       * Absent for the initial attempt, preserving existing source identities.
+       */
+      attempt?: number | null;
       [k: string]: unknown | undefined;
     }
   | {
@@ -2500,8 +2652,28 @@ export interface ServiceMethods {
       input: {
         scope: AgentChangeMemoryInput_MemoryScope;
         edit: AgentChangeMemoryInput_MemoryEdit;
+        resolution?: AgentChangeMemoryInput_MemoryResolution | null;
       };
       output:
+        | {
+            kind: 'created';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'revised';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'unresolved';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'retryable';
+            reason: string;
+          }
         | {
             kind: 'evidence_added';
             id: string;
@@ -3396,6 +3568,18 @@ export interface ServiceMethods {
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentPendingInteractions;
     };
+    pendingMemories: {
+      mode: 'query';
+      input: {
+        scope: AgentPendingMemoriesInput_MemoryScope;
+        after?: string | null;
+        limit: number;
+      };
+      output: {
+        records: AgentPendingMemoriesOutput_MemoryRecord[];
+        next?: string | null;
+      };
+    };
     predictNextMessage: {
       mode: 'mutation';
       input: {
@@ -3542,6 +3726,23 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentRecapRead;
       output: Runtime.AgentRecapReceipt | null;
+    };
+    reconcileMemories: {
+      mode: 'mutation';
+      input: {
+        scope: AgentReconcileMemoriesInput_MemoryScope;
+        writes: AgentReconcileMemoriesInput_MemoryWrite[];
+        resolution?: AgentReconcileMemoriesInput_MemoryResolution | null;
+      };
+      output:
+        | {
+            kind: 'committed';
+            results: AgentReconcileMemoriesOutput_MemoryResult[];
+          }
+        | {
+            kind: 'retryable';
+            reason: string;
+          };
     };
     requestSystemPermission: {
       mode: 'mutation';
@@ -4909,6 +5110,18 @@ export interface AgentChangeMemoryInput_MemoryMetadata {
   statement: AgentChangeMemoryInput_MemoryStatement;
   temporal: AgentChangeMemoryInput_MemoryTemporal;
 }
+export interface AgentChangeMemoryInput_MemoryResolution {
+  sessionId: string;
+  model: AgentChangeMemoryInput_ModelSelection;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentChangeMemoryInput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
 export interface AgentCheckpointReceiptInput_RecoveryRef {
   source: AgentCheckpointReceiptInput_DeploymentRef;
   namespace: AgentCheckpointReceiptInput_InstanceId;
@@ -5666,6 +5879,22 @@ export interface AgentMemoryHistoryOutput_MemoryEvidenceReference {
   end: number;
   quote: string;
 }
+export interface AgentPendingMemoriesOutput_MemoryRecord {
+  assertion: number;
+  id: string;
+  revision: number;
+  mode: AgentPendingMemoriesOutput_MemoryMode;
+  state: AgentPendingMemoriesOutput_MemoryState;
+  body: string;
+  metadata: AgentPendingMemoriesOutput_MemoryMetadata;
+  createdAt: number;
+  modifiedAt: number;
+}
+export interface AgentPendingMemoriesOutput_MemoryMetadata {
+  kind: AgentPendingMemoriesOutput_MemoryKind;
+  statement: AgentPendingMemoriesOutput_MemoryStatement;
+  temporal: AgentPendingMemoriesOutput_MemoryTemporal;
+}
 export interface AgentPresetOutput_PresetDetail {
   preset: AgentPresetOutput_Preset;
   availability: AgentPresetOutput_PresetAvailability;
@@ -5764,6 +5993,43 @@ export interface AgentReadPatchOutput_AgentWorkspacePatch {
   turnId: string;
   baseCommit: string;
   bytes: number;
+}
+export interface AgentReconcileMemoriesInput_MemoryWrite {
+  edit: AgentReconcileMemoriesInput_MemoryEdit;
+  /**
+   * A verified conversation source grants automatic extraction authority only.
+   */
+  evidence?: AgentReconcileMemoriesInput_MemoryEvidenceReference | null;
+}
+export interface AgentReconcileMemoriesInput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
+}
+export interface AgentReconcileMemoriesInput_MemoryMetadata {
+  kind: AgentReconcileMemoriesInput_MemoryKind;
+  statement: AgentReconcileMemoriesInput_MemoryStatement;
+  temporal: AgentReconcileMemoriesInput_MemoryTemporal;
+}
+export interface AgentReconcileMemoriesInput_MemoryResolution {
+  sessionId: string;
+  model: AgentReconcileMemoriesInput_ModelSelection;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentReconcileMemoriesInput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentRequestSystemPermissionOutput_AgentSystemPermissionState {
   grant: AgentRequestSystemPermissionOutput_SystemPermissionGrant;

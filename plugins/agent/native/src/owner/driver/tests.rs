@@ -453,6 +453,8 @@ impl Rig {
                 "memoryEvidence",
                 "memorySource",
                 "changeMemory",
+                "reconcileMemories",
+                "pendingMemories",
                 "presets",
                 "preset",
                 "createPreset",
@@ -565,6 +567,7 @@ impl Rig {
                             "create".into(),
                             "update".into(),
                             "updateAssistantPreferences".into(),
+                            "usage".into(),
                         ]
                         .into(),
                         recovery: false,

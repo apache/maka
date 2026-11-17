@@ -17,61 +17,97 @@
   under the License.
 -->
 
-# Ordinary memory PR2: exact matching implementation record
+# Ordinary memory PR2: unified write reconciliation
 
-Date: 2026-11-17. Base: upstream `rust-preview` at `9ac917f17` (PR1, #6970). Branch: `codex/ordinary-memory-pr2`.
+Date: 2026-11-17. Base: upstream `rust-preview` at `9ac917f17`, including PR1 (#6970). Branch: `codex/ordinary-memory-pr2`.
 
-**Status: partial PR2 implementation.** Semantic retrieval, model relation classification, automatic writes, scope snapshot validation and the full acceptance suite remain unfinished.
+This document replaces the earlier exact-matching-only report. The branch now routes both single and batch writes through bounded candidate retrieval, relation classification and a guarded commit. Natural-language uniqueness is not a database invariant; measured limitations appear below.
 
-## Implemented behavior
+## Behavior and scope
 
-PR1 stored hashes and retained deleted/corrected assertions, but Create always allocated a new ID. The existing user-management transaction now checks restricted assertions first, then active assertions. An exact active match reuses its ID and appends user-operation evidence. An exact restricted match returns `suppressed` without exposing its body or ID.
+Equivalent assertions reuse an ID and append evidence. Explicit, newer changes can revise automatic facts. Conflicts with protected records remain unresolved. Deleted and corrected history participates in matching. Scope changes during model evaluation cause bounded reinspection; the final transaction checks the scope again.
 
-Normalization only converts CRLF to LF and trims outer whitespace. Case, internal whitespace, punctuation, negation, quantities, conditions and dates remain intact. Matching also checks namespace, resolved scope and assertion metadata, including temporal boundaries. The algorithm remains compatible with PR1 hashes and requires no migration.
+PR3 Recall filtering, PR4 pinned projections/import readers, PR5 frozen conversation extraction and authorization parsing, and PR6/7 triggers remain separate planned PRs. They can consume this batch service. No new scheduler is introduced.
 
-## Changes and rationale
+## Code changes and purpose
 
-- `facts/src/memory.rs` adds `evidence_added` and `suppressed` results, separating successful confirmation from suppression.
-- `state/src/memory/matching.rs` implements normalization, restricted-first indexed matching and incremental evidence attachment.
-- `state/src/memory.rs` calls matching after Create validation and before insertion, recognizes evidence writes in the Statement changed flag, and adds behavior tests.
-- The native memory recovery test exercises the real Host API and suppression after restart.
-- Generated plugin SDK declarations expose the new result variants to TypeScript consumers.
+- Facts/API contracts add MemoryWrite, batch results, extraction provenance, reconcileMemories, pendingMemories and optional model resolution context.
+- State memory/resolution.rs owns snapshots, bounded retrieval, complete relation matrices, evidence validation, batch planning, conflicts and atomic writes. Raw UserChange is crate-local to prevent Native consumers bypassing reconciliation.
+- Migration 0046 builds an FTS5 trigram derived index for existing assertions, maintains inserts/deletes with triggers, adds an indexed relation table and a canonical generation method field. Existing immutable migration constraints remain unchanged.
+- Native memory.rs binds management authority, project/source identity and model context, retries a changed scope once, then prepares a RootStore Statement.
+- Native recap.rs shares the existing auxiliary model worker, cancellation, cleanup tickets, pricing and usage accounting between recap and memory purposes. The embedded resolution prompt requests strict JSON pairwise classification.
+- Service routing, generated SDK declarations, product client operation admission/recovery and the Host fixture grants include the new methods.
+- CI tests verify that the embedded prompt selects Native and downstream product consumers through the Cargo ownership graph.
+- The first-stage SessionCreate compilation fix remains: incognito defaults false at construction while the common path inherits caller privacy through input.incognito OR policy.incognito.
 
-A baseline compilation omission in `owner/session_tools.rs` is also fixed by providing `incognito: false` to Create. The common creation path still computes `input.incognito || policy.incognito`, preserving caller privacy inheritance.
+## Authority and API
 
-## Storage and authority
+Both mutation APIs require Native/Remote management identity. Agent callers are rejected, including attempts through the batch method. There is no model-supplied user actor field.
 
-Restricted matching uses EXISTS and the existing namespace/scope/digest/disposition index. It does not materialize an unbounded history array or compete with an active-result Top-K budget. A restored active assertion exempts its own identical historical restricted versions; unrelated old assertions remain suppressed.
+MemoryWrite contains an edit and optional evidence. Direct management input creates UserOperation provenance. A conversation reference grants only automatic extraction authority and is only accepted with Create. Its session, fact ID, fingerprint and UTF-8 span must match immutable history; incognito and cross-project sources are rejected. Automatic candidates cannot request direct correction, restore, pinning or deletion.
 
-An active match adds evidence to the existing assertion, keyed by operation UUID. Repeating that confirmation does not add another evidence row. New evidence increments record and scope revisions while preserving the assertion, body, metadata and modified_at. Explicit user confirmation promotes auto_recall to user_recall and preserves user_always.
+reconcileMemories takes one resolved scope, up to four writes, and optional resolution containing a non-incognito sessionId and an explicit configured model selection. That session must admit an auxiliary request. If semantic comparison is needed without this context, the response is retryable, not an unchecked creation.
 
-The existing Native/Remote management admission supplies user authority. The matching code does not add a model-writable authority field. All matching and mutations execute in the existing RootStore Statement and Host receipt transaction. There is no external model call inside the transaction.
+Batch results distinguish created, evidence_added, revised, suppressed, unresolved and retryable. changeMemory preserves saved for single creation/revision and retains NotFound, Conflict and InvalidState semantics. pendingMemories exposes keyset pagination only to management callers. Normal memory reads exclude unresolved and suppressed records; management evidence/history can inspect unresolved provenance.
 
-When legacy duplicates exist, matching selects a stable ID; it does not consolidate all legacy records. Metadata is serialized by the same Rust structure and compared through SQLite json(); this is not general JSON object-key canonicalization.
+## Retrieval and classification
 
-## Verification and limits
+Exact hashing preserves case, internal whitespace, punctuation, negation, conditions, quantities and time. Only CRLF and surrounding whitespace are normalized. Namespace, scope and assertion metadata remain separate constraints. Clearly disjoint time intervals can be independent deterministically; arbitrary metadata differences do not authorize bypassing suppression.
 
-Storage tests cover normalized duplicates, scope/time isolation, negation and case, evidence growth, stable priority, protected mode preservation, deleted/corrected assertion suppression, explicit restore, promotion of automatic facts, confirmation replay and indexed query planning. The native acceptance extension checks real API results and restart persistence. Execution results are recorded below.
+Candidate identities come from indexed hashes, scope-qualified FTS5 trigram matches and current pinned records. Matching texts include both version bodies and confirmed equivalent expressions, bound to the original assertion. Deletion and correction therefore restrict known aliases; explicit restoration follows known equivalent assertion versions, inherits their matches and records authorization tied to the restored fact. Old related records stay suppressed; conflict-only descendants are not reactivated. A target-bound restoration remains unresolved when another active identity already represents that fact. Semantic suppression also retains the matched text and restricted assertion identity for later batch relations and retries, without treating restricted content as supporting evidence. Exact hits for every batch item are collected before lexical candidates fill the shared budgets. Deduplicating candidates by assertion preserves each input’s exact matches, so resubmitting several confirmed aliases in one batch remains deterministic without another model call. Ordinary, protected/pending and restricted-history buckets have independent budgets. An additional indexed single-match lookup enforces known exact suppression without relying on Top-K. The application never loads the entire history into a model prompt.
 
-This change only intercepts Create. Correct and Restore have not been routed through cross-record resolution. It therefore does not establish the complete write boundary required by PR2. It also does not add new created/revised result distinctions or implement semantic equivalence.
+Candidate matches drive the joins: exact queries use the digest index, while lexical queries fetch the retrieved rowids. This prevents SQLite from scanning the whole scope or a memory-state bucket before filtering. Commit-time exact reuse and suppression queries also start from digest hits. A regression test executes the production queries for all three candidate classes with exact hits, lexical hits and misses, comparing results and database VM steps as records grow from 100 to 10,000. Broad lexical matches, pinned entries and related restoration history still have their own read costs; the final candidate limit does not imply constant query cost.
 
-## Remaining PR2 work
+For input i, the model returns a row against every stored candidate followed by every earlier input in the batch. Matrix dimensions, enums, unknown fields and replacement quotes are checked. Targets and revisions come from the trusted snapshot, not model declarations.
 
-1. Bounded multilingual keyword/entity/alias retrieval with separate ordinary, protected and restricted budgets.
-2. One bounded semantic classification call per batch, evidence and authority validation, and no write fallback on model failure.
-3. One commit plan shared by creation, correction, import and extraction; immutable revisions, conflict relations and unresolved candidates.
-4. Scope and target revision checks across model execution, source/authority revalidation and bounded retries.
-5. Within-batch and cross-session races, semantic fixtures, provider failure tests and measured recall/merge/suppression errors.
+Equivalent assertions reuse their current version. Compatible supplements and independent facts remain separate. Automatic replacement requires an automatic target, a source observation newer than all verified evidence for the current assertion, compatible effective time and an explicit replacement quote found in verified evidence. Protected or uncertain conflicts become unresolved and retain target relations. A target-bound edit matching another ID remains unresolved, preserving both existing identities and pinning instead of silently retiring a protected record. User corrections use new user provenance; historical evidence is not relabeled as support for the new assertion.
 
-This commit is a foundation for continued PR2 work, not evidence that the full planned PR2 is ready to merge.
+Pending candidates retain both confirmed equivalent and conflicting targets. Both relation endpoints identify assertion versions. Deletion follows those versions and deactivates a record only when its current assertion is affected, preserving later user corrections while still suppressing pending descendants linked to old versions. Explicit restoration traverses indexed known equivalents; its cost grows with that component’s history and aliases. It does not promise to discover every unrecognized synonym or erase original conversations. Restore must be explicit.
 
-## Execution record
+## Transactions and recovery
 
-- `cargo test -p maka-agent-state --lib --locked`: 18 passed.
-- `npm run schema:generate -w @maka-agent/plugin-sdk`: declarations generated successfully.
-- `cargo test -p maka-agent-native --lib memory_management_cas_sources_deletion_and_restart --locked`: 1 passed, including concurrent creation and suppression after restart. The sandbox initially rejected fixture initialization with EPERM; the unsandboxed rerun passed.
-- `npm run typecheck -w @maka-agent/plugin-sdk`: passed.
-- `npm run schema:check -w @maka-agent/plugin-sdk`: 5 declaration files verified.
-- `node --test scripts/ci.test.mjs`: 18 passed after allowing the local listener outside the sandbox.
-- `rustfmt --check` on changed Rust files and `git diff --check`: passed.
-- Full-repository `just check` and full PR2 semantic acceptance were not run.
+Inspect captures candidates and scope revision together. Model evaluation runs outside the database transaction. Native rechecks the scope and allows one reinspection/reclassification attempt. Commit validates scope and target revisions, source references, project bindings and caller CAS before applying writes under a savepoint. Later ID-based edits carry forward revisions produced by earlier writes in the same transaction, while retaining the requested assertion and state checks. Failed batch validation rolls back all changes. Later batch items reload the original assertion’s state, protection and latest evidence time. Repeated unresolved assertions retain their ID and append evidence and relations. Replacement targets are deduplicated by ID and assertion. An exact match of the current assertion is not turned into a duplicate pending record by an older version of that same ID. An assertion-scoped ordered index supplies the latest observation without scanning its evidence history.
+
+Two concurrent absent-candidate snapshots cannot both insert unchecked facts. One may commit; the other receives retryable and must resolve again with a new operation identity. Assertions, evidence, relations, scope revisions, derived indexes and Host receipts use the existing RootStore boundary.
+
+Host operation replay returns the existing receipt without rerunning the model. Receipts contain IDs/revisions/status rather than cached memory bodies. Auxiliary timeout cancels the child scope and waits for resource cleanup instead of abandoning a provider worker. Reclassification after a scope change uses a distinct auxiliary attempt under the same Host operation, accounting for both calls separately. The initial attempt omits the new ordinal to preserve existing ledger source identities.
+
+A valid replacement of the current automatic assertion is not blocked by historical conflicts under the same ID, allowing successive explicit preference changes to retain the original identity. Equivalence to restricted old content still takes suppression precedence; conflicts with other IDs and user protection remain effective. Deterministic suppression of confirmed aliases retains each batch input's exact match even when other lexical candidates are retrieved.
+
+## Fixed budgets
+
+| Resource | Limit |
+| --- | --- |
+| Writes per batch | 4 |
+| Body / evidence quote | 8,192 / 16,384 UTF-8 bytes |
+| Query trigrams | 48 per input |
+| Each of three candidate buckets | 8 records and 8,192 body bytes |
+| Serialized semantic input | 40,000 bytes |
+| Output | 8,192 tokens, bounded by the model; 65,536 response bytes |
+| Model wait | 45 seconds, followed by cancellation and cleanup |
+| Reclassification | Once; at most two model calls |
+
+Input bytes are a deterministic bound, not an exact tokenizer estimate. Oversized restricted content is rejected rather than truncated. Actual provider usage remains in the existing auxiliary journal. Retained suppression history and indexes grow; no TTL silently discards them.
+
+## Validation and measured limits
+
+State tests cover normalization, scopes/time, evidence idempotency, protected modes, deletion/correction suppression, in-batch equivalence, stale snapshots after concurrent insertion/deletion, invalid matrices, cross-time equivalence, forged evidence, unquoted replacement, delayed older sources, pending records and separate restricted budgets. Migration tests cover initialization, upgrade and reopening.
+
+The real Host acceptance test uses a local provider-protocol fixture to exercise auxiliary generation, operation receipts, persistence and restart. It covers Postgres/PostgreSQL reuse, malformed model output without writes, paraphrase suppression after deletion and rejected Agent impersonation. A concurrency case deletes the candidate before the first model response, then verifies a second request with the restricted snapshot, final suppression, and two separately settled usage records under one operation. Its controlled relations test integration and authority, not production-model language quality.
+
+A fixed lexical retrieval fixture finds 5 of 6 examples. Spelling variants, Chinese substrings, email conditions, negation and Python keywords are retrieved. `I live in Beijing` to `我的常住城市是北京` misses because there is no shared substring. One development run measured lookup p50 23,350µs and p95 128,278µs over six queries while other work ran; this is a smoke observation, not a scale benchmark.
+
+Production-model false merge and false suppression rates were not measured and must not be reported as zero. Short strings, translations without shared terms, absent aliases and records beyond the candidate budget may be missed. No candidates means no match within this retrieval budget, not global semantic uniqueness.
+
+Full-repository just check, cross-platform runners and production-model sampling were not run locally. Final focused verification follows.
+
+## Final verification
+
+- State library tests (`cargo test -p maka-agent-state --lib --locked`): 44 passed. Facts library tests also passed all 36 cases.
+- Native `memory::` tests: 4 passed, including real Host semantic calls, authority rejection, restart and Host isolation; local listeners required unsandboxed execution.
+- Product client pending-operation recovery test: 1 passed.
+- CI planning tests: 19 passed.
+- SDK generation, verification of 5 declaration files and TypeScript checking: passed.
+- State-only strict Clippy (`--no-deps -- -D warnings`): passed.
+- Changed Rust file formatting and `git diff --check`: passed.
+- Additional strict Native Clippy failed in unchanged driver, driver_cleanup, notifications, history projection and scheduler code. Dependency-inclusive Clippy also reported a provider-protocol struct-update warning. Repository lint settings were not weakened; full strict Clippy is not claimed to pass.

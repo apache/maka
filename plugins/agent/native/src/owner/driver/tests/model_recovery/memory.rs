@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_facts::memory::{MemoryEdit, MemoryRevision, MemoryWrite};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn memory_management_cas_sources_deletion_and_restart() {
@@ -39,7 +40,13 @@ async fn exact_matching_acceptance(client: &HostClient) -> TestResult<()> {
         call(client, "agent", "changeMemory", create.clone()),
         call(client, "agent", "changeMemory", create.clone()),
     );
-    let (a, b) = (a?, b?);
+    let (mut a, mut b) = (a?, b?);
+    if a["kind"] == "retryable" {
+        a = call(client, "agent", "changeMemory", create.clone()).await?;
+    }
+    if b["kind"] == "retryable" {
+        b = call(client, "agent", "changeMemory", create.clone()).await?;
+    }
     let (first, duplicate) = if a["kind"] == "saved" { (a, b) } else { (b, a) };
     assert_eq!(first["kind"], "saved");
     assert_eq!(duplicate["kind"], "evidence_added");
@@ -62,16 +69,177 @@ async fn exact_matching_acceptance(client: &HostClient) -> TestResult<()> {
     Ok(())
 }
 
+async fn semantic_matching_acceptance(
+    client: &HostClient,
+    session: Value,
+    model: Value,
+) -> TestResult<()> {
+    let resolution = json!({"sessionId":session,"model":model});
+    let create = |body: &str| json!({"scope":{"kind":"personal"},"writes":[{"edit":{"kind":"create","body":body}}],"resolution":resolution});
+    let first = call(
+        client,
+        "agent",
+        "reconcileMemories",
+        create("Semantic fixture PostgreSQL storage"),
+    )
+    .await?;
+    assert_eq!(first["kind"], "committed", "{first}");
+    assert_eq!(first["results"][0]["kind"], "created");
+    let duplicate = call(
+        client,
+        "agent",
+        "reconcileMemories",
+        create("Semantic fixture Postgres storage"),
+    )
+    .await?;
+    assert_eq!(
+        duplicate["results"][0]["kind"], "evidence_added",
+        "{duplicate}"
+    );
+    assert_eq!(duplicate["results"][0]["id"], first["results"][0]["id"]);
+    assert!(
+        call(
+            client,
+            "agent",
+            "reconcileMemories",
+            create("Semantic fixture invalid semantic output")
+        )
+        .await
+        .is_err()
+    );
+    let records = call(
+        client,
+        "agent",
+        "memories",
+        json!({"scope":{"kind":"personal"},"limit":100}),
+    )
+    .await?;
+    assert_eq!(records["records"].as_array().unwrap().len(), 1);
+    call(client,"agent","changeMemory",json!({"scope":{"kind":"personal"},"edit":{"kind":"delete","id":duplicate["results"][0]["id"],"expectedRevision":duplicate["results"][0]["revision"]}})).await?;
+    let suppressed = call(
+        client,
+        "agent",
+        "reconcileMemories",
+        create("Semantic fixture PostgreSql database"),
+    )
+    .await?;
+    assert_eq!(suppressed["results"][0], json!({"kind":"suppressed"}));
+    Ok(())
+}
+
+async fn semantic_recheck_acceptance(
+    client: &HostClient,
+    session: Value,
+    model: Value,
+    observed: &mut tokio::sync::mpsc::Receiver<(Value, oneshot::Sender<()>)>,
+) -> TestResult<()> {
+    let scope = json!({"kind":"personal"});
+    let first = call(
+        client,
+        "agent",
+        "changeMemory",
+        json!({"scope":scope,"edit":{"kind":"create","body":"Recheck fixture alpha"}}),
+    )
+    .await?;
+    assert_eq!(first["kind"], "saved");
+    let pending = call(
+        client,
+        "agent",
+        "reconcileMemories",
+        json!({"scope":scope,"writes":[{"edit":{"kind":"create","body":"Recheck fixture alfa"}}],"resolution":{"sessionId":session,"model":model}}),
+    );
+    tokio::pin!(pending);
+    let (before, respond) = tokio::select! {
+        request = observed.recv() => request.ok_or("first semantic request missing")?,
+        result = &mut pending => panic!("mutation ended before first judgment: {result:?}"),
+    };
+    assert!(
+        before["snapshot"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == first["id"] && c["restricted"] == false)
+    );
+    call(client, "agent", "changeMemory", json!({"scope":scope,"edit":{"kind":"delete","id":first["id"],"expectedRevision":first["revision"]}})).await?;
+    respond
+        .send(())
+        .map_err(|_| "first semantic response dropped")?;
+    let (after, respond) = tokio::select! {
+        request = observed.recv() => request.ok_or("second semantic request missing")?,
+        result = &mut pending => panic!("mutation ended before rechecking the changed scope: {result:?}"),
+    };
+    assert!(
+        after["snapshot"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == first["id"] && c["restricted"] == true)
+    );
+    respond
+        .send(())
+        .map_err(|_| "second semantic response dropped")?;
+    let result = pending.await?;
+    assert_eq!(result["kind"], "committed");
+    assert_eq!(result["results"], json!([{"kind":"suppressed"}]));
+    let usage = call(
+        client,
+        "settings",
+        "usage",
+        json!({
+            "range":{"from":0,"to":9_007_199_254_740_991_u64,"sessionId":session,"through":null},
+            "selection":{"kind":"model","status":null,"search":""},"cursor":null
+        }),
+    )
+    .await?;
+    let attempts = usage["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{usage}");
+    let sources = attempts
+        .iter()
+        .map(|a| &a["attempt"]["origin"]["source"])
+        .collect::<Vec<_>>();
+    assert_eq!(sources[0]["operation"], sources[1]["operation"]);
+    assert!(sources.iter().any(|s| s["attempt"].is_null()));
+    assert!(sources.iter().any(|s| s["attempt"] == 1));
+    assert!(
+        attempts
+            .iter()
+            .all(|a| a["attempt"]["outcome"] == "success")
+    );
+    assert_ne!(
+        attempts[0]["attempt"]["requestId"],
+        attempts[1]["attempt"]["requestId"]
+    );
+    Ok(())
+}
+
 async fn exercise(rig: &mut Rig) -> TestResult<()> {
     let base = rig.directory.path().to_path_buf();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let url = format!("http://{}/v1", listener.local_addr()?);
     let (requests, mut observed) = tokio::sync::mpsc::channel(1);
+    let (semantic_requests, mut semantic_observed) = tokio::sync::mpsc::channel(1);
     let app = axum::Router::new().route(
         "/v1/chat/completions",
-        axum::routing::post(move || {
+        axum::routing::post(move |request: axum::extract::Request| {
             let requests = requests.clone();
+            let semantic_requests = semantic_requests.clone();
             async move {
+                let bytes=axum::body::to_bytes(request.into_body(),1024*1024).await.unwrap();
+                let request:Value=serde_json::from_slice(&bytes).unwrap();
+                if let Some(prompt)=request["messages"].as_array().and_then(|messages|messages.iter().rev().find_map(|m|m["content"].as_str())).and_then(|text|serde_json::from_str::<Value>(text).ok()).filter(|v|v["snapshot"].is_object()) {
+                    if prompt["writes"].as_array().unwrap().iter().any(|w| w["edit"]["body"].as_str().is_some_and(|s| s.contains("Recheck fixture"))) {
+                        let (respond, response) = oneshot::channel();
+                        semantic_requests.send((prompt.clone(), respond)).await.unwrap();
+                        response.await.unwrap();
+                    }
+                    let writes=prompt["writes"].as_array().unwrap();
+                    let candidates=prompt["snapshot"]["candidates"].as_array().unwrap();
+                    let text=if writes.iter().any(|w|w["edit"]["body"].as_str().is_some_and(|s|s.contains("invalid semantic output"))) {"not JSON".to_owned()} else {
+                        let matrix:Vec<Vec<Value>>=writes.iter().enumerate().map(|(i,write)| candidates.iter().map(|c|c["body"].as_str().unwrap_or("")).chain(writes[..i].iter().map(|w|w["edit"]["body"].as_str().unwrap_or(""))).map(|body|json!({"relation":if ["Semantic fixture", "Recheck fixture"].iter().any(|marker| body.contains(marker) && write["edit"]["body"].as_str().unwrap_or("").contains(marker)) {"equivalent"}else{"independent"},"replacement_quote":null})).collect()).collect();
+                        serde_json::to_string(&matrix).unwrap()
+                    };
+                    return ([("content-type","text/event-stream")],super::bot_tools::completion(json!({"role":"assistant","content":text}),"stop"));
+                }
                 let (respond, response) = oneshot::channel::<()>();
                 let _ = requests.send(respond).await;
                 let _ = response.await;
@@ -112,6 +280,20 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         assert_eq!(created["kind"], "created", "{created}");
         sessions.push(created["session"]["id"].clone());
     }
+    semantic_recheck_acceptance(
+        client,
+        sessions[0].clone(),
+        json!({"connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}),
+        &mut semantic_observed,
+    )
+    .await?;
+    semantic_matching_acceptance(
+        client,
+        sessions[0].clone(),
+        json!({"connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}),
+    )
+    .await?;
+    let resolution = json!({"sessionId":sessions[0],"model":{"connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}});
     let project_scope = json!({"kind":"project","sessionId":sessions[0]});
     let project_memory = call(
         client,
@@ -183,10 +365,12 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         model_write(
             &owner,
             sessions[0].as_str().unwrap(),
+            "changeMemory",
             json!({"scope":{"kind":"personal"},"edit":{"kind":"create","body":"Impersonated user"}})
         )
         .await?
     );
+    assert!(model_write(&owner,sessions[0].as_str().unwrap(),"reconcileMemories",json!({"scope":{"kind":"personal"},"writes":[{"edit":{"kind":"create","body":"Impersonated batch user"}}]})).await?);
     respond.send(()).map_err(|_| "provider stopped")?;
     quiescent_message(client, sessions[0].as_str().unwrap(), &sent["messageId"]).await?;
     let private_sent = call(client,"agent","send",json!({"sessionId":private["session"]["id"],"message":"Private conversation","backend":backend})).await?;
@@ -266,6 +450,32 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
             before.configuration.permission_basis(),
         )),
     };
+    let stale_writes = vec![MemoryWrite {
+        edit: MemoryEdit::Correct {
+            id: serde_json::from_value(project_memory["id"].clone())?,
+            expected_revision: MemoryRevision(2),
+            body: "Stale permission write".into(),
+            metadata: Default::default(),
+        },
+        evidence: None,
+    }];
+    let stale_snapshot = rig
+        .store
+        .as_ref()
+        .unwrap()
+        .data_writer()?
+        .query(maka_agent_state::memory::resolution::Inspect {
+            scope: captured.clone(),
+            writes: stale_writes.clone(),
+        })
+        .await?;
+    let stale_decisions = vec![vec![
+        maka_agent_state::memory::resolution::Judgment {
+            relation: maka_agent_state::memory::resolution::Relation::Independent,
+            replacement_quote: None
+        };
+        stale_snapshot.candidates.len()
+    ]];
     let changed = call(client,"agent","metadata",json!({"sessionId":sessions[0],"expectedRevision":before.revision,"title":before.configuration.title,"labels":[],"permissions":{"settings":{"access":"read_only","requestPermissions":false},"revokeGrants":true}})).await?;
     assert_eq!(changed["kind"], "committed", "{changed}");
     let stale = rig
@@ -273,17 +483,14 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         .as_ref()
         .unwrap()
         .data_writer()?
-        .write(maka_agent_state::memory::UserChange {
-            source_scope: None,
+        .write(maka_agent_state::memory::resolution::Commit {
+            source_scopes: Vec::new(),
             scope: captured,
             operation: Uuid::new_v4(),
             at: 1,
-            edit: maka_agent_facts::memory::MemoryEdit::Correct {
-                id: serde_json::from_value(project_memory["id"].clone())?,
-                expected_revision: maka_agent_facts::memory::MemoryRevision(2),
-                body: "Stale permission write".into(),
-                metadata: Default::default(),
-            },
+            writes: stale_writes,
+            snapshot: stale_snapshot,
+            decisions: stale_decisions,
         })
         .await;
     assert!(stale.unwrap_err().to_string().contains("binding changed"));
@@ -293,7 +500,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         .call(
             "agent",
             "changeMemory".into(),
-            json!({"scope":scope,"edit":{"kind":"create","body":"Prefer Chinese"}}),
+            json!({"scope":scope,"resolution":resolution,"edit":{"kind":"create","body":"Prefer Chinese"}}),
             Attachments::new(),
         )
         .await?;
@@ -341,19 +548,20 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
             client,
             "agent",
             "changeMemory",
-            json!({"scope":scope,"edit":{"kind":"correct","id":id,"expectedRevision":1,"body":"Prefer English"}})
+            json!({"scope":scope,"resolution":resolution,"edit":{"kind":"correct","id":id,"expectedRevision":1,"body":"Prefer English"}})
         ),
         call(
             client,
             "agent",
             "changeMemory",
-            json!({"scope":scope,"edit":{"kind":"correct","id":id,"expectedRevision":1,"body":"Prefer French"}})
+            json!({"scope":scope,"resolution":resolution,"edit":{"kind":"correct","id":id,"expectedRevision":1,"body":"Prefer French"}})
         )
     );
     let (a, b) = (a?, b?);
     assert!(matches!(
         (a["kind"].as_str(), b["kind"].as_str()),
-        (Some("saved"), Some("conflict")) | (Some("conflict"), Some("saved"))
+        (Some("saved"), Some("conflict" | "retryable"))
+            | (Some("conflict" | "retryable"), Some("saved"))
     ));
     let history = call(
         client,
@@ -434,7 +642,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(call(client,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"correct","id":id,"expectedRevision":5,"body":"silent resurrection"}})).await?["kind"],"invalid_state");
+    assert_eq!(call(client,"agent","changeMemory",json!({"scope":scope,"resolution":resolution,"edit":{"kind":"correct","id":id,"expectedRevision":5,"body":"silent resurrection"}})).await?["kind"],"invalid_state");
     drop(owner);
     assert!(rig.finish().await.is_empty());
     rig.client = None;
@@ -490,7 +698,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
             result: OperationResult::Success { value: created }
         }
     );
-    assert_eq!(call(client,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"restore","id":id,"expectedRevision":5,"body":"Explicitly restored"}})).await?["revision"],6);
+    assert_eq!(call(client,"agent","changeMemory",json!({"scope":scope,"resolution":resolution,"edit":{"kind":"restore","id":id,"expectedRevision":5,"body":"Explicitly restored"}})).await?["revision"],6);
     assert_eq!(
         call(client, "agent", "memory", read).await?["body"],
         "Explicitly restored"
@@ -504,7 +712,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
     .await?;
     assert_eq!(restored_history["versions"].as_array().unwrap().len(), 1);
     call(client,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"set_always","id":id,"expectedRevision":6,"always":true}})).await?;
-    call(client,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"correct","id":id,"expectedRevision":7,"body":"Always after editing","metadata":{"kind":"preference","statement":"preference","temporal":{"kind":"interval","start":10,"end":20}}}})).await?;
+    call(client,"agent","changeMemory",json!({"scope":scope,"resolution":resolution,"edit":{"kind":"correct","id":id,"expectedRevision":7,"body":"Always after editing","metadata":{"kind":"preference","statement":"preference","temporal":{"kind":"interval","start":10,"end":20}}}})).await?;
     let pinned = call(client, "agent", "memory", json!({"scope":scope,"id":id})).await?;
     assert_eq!(pinned["mode"], "user_always");
     assert_eq!(pinned["metadata"]["temporal"]["end"], 20);
@@ -513,7 +721,7 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
             client,
             "agent",
             "changeMemory",
-            json!({"scope":project_scope,"edit":{"kind":"create","body":body}}),
+            json!({"scope":project_scope,"resolution":resolution,"edit":{"kind":"create","body":body}}),
         )
         .await?;
     }
@@ -595,7 +803,7 @@ async fn model_read(owner: &Owner, session: &str, input: Value) -> Result<Value,
     result
 }
 
-async fn model_write(owner: &Owner, session: &str, input: Value) -> TestResult<bool> {
+async fn model_write(owner: &Owner, session: &str, method: &str, input: Value) -> TestResult<bool> {
     use maka_plugin_core::contract::ServiceTarget;
     let access = owner
         .runs
@@ -608,7 +816,7 @@ async fn model_write(owner: &Owner, session: &str, input: Value) -> TestResult<b
     let target = ServiceTarget::Export {
         name: "agent".into(),
     };
-    let services = owner.services.select_method(&target, "changeMemory")?;
+    let services = owner.services.select_method(&target, method)?;
     let request = services.request_with_work(
         maka_capabilities::call::Identity::Agent {
             execution: access.execution().clone(),
@@ -620,7 +828,7 @@ async fn model_write(owner: &Owner, session: &str, input: Value) -> TestResult<b
     let result = request
         .begin_mutation_target(
             &target,
-            "changeMemory".into(),
+            method.into(),
             input,
             Uuid::new_v4(),
             json!({"test":"memory-denied-write"}),

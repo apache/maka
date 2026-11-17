@@ -269,53 +269,207 @@ impl Owner {
         })
         .await
     }
+    pub(crate) async fn pending_memories(
+        self: &Arc<Self>,
+        input: MemoriesRead,
+        call: &Scope,
+    ) -> Result<MemoryPage, String> {
+        management(call)?;
+        if !(1..=100).contains(&input.limit) {
+            return Err("agent_memory_page_limit".into());
+        }
+        self.resource_work(call, move |owner, call| {
+            Box::pin(async move {
+                let scope = owner.memory_scope(input.scope).await?;
+                let mut records = owner
+                    .memory_data(&call)?
+                    .query(stored::PendingPage(stored::Page {
+                        scope,
+                        after: input.after,
+                        limit: input.limit + 1,
+                    }))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let next = if records.len() > input.limit as usize {
+                    records.pop();
+                    records.last().map(|r| r.id.clone())
+                } else {
+                    None
+                };
+                Ok(MemoryPage { records, next })
+            })
+        })
+        .await
+    }
     pub(crate) async fn change_memory(
         self: &Arc<Self>,
         input: MemoryChange,
         operation: &RecoveryRef,
         scope: &Scope,
+        dispatch: maka_event_log::applications::operations::OperationDispatchScope,
     ) -> Result<NativeMutation<MemoryResult>, String> {
         management(scope)?;
-        let operation = operation.operation;
-        self.resource_work(scope, move |owner, _| {
+        let operation = operation.clone();
+        self.resource_work(scope, move |owner, call| {
             Box::pin(async move {
-                let project = matches!(&input.scope, MemoryScope::Project { .. });
-                let scope = owner.memory_scope(input.scope).await?;
-                let source_scope = if let MemoryEdit::AddEvidence { reference, .. } = &input.edit {
-                    let source = owner.session(&reference.session_id).await?;
-                    if source.configuration.incognito {
-                        return Err("agent_memory_incognito_source".into());
-                    }
-                    let origin = owner
-                        .memory_scope(MemoryScope::Project {
-                            session_id: reference.session_id.clone(),
-                        })
-                        .await?;
-                    if project && scope.location != origin.location {
-                        return Err("agent_memory_evidence_scope".into());
-                    }
-                    Some(origin)
-                } else {
-                    None
+                let request = ReconcileMemories {
+                    scope: input.scope,
+                    writes: vec![MemoryWrite {
+                        edit: input.edit,
+                        evidence: None,
+                    }],
+                    resolution: input.resolution,
                 };
-                let writer = owner.store.data_writer().map_err(|e| e.to_string())?;
-                let change = writer
-                    .prepare_result(|_| {
-                        Ok(stored::UserChange {
-                            source_scope,
-                            scope,
-                            edit: input.edit,
-                            operation,
-                            at: i64::try_from(now()).map_err(|e| {
-                                maka_event_log::StoreError::InvalidTransition(e.to_string())
-                            })?,
-                        })
-                    })
-                    .map_err(|e| e.to_string())?;
-                Ok(NativeMutation::Computed { change })
+                match owner
+                    .prepare_memory_resolution(request, &operation, &call, dispatch)
+                    .await?
+                {
+                    Ok(commit) => {
+                        let writer = owner.memory_data(&call)?;
+                        let change = writer
+                            .prepare_result(|_| Ok(stored::resolution::SingleCommit(commit)))
+                            .map_err(|e| e.to_string())?;
+                        Ok(NativeMutation::Computed { change })
+                    }
+                    Err(reason) => Ok(NativeMutation::Returned(MemoryResult::Retryable { reason })),
+                }
             })
         })
         .await
+    }
+    pub(crate) async fn reconcile_memories(
+        self: &Arc<Self>,
+        input: ReconcileMemories,
+        operation: &RecoveryRef,
+        scope: &Scope,
+        dispatch: maka_event_log::applications::operations::OperationDispatchScope,
+    ) -> Result<NativeMutation<MemoryBatchResult>, String> {
+        management(scope)?;
+        let operation = operation.clone();
+        self.resource_work(scope, move |owner, call| {
+            Box::pin(async move {
+                match owner
+                    .prepare_memory_resolution(input, &operation, &call, dispatch)
+                    .await?
+                {
+                    Ok(commit) => {
+                        let writer = owner.memory_data(&call)?;
+                        let change = writer
+                            .prepare_result(|_| Ok(commit))
+                            .map_err(|e| e.to_string())?;
+                        Ok(NativeMutation::Computed { change })
+                    }
+                    Err(reason) => Ok(NativeMutation::Returned(MemoryBatchResult::Retryable {
+                        reason,
+                    })),
+                }
+            })
+        })
+        .await
+    }
+    async fn prepare_memory_resolution(
+        self: &Arc<Self>,
+        input: ReconcileMemories,
+        operation: &RecoveryRef,
+        call: &Scope,
+        dispatch: maka_event_log::applications::operations::OperationDispatchScope,
+    ) -> Result<Result<stored::resolution::Commit, String>, String> {
+        stored::resolution::validate(&input.writes).map_err(|e| e.to_string())?;
+        let project = matches!(&input.scope, MemoryScope::Project { .. });
+        let scope = self.memory_scope(input.scope).await?;
+        let mut source_scopes = Vec::new();
+        for write in &input.writes {
+            let reference = write.evidence.as_ref().or(match &write.edit {
+                MemoryEdit::AddEvidence { reference, .. } => Some(reference),
+                _ => None,
+            });
+            if let Some(reference) = reference {
+                let source = self.session(&reference.session_id).await?;
+                if source.configuration.incognito {
+                    return Err("agent_memory_incognito_source".into());
+                }
+                let origin = self
+                    .memory_scope(MemoryScope::Project {
+                        session_id: reference.session_id.clone(),
+                    })
+                    .await?;
+                if project && scope.location != origin.location {
+                    return Err("agent_memory_evidence_scope".into());
+                }
+                source_scopes.push(origin);
+            }
+        }
+        if let Some(resolution) = &input.resolution {
+            let session = self.scoped_session(call, &resolution.session_id).await?;
+            if session.configuration.incognito {
+                return Err("agent_memory_incognito".into());
+            }
+            source_scopes.push(
+                self.memory_scope(MemoryScope::Project {
+                    session_id: resolution.session_id.clone(),
+                })
+                .await?,
+            );
+        }
+        let writer = self.memory_data(call)?;
+        for attempt in 0..2 {
+            let snapshot = writer
+                .query(stored::resolution::Inspect {
+                    scope: scope.clone(),
+                    writes: input.writes.clone(),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            let decisions = match snapshot.deterministic(&input.writes) {
+                Some(decisions) => decisions,
+                None => {
+                    let Some(resolution) = input.resolution.clone() else {
+                        return Ok(Err("semantic comparison requires resolution.sessionId and resolution.model".into()));
+                    };
+                    let prompt = serde_json::to_string(
+                        &serde_json::json!({"writes":input.writes,"snapshot":snapshot}),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    if prompt.len() > 40000 {
+                        return Ok(Err("memory semantic input budget exceeded".into()));
+                    }
+                    self.memory_judgments(
+                        call,
+                        resolution,
+                        operation.clone(),
+                        dispatch.clone(),
+                        prompt,
+                        attempt,
+                    )
+                    .await?
+                }
+            };
+            let current = writer
+                .query(stored::resolution::Inspect {
+                    scope: scope.clone(),
+                    writes: input.writes.clone(),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            if current.revision != snapshot.revision {
+                if attempt == 0 {
+                    continue;
+                }
+                return Ok(Err(
+                    "memory scope changed during both resolution attempts".into()
+                ));
+            }
+            return Ok(Ok(stored::resolution::Commit {
+                scope,
+                source_scopes,
+                writes: input.writes,
+                snapshot,
+                decisions,
+                operation: operation.operation,
+                at: i64::try_from(now()).map_err(|e| e.to_string())?,
+            }));
+        }
+        unreachable!()
     }
 }
 

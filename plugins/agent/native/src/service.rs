@@ -82,6 +82,7 @@ impl Handler for Agent {
         if matches!(
             method.as_str(),
             "changeMemory"
+                | "reconcileMemories"
                 | "createPreset"
                 | "updatePreset"
                 | "deletePreset"
@@ -116,7 +117,27 @@ impl Handler for Agent {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     match method.as_str() {
                         "changeMemory" => owner
-                            .change_memory(decode(input)?, operation, context.scope())
+                            .change_memory(
+                                decode(input)?,
+                                operation,
+                                context.scope(),
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
+                            .await?
+                            .complete(&context),
+                        "reconcileMemories" => owner
+                            .reconcile_memories(
+                                decode(input)?,
+                                operation,
+                                context.scope(),
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
                             .await?
                             .complete(&context),
                         "createPreset" => owner
@@ -423,6 +444,11 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "pendingMemories" => encode(
+                    owner
+                        .pending_memories(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "generateRecap" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
