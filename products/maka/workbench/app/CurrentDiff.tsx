@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { computed, inputAction, Scroll, signal, Text, View } from 'nsh';
+import { computed, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
 import {
   Button,
   DiffView,
@@ -129,6 +129,31 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
   const textState = computed(() => {
     const cur = model.state();
     return cur.kind === 'text' ? cur : null;
+  });
+
+  effect(() => {
+    const anc = model.anchor();
+    const cur = textState();
+    if (!anc || !cur) return;
+    setTimeout(() => {
+      if (!diffRef) return;
+      const range: DiffLineRange = {
+        side: anc.side,
+        start: anc.line,
+        end: anc.endLine ?? anc.line,
+      };
+      selectedRange.set(range);
+      diffRef.setSelectedLines(range);
+      void (async () => {
+        const hunks = await diffRef.hunks();
+        const idx = hunks.findIndex((h) => {
+          const start = anc.side === 'old' ? h.oldStart : h.newStart;
+          const count = anc.side === 'old' ? h.oldLines : h.newLines;
+          return anc.line >= start && anc.line <= start + Math.max(1, count);
+        });
+        if (idx >= 0) diffRef.goToHunk(idx);
+      })();
+    }, 0);
   });
 
   const extractExcerpt = (side: DiffSide, startLine: number, endLine: number): string => {

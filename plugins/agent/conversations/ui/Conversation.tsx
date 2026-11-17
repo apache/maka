@@ -270,6 +270,7 @@ export type ConversationHandle = Omit<
   'attachments' | 'modelDetails' | 'permissions' | 'projectMcp' | 'completion' | 'checklist'
 > & {
   attachments: AttachmentDraft;
+  sendExternalPrompt(text: string): boolean;
   goal: ReturnType<typeof createSessionGoal>;
   modelDetails(): ModelDetails;
   permissions: ReturnType<typeof createSessionPermissions>;
@@ -3383,6 +3384,52 @@ export function Conversation(props: ConversationProps) {
       return;
     void send(text, expectedBackend, false, delivery);
   };
+  const sendExternalPrompt = (text: string): boolean => {
+    if (!alive || !text.trim()) return false;
+    if (sendBlockedReason()) {
+      notice.set(
+        uiMessage(
+          'This message was not sent. Your draft is kept; check the status below before trying again.',
+        ),
+      );
+      return false;
+    }
+    const delivery: 'steer' | 'queue' = 'steer';
+    if (modelLoading(delivery)) return false;
+    let selected: ReturnType<typeof sendSelection>;
+    try {
+      selected = sendSelection(delivery, backend() ?? undefined);
+    } catch (reason) {
+      report(reason, 'Could not send the message.');
+      return false;
+    }
+    const savedComposerEdit: AttachmentEdit & { text: string } = {
+      text: draft(),
+      ...attachments.snapshot(),
+    };
+    const externalEdit: AttachmentEdit & { text: string } = {
+      text,
+      attachments: [],
+      settledUploads: [],
+    };
+    const frozen: FrozenSend = {
+      id: `draft-send-${++sendSequence}`,
+      text,
+      files: [],
+      edit: externalEdit,
+      selection: selected,
+    };
+    pendingDraft = externalEdit;
+    heldDraft = savedComposerEdit;
+    holding = true;
+    error.set('');
+    if (props.compact) {
+      if (compactStart() === null) compactStart.set(latestQuestionKey());
+      followCompact = true;
+    }
+    void freezeSend(frozen);
+    return true;
+  };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
   const messagePrediction = createMessagePrediction({
@@ -3541,6 +3588,7 @@ export function Conversation(props: ConversationProps) {
       void send(event.text);
     },
     sendRendered,
+    sendExternalPrompt,
     run: runId,
     activeTurn: runTurn,
     activityTurn: () => {

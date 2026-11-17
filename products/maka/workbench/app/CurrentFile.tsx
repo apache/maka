@@ -33,7 +33,6 @@ import {
   Scroll,
   signal,
   Text,
-  untracked,
   View,
   type ViewRef,
 } from 'nsh';
@@ -511,13 +510,18 @@ export function CurrentFile(props: {
                 {tr('The workspace may have changed. Refresh for current contents.')}
               </Text>
             </If>
-            <If when={failed() && model.state().kind !== 'loading'}>
+            <If when={(failed() || view()?.kind === 'changed') && model.state().kind !== 'loading'}>
               <RetryCurrentFile model={model} />
             </If>
           </View>
         </Scroll>
       </If>
-      <Each of={readable() && view() ? [view()!] : []} key={(value) => value.kind}>
+      <Each
+        of={readable() && view() ? [view()!] : []}
+        key={(value) =>
+          value.kind === 'text' && value.bytes <= MAX_EDITOR_TEXT_BYTES ? 'editor' : value
+        }
+      >
         {(value) => {
           const snapshot = value();
           if (snapshot.kind === 'text') {
@@ -525,7 +529,7 @@ export function CurrentFile(props: {
               return (
                 <SourceEditorView
                   model={model}
-                  view={snapshot}
+                  view={() => value() as Extract<FileView, { kind: 'text' }>}
                   copyAction={copyAction}
                   copied={copied}
                   copying={copying}
@@ -570,7 +574,7 @@ type FileDraftNote = {
 
 function SourceEditorView(props: {
   model: CurrentFileModel;
-  view: Extract<FileView, { kind: 'text' }>;
+  view: () => Extract<FileView, { kind: 'text' }>;
   copyAction: () => (() => void) | undefined;
   copied: () => { failed: boolean; message: UiText } | null;
   copying: () => boolean;
@@ -591,6 +595,7 @@ function SourceEditorView(props: {
   let editorRef: EditorRef | undefined;
   let containerNode: ViewRef | undefined;
   let unbindKeys: (() => void)[] = [];
+  let unbindFindEsc: (() => void) | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   let hoverTimer: ReturnType<typeof setTimeout> | undefined;
   let hoverSeq = 0;
@@ -598,11 +603,12 @@ function SourceEditorView(props: {
 
   cleanup(() => {
     for (const fn of unbindKeys) fn();
+    unbindFindEsc?.();
     clearTimeout(flashTimer);
     clearTimeout(hoverTimer);
   });
 
-  const fullText = computed(() => props.view.rows.originalText());
+  const fullText = computed(() => props.view().rows.originalText());
 
   const primaryPosition = (): EditorPosition => {
     const primary = selections().at(-1);
@@ -668,18 +674,8 @@ function SourceEditorView(props: {
   };
 
   effect(() => {
-    const _ver = props.view.version;
-    void _ver;
-    if (props.navigation) {
-      untracked(() => {
-        void props.navigation!.hover({ line: 0, column: 0 }).catch(() => {});
-      });
-    }
-  });
-
-  effect(() => {
     const currentAnchor = model.anchor();
-    const _ver = props.view.version;
+    const _ver = props.view().version;
     void _ver;
     if (currentAnchor) {
       setTimeout(() => applyAnchor(currentAnchor), 0);
@@ -931,6 +927,12 @@ function SourceEditorView(props: {
 
       <If when={finding()}>
         <View
+          ref={(node) => {
+            unbindFindEsc?.();
+            unbindFindEsc = node
+              ? keymap.bind('escape', () => closeFind(), { when: 'always', within: node })
+              : undefined;
+          }}
           style={{
             flexDirection: 'row',
             alignItems: 'center',
@@ -1256,6 +1258,14 @@ function SourceEditorView(props: {
           onCancel={() => hoverCard.set(null)}
         >
           <View
+            onMouseEnter={() => {
+              pointerInHover = true;
+              clearTimeout(hoverTimer);
+            }}
+            onMouseLeave={() => {
+              pointerInHover = false;
+              scheduleCloseHover();
+            }}
             style={{
               ...floatingStyle(),
               maxWidth: 420,

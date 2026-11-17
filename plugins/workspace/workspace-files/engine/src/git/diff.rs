@@ -23,6 +23,52 @@ use cap_fs_ext::DirExt;
 use gix::index::entry::Mode;
 use std::io::Read;
 
+pub(super) enum PatchDiff {
+    Text(String),
+    Binary,
+    Unchanged,
+    Unsupported,
+}
+
+pub(super) fn read_patch_from_status(
+    repo: &Repository,
+    area: GitArea,
+    name: &[u8],
+    combine_head_to_worktree: bool,
+) -> io::Result<PatchDiff> {
+    let pair = if combine_head_to_worktree {
+        images_head_to_worktree(repo, name)?
+    } else {
+        images_inner(repo, area, name, true)?
+    };
+    let Some((before, after)) = pair else {
+        return Ok(PatchDiff::Unsupported);
+    };
+    if before.as_ref().map(|i| (i.mode, &i.bytes)) == after.as_ref().map(|i| (i.mode, &i.bytes)) {
+        return Ok(PatchDiff::Unchanged);
+    }
+    if before
+        .iter()
+        .chain(after.iter())
+        .any(|image| image.bytes.contains(&0) || std::str::from_utf8(&image.bytes).is_err())
+    {
+        return Ok(PatchDiff::Binary);
+    }
+    interrupted(&repo.cancel)?;
+    let mut patch = Vec::new();
+    image::append(
+        &mut patch,
+        name,
+        before.as_ref(),
+        after.as_ref(),
+        repo.repo.object_hash(),
+    )?;
+    interrupted(&repo.cancel)?;
+    Ok(PatchDiff::Text(
+        String::from_utf8(patch).map_err(|_| failure("git_unsupported"))?,
+    ))
+}
+
 pub(super) fn read(repo: &Repository, area: GitArea, name: &[u8]) -> io::Result<GitDiff> {
     let Some((before, after)) = images(repo, area, name)? else {
         return Ok(GitDiff::Unsupported);
@@ -61,10 +107,49 @@ pub(super) fn read(repo: &Repository, area: GitArea, name: &[u8]) -> io::Result<
         after: after_text,
     })
 }
+fn head_image(repo: &Repository, name: &[u8]) -> io::Result<Option<Image>> {
+    if repo.head.is_none() {
+        return Ok(None);
+    }
+    let tree = repo.repo.find_tree(repo.tree).map_err(io::Error::other)?;
+    tree.lookup_entry(name.split(|b| *b == b'/').map(|p| p.to_vec()))
+        .map_err(io::Error::other)?
+        .map(|entry| object(repo, entry.object_id(), u32::from(entry.mode().value())))
+        .transpose()
+}
+
+fn images_head_to_worktree(
+    repo: &Repository,
+    name: &[u8],
+) -> io::Result<Option<(Option<Image>, Option<Image>)>> {
+    if repo
+        .index
+        .entries()
+        .iter()
+        .any(|e| e.path(&repo.index) == name.as_bstr() && e.stage_raw() != 0)
+    {
+        return Ok(None);
+    }
+    let indexed = repo.index.entry_by_path(name.as_bstr());
+    Ok(Some((
+        head_image(repo, name)?,
+        working(repo, name, indexed.map(|e| e.mode))?,
+    )))
+}
+
 fn images(
     repo: &Repository,
     area: GitArea,
     name: &[u8],
+) -> io::Result<Option<(Option<Image>, Option<Image>)>> {
+    images_inner(repo, area, name, false)
+}
+
+fn images_inner(
+    repo: &Repository,
+    area: GitArea,
+    name: &[u8],
+    already_verified_untracked: bool,
 ) -> io::Result<Option<(Option<Image>, Option<Image>)>> {
     if repo
         .index
@@ -82,18 +167,7 @@ fn images(
             .transpose()
     };
     match area {
-        GitArea::Staged => {
-            let before = if repo.head.is_some() {
-                let tree = repo.repo.find_tree(repo.tree).map_err(io::Error::other)?;
-                tree.lookup_entry(name.split(|b| *b == b'/').map(|p| p.to_vec()))
-                    .map_err(io::Error::other)?
-                    .map(|entry| object(repo, entry.object_id(), u32::from(entry.mode().value())))
-                    .transpose()?
-            } else {
-                None
-            };
-            Ok(Some((before, index_image()?)))
-        }
+        GitArea::Staged => Ok(Some((head_image(repo, name)?, index_image()?))),
         GitArea::Worktree => {
             if indexed.is_none() {
                 return Ok(Some((None, None)));
@@ -104,7 +178,7 @@ fn images(
             )))
         }
         GitArea::Untracked => {
-            if indexed.is_some() || !untracked(repo, name)? {
+            if indexed.is_some() || (!already_verified_untracked && !untracked(repo, name)?) {
                 return Ok(Some((None, None)));
             }
             Ok(Some((None, working(repo, name, None)?)))

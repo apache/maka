@@ -2208,14 +2208,7 @@ export function createConversationUi(
       return true;
     }
     if (!owner.connected()) return false;
-    owner.sendRendered({
-      owner: sid,
-      text: input.text,
-      backend: owner.backend(),
-      attachments: [],
-      ...(owner.run() !== null ? { delivery: 'steer' as const } : {}),
-    });
-    return true;
+    return owner.sendExternalPrompt(input.text);
   };
   const previewHandle = {
     shown: resources.shown,
@@ -2242,8 +2235,10 @@ export function createConversationUi(
         workspaceViewContract,
         {
           sessions: window.sessions,
-          directory: (id) =>
-            browsing.sessions().find((session) => session.id === id)?.workspace.path,
+          directory: (id) => {
+            const found = browsing.sessions().find((session) => session.id === id);
+            return found?.workspace.worktree?.directory ?? found?.workspace.path;
+          },
           prompt: (id, action) => window.prompt?.(id, action) ?? false,
           blocked: () => reloading() || !(shell()?.visible() ?? false),
           get docked() {

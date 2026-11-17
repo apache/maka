@@ -168,61 +168,41 @@ pub fn references(
 ) -> io::Result<CodeReferencesResult> {
     let origin_display = path_string(origin_path);
     let origin_dir = parent_dir(&origin_display);
-    let decl_keys: HashSet<(String, u64, u64)> = if include_declaration {
-        HashSet::new()
-    } else {
-        definition(directory, origin_path, target, cancel)?
-            .locations
-            .into_iter()
-            .map(|loc| {
-                (
-                    path_string(&loc.path),
-                    loc.range.start.line,
-                    loc.range.start.column,
-                )
-            })
-            .collect()
-    };
-
     let mut entries: Vec<(u8, String, CodeLocation)> = Vec::new();
     let mut truncated = false;
 
-    directory.visit_text_files(
-        MAX_SCAN_FILE_BYTES,
-        MAX_SCAN_FILES,
-        cancel,
-        |ws_path, display, content| {
+    let mut collect_file =
+        |ws_path: &WorkspacePath, display: &str, content: &str, tier: u8| -> bool {
             if !content.contains(&target.name) {
-                return Ok(true);
+                return true;
             }
-            let tier = if ws_path == *origin_path {
-                0
-            } else if parent_dir(&display) == origin_dir && !origin_dir.is_empty() {
-                1
+            let file_decls: HashSet<(u64, u64)> = if include_declaration {
+                HashSet::new()
             } else {
-                2
+                find_declarations_in_file(ws_path, display, content, &target.name, tier == 0)
+                    .into_iter()
+                    .map(|d| (d.location.range.start.line, d.location.range.start.column))
+                    .collect()
             };
             for (line_idx, raw_line) in content.lines().enumerate() {
                 if !raw_line.contains(&target.name) {
                     continue;
                 }
-                let code_slice = strip_line_comment(raw_line, &display);
+                let code_slice = strip_line_comment(raw_line, display);
                 for byte_col in word_matches(code_slice, &target.name) {
                     let start_col = byte_to_utf16_col(raw_line, byte_col);
                     let end_col = byte_to_utf16_col(raw_line, byte_col + target.name.len());
                     let line_u64 = line_idx as u64;
-                    if !include_declaration
-                        && decl_keys.contains(&(display.clone(), line_u64, start_col))
-                    {
+                    if !include_declaration && file_decls.contains(&(line_u64, start_col)) {
                         continue;
                     }
                     if entries.len() >= MAX_REFERENCES {
                         truncated = true;
-                        return Ok(false);
+                        return false;
                     }
                     entries.push((
                         tier,
-                        display.clone(),
+                        display.to_owned(),
                         CodeLocation {
                             path: ws_path.clone(),
                             range: CodeRange {
@@ -240,9 +220,35 @@ pub fn references(
                     ));
                 }
             }
-            Ok(true)
-        },
-    )?;
+            true
+        };
+
+    // Always collect tier-0 current-file matches first so truncation never drops local references.
+    let keep_scanning = match target.source_text.as_deref() {
+        Some(source_text) => collect_file(origin_path, &origin_display, source_text, 0),
+        None => true,
+    };
+
+    if keep_scanning {
+        directory.visit_text_files(
+            MAX_SCAN_FILE_BYTES,
+            MAX_SCAN_FILES,
+            cancel,
+            |ws_path, display, content| {
+                if ws_path == *origin_path && target.source_text.is_some() {
+                    return Ok(true);
+                }
+                let tier = if ws_path == *origin_path {
+                    0
+                } else if parent_dir(&display) == origin_dir && !origin_dir.is_empty() {
+                    1
+                } else {
+                    2
+                };
+                Ok(collect_file(&ws_path, &display, &content, tier))
+            },
+        )?;
+    }
 
     entries.sort_by(|left, right| {
         left.0
@@ -314,7 +320,14 @@ pub fn read_text(
     match directory.read_file(path, None, cancel) {
         Ok(FileCapture::Ready(snapshot)) => Ok(String::from_utf8(snapshot.data).ok()),
         Ok(_) => Ok(None),
-        Err(_) => Ok(None),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg == "files_cancelled" || msg == "files_changed" {
+                Err(err)
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 

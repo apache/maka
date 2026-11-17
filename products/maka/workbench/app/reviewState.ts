@@ -64,6 +64,7 @@ export type ReviewStore = {
   selectSymbolLocation(sessionId: string, index: number): void;
   statusMessage(sessionId: string): string;
   setStatusMessage(sessionId: string, message: string): void;
+  pruneSessions(activeSessionIds: readonly string[]): void;
 };
 
 export function createReviewStore(): ReviewStore {
@@ -132,6 +133,24 @@ export function createReviewStore(): ReviewStore {
     setStatusMessage(sessionId, message) {
       statusBySession.set({ ...statusBySession(), [sessionId]: message });
     },
+    pruneSessions(activeSessionIds) {
+      const keep = new Set(activeSessionIds);
+      const filterMap = <T>(record: Record<string, T>): [Record<string, T>, boolean] => {
+        let changed = false;
+        const next: Record<string, T> = {};
+        for (const [k, v] of Object.entries(record)) {
+          if (keep.has(k)) next[k] = v;
+          else changed = true;
+        }
+        return [next, changed];
+      };
+      const [nextNotes, c1] = filterMap(bySession());
+      if (c1) bySession.set(nextNotes);
+      const [nextSyms, c2] = filterMap(symbolsBySession());
+      if (c2) symbolsBySession.set(nextSyms);
+      const [nextStatus, c3] = filterMap(statusBySession());
+      if (c3) statusBySession.set(nextStatus);
+    },
   };
 }
 
@@ -171,7 +190,10 @@ export function formatReviewNote(
   const snippet = note.excerpt.replace(/\r?\n$/, '');
   const parts = [`\`${loc}\`${sideTag}:`];
   if (snippet.trim().length > 0) {
-    parts.push('```' + lang + '\n' + snippet + '\n```');
+    const runs = snippet.match(/`+/g);
+    const maxTicks = runs ? Math.max(...runs.map((r) => r.length)) : 0;
+    const fence = '`'.repeat(Math.max(3, maxTicks + 1));
+    parts.push(fence + lang + '\n' + snippet + '\n' + fence);
   }
   if (note.comment.trim().length > 0) {
     parts.push(note.comment.trim());
@@ -285,8 +307,14 @@ export function relativizeWorkspaceFileUrl(target: string, workspaceDir?: string
   } catch {
     return target;
   }
-  const normDir = workspaceDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  const normPath = decoded.replace(/\\/g, '/');
+  let normDir = workspaceDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  let normPath = decoded.replace(/\\/g, '/');
+  if (/^\/[A-Za-z]:\//.test(normPath)) normPath = normPath.slice(1);
+  if (/^\/[A-Za-z]:\//.test(normDir)) normDir = normDir.slice(1);
+  if (/^[A-Za-z]:\//.test(normPath) && /^[A-Za-z]:\//.test(normDir)) {
+    normPath = normPath[0]!.toLowerCase() + normPath.slice(1);
+    normDir = normDir[0]!.toLowerCase() + normDir.slice(1);
+  }
   const candidates = [normDir];
   if (normDir.startsWith('/private/')) candidates.push(normDir.slice('/private'.length));
   else if (normDir.startsWith('/tmp/') || normDir.startsWith('/var/'))
@@ -296,7 +324,11 @@ export function relativizeWorkspaceFileUrl(target: string, workspaceDir?: string
     if (normPath.startsWith(root + '/')) {
       const rel = normPath.slice(root.length + 1);
       if (rel.length > 0 && !rel.startsWith('/')) {
-        return encodeURI(rel) + suffix;
+        const encodedRel = rel
+          .split('/')
+          .map((seg) => encodeURIComponent(seg))
+          .join('/');
+        return encodedRel + suffix;
       }
     }
   }

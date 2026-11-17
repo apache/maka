@@ -99,10 +99,20 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         resources.attach(node);
         for (const fn of unbinds) fn();
         unbinds = [
-          keymap.bind('escape', () => resources.close(closeTarget), {
-            when: 'always',
-            within: node,
-          }),
+          keymap.bind(
+            'escape',
+            () => {
+              if (resources.reviewStore.symbolBatch(sessionId) !== null) {
+                resources.reviewStore.setSymbolBatch(sessionId, null);
+                return;
+              }
+              resources.close(closeTarget);
+            },
+            {
+              when: 'notEditing',
+              within: node,
+            },
+          ),
           keymap.bind('mod+[', () => resources.goBack(), { within: node }),
           keymap.bind('mod+]', () => resources.goForward(), { within: node }),
         ];
@@ -357,13 +367,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         />
       </If>
       <If when={resources.active() === 'changes'}>
-        <WorkspaceChanges
-          sessionId={sessionId}
-          openDiff={(target) => resources.openDiff(target)}
-          reviewStore={resources.reviewStore}
-          canPrompt={resources.canPrompt()}
-          deliverPrompt={(text, mode) => resources.deliverPrompt(sessionId, text, mode)}
-        />
+        <WorkspaceChanges sessionId={sessionId} openDiff={(target) => resources.openDiff(target)} />
       </If>
       <If when={resources.active() === 'files'}>
         <WorkspaceFiles model={resources.files} />

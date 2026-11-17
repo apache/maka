@@ -17,7 +17,18 @@
  * under the License.
  */
 
-import { inputAction, List, platform, Scroll, signal, Text, View, type InputRef } from 'nsh';
+import {
+  cleanup,
+  inputAction,
+  keymap,
+  List,
+  platform,
+  Scroll,
+  signal,
+  Text,
+  View,
+  type InputRef,
+} from 'nsh';
 import { Button, Input } from 'nsh/base';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -85,9 +96,17 @@ export function InlineReviewComposer(props: {
   const draft = signal(props.initialComment ?? '');
   const valid = () => draft().trim().length > 0;
   let focusedOnce = false;
+  let unbindEsc: (() => void) | undefined;
+  cleanup(() => unbindEsc?.());
 
   return (
     <View
+      ref={(node) => {
+        unbindEsc?.();
+        unbindEsc = node
+          ? keymap.bind('escape', () => props.onCancel(), { when: 'always', within: node })
+          : undefined;
+      }}
       style={{
         marginVertical: 4,
         marginHorizontal: 8,
@@ -504,7 +523,7 @@ export function SymbolLocationsDrawer(props: {
     <View
       style={{
         height: platform.idiom === 'terminal' ? 10 : 196,
-        minHeight: 120,
+        minHeight: platform.idiom === 'terminal' ? 6 : 120,
         borderRadius: 8,
         borderWidth: 1,
         borderColor: C.line,

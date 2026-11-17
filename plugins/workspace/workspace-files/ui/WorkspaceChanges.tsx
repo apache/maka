@@ -18,16 +18,7 @@
  */
 
 import { cleanup, computed, effect, inputAction, List, signal, Text, untracked, View } from 'nsh';
-import {
-  Button,
-  DiffView,
-  type DiffAnnotation,
-  type DiffFile,
-  type DiffLineRange,
-  type DiffSide,
-  type DiffStats,
-  type DiffViewRef,
-} from 'nsh/base';
+import { Button, DiffView, type DiffFile, type DiffStats, type DiffViewRef } from 'nsh/base';
 import type {
   GitArea,
   GitStatus,
@@ -40,15 +31,7 @@ import {
 import { useHost } from '../../../../products/maka/workbench/app/host';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { tr } from '../../../../products/maka/workbench/app/locale';
-import {
-  AddLineNoteButton,
-  formatReviewNote,
-  InlineReviewComposer,
-} from '../../../../products/maka/workbench/app/ReviewComposer';
-import type {
-  GitWorkspaceDiff,
-  ReviewStore,
-} from '../../../../products/maka/workbench/app/reviewState';
+import type { GitWorkspaceDiff } from '../../../../products/maka/workbench/app/reviewState';
 import { errorText, renderText, type UiText } from '../../../../products/maka/workbench/app/text';
 import {
   bodyTextStyle,
@@ -107,9 +90,6 @@ export function WorkspaceChanges(props: {
   sessionId: string;
   openDiff(target: CurrentDiffTarget): void;
   openFile?(pathLabel: string): void;
-  reviewStore?: ReviewStore;
-  canPrompt?: boolean;
-  deliverPrompt?(text: string, mode: 'insert' | 'send'): boolean;
 }) {
   const host = useHost();
   const state = signal<ChangesState>({ kind: 'loading' });
@@ -119,13 +99,6 @@ export function WorkspaceChanges(props: {
   const layout = signal<'split' | 'unified'>('unified');
   const softWrap = signal(false);
   const stats = signal<DiffStats>({ added: 0, deleted: 0, hunks: 0 });
-  const draftRange = signal<{
-    side: DiffSide;
-    start: number;
-    end: number;
-    excerpt: string;
-    guessPath: string;
-  } | null>(null);
   let diffRef: DiffViewRef | undefined;
   let generation = 0;
   let diffGeneration = 0;
@@ -216,8 +189,10 @@ export function WorkspaceChanges(props: {
   };
 
   const openDiffByPathLabel = (pathLabel: string) => {
+    const candidates = filteredEntries().filter((e) => host.pathLabel(e.path) === pathLabel);
     const match =
-      filteredEntries().find((e) => host.pathLabel(e.path) === pathLabel) ??
+      candidates.find((e) => e.area === 'worktree') ??
+      candidates[0] ??
       allEntries().find((e) => host.pathLabel(e.path) === pathLabel);
     if (match) {
       props.openDiff({
@@ -227,27 +202,6 @@ export function WorkspaceChanges(props: {
         title: pathLabel,
       });
     }
-  };
-
-  const draftAnnotations = computed<DiffAnnotation[]>(() => {
-    const cur = draftRange();
-    if (!cur) return [];
-    return [{ id: '__all_draft__', side: cur.side, line: cur.end }];
-  });
-
-  const startAllDraft = async (range: DiffLineRange) => {
-    diffRef?.setSelectedLines(range);
-    const [excerpt, files] = await Promise.all([
-      diffRef ? diffRef.selectedText() : Promise.resolve(''),
-      diffRef ? diffRef.files() : Promise.resolve([]),
-    ]);
-    draftRange.set({
-      side: range.side,
-      start: range.start,
-      end: range.end,
-      excerpt,
-      guessPath: files[0]?.path ?? 'workspace',
-    });
   };
 
   return (
@@ -708,74 +662,6 @@ export function WorkspaceChanges(props: {
                         </Button>
                       </View>
                     )}
-                    annotations={draftAnnotations()}
-                    renderAddAnnotation={
-                      props.reviewStore && props.deliverPrompt
-                        ? (range) => <AddLineNoteButton onPress={() => void startAllDraft(range)} />
-                        : undefined
-                    }
-                    renderAnnotation={
-                      props.reviewStore && props.deliverPrompt
-                        ? () => {
-                            const cur = draftRange();
-                            if (!cur) return <View />;
-                            const guessPath = cur.guessPath;
-                            const matchEntry =
-                              allEntries().find((e) => host.pathLabel(e.path) === guessPath) ??
-                              allEntries()[0];
-                            return (
-                              <InlineReviewComposer
-                                startLine={cur.start}
-                                endLine={cur.end}
-                                canPrompt={props.canPrompt ?? false}
-                                onSave={(comment) => {
-                                  if (matchEntry) {
-                                    props.reviewStore!.upsertNote({
-                                      sessionId: props.sessionId,
-                                      path: matchEntry.path,
-                                      pathLabel: host.pathLabel(matchEntry.path),
-                                      area: matchEntry.area,
-                                      side: cur.side,
-                                      startLine: cur.start,
-                                      endLine: cur.end,
-                                      excerpt: cur.excerpt,
-                                      comment,
-                                    });
-                                  }
-                                  draftRange.set(null);
-                                }}
-                                onInsertPrompt={(comment) => {
-                                  const text = formatReviewNote({
-                                    pathLabel: matchEntry
-                                      ? host.pathLabel(matchEntry.path)
-                                      : guessPath,
-                                    side: cur.side,
-                                    startLine: cur.start,
-                                    endLine: cur.end,
-                                    excerpt: cur.excerpt,
-                                    comment,
-                                  });
-                                  if (props.deliverPrompt!(text, 'insert')) draftRange.set(null);
-                                }}
-                                onSendNow={(comment) => {
-                                  const text = formatReviewNote({
-                                    pathLabel: matchEntry
-                                      ? host.pathLabel(matchEntry.path)
-                                      : guessPath,
-                                    side: cur.side,
-                                    startLine: cur.start,
-                                    endLine: cur.end,
-                                    excerpt: cur.excerpt,
-                                    comment,
-                                  });
-                                  if (props.deliverPrompt!(text, 'send')) draftRange.set(null);
-                                }}
-                                onCancel={() => draftRange.set(null)}
-                              />
-                            );
-                          }
-                        : undefined
-                    }
                     style={{ flex: 1, minHeight: 0 }}
                   />
                 </View>

@@ -19,9 +19,18 @@
 
 //! Read-only symbol navigation using the Session's original workspace capability.
 use super::*;
+use maka_agent_api::contract::WorkspaceAccess;
 use maka_capabilities::call::Scope;
 use maka_fs_tools::symbols::LspRequestContext;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 impl Owner {
     pub async fn code_definition(
@@ -35,9 +44,9 @@ impl Owner {
             .map_err(|_| "agent_symbols_invalid_path".to_owned())?;
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
-                let (original, ctx, guard) =
+                let (original, ctx, _guard) =
                     owner.symbol_context(&input.session_id, &scope).await?;
-                let result = owner
+                let value = owner
                     .lsp_pool
                     .definition(
                         &ctx,
@@ -46,9 +55,7 @@ impl Owner {
                         input.symbol.as_deref(),
                         input.hover_only,
                     )
-                    .await;
-                drop(guard);
-                let value = result?;
+                    .await?;
                 owner
                     .check_file_session(&input.session_id, &original, &scope)
                     .await?;
@@ -69,9 +76,9 @@ impl Owner {
             .map_err(|_| "agent_symbols_invalid_path".to_owned())?;
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
-                let (original, ctx, guard) =
+                let (original, ctx, _guard) =
                     owner.symbol_context(&input.session_id, &scope).await?;
-                let result = owner
+                let value = owner
                     .lsp_pool
                     .references(
                         &ctx,
@@ -80,9 +87,7 @@ impl Owner {
                         input.symbol.as_deref(),
                         input.include_declaration,
                     )
-                    .await;
-                drop(guard);
-                let value = result?;
+                    .await?;
                 owner
                     .check_file_session(&input.session_id, &original, &scope)
                     .await?;
@@ -103,14 +108,12 @@ impl Owner {
             .map_err(|_| "agent_symbols_invalid_path".to_owned())?;
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
-                let (original, ctx, guard) =
+                let (original, ctx, _guard) =
                     owner.symbol_context(&input.session_id, &scope).await?;
-                let result = owner
+                let value = owner
                     .lsp_pool
                     .hover(&ctx, &input.path, input.position)
-                    .await;
-                drop(guard);
-                let value = result?;
+                    .await?;
                 owner
                     .check_file_session(&input.session_id, &original, &scope)
                     .await?;
@@ -124,32 +127,14 @@ impl Owner {
         &self,
         session_id: &str,
         scope: &Scope,
-    ) -> Result<
-        (
-            ResolvedConfiguration,
-            LspRequestContext,
-            tokio::task::JoinHandle<()>,
-        ),
-        String,
-    > {
+    ) -> Result<(ResolvedConfiguration, LspRequestContext, AbortOnDrop), String> {
         let (original, directory) = self.file_directory(session_id, None, scope).await?;
-        let private_root = self
-            .store
-            .owned_root()
-            .map_err(|_| "agent_root_unavailable".to_owned())?
-            .canonical_path()
-            .to_owned();
-        let (resolved_root, _, _) = workspace::open_workspace_observation(
-            &self.workspace_roots,
-            &original.workspace,
-            &self.managed_worktrees,
-        )
-        .await?;
+        let allow_lsp = original.permissions.access != WorkspaceAccess::ReadOnly;
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_watch = cancel.clone();
         let scope_cancel = scope.cancellation.clone();
         let stop_cancel = self.stop.clone();
-        let guard = tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             tokio::select! {
                 _ = scope_cancel.cancelled() => {}
                 _ = stop_cancel.cancelled() => {}
@@ -157,11 +142,10 @@ impl Owner {
             cancel_watch.store(true, Ordering::Relaxed);
         });
         let ctx = LspRequestContext {
-            workspace_root: resolved_root,
-            private_root,
             directory,
+            allow_lsp,
             cancel,
         };
-        Ok((original, ctx, guard))
+        Ok((original, ctx, AbortOnDrop(task.abort_handle())))
     }
 }

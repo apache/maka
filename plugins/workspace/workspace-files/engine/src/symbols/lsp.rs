@@ -17,9 +17,8 @@
  * under the License.
  */
 
-//! Opportunistic local Language Server client pool with strict workspace containment
-//! and bounded latency. Falls back to the built-in lexical index whenever no server
-//! is installed, initialization is still warming up, or the server returns nothing.
+//! Opportunistic local Language Server client pool with strict `Directory` capability
+//! containment, bounded latency, and clean process-group teardown.
 
 use super::{
     CodeBackend, CodeDefinitionResult, CodeHoverResult, CodeLocation, CodePosition, CodeRange,
@@ -171,6 +170,18 @@ impl LanguageFamily {
             }],
         }
     }
+
+    fn initialization_options(self) -> Value {
+        match self {
+            // Keep navigation strictly read-only: never run `cargo check`, `build.rs`, or proc-macros.
+            Self::Rust => json!({
+                "checkOnSave": false,
+                "cargo": { "buildScripts": { "enable": false } },
+                "procMacro": { "enable": false },
+            }),
+            _ => Value::Null,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -182,14 +193,31 @@ pub struct CustomServerCommand {
 
 #[derive(Clone, Default)]
 pub struct LspPool {
-    inner: Arc<Mutex<PoolState>>,
+    inner: Arc<PoolOwner>,
     override_cmd: Option<Arc<CustomServerCommand>>,
+}
+
+#[derive(Default)]
+struct PoolOwner {
+    state: Mutex<PoolState>,
+}
+
+impl Drop for PoolOwner {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.stopped = true;
+            for (_, entry) in guard.entries.drain() {
+                entry.client.abort();
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 struct PoolState {
     stopped: bool,
     entries: HashMap<(PathBuf, LanguageFamily), PoolEntry>,
+    detected: HashMap<LanguageFamily, Option<CustomServerCommand>>,
 }
 
 struct PoolEntry {
@@ -199,10 +227,14 @@ struct PoolEntry {
 
 #[derive(Clone)]
 pub struct LspRequestContext {
-    pub workspace_root: PathBuf,
-    pub private_root: PathBuf,
     pub directory: Arc<Directory>,
+    pub allow_lsp: bool,
     pub cancel: Arc<AtomicBool>,
+}
+
+enum LspOutcome<T> {
+    Unavailable,
+    Authoritative { server: String, value: T },
 }
 
 impl LspPool {
@@ -213,14 +245,14 @@ impl LspPool {
     #[cfg(test)]
     fn with_override(cmd: CustomServerCommand) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(PoolState::default())),
+            inner: Arc::new(PoolOwner::default()),
             override_cmd: Some(Arc::new(cmd)),
         }
     }
 
     pub fn shutdown_all(&self) {
         let clients: Vec<Arc<LspClient>> = {
-            let mut guard = self.inner.lock().expect("lsp pool mutex");
+            let mut guard = self.inner.state.lock().expect("lsp pool mutex");
             guard.stopped = true;
             guard
                 .entries
@@ -253,7 +285,13 @@ impl LspPool {
         })
         .await
         .map_err(|_| "agent_symbols_unavailable".to_owned())?
-        .map_err(|_| "agent_symbols_unavailable".to_owned())
+        .map_err(|err| {
+            if err.to_string() == "files_cancelled" {
+                "agent_files_cancelled".to_owned()
+            } else {
+                "agent_symbols_unavailable".to_owned()
+            }
+        })
     }
 
     pub async fn definition(
@@ -281,31 +319,33 @@ impl LspPool {
             QUERY_TIMEOUT
         };
 
-        if explicit_symbol.is_none()
+        if ctx.allow_lsp
+            && explicit_symbol.is_none()
             && let Some(source_text) = target.source_text.as_deref()
-            && let Some((server_name, locations)) = self
+        {
+            let doc_uri = file_uri(&ctx.directory.root_path().join(index::path_string(path)));
+            if let LspOutcome::Authoritative { server, value } = self
                 .try_lsp_locations(
                     ctx,
                     path,
                     source_text,
                     "textDocument/definition",
                     json!({
-                        "textDocument": { "uri": file_uri(&dunce::canonicalize(&ctx.workspace_root).unwrap_or_else(|_| ctx.workspace_root.clone()).join(index::path_string(path))) },
+                        "textDocument": { "uri": doc_uri },
                         "position": { "line": position.line, "character": position.column },
                     }),
                     budget,
+                    MAX_LSP_REFERENCES,
                 )
                 .await
-            && !locations.is_empty()
-        {
-            return Ok(CodeDefinitionResult {
-                backend: CodeBackend::Lsp {
-                    server: server_name,
-                },
-                symbol: target.name,
-                origin_range: target.range,
-                locations,
-            });
+            {
+                return Ok(CodeDefinitionResult {
+                    backend: CodeBackend::Lsp { server },
+                    symbol: target.name,
+                    origin_range: target.range,
+                    locations: value.0,
+                });
+            }
         }
 
         let dir = ctx.directory.clone();
@@ -336,36 +376,37 @@ impl LspPool {
             });
         };
 
-        if explicit_symbol.is_none()
+        if ctx.allow_lsp
+            && explicit_symbol.is_none()
             && let Some(source_text) = target.source_text.as_deref()
-            && let Some((server_name, mut locations)) = self
+        {
+            let doc_uri = file_uri(&ctx.directory.root_path().join(index::path_string(path)));
+            if let LspOutcome::Authoritative {
+                server,
+                value: (locations, truncated),
+            } = self
                 .try_lsp_locations(
                     ctx,
                     path,
                     source_text,
                     "textDocument/references",
                     json!({
-                        "textDocument": { "uri": file_uri(&dunce::canonicalize(&ctx.workspace_root).unwrap_or_else(|_| ctx.workspace_root.clone()).join(index::path_string(path))) },
+                        "textDocument": { "uri": doc_uri },
                         "position": { "line": position.line, "character": position.column },
                         "context": { "includeDeclaration": include_declaration },
                     }),
                     QUERY_TIMEOUT,
+                    MAX_LSP_REFERENCES,
                 )
                 .await
-            && !locations.is_empty()
-        {
-            let truncated = locations.len() > MAX_LSP_REFERENCES;
-            if truncated {
-                locations.truncate(MAX_LSP_REFERENCES);
+            {
+                return Ok(CodeReferencesResult {
+                    backend: CodeBackend::Lsp { server },
+                    symbol: target.name,
+                    locations,
+                    truncated,
+                });
             }
-            return Ok(CodeReferencesResult {
-                backend: CodeBackend::Lsp {
-                    server: server_name,
-                },
-                symbol: target.name,
-                locations,
-                truncated,
-            });
         }
 
         let dir = ctx.directory.clone();
@@ -385,20 +426,17 @@ impl LspPool {
         path: &WorkspacePath,
         position: CodePosition,
     ) -> Result<Option<CodeHoverResult>, String> {
-        self.warm_up(&ctx.workspace_root, path);
         let Some(target) = Self::resolve_target(ctx, path, position, None).await? else {
             return Ok(None);
         };
 
-        if let Some(source_text) = target.source_text.as_deref()
-            && let Some((server_name, markdown, range)) =
+        if ctx.allow_lsp
+            && let Some(source_text) = target.source_text.as_deref()
+            && let LspOutcome::Authoritative { server, value } =
                 self.try_lsp_hover(ctx, path, source_text, position).await
-            && !markdown.trim().is_empty()
         {
-            return Ok(Some(CodeHoverResult {
-                backend: CodeBackend::Lsp {
-                    server: server_name,
-                },
+            return Ok(value.map(|(markdown, range)| CodeHoverResult {
+                backend: CodeBackend::Lsp { server },
                 symbol: target.name,
                 range: range.or(target.range),
                 markdown,
@@ -422,61 +460,87 @@ impl LspPool {
         method: &'static str,
         params: Value,
         budget: Duration,
-    ) -> Option<(String, Vec<CodeLocation>)> {
+        max_items: usize,
+    ) -> LspOutcome<(Vec<CodeLocation>, bool)> {
         let rel = index::path_string(path);
-        let (family, lang_id) = LanguageFamily::from_path(&rel)?;
-        let root = dunce::canonicalize(&ctx.workspace_root).ok()?;
-        let private_root = dunce::canonicalize(&ctx.private_root).ok();
-        let raw_private_root = ctx.private_root.clone();
-        let client = self.client_for(&root, family)?;
-        if !client.ensure_ready(&root).await {
-            return None;
+        let Some((family, lang_id)) = LanguageFamily::from_path(&rel) else {
+            return LspOutcome::Unavailable;
+        };
+        let root = ctx.directory.root_path().to_path_buf();
+        let Some(client) = self.client_for(&root, family).await else {
+            return LspOutcome::Unavailable;
+        };
+        if !client
+            .ensure_ready(&root, family.initialization_options())
+            .await
+        {
+            return LspOutcome::Unavailable;
         }
         let doc_uri = file_uri(&root.join(&rel));
-        client
+        if client
             .sync_document(&doc_uri, lang_id, source_text)
             .await
-            .ok()?;
-        let response = timeout(budget, client.request(method, params))
-            .await
-            .ok()?
-            .ok()?;
+            .is_err()
+        {
+            return LspOutcome::Unavailable;
+        }
+        let Ok(Ok(response)) = timeout(budget, client.request(method, params)).await else {
+            return LspOutcome::Unavailable;
+        };
         let raw_locs = parse_lsp_locations(&response);
         if raw_locs.is_empty() {
-            return None;
+            return LspOutcome::Authoritative {
+                server: client.server_name.clone(),
+                value: (Vec::new(), false),
+            };
         }
         let dir = ctx.directory.clone();
         let cancel = ctx.cancel.clone();
         let source_owned = source_text.to_owned();
-        let out = tokio::task::spawn_blocking(move || {
+        let Ok((resolved, truncated)) = tokio::task::spawn_blocking(move || {
+            let root = dir.root_path().to_path_buf();
             let mut preview_cache: HashMap<String, Option<String>> = HashMap::new();
             preview_cache.insert(rel, Some(source_owned));
-            let mut resolved = Vec::new();
+            let mut out = Vec::new();
+            let mut truncated = false;
             for (uri, range) in raw_locs {
-                let Some(ws_path) =
-                    resolve_workspace_uri(&uri, &root, private_root.as_deref(), &raw_private_root)
-                else {
+                let Some(ws_path) = uri_to_workspace_path(&uri, &root) else {
                     continue;
                 };
                 let key = index::path_string(&ws_path);
-                let file_text = preview_cache
-                    .entry(key)
-                    .or_insert_with(|| index::read_text(&dir, &ws_path, &cancel).ok().flatten());
-                let preview = file_text
-                    .as_deref()
-                    .map(|t| index::line_preview(t, range.start.line))
-                    .unwrap_or_default();
-                resolved.push(CodeLocation {
+                let file_text = match preview_cache.get(&key) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let loaded = index::read_text(&dir, &ws_path, &cancel).ok().flatten();
+                        preview_cache.insert(key, loaded.clone());
+                        loaded
+                    }
+                };
+                // `Directory::read_file` enforces `open_dir_nofollow` and private/control exclusions
+                // while permitting this session's bound managed worktree.
+                let Some(file_text) = file_text else {
+                    continue;
+                };
+                if out.len() >= max_items {
+                    truncated = true;
+                    break;
+                }
+                out.push(CodeLocation {
                     path: ws_path,
                     range,
-                    preview,
+                    preview: index::line_preview(&file_text, range.start.line),
                 });
             }
-            resolved
+            (out, truncated)
         })
         .await
-        .ok()?;
-        Some((client.server_name.clone(), out))
+        else {
+            return LspOutcome::Unavailable;
+        };
+        LspOutcome::Authoritative {
+            server: client.server_name.clone(),
+            value: (resolved, truncated),
+        }
     }
 
     async fn try_lsp_hover(
@@ -485,20 +549,30 @@ impl LspPool {
         path: &WorkspacePath,
         source_text: &str,
         position: CodePosition,
-    ) -> Option<(String, String, Option<CodeRange>)> {
+    ) -> LspOutcome<Option<(String, Option<CodeRange>)>> {
         let rel = index::path_string(path);
-        let (family, lang_id) = LanguageFamily::from_path(&rel)?;
-        let root = dunce::canonicalize(&ctx.workspace_root).ok()?;
-        let client = self.client_for(&root, family)?;
-        if !client.ensure_ready(&root).await {
-            return None;
+        let Some((family, lang_id)) = LanguageFamily::from_path(&rel) else {
+            return LspOutcome::Unavailable;
+        };
+        let root = ctx.directory.root_path().to_path_buf();
+        let Some(client) = self.client_for(&root, family).await else {
+            return LspOutcome::Unavailable;
+        };
+        if !client
+            .ensure_ready(&root, family.initialization_options())
+            .await
+        {
+            return LspOutcome::Unavailable;
         }
         let doc_uri = file_uri(&root.join(&rel));
-        client
+        if client
             .sync_document(&doc_uri, lang_id, source_text)
             .await
-            .ok()?;
-        let response = timeout(
+            .is_err()
+        {
+            return LspOutcome::Unavailable;
+        }
+        let Ok(Ok(response)) = timeout(
             QUERY_TIMEOUT,
             client.request(
                 "textDocument/hover",
@@ -509,35 +583,36 @@ impl LspPool {
             ),
         )
         .await
-        .ok()?
-        .ok()?;
+        else {
+            return LspOutcome::Unavailable;
+        };
         if response.is_null() {
-            return None;
+            return LspOutcome::Authoritative {
+                server: client.server_name.clone(),
+                value: None,
+            };
         }
-        let markdown = extract_hover_markdown(response.get("contents")?)?;
-        let range = response.get("range").and_then(parse_lsp_range);
-        Some((client.server_name.clone(), markdown, range))
-    }
-
-    fn warm_up(&self, workspace_root: &Path, path: &WorkspacePath) {
-        let rel = index::path_string(path);
-        let Some((family, _)) = LanguageFamily::from_path(&rel) else {
-            return;
-        };
-        let Ok(root) = dunce::canonicalize(workspace_root) else {
-            return;
-        };
-        if let Some(client) = self.client_for(&root, family) {
-            tokio::spawn(async move {
-                let _ = client.ensure_ready(&root).await;
+        let parsed = response
+            .get("contents")
+            .and_then(extract_hover_markdown)
+            .and_then(|md| {
+                if md.trim().is_empty() {
+                    None
+                } else {
+                    Some((md, response.get("range").and_then(parse_lsp_range)))
+                }
             });
+        LspOutcome::Authoritative {
+            server: client.server_name.clone(),
+            value: parsed,
         }
     }
 
-    fn client_for(&self, root: &Path, family: LanguageFamily) -> Option<Arc<LspClient>> {
+    async fn client_for(&self, root: &Path, family: LanguageFamily) -> Option<Arc<LspClient>> {
         let now = Instant::now();
+        let cached_cmd: Option<Option<CustomServerCommand>>;
         {
-            let mut guard = self.inner.lock().expect("lsp pool mutex");
+            let mut guard = self.inner.state.lock().expect("lsp pool mutex");
             if guard.stopped {
                 return None;
             }
@@ -567,18 +642,32 @@ impl LspPool {
                 existing.last_used = now;
                 return Some(existing.client.clone());
             }
+            cached_cmd = guard.detected.get(&family).cloned();
         }
 
         let cmd = if let Some(custom) = &self.override_cmd {
             (**custom).clone()
+        } else if let Some(cached) = cached_cmd {
+            cached?
         } else {
-            detect_server(family)?
+            let found = tokio::task::spawn_blocking(move || detect_server(family))
+                .await
+                .ok()?;
+            if let Ok(mut guard) = self.inner.state.lock() {
+                guard.detected.insert(family, found.clone());
+            }
+            found?
         };
-        let spawned = LspClient::spawn(root, cmd).ok()?;
+
+        let root_owned = root.to_path_buf();
+        let spawned = tokio::task::spawn_blocking(move || LspClient::spawn(&root_owned, cmd))
+            .await
+            .ok()?
+            .ok()?;
 
         let mut evicted: Option<Arc<LspClient>> = None;
         let selected = {
-            let mut guard = self.inner.lock().expect("lsp pool mutex");
+            let mut guard = self.inner.state.lock().expect("lsp pool mutex");
             if guard.stopped {
                 spawned.abort();
                 return None;
@@ -586,6 +675,9 @@ impl LspPool {
             let key = (root.to_path_buf(), family);
             if let Some(existing) = guard.entries.get_mut(&key) {
                 spawned.abort();
+                if existing.client.is_dead() {
+                    return None;
+                }
                 existing.last_used = now;
                 existing.client.clone()
             } else {
@@ -616,15 +708,50 @@ impl LspPool {
     }
 }
 
+struct ClientIo {
+    dead: AtomicBool,
+    stdin: AsyncMutex<Option<ChildStdin>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
+}
+
+impl ClientIo {
+    async fn send_raw(&self, payload: &Value) -> Result<(), String> {
+        let body = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
+        let header = format!("Content-Length: {}\r\n\r\n", body.len());
+        let mut guard = self.stdin.lock().await;
+        let stdin = guard.as_mut().ok_or("lsp_stdin_closed")?;
+        stdin
+            .write_all(header.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        stdin.write_all(&body).await.map_err(|e| e.to_string())?;
+        stdin.flush().await.map_err(|e| e.to_string())
+    }
+
+    async fn notify(&self, method: &'static str, params: Value) -> Result<(), String> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        self.send_raw(&payload).await
+    }
+}
+
 struct LspClient {
     server_name: String,
     next_id: AtomicU64,
-    dead: AtomicBool,
     ready: OnceCell<bool>,
-    stdin: AsyncMutex<Option<ChildStdin>>,
+    io: Arc<ClientIo>,
+    child_pid: Option<u32>,
     child: Mutex<Option<Child>>,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
     docs: AsyncMutex<HashMap<String, (i32, [u8; 32])>>,
+}
+
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        self.abort();
+    }
 }
 
 impl LspClient {
@@ -646,23 +773,21 @@ impl LspClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
 
         let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let child_pid = child.id();
         let stdin = child.stdin.take().ok_or("missing lsp stdin")?;
         let stdout = child.stdout.take().ok_or("missing lsp stdout")?;
 
-        let client = Arc::new(Self {
-            server_name: server.name,
-            next_id: AtomicU64::new(1),
+        let io = Arc::new(ClientIo {
             dead: AtomicBool::new(false),
-            ready: OnceCell::new(),
             stdin: AsyncMutex::new(Some(stdin)),
-            child: Mutex::new(Some(child)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            docs: AsyncMutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
         });
 
-        let reader_client = client.clone();
+        let reader_io = io.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             while let Some(msg) = read_rpc_frame(&mut reader).await {
@@ -673,9 +798,9 @@ impl LspClient {
                             "id": id_val,
                             "result": null,
                         });
-                        let _ = reader_client.send_raw(&response).await;
+                        let _ = reader_io.send_raw(&response).await;
                     } else if let Some(id) = id_val.as_u64() {
-                        let tx = reader_client
+                        let tx = reader_io
                             .pending
                             .lock()
                             .expect("lsp pending mutex")
@@ -691,8 +816,8 @@ impl LspClient {
                     }
                 }
             }
-            reader_client.dead.store(true, Ordering::Relaxed);
-            let waiters: Vec<_> = reader_client
+            reader_io.dead.store(true, Ordering::Relaxed);
+            let waiters: Vec<_> = reader_io
                 .pending
                 .lock()
                 .expect("lsp pending mutex")
@@ -704,21 +829,35 @@ impl LspClient {
             }
         });
 
-        Ok(client)
+        Ok(Arc::new(Self {
+            server_name: server.name,
+            next_id: AtomicU64::new(1),
+            ready: OnceCell::new(),
+            io,
+            child_pid,
+            child: Mutex::new(Some(child)),
+            docs: AsyncMutex::new(HashMap::new()),
+        }))
     }
 
     fn is_dead(&self) -> bool {
-        self.dead.load(Ordering::Relaxed)
+        self.io.dead.load(Ordering::Relaxed)
     }
 
     fn abort(&self) {
-        self.dead.store(true, Ordering::Relaxed);
+        self.io.dead.store(true, Ordering::Relaxed);
+        if let Ok(mut stdin_guard) = self.io.stdin.try_lock() {
+            let _ = stdin_guard.take();
+        }
+        if let Some(pid) = self.child_pid {
+            kill_process_tree(pid);
+        }
         if let Some(mut child) = self.child.lock().expect("lsp child mutex").take() {
             let _ = child.start_kill();
         }
     }
 
-    async fn ensure_ready(&self, root: &Path) -> bool {
+    async fn ensure_ready(&self, root: &Path, init_options: Value) -> bool {
         let root_buf = root.to_path_buf();
         *self
             .ready
@@ -732,6 +871,7 @@ impl LspClient {
                             "processId": std::process::id(),
                             "rootUri": uri,
                             "workspaceFolders": [{ "uri": uri, "name": "workspace" }],
+                            "initializationOptions": init_options,
                             "capabilities": {
                                 "textDocument": {
                                     "definition": { "linkSupport": true },
@@ -747,7 +887,7 @@ impl LspClient {
                     self.abort();
                     return false;
                 }
-                let _ = self.notify("initialized", json!({})).await;
+                let _ = self.io.notify("initialized", json!({})).await;
                 true
             })
             .await
@@ -755,40 +895,43 @@ impl LspClient {
 
     async fn sync_document(&self, uri: &str, language_id: &str, text: &str) -> Result<(), String> {
         let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+        // Hold `docs` lock across `notify` so `didOpen` (v1) always precedes `didChange` (v2) on stdin.
         let mut docs = self.docs.lock().await;
         match docs.get_mut(uri) {
             None => {
+                self.io
+                    .notify(
+                        "textDocument/didOpen",
+                        json!({
+                            "textDocument": {
+                                "uri": uri,
+                                "languageId": language_id,
+                                "version": 1,
+                                "text": text,
+                            }
+                        }),
+                    )
+                    .await?;
                 docs.insert(uri.to_owned(), (1, digest));
-                drop(docs);
-                self.notify(
-                    "textDocument/didOpen",
-                    json!({
-                        "textDocument": {
-                            "uri": uri,
-                            "languageId": language_id,
-                            "version": 1,
-                            "text": text,
-                        }
-                    }),
-                )
-                .await
+                Ok(())
             }
             Some((version, prev_digest)) => {
                 if *prev_digest == digest {
                     return Ok(());
                 }
-                *version += 1;
+                let next_ver = *version + 1;
+                self.io
+                    .notify(
+                        "textDocument/didChange",
+                        json!({
+                            "textDocument": { "uri": uri, "version": next_ver },
+                            "contentChanges": [{ "text": text }],
+                        }),
+                    )
+                    .await?;
+                *version = next_ver;
                 *prev_digest = digest;
-                let next_ver = *version;
-                drop(docs);
-                self.notify(
-                    "textDocument/didChange",
-                    json!({
-                        "textDocument": { "uri": uri, "version": next_ver },
-                        "contentChanges": [{ "text": text }],
-                    }),
-                )
-                .await
+                Ok(())
             }
         }
     }
@@ -799,43 +942,77 @@ impl LspClient {
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending
+        self.io
+            .pending
             .lock()
             .expect("lsp pending mutex")
             .insert(id, tx);
+
+        struct PendingGuard {
+            id: u64,
+            armed: bool,
+            io: Arc<ClientIo>,
+        }
+        impl Drop for PendingGuard {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                let removed = self
+                    .io
+                    .pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut map| map.remove(&self.id))
+                    .is_some();
+                if removed && !self.io.dead.load(Ordering::Relaxed) {
+                    let io = self.io.clone();
+                    let id = self.id;
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        handle.spawn(async move {
+                            let _ = io.notify("$/cancelRequest", json!({ "id": id })).await;
+                        });
+                    }
+                }
+            }
+        }
+        let mut guard = PendingGuard {
+            id,
+            armed: true,
+            io: self.io.clone(),
+        };
+
         let payload = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
             "params": params,
         });
-        if let Err(err) = self.send_raw(&payload).await {
-            self.pending.lock().expect("lsp pending mutex").remove(&id);
-            return Err(err);
+        self.io.send_raw(&payload).await?;
+        let reply = rx.await.map_err(|_| "lsp_cancelled".to_owned())?;
+        guard.armed = false;
+        reply
+    }
+}
+
+fn kill_process_tree(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pgid) = i32::try_from(pid)
+        && pgid > 1
+    {
+        // SAFETY: `LspClient::spawn` sets `process_group(0)`, making `pid` its own process-group leader.
+        unsafe {
+            let _ = libc::kill(-pgid, libc::SIGKILL);
         }
-        rx.await.map_err(|_| "lsp_cancelled".to_owned())?
     }
-
-    async fn notify(&self, method: &'static str, params: Value) -> Result<(), String> {
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        });
-        self.send_raw(&payload).await
-    }
-
-    async fn send_raw(&self, payload: &Value) -> Result<(), String> {
-        let body = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
-        let mut guard = self.stdin.lock().await;
-        let stdin = guard.as_mut().ok_or("lsp_stdin_closed")?;
-        stdin
-            .write_all(header.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        stdin.write_all(&body).await.map_err(|e| e.to_string())?;
-        stdin.flush().await.map_err(|e| e.to_string())
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -896,7 +1073,6 @@ fn augmented_search_dirs() -> Vec<PathBuf> {
 
 fn detect_server(family: LanguageFamily) -> Option<CustomServerCommand> {
     let search_dirs = augmented_search_dirs();
-
     for candidate in family.candidates() {
         for dir in &search_dirs {
             if let Some(found) = executable_in_dir(dir, candidate.bin) {
@@ -1000,23 +1176,10 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-fn resolve_workspace_uri(
-    uri: &str,
-    root: &Path,
-    private_root: Option<&Path>,
-    raw_private_root: &Path,
-) -> Option<WorkspacePath> {
+fn uri_to_workspace_path(uri: &str, canonical_root: &Path) -> Option<WorkspacePath> {
     let path = uri_to_path(uri)?;
     let canonical = dunce::canonicalize(&path).ok()?;
-    if let Some(priv_root) = private_root
-        && canonical.starts_with(priv_root)
-    {
-        return None;
-    }
-    if canonical.starts_with(raw_private_root) {
-        return None;
-    }
-    let rel = canonical.strip_prefix(root).ok()?;
+    let rel = canonical.strip_prefix(canonical_root).ok()?;
     if rel.as_os_str().is_empty() {
         return None;
     }
@@ -1033,11 +1196,6 @@ fn parse_lsp_locations(value: &Value) -> Vec<(String, CodeRange)> {
     } else {
         Vec::new()
     };
-    else_empty(&mut out, items);
-    out
-}
-
-fn else_empty(out: &mut Vec<(String, CodeRange)>, items: Vec<&Value>) {
     for item in items {
         if let (Some(uri), Some(range)) = (
             item.get("uri").and_then(Value::as_str),
@@ -1054,6 +1212,7 @@ fn else_empty(out: &mut Vec<(String, CodeRange)>, items: Vec<&Value>) {
             }
         }
     }
+    out
 }
 
 fn parse_lsp_range(value: &Value) -> Option<CodeRange> {
@@ -1095,108 +1254,165 @@ fn extract_hover_markdown(contents: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worktree::Worktrees;
     use std::fs;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn uses_lsp_when_available_and_filters_outside_workspace_uris() {
-        let workspace = TempDir::new().unwrap();
-        let private = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        fs::write(outside.path().join("leak.rs"), "pub fn secret() {}\n").unwrap();
-        fs::create_dir_all(workspace.path().join("src")).unwrap();
-        fs::write(
-            workspace.path().join("src/lib.rs"),
-            "pub fn greet() -> i32 { 42 }\npub fn caller() -> i32 { greet() }\n",
-        )
-        .unwrap();
+    fn detect_python(bin: &str) -> Option<PathBuf> {
+        let dirs: Vec<PathBuf> = env::var_os("PATH")
+            .map(|p| env::split_paths(&p).collect())
+            .unwrap_or_default();
+        for d in dirs {
+            if let Some(found) = executable_in_dir(&d, bin) {
+                return Some(found);
+            }
+        }
+        None
+    }
 
-        let script_path = outside.path().join("mock_lsp.py");
+    fn write_mock_lsp_script(dir: &Path) -> PathBuf {
+        let script_path = dir.join("mock_lsp.py");
         fs::write(
             &script_path,
-            r#"import json, sys
+            r#"import json, os, sys
 
 def send(obj):
-    raw = json.dumps(obj).encode('utf-8')
-    sys.stdout.buffer.write(f"Content-Length: {len(raw)}\r\n\r\n".encode('ascii') + raw)
+    raw = json.dumps(obj).encode("utf-8")
+    sys.stdout.buffer.write(f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii") + raw)
     sys.stdout.buffer.flush()
 
-root_uri = ""
-leak_uri = sys.argv[1]
+pid_file = sys.argv[1]
+mode = sys.argv[2]
+extra_uri = sys.argv[3]
+with open(pid_file, "w") as f:
+    f.write(str(os.getpid()))
 
+root_uri = ""
 while True:
     headers = {}
     while True:
         line = sys.stdin.buffer.readline()
         if not line:
             sys.exit(0)
-        s = line.decode('ascii').strip()
+        s = line.decode("ascii").strip()
         if not s:
             break
-        k, v = s.split(':', 1)
+        k, v = s.split(":", 1)
         headers[k.lower()] = v.strip()
-    body = sys.stdin.buffer.read(int(headers['content-length']))
-    msg = json.loads(body.decode('utf-8'))
-    method = msg.get('method')
-    if method == 'initialize':
-        root_uri = msg['params']['rootUri']
-        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'capabilities': {}}})
-    elif method == 'textDocument/definition':
-        send({
-            'jsonrpc': '2.0',
-            'id': msg['id'],
-            'result': [
-                {
-                    'uri': leak_uri,
-                    'range': {'start': {'line': 0, 'character': 7}, 'end': {'line': 0, 'character': 13}},
-                },
-                {
-                    'uri': root_uri + '/src/lib.rs',
-                    'range': {'start': {'line': 0, 'character': 7}, 'end': {'line': 0, 'character': 12}},
-                },
-            ],
-        })
-    elif method == 'textDocument/hover':
-        send({
-            'jsonrpc': '2.0',
-            'id': msg['id'],
-            'result': {'contents': {'language': 'rust', 'value': 'pub fn greet() -> i32'}},
-        })
+    body = sys.stdin.buffer.read(int(headers["content-length"]))
+    msg = json.loads(body.decode("utf-8"))
+    method = msg.get("method")
+    if method == "initialize":
+        root_uri = msg["params"]["rootUri"]
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": {}}})
+    elif method == "textDocument/definition":
+        if mode == "external_only":
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                {"uri": extra_uri, "range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 10}}}
+            ]})
+        else:
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                {"uri": extra_uri, "range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 13}}},
+                {"uri": root_uri + "/src/lib.rs", "range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 12}}}
+            ]})
+    elif method == "textDocument/hover":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"contents": {"language": "rust", "value": "pub fn greet() -> i32"}}})
 "#,
         )
         .unwrap();
+        script_path
+    }
 
-        let leak_uri = file_uri(&outside.path().join("leak.rs"));
+    #[tokio::test]
+    async fn resolves_in_managed_worktree_filters_leaks_and_cleans_up_on_drop() {
         let Some(python_exe) = detect_python("python3").or_else(|| detect_python("python")) else {
             return;
         };
+        let private = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("leak.rs"), "pub fn secret() {}\n").unwrap();
+        let pid_file = outside.path().join("server.pid");
+        let script_path = write_mock_lsp_script(outside.path());
 
-        let pool = LspPool::with_override(CustomServerCommand {
-            name: "mock-rust-lsp".into(),
-            executable: python_exe,
-            args: vec![script_path.to_string_lossy().into_owned(), leak_uri],
-        });
+        // Managed worktree lives inside `<private_root>/subagent-worktrees/...`.
+        let origin_repo = TempDir::new().unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "T"][..],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(origin_repo.path())
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::create_dir_all(origin_repo.path().join("src")).unwrap();
+        fs::write(
+            origin_repo.path().join("src/lib.rs"),
+            "pub fn greet() -> i32 { 42 }\npub fn caller() -> i32 { greet() }\n",
+        )
+        .unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(origin_repo.path())
+                .args(["add", "."])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(origin_repo.path())
+                .args(["commit", "-q", "-m", "init"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let manager = Worktrees::open(&private.path().join("subagent-worktrees")).unwrap();
+        let binding = manager
+            .plan(
+                origin_repo.path(),
+                &"1".repeat(64),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        manager.ensure(&binding, &AtomicBool::new(false)).unwrap();
 
-        let (canonical, obs) = crate::directory::capture(workspace.path()).unwrap();
+        let control_dir = private.path().join("control");
+        fs::create_dir_all(&control_dir).unwrap();
+        let (canonical, obs) = crate::directory::capture(binding.directory()).unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let dir = Arc::new(
             Directory::open(
                 &canonical,
                 &obs,
                 private.path(),
-                private.path(),
-                None,
+                &control_dir,
+                Some(&binding),
                 None,
                 &cancel,
             )
             .unwrap(),
         );
-        // Pass an unmaterialized private_root subdirectory to ensure fresh sessions still use LSP.
-        let uncreated_private = private.path().join("uncreated-session-private");
+        let leak_uri = file_uri(&outside.path().join("leak.rs"));
+        let pool = LspPool::with_override(CustomServerCommand {
+            name: "mock-rust-lsp".into(),
+            executable: python_exe,
+            args: vec![
+                script_path.to_string_lossy().into_owned(),
+                pid_file.to_string_lossy().into_owned(),
+                "normal".into(),
+                leak_uri,
+            ],
+        });
+
         let ctx = LspRequestContext {
-            workspace_root: workspace.path().to_path_buf(),
-            private_root: uncreated_private,
             directory: dir,
+            allow_lsp: true,
             cancel,
         };
         let lib_path = WorkspacePath::from_bytes(b"src/lib.rs").unwrap();
@@ -1221,28 +1437,137 @@ while True:
         );
         assert_eq!(res.locations.len(), 1);
         assert_eq!(res.locations[0].path, lib_path);
-        assert_eq!(res.locations[0].range.start.line, 0);
 
-        let hov = pool
-            .hover(
-                &ctx,
-                &lib_path,
-                CodePosition {
-                    line: 1,
-                    column: 26,
-                },
-            )
-            .await
+        let pid: i32 = fs::read_to_string(&pid_file)
             .unwrap()
+            .trim()
+            .parse()
             .unwrap();
-        assert!(hov.markdown.contains("pub fn greet() -> i32"));
-        pool.shutdown_all();
+        // Drop pool directly without calling `shutdown_all()` and verify subprocess termination.
+        drop(pool);
+        #[cfg(unix)]
+        {
+            let mut exited = false;
+            for _ in 0..40 {
+                // SAFETY: `kill(pid, 0)` only probes process existence.
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    exited = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            assert!(
+                exited,
+                "LSP child process {pid} leaked after dropping LspPool"
+            );
+        }
     }
 
-    fn detect_python(bin: &str) -> Option<PathBuf> {
-        let dirs: Vec<PathBuf> = env::var_os("PATH")
-            .map(|p| env::split_paths(&p).collect())
-            .unwrap_or_default();
-        dirs.into_iter().find_map(|d| executable_in_dir(&d, bin))
+    #[tokio::test]
+    async fn authoritative_external_lsp_result_does_not_jump_to_workspace_homonym_and_read_only_skips_lsp()
+     {
+        let Some(python_exe) = detect_python("python3").or_else(|| detect_python("python")) else {
+            return;
+        };
+        let workspace = TempDir::new().unwrap();
+        let private = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("stdlib.rs"), "pub fn new() {}\n").unwrap();
+        fs::create_dir_all(workspace.path().join("src")).unwrap();
+        fs::write(
+            workspace.path().join("src/other.rs"),
+            "pub fn new() -> u32 { 99 }\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace.path().join("src/lib.rs"),
+            "pub fn make() { let _ = Vec::<u8>::new(); }\n",
+        )
+        .unwrap();
+
+        let pid_file = outside.path().join("ext.pid");
+        let script_path = write_mock_lsp_script(outside.path());
+        let stdlib_uri = file_uri(&outside.path().join("stdlib.rs"));
+        let pool = LspPool::with_override(CustomServerCommand {
+            name: "mock-rust-lsp".into(),
+            executable: python_exe,
+            args: vec![
+                script_path.to_string_lossy().into_owned(),
+                pid_file.to_string_lossy().into_owned(),
+                "external_only".into(),
+                stdlib_uri,
+            ],
+        });
+
+        let (canonical, obs) = crate::directory::capture(workspace.path()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let dir = Arc::new(
+            Directory::open(
+                &canonical,
+                &obs,
+                private.path(),
+                private.path(),
+                None,
+                None,
+                &cancel,
+            )
+            .unwrap(),
+        );
+        let lib_path = WorkspacePath::from_bytes(b"src/lib.rs").unwrap();
+
+        // 1. Read-only context must not spawn external LSP.
+        let ro_ctx = LspRequestContext {
+            directory: dir.clone(),
+            allow_lsp: false,
+            cancel: cancel.clone(),
+        };
+        let ro_res = pool
+            .definition(
+                &ro_ctx,
+                &lib_path,
+                CodePosition {
+                    line: 0,
+                    column: 36,
+                },
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ro_res.backend, CodeBackend::Indexed);
+        assert!(
+            !pid_file.exists(),
+            "read-only session must not spawn external LSP"
+        );
+
+        // 2. Writable context uses LSP and keeps authoritative empty result when target is outside workspace.
+        let rw_ctx = LspRequestContext {
+            directory: dir,
+            allow_lsp: true,
+            cancel,
+        };
+        let rw_res = pool
+            .definition(
+                &rw_ctx,
+                &lib_path,
+                CodePosition {
+                    line: 0,
+                    column: 36,
+                },
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rw_res.backend,
+            CodeBackend::Lsp {
+                server: "mock-rust-lsp".into()
+            }
+        );
+        assert!(
+            rw_res.locations.is_empty(),
+            "must not fall back to unrelated src/other.rs::new()"
+        );
     }
 }

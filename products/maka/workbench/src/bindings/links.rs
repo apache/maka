@@ -135,14 +135,32 @@ fn destination(target: &str) -> Result<Destination, String> {
     if target.is_empty() || target.chars().any(char::is_control) {
         return Err("The link is empty or contains control characters.".into());
     }
-    // Check relative colon syntax (e.g. `src/foo.rs:12:4`) before Url::parse mistakes `src/...` or `foo:12` for a scheme.
+    // Distinguish RFC 3986 URI schemes (`javascript:1`, `tel:12345`, `vscode.git:foo`, `https://...`)
+    // from workspace-relative `path:line[:col]` links (`src/foo.rs:12:4`, `Cargo.toml:8`).
     let looks_like_scheme = target.split_once(':').is_some_and(|(head, tail)| {
-        !head.is_empty()
-            && !head.contains(['/', '.', '\\'])
+        let valid_scheme = head.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
             && head
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-'))
-            && (tail.starts_with('/') || !tail.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
+        if !valid_scheme {
+            return false;
+        }
+        let numeric_line_tail = {
+            let before_frag = tail.split(['?', '#']).next().unwrap_or_default();
+            !before_frag.is_empty()
+                && before_frag
+                    .split(':')
+                    .take(3)
+                    .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
+                && before_frag.split(':').count() <= 2
+        };
+        if !numeric_line_tail {
+            return true;
+        }
+        // `head:digits` without `/`: treat as root-level file (`Cargo.toml:12`, `Makefile:9`)
+        // only when `head` has an extension or starts uppercase; lowercase bare tokens like
+        // `javascript:1` or `tel:12345` remain URI schemes and are rejected below.
+        !head.contains('.') && !head.as_bytes()[0].is_ascii_uppercase()
     });
     if looks_like_scheme || target.starts_with("//") {
         let url = Url::parse(target)
@@ -364,6 +382,10 @@ mod tests {
         assert_eq!(STANDARD.decode(path.bytes_base64).unwrap(), b"a#b.txt");
         for invalid in [
             "javascript:alert(1)",
+            "javascript:1",
+            "tel:12345",
+            "vscode.git:clone",
+            "C:/Users/example/a.rs",
             "data:text/plain,body",
             "file:///tmp/a",
             "//example.test/a",

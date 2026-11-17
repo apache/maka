@@ -29,7 +29,7 @@ const native = {
   locale: `export const tr = key => key;`,
   workspaceFileState: `export const createWorkspaceFiles = (_host, options) => ({ sessionId: options.sessionId });`,
   CurrentFile: `export const createCurrentFile = (_host, target) => ({target, anchorValue: target.anchor, setAnchor(next) { this.anchorValue = next; }, activate() {}, suspend() {}, dispose() {this.disposed = true;}});`,
-  currentDiffState: `export const createCurrentDiff = (_host, target) => ({target, state: () => ({ kind: 'loading' }), position: { x: 0, y: 0 }, refresh: async () => {}, dispose() { this.disposed = true; }});`,
+  currentDiffState: `export const createCurrentDiff = (_host, target) => ({target, anchorValue: target.anchor, anchor() { return this.anchorValue; }, setAnchor(next) { this.anchorValue = next; }, state: () => ({ kind: 'loading' }), position: { x: 0, y: 0 }, refresh: async () => {}, dispose() { this.disposed = true; }});`,
   terminalState: `
     export const completed = reply => reply.value;
     export const terminalRunning = entry => entry.result.status === 'running';
@@ -205,11 +205,12 @@ test('window commands follow the focused pane and stop targeting a removed pane'
 });
 
 test('review navigation preserves workspace file:// anchors, history back/forward, and review batch formatting', async (t) => {
-  const { formatReviewBatch, extractLineIdentifiers } = await import(
+  const { formatReviewBatch, extractLineIdentifiers, relativizeWorkspaceFileUrl } = await import(
     new URL('reviewState.ts', appRoot)
   );
   globalThis.resourceScope = [];
-  const sessions = signal(['A']);
+  const sessions = signal(['A', 'B']);
+  let allowSend = true;
   const prompts = [];
   const openedTargets = [];
   const resources = createResources(
@@ -226,6 +227,7 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
       blocked: () => false,
       directory: () => '/Users/test/project',
       prompt: (sessionId, action) => {
+        if (action.mode === 'send' && !allowSend) return false;
         prompts.push({ sessionId, ...action });
         return true;
       },
@@ -278,9 +280,54 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
   assert.match(formatted, /```rust/);
   assert.match(formatted, /Move I\/O outside the mutex guard\./);
 
+  // Jumping to a diff review note updates the diff anchor even when the diff tab is already open.
+  resources.jumpToNote(note);
+  assert.equal(resources.activeTab().kind, 'diff');
+  assert.equal(resources.activeTab().model.anchorValue.line, 9);
+  assert.equal(resources.activeTab().model.anchorValue.endLine, 11);
+
+  // Blocked sends return false so callers retain unsent review notes.
+  allowSend = false;
+  assert.equal(resources.deliverPrompt('A', formatted, 'send'), false);
+  assert.equal(prompts.length, 0);
+
+  allowSend = true;
   assert.equal(resources.deliverPrompt('A', formatted, 'send'), true);
   assert.equal(prompts.length, 1);
   assert.equal(prompts[0].mode, 'send');
+
+  // Nested triple-backtick excerpts expand outer fence to avoid breaking Markdown blocks.
+  const mdNote = resources.reviewStore.upsertNote({
+    sessionId: 'B',
+    path,
+    pathLabel: 'docs/guide.md',
+    side: 'new',
+    startLine: 0,
+    endLine: 2,
+    excerpt: '```ts\nconst x = 1;\n```',
+    comment: 'Clarify example.',
+  });
+  const mdFormatted = formatReviewBatch([mdNote]);
+  assert.ok(mdFormatted.includes('````markdown\n```ts'), mdFormatted);
+
+  // Windows file:///C:/... and '#'/'?' percent-encoded filenames relativize without corrupting anchors.
+  assert.equal(
+    relativizeWorkspaceFileUrl('file:///C:/Users/dev/repo/src/main.rs#L12', 'C:\\Users\\dev\\repo'),
+    'src/main.rs#L12',
+  );
+  assert.equal(
+    relativizeWorkspaceFileUrl(
+      'file:///Users/test/project/docs/a%23b.md#L10',
+      '/Users/test/project',
+    ),
+    'docs/a%23b.md#L10',
+  );
+
+  // Closing session B prunes its review store entries.
+  assert.equal(resources.reviewStore.notes('B').length, 1);
+  sessions.set(['A']);
+  assert.equal(resources.reviewStore.notes('B').length, 0);
+
   assert.deepEqual(extractLineIdentifiers('pub async fn read_git(repo: &Repository)'), [
     'read_git',
     'repo',

@@ -168,6 +168,7 @@ export function createResources(
       if (pendingPreview && !sessions.includes(pendingPreview.sessionId)) pendingPreview = null;
       for (const id of headers.keys()) if (!sessions.includes(id)) headers.delete(id);
       for (const id of lastTerminal.keys()) if (!sessions.includes(id)) lastTerminal.delete(id);
+      reviewStore.pruneSessions(sessions);
     });
   });
 
@@ -243,16 +244,23 @@ export function createResources(
 
   const openDiff = (target: CurrentDiffTarget, restoreFocus?: () => boolean) => {
     if (!admits(target.sessionId)) return;
+    const stampedAnchor = target.anchor ? { ...target.anchor, nonce: ++anchorNonce } : undefined;
+    const enriched: CurrentDiffTarget = stampedAnchor
+      ? { ...target, anchor: stampedAnchor }
+      : target;
     const identity = `diff:${target.area}:${target.path.bytesBase64}`;
-    open(target.sessionId, identity, (instance) => ({
+    const tab = open(target.sessionId, identity, (instance) => ({
       kind: 'diff',
       instance,
       identity,
       sessionId: target.sessionId,
       title: `${target.title} (${tr('Review')})`,
-      model: createCurrentDiff(host, target),
+      model: createCurrentDiff(host, enriched),
     }));
-    recordStep({ kind: 'diff', target });
+    if (tab?.kind === 'diff' && stampedAnchor) {
+      tab.model.setAnchor?.(stampedAnchor);
+    }
+    recordStep({ kind: 'diff', target: enriched });
     if (restoreFocus) {
       const fallback = headerOpener(target.sessionId);
       opener = () => restoreFocus() || fallback();
@@ -451,7 +459,11 @@ export function createResources(
         area: note.area,
         path: note.path,
         title: note.pathLabel,
-        anchorLine: note.startLine,
+        anchor: {
+          side: note.side,
+          line: note.startLine,
+          endLine: note.endLine,
+        },
       });
     } else {
       openFile({

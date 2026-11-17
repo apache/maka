@@ -676,4 +676,23 @@ fn workspace_diff_combines_changed_files_and_counts_binary_skips() {
     .unwrap();
     assert_eq!(worktree_only.skipped_files, 0);
     assert!(worktree_only.patch.contains("+fn a() -> i32 { 10 }"));
+
+    // Stage a.rs=10, then edit worktree a.rs=100; All-area workspace_diff emits one HEAD->worktree diff.
+    git(&f.root, &["add", "a.rs"]);
+    fs::write(
+        f.root.join("a.rs"),
+        "fn a() -> i32 { 100 }
+",
+    )
+    .unwrap();
+    let combined = workspace_diff(&f.root, &f.identity, &f.private, None, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        combined.patch.matches(r#"diff --git "a/a.rs""#).count(),
+        1,
+        "must not emit duplicate file sections when staged and worktree both touch a.rs"
+    );
+    assert!(combined.patch.contains("-fn a() -> i32 { 1 }"));
+    assert!(combined.patch.contains("+fn a() -> i32 { 100 }"));
 }

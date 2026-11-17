@@ -153,17 +153,37 @@ pub fn workspace_diff(
         let mut combined = String::new();
         let mut truncated = false;
         let mut skipped_files = 0_u64;
+        let mut multi_area = std::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new();
+        if area.is_none() {
+            let mut first_seen = std::collections::HashSet::new();
+            for entry in &status.entries {
+                if !first_seen.insert(entry.path.bytes_base64.as_str()) {
+                    multi_area.insert(entry.path.bytes_base64.clone());
+                }
+            }
+        }
         for entry in status.entries {
             interrupted(&repo.cancel)?;
             if area.is_some_and(|wanted| wanted != entry.area) {
+                continue;
+            }
+            let combine_head_to_worktree =
+                area.is_none() && multi_area.contains(&entry.path.bytes_base64);
+            if area.is_none() && !seen.insert(entry.path.bytes_base64.clone()) {
+                continue;
+            }
+            if truncated {
+                skipped_files += 1;
                 continue;
             }
             let bytes = entry
                 .path
                 .bytes()
                 .map_err(|_| failure("git_invalid_path"))?;
-            match diff::read(&repo, entry.area, &bytes)? {
-                GitDiff::Text { patch, .. } => {
+            match diff::read_patch_from_status(&repo, entry.area, &bytes, combine_head_to_worktree)?
+            {
+                diff::PatchDiff::Text(patch) => {
                     if combined.len() + patch.len() > MAX_PATCH_BYTES {
                         truncated = true;
                         skipped_files += 1;
@@ -171,10 +191,10 @@ pub fn workspace_diff(
                         combined.push_str(&patch);
                     }
                 }
-                GitDiff::Binary | GitDiff::Unsupported => {
+                diff::PatchDiff::Binary | diff::PatchDiff::Unsupported => {
                     skipped_files += 1;
                 }
-                GitDiff::Unchanged => {}
+                diff::PatchDiff::Unchanged => {}
             }
         }
         repo.finish()?;

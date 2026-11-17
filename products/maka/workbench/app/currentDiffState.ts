@@ -22,12 +22,19 @@ import type { GitArea, GitDiff, WorkspacePath } from '../../../../packages/plugi
 import type { Host } from './host';
 import { errorText, type UiText } from './text';
 
+export type DiffAnchor = {
+  side: 'old' | 'new';
+  line: number;
+  endLine?: number;
+  nonce?: number;
+};
+
 export type CurrentDiffTarget = {
   sessionId: string;
   area: GitArea;
   path: WorkspacePath;
   title: string;
-  anchorLine?: number;
+  anchor?: DiffAnchor;
 };
 
 export type DiffState =
@@ -40,6 +47,8 @@ export type DiffState =
 export type CurrentDiffModel = {
   target: CurrentDiffTarget;
   state(): DiffState;
+  anchor(): DiffAnchor | undefined;
+  setAnchor(anchor: DiffAnchor | undefined): void;
   position: { x: number; y: number };
   refresh(): Promise<void>;
   dispose(): void;
@@ -47,6 +56,7 @@ export type CurrentDiffModel = {
 
 export function createCurrentDiff(host: Host, target: CurrentDiffTarget): CurrentDiffModel {
   const state = signal<DiffState>({ kind: 'loading' });
+  const anchor = signal<DiffAnchor | undefined>(target.anchor);
   let generation = 0;
   let alive = true;
   let previous: GitDiff | null | undefined;
@@ -91,6 +101,10 @@ export function createCurrentDiff(host: Host, target: CurrentDiffTarget): Curren
   const model: CurrentDiffModel = {
     target,
     state,
+    anchor,
+    setAnchor(next) {
+      anchor.set(next);
+    },
     position: { x: 0, y: 0 },
     refresh,
     dispose() {
