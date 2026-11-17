@@ -190,7 +190,7 @@ pub struct SessionReadInput {
     #[serde(default)]
     pub view: SessionTranscriptView,
     #[serde(default)]
-    pub position: SessionWindowPosition,
+    pub position: Option<SessionWindowPosition>,
     /// Opaque pagination token (beforeCursor or afterCursor) from a previous SessionRead.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -198,7 +198,7 @@ pub struct SessionReadInput {
     #[serde(default)]
     pub message_id: Option<String>,
     #[serde(default)]
-    pub anchor: RoomAnchorMode,
+    pub anchor: Option<RoomAnchorMode>,
     /// Exact historical row lookup emitted by Recall or Code Mode cell references.
     #[serde(default)]
     pub row: Option<SessionRowLookup>,
@@ -211,6 +211,8 @@ pub struct SessionRunOverview {
     pub run_id: RunId,
     pub state: String,
     pub stopped: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blockers: Vec<String>,
 }
@@ -330,10 +332,6 @@ pub enum SessionWorkspaceTarget {
         #[serde(default)]
         path: Option<String>,
     },
-    IsolatedGit {
-        #[schemars(length(min = 1))]
-        path: String,
-    },
     Directory {
         #[schemars(length(min = 1))]
         path: String,
@@ -370,17 +368,17 @@ pub struct SessionCreateInput {
     #[schemars(length(min = 1))]
     pub title: String,
     #[serde(default)]
-    pub kind: SessionKind,
+    pub kind: Option<SessionKind>,
     #[serde(default)]
     pub labels: Vec<String>,
     #[serde(default)]
-    pub workspace: SessionWorkspaceTarget,
+    pub workspace: Option<SessionWorkspaceTarget>,
     #[serde(default)]
     pub preset_id: Option<crate::preset::PresetId>,
     #[serde(default)]
     pub backend: Option<BackendPreference>,
     #[serde(default)]
-    pub automatic_title: bool,
+    pub automatic_title: Option<bool>,
     #[serde(default)]
     #[schemars(extend("uniqueItems" = true))]
     pub tools: Option<Vec<String>>,

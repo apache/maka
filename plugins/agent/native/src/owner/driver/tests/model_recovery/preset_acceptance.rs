@@ -23,6 +23,7 @@ mod rooms;
 enum ModelReply {
     Stream(String),
     RateLimited,
+    Fatal(String),
 }
 fn completion(delta: Value, finish: &str) -> ModelReply {
     ModelReply::Stream(super::bot_tools::completion(delta, finish))
@@ -61,6 +62,12 @@ impl Provider {
                             axum::http::StatusCode::TOO_MANY_REQUESTS,
                             [("retry-after", "0")],
                             "rate limited",
+                        )
+                            .into_response(),
+                        Ok(ModelReply::Fatal(message)) => (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            [("content-type", "application/json")],
+                            serde_json::json!({"error": {"message": message, "type": "invalid_request_error"}}).to_string(),
                         )
                             .into_response(),
                         Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),

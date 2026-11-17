@@ -22,11 +22,8 @@ use super::*;
 use crate::service;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use maka_agent_facts::{
-    history::HistoryRowAddress,
-    message::MessageOrigin,
-    read::{ResourceAddress, imported_tool_result_path},
-    room::RoomAuthor,
-    session::ForkPosition,
+    durable::Terminal, history::HistoryRowAddress, message::MessageOrigin, read::ResourceAddress,
+    room::RoomAuthor, session::ForkPosition,
 };
 use maka_agent_ports::session::history as wire;
 use maka_capabilities::call::Scope;
@@ -40,12 +37,16 @@ enum OpaqueSessionCursor {
         cursor: wire::Cursor,
         #[serde(default)]
         raw: bool,
+        #[serde(default)]
+        include_thinking: bool,
     },
     AgentAfter {
         through: Option<u64>,
         cursor: wire::Cursor,
         #[serde(default)]
         raw: bool,
+        #[serde(default)]
+        include_thinking: bool,
     },
     RoomBefore {
         through: u64,
@@ -113,7 +114,12 @@ fn tool_result_path(session_id: &str, position: &HistoryRowAddress) -> Option<St
         }
         .canonical_path()
         .ok(),
-        HistoryRowAddress::Imported { .. } => imported_tool_result_path(position).ok(),
+        HistoryRowAddress::Imported { .. } => ResourceAddress::SessionImportedToolResult {
+            session_id: session_id.to_owned(),
+            address: position.clone(),
+        }
+        .canonical_path()
+        .ok(),
         HistoryRowAddress::Snapshot { .. } => None,
     }
 }
@@ -122,6 +128,7 @@ fn chunk_to_entry(
     session_id: &str,
     chunk: HistoryChunk,
     include_byte_bounds: bool,
+    include_thinking: bool,
 ) -> Option<AgentTranscriptEntry> {
     let sliced =
         include_byte_bounds || chunk.offset > 0 || chunk.total_bytes > chunk.text.len() as u64;
@@ -140,11 +147,16 @@ fn chunk_to_entry(
             text: chunk.text,
         }),
         wire::Role::Assistant => {
-            if chunk.field == wire::HistoryField::Thinking {
-                return None;
-            }
+            let role = if chunk.field == wire::HistoryField::Thinking {
+                if !include_thinking || chunk.text.is_empty() {
+                    return None;
+                }
+                "thinking"
+            } else {
+                "assistant"
+            };
             Some(AgentTranscriptEntry {
-                role: "assistant".into(),
+                role: role.into(),
                 turn_id: chunk.turn_id,
                 message_id: chunk.message_id,
                 tool_name: None,
@@ -155,21 +167,54 @@ fn chunk_to_entry(
                 text: chunk.text,
             })
         }
+        wire::Role::Failure => {
+            if chunk.text.is_empty() {
+                None
+            } else {
+                Some(AgentTranscriptEntry {
+                    role: "failure".into(),
+                    turn_id: chunk.turn_id,
+                    message_id: chunk.message_id,
+                    tool_name: None,
+                    status: None,
+                    result_path: None,
+                    offset,
+                    total_bytes,
+                    text: chunk.text,
+                })
+            }
+        }
+        wire::Role::Compaction => {
+            if chunk.text.is_empty() {
+                None
+            } else {
+                Some(AgentTranscriptEntry {
+                    role: "compaction".into(),
+                    turn_id: chunk.turn_id,
+                    message_id: chunk.message_id,
+                    tool_name: None,
+                    status: None,
+                    result_path: None,
+                    offset,
+                    total_bytes,
+                    text: chunk.text,
+                })
+            }
+        }
         wire::Role::ToolCall => {
             let tool = chunk.tool?;
             let call = tool.call.as_ref();
             if call.is_some_and(|c| !c.ancestor_tool_use_ids.is_empty()) && chunk.text.is_empty() {
                 return None;
             }
-            let (status, result_path) = match &tool.result {
+            let (status, result_path) = match tool.result.as_ref() {
                 Some(res) => {
                     let st = if res.is_error {
                         "error".to_owned()
                     } else {
                         enum_snake(&res.settlement)
                     };
-                    let path = tool_result_path(session_id, &res.position);
-                    (Some(st), path)
+                    (Some(st), tool_result_path(session_id, &res.position))
                 }
                 None => (
                     Some(
@@ -260,7 +305,7 @@ impl Owner {
         scope: &Scope,
     ) -> Result<SessionListOutput, String> {
         let limit = input.limit.unwrap_or(25).clamp(1, 100);
-        let (list_scope, include_archived, only_archived) = match input.scope {
+        let (list_scope, only_archived, include_archived) = match input.scope {
             SessionToolScope::All => (SessionListScope::All, false, false),
             SessionToolScope::Archived => (SessionListScope::All, true, true),
             SessionToolScope::Children => {
@@ -272,10 +317,10 @@ impl Owner {
                 )
             }
         };
-        let mut position = match input.cursor.filter(|c| !c.trim().is_empty()) {
-            Some(cursor) => SessionPosition::At { cursor },
-            None => SessionPosition::Start,
-        };
+        let mut exclusive_after = input
+            .cursor
+            .map(|c| c.trim().to_owned())
+            .filter(|c| !c.is_empty());
         let query_lower = input
             .query
             .as_deref()
@@ -294,11 +339,21 @@ impl Owner {
 
         while matched.len() < limit && pages_scanned < 16 {
             pages_scanned += 1;
+            let position = match &exclusive_after {
+                Some(cursor) => SessionPosition::At {
+                    cursor: cursor.clone(),
+                },
+                None => SessionPosition::Start,
+            };
             let page = service::catalog_page_for_tool(
                 self,
                 &List {
                     kind: input.kind.clone(),
-                    filter: SessionFilter::All,
+                    filter: if only_archived {
+                        SessionFilter::Archived
+                    } else {
+                        SessionFilter::All
+                    },
                     include_archived,
                     roots_only: false,
                     position,
@@ -309,12 +364,15 @@ impl Owner {
             .await
             .map_err(humanize_agent_error)?;
 
-            let page_after = page.after.clone();
+            let page_after = page.after;
             let items = page.sessions;
+            let mut progressed = false;
             for (idx, session) in items.iter().enumerate() {
-                if only_archived && !session.archived {
+                if exclusive_after.as_deref() == Some(session.id.as_str()) {
+                    exclusive_after = None;
                     continue;
                 }
+                progressed = true;
                 if let Some(expected_activity) = &input.activity
                     && !matches!(
                         (&session.activity, expected_activity),
@@ -344,22 +402,21 @@ impl Owner {
                 }
                 matched.push(SessionSummary::from(session.clone()));
                 if matched.len() == limit {
-                    next_cursor = items
-                        .get(idx + 1)
-                        .map(|s| s.id.clone())
-                        .or_else(|| page_after.clone());
+                    let has_more = idx + 1 < items.len() || page_after.is_some();
+                    next_cursor = has_more.then(|| session.id.clone());
                     break;
                 }
             }
             if matched.len() == limit {
                 break;
             }
+            if !progressed {
+                next_cursor = None;
+                break;
+            }
             match page_after {
                 Some(after_id) => {
-                    position = SessionPosition::After {
-                        revision: page.revision,
-                        cursor: after_id.clone(),
-                    };
+                    exclusive_after = Some(after_id.clone());
                     next_cursor = Some(after_id);
                 }
                 None => {
@@ -380,6 +437,21 @@ impl Owner {
         input: SessionReadInput,
         scope: &Scope,
     ) -> Result<SessionReadOutput, String> {
+        let cursor = input.cursor.filter(|c| !c.trim().is_empty());
+        let message_id = input.message_id.filter(|m| !m.trim().is_empty());
+        let locator_count = u8::from(input.position.is_some())
+            + u8::from(cursor.is_some())
+            + u8::from(message_id.is_some())
+            + u8::from(input.row.is_some());
+        if locator_count > 1 {
+            return Err(
+                "Specify at most one of position, cursor, messageId, or row in SessionRead".into(),
+            );
+        }
+        if input.anchor.is_some() && message_id.is_none() {
+            return Err("anchor requires messageId in SessionRead".into());
+        }
+
         let session_id = self.resolve_caller_or_target(input.session_id, scope)?;
         let observed = service::history_observation_for_tool(
             self,
@@ -392,6 +464,17 @@ impl Owner {
         .map_err(humanize_agent_error)?;
 
         let is_room = matches!(observed.session.kind, SessionKind::Room);
+        if is_room && input.row.is_some() {
+            return Err(
+                "row is only valid for Agent conversations, not Rooms; use messageId or cursor for Rooms".into(),
+            );
+        }
+        if !is_room && (message_id.is_some() || input.anchor.is_some()) {
+            return Err(
+                "messageId and anchor are only valid for Rooms; use position, cursor, or row for Agent conversations".into(),
+            );
+        }
+
         let summary = SessionSummary::from(observed.session);
 
         let mut run_overview = None;
@@ -403,7 +486,7 @@ impl Owner {
                 {
                     let mut preview: String = work.answer.text.chars().take(800).collect();
                     if work.answer.next.is_some() || work.answer.text.chars().count() > 800 {
-                        preview.push_str("…");
+                        preview.push('…');
                     }
                     live_output_preview = Some(preview);
                 }
@@ -421,6 +504,7 @@ impl Owner {
                     run_id: active_run.run_id,
                     state: enum_snake(&active_run.state),
                     stopped,
+                    error: None,
                     blockers,
                 });
             } else if let Ok(Some(latest_id)) = self.durable.latest_run(session_id.clone()).await
@@ -431,10 +515,26 @@ impl Owner {
                     None if view.stopped => "stopped".into(),
                     None => "running".into(),
                 };
+                let mut error = view.recovery_failure().and_then(|f| {
+                    serde_json::to_value(f)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("diagnostic")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .or_else(|| serde_json::to_string(f).ok())
+                });
+                if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
+                    error = self
+                        .history_run_snippet(&session_id, latest_id, &Terminal::Failed)
+                        .await;
+                }
                 run_overview = Some(SessionRunOverview {
                     run_id: latest_id,
                     state,
                     stopped: view.stopped,
+                    error,
                     blockers: Vec::new(),
                 });
             }
@@ -458,8 +558,8 @@ impl Owner {
         let mut queued_messages = Vec::new();
         let mut queue_revision = None;
         if !is_room && let Ok(q) = self.queue(&session_id).await {
-            queue_revision = Some(q.revision);
             let caller_id = scope.identity.agent().map(|e| e.session_id.as_str());
+            queue_revision = Some(q.revision);
             for entry in q.entries {
                 let editable = match caller_id {
                     None => true,
@@ -476,20 +576,10 @@ impl Owner {
             }
         }
 
-        if input.view == SessionTranscriptView::StatusOnly {
-            return Ok(SessionReadOutput {
-                session: summary,
-                run: run_overview,
-                pending_interactions,
-                queued_messages,
-                queue_revision,
-                live_output_preview,
-                transcript: None,
-            });
-        }
-
-        let transcript = if is_room {
-            let (through, pos) = if let Some(cur) = input.cursor.as_deref() {
+        let transcript = if matches!(input.view, SessionTranscriptView::StatusOnly) {
+            None
+        } else if is_room {
+            let (through, pos) = if let Some(cur) = cursor.as_deref() {
                 match decode_cursor(cur)? {
                     OpaqueSessionCursor::RoomBefore {
                         through,
@@ -501,18 +591,19 @@ impl Owner {
                     } => (Some(through), wire::Position::AfterMessage { message_id }),
                     _ => return Err("Cursor belongs to an Agent session, not a Room".into()),
                 }
-            } else if let Some(message_id) = input.message_id {
-                let p = match input.anchor {
-                    RoomAnchorMode::At => wire::Position::Message { message_id },
-                    RoomAnchorMode::Before => wire::Position::BeforeMessage { message_id },
-                    RoomAnchorMode::After => wire::Position::AfterMessage { message_id },
+            } else if let Some(mid) = message_id {
+                let pos = match input.anchor.unwrap_or(RoomAnchorMode::At) {
+                    RoomAnchorMode::At => wire::Position::Message { message_id: mid },
+                    RoomAnchorMode::Before => wire::Position::BeforeMessage { message_id: mid },
+                    RoomAnchorMode::After => wire::Position::AfterMessage { message_id: mid },
+                };
+                (None, pos)
+            } else {
+                let p = match input.position.unwrap_or(SessionWindowPosition::Tail) {
+                    SessionWindowPosition::Tail => wire::Position::Tail,
+                    SessionWindowPosition::Start => wire::Position::Start,
                 };
                 (None, p)
-            } else {
-                match input.position {
-                    SessionWindowPosition::Tail => (None, wire::Position::Tail),
-                    SessionWindowPosition::Start => (None, wire::Position::Start),
-                }
             };
 
             let page = service::history_read_for_tool(
@@ -566,23 +657,26 @@ impl Owner {
                 HistoryPage::Ready { .. } => None,
             }
         } else {
-            let (through, pos, hist_view, is_raw) = if let Some(row) = input.row {
+            let (through, pos, hist_view, is_raw, include_thinking) = if let Some(row) = input.row {
+                let inc_thinking = row.field == wire::HistoryField::Thinking;
                 (
-                    row.through,
+                    Some(row.through.unwrap_or(observed.through)),
                     wire::Position::Row {
                         position: row.position,
                         field: row.field,
                     },
                     wire::HistoryView::Text,
                     true,
+                    inc_thinking,
                 )
-            } else if let Some(cur) = input.cursor.as_deref() {
+            } else if let Some(cur) = cursor.as_deref() {
                 let explicit_raw = matches!(input.view, SessionTranscriptView::Raw);
                 match decode_cursor(cur)? {
                     OpaqueSessionCursor::AgentBefore {
                         through,
                         cursor,
                         raw,
+                        include_thinking,
                     } => {
                         let use_raw = raw || explicit_raw;
                         let view = if use_raw {
@@ -590,12 +684,19 @@ impl Owner {
                         } else {
                             wire::HistoryView::Conversation
                         };
-                        (through, wire::Position::Before { cursor }, view, use_raw)
+                        (
+                            through,
+                            wire::Position::Before { cursor },
+                            view,
+                            use_raw,
+                            include_thinking,
+                        )
                     }
                     OpaqueSessionCursor::AgentAfter {
                         through,
                         cursor,
                         raw,
+                        include_thinking,
                     } => {
                         let use_raw = raw || explicit_raw;
                         let view = if use_raw {
@@ -603,7 +704,13 @@ impl Owner {
                         } else {
                             wire::HistoryView::Conversation
                         };
-                        (through, wire::Position::After { cursor }, view, use_raw)
+                        (
+                            through,
+                            wire::Position::After { cursor },
+                            view,
+                            use_raw,
+                            include_thinking,
+                        )
                     }
                     _ => return Err("Cursor belongs to a Room, not an Agent session".into()),
                 }
@@ -614,11 +721,11 @@ impl Owner {
                 } else {
                     wire::HistoryView::Conversation
                 };
-                let p = match input.position {
+                let p = match input.position.unwrap_or(SessionWindowPosition::Tail) {
                     SessionWindowPosition::Tail => wire::Position::Tail,
                     SessionWindowPosition::Start => wire::Position::Start,
                 };
-                (None, p, view, use_raw)
+                (None, p, view, use_raw, false)
             };
 
             let page = service::history_read_for_tool(
@@ -628,7 +735,7 @@ impl Owner {
                     session_id: session_id.clone(),
                     through,
                     position: pos,
-                    include_thinking: false,
+                    include_thinking,
                     view: hist_view,
                 },
             )
@@ -647,6 +754,7 @@ impl Owner {
                             through,
                             cursor,
                             raw: is_raw,
+                            include_thinking,
                         })
                     });
                     let after_cursor = after.and_then(|cursor| {
@@ -654,11 +762,12 @@ impl Owner {
                             through,
                             cursor,
                             raw: is_raw,
+                            include_thinking,
                         })
                     });
                     let items = chunks
                         .into_iter()
-                        .filter_map(|c| chunk_to_entry(&session_id, c, is_raw))
+                        .filter_map(|c| chunk_to_entry(&session_id, c, is_raw, include_thinking))
                         .collect();
                     Some(SessionTranscript::Agent {
                         items,
@@ -684,83 +793,95 @@ impl Owner {
     pub async fn render_session_markdown(
         self: &Arc<Self>,
         session_id: &str,
+        through: Option<u64>,
         scope: &Scope,
-    ) -> Result<String, String> {
-        let first = self
-            .session_read_tool(
-                SessionReadInput {
-                    session_id: Some(session_id.to_owned()),
-                    view: SessionTranscriptView::Turns,
-                    position: SessionWindowPosition::Tail,
-                    cursor: None,
-                    message_id: None,
-                    anchor: RoomAnchorMode::At,
-                    row: None,
-                },
-                scope,
-            )
-            .await?;
+    ) -> Result<(String, Option<u64>), String> {
+        let observed = service::history_observation_for_tool(
+            self,
+            scope,
+            SessionRead {
+                session_id: session_id.to_owned(),
+            },
+        )
+        .await
+        .map_err(humanize_agent_error)?;
 
+        let pinned_through = through.unwrap_or(observed.through);
+        let summary = SessionSummary::from(observed.session);
         let mut out = String::new();
-        match first.session.kind {
+
+        match summary.kind {
             SessionKind::Room => {
                 out.push_str(&format!(
-                    "# Room: {} (maka://session/{})\nWorkspace: {}\n\n",
-                    first.session.title, first.session.id, first.session.workspace_path
+                    "# Room: {} (maka://session/{})
+Workspace: {}
+
+",
+                    summary.title, summary.id, summary.workspace_path
                 ));
-                let mut all_posts = Vec::new();
-                let mut older_cursor = None;
-                if let Some(SessionTranscript::Room {
-                    items,
-                    before_cursor,
-                    ..
-                }) = first.transcript
-                {
-                    all_posts = items;
-                    older_cursor = before_cursor;
-                }
-                for _ in 0..3 {
-                    let Some(cur) = older_cursor.clone() else {
+                let mut all_posts: Vec<RoomPostEntry> = Vec::new();
+                let mut pos = wire::Position::Tail;
+                let mut older_message_id = None;
+                for _ in 0..4 {
+                    let page = service::history_read_for_tool(
+                        self,
+                        scope,
+                        History {
+                            session_id: session_id.to_owned(),
+                            through: Some(pinned_through),
+                            position: pos,
+                            include_thinking: false,
+                            view: wire::HistoryView::Conversation,
+                        },
+                    )
+                    .await
+                    .map_err(humanize_agent_error)?;
+                    let HistoryPage::Room { page } = page else {
                         break;
                     };
-                    let prev = self
-                        .session_read_tool(
-                            SessionReadInput {
-                                session_id: Some(session_id.to_owned()),
-                                view: SessionTranscriptView::Turns,
-                                position: SessionWindowPosition::Tail,
-                                cursor: Some(cur),
-                                message_id: None,
-                                anchor: RoomAnchorMode::At,
-                                row: None,
-                            },
-                            scope,
-                        )
-                        .await?;
-                    if let Some(SessionTranscript::Room {
-                        mut items,
-                        before_cursor,
-                        ..
-                    }) = prev.transcript
-                    {
-                        older_cursor = before_cursor;
-                        items.extend(all_posts);
-                        all_posts = items;
-                    } else {
+                    let mut batch: Vec<RoomPostEntry> = page
+                        .items
+                        .into_iter()
+                        .map(|m| RoomPostEntry {
+                            id: m.id,
+                            sequence: m.sequence,
+                            at: m.at,
+                            author: m.author,
+                            text: m.content.text,
+                            reply_to: m.reply_to,
+                            mentions: m.mentions,
+                            deliveries: m.deliveries,
+                        })
+                        .collect();
+                    older_message_id = page.before;
+                    batch.extend(all_posts);
+                    all_posts = batch;
+                    let Some(mid) = older_message_id.clone() else {
                         break;
-                    }
+                    };
+                    pos = wire::Position::BeforeMessage { message_id: mid };
                 }
-                if let Some(cur) = older_cursor {
+                if let Some(mid) = older_message_id
+                    && let Some(cur) = encode_cursor(&OpaqueSessionCursor::RoomBefore {
+                        through: pinned_through,
+                        message_id: mid,
+                    })
+                {
                     let more_call = serde_json::json!({
                         "sessionId": session_id,
                         "cursor": cur,
                     });
                     out.push_str(&format!(
-                        "> Earlier Room messages omitted; call SessionRead({more_call}) for older posts.\n\n"
+                        "> Earlier Room messages omitted; call SessionRead({more_call}) for older posts.
+
+"
                     ));
                 }
                 if all_posts.is_empty() {
-                    out.push_str("(No messages in this Room yet.)\n");
+                    out.push_str(
+                        "(No messages in this Room yet.)
+",
+                    );
                 } else {
                     for post in all_posts {
                         let author = match &post.author {
@@ -787,82 +908,83 @@ impl Owner {
             }
             SessionKind::Agent => {
                 out.push_str(&format!(
-                    "# Conversation: {} (maka://session/{})\nStatus: {} · Workspace: {}\n",
-                    first.session.title,
-                    first.session.id,
-                    enum_snake(&first.session.activity),
-                    first.session.workspace_path
-                ));
-                if let Some(run) = &first.run {
-                    out.push_str(&format!("Latest Run: {} ({})\n", run.run_id, run.state));
-                }
-                if !first.pending_interactions.is_empty() {
-                    let inspect_arg = serde_json::json!({ "sessionId": session_id });
-                    out.push_str(&format!(
-                        "Pending Interactions: {} (inspect structured fields with SessionRead({inspect_arg}))\n",
-                        first.pending_interactions.len(),
-                    ));
-                }
-                out.push('\n');
+                    "# Conversation: {} (maka://session/{})
+Workspace: {}
 
-                let mut all_entries = Vec::new();
-                let mut older_cursor = None;
-                if let Some(SessionTranscript::Agent {
-                    items,
-                    before_cursor,
-                    ..
-                }) = first.transcript
-                {
-                    all_entries = items;
-                    older_cursor = before_cursor;
-                }
-                for _ in 0..5 {
-                    let Some(cur) = older_cursor.clone() else {
+",
+                    summary.title, summary.id, summary.workspace_path
+                ));
+                let mut all_entries: Vec<AgentTranscriptEntry> = Vec::new();
+                let mut pos = wire::Position::Tail;
+                let mut older_wire_cursor = None;
+                let mut effective_through = Some(pinned_through);
+                for _ in 0..6 {
+                    let page = service::history_read_for_tool(
+                        self,
+                        scope,
+                        History {
+                            session_id: session_id.to_owned(),
+                            through: effective_through,
+                            position: pos,
+                            include_thinking: false,
+                            view: wire::HistoryView::Conversation,
+                        },
+                    )
+                    .await
+                    .map_err(humanize_agent_error)?;
+                    let HistoryPage::Ready {
+                        through: page_through,
+                        chunks,
+                        before,
+                        ..
+                    } = page
+                    else {
                         break;
                     };
-                    let prev = self
-                        .session_read_tool(
-                            SessionReadInput {
-                                session_id: Some(session_id.to_owned()),
-                                view: SessionTranscriptView::Turns,
-                                position: SessionWindowPosition::Tail,
-                                cursor: Some(cur),
-                                message_id: None,
-                                anchor: RoomAnchorMode::At,
-                                row: None,
-                            },
-                            scope,
-                        )
-                        .await?;
-                    if let Some(SessionTranscript::Agent {
-                        mut items,
-                        before_cursor,
-                        ..
-                    }) = prev.transcript
-                    {
-                        older_cursor = before_cursor;
-                        items.extend(all_entries);
-                        all_entries = items;
-                    } else {
+                    effective_through = page_through.or(effective_through);
+                    older_wire_cursor = before;
+                    let mut batch: Vec<AgentTranscriptEntry> = chunks
+                        .into_iter()
+                        .filter_map(|c| chunk_to_entry(session_id, c, false, false))
+                        .collect();
+                    batch.extend(all_entries);
+                    all_entries = batch;
+                    let Some(cursor) = older_wire_cursor.clone() else {
                         break;
-                    }
+                    };
+                    pos = wire::Position::Before { cursor };
                 }
-                if let Some(cur) = older_cursor {
+                if let Some(cursor) = older_wire_cursor
+                    && let Some(cur) = encode_cursor(&OpaqueSessionCursor::AgentBefore {
+                        through: effective_through,
+                        cursor,
+                        raw: false,
+                        include_thinking: false,
+                    })
+                {
                     let more_call = serde_json::json!({
                         "sessionId": session_id,
                         "cursor": cur,
                     });
                     out.push_str(&format!(
-                        "> Earlier turns omitted; call SessionRead({more_call}) for older turns.\n\n"
+                        "> Earlier turns omitted; call SessionRead({more_call}) for older turns.
+
+"
                     ));
                 }
                 if all_entries.is_empty() {
-                    out.push_str("(No messages in this Conversation yet.)\n");
+                    out.push_str(
+                        "(No messages in this Conversation yet.)
+",
+                    );
                 } else {
                     for entry in all_entries {
                         match entry.role.as_str() {
                             "user" => {
-                                out.push_str("### User\n");
+                                out.push_str(
+                                    "### User
+",
+                                );
                                 out.push_str(&entry.text);
                                 if !entry.text.ends_with('\n') {
                                     out.push('\n');
@@ -870,7 +992,32 @@ impl Owner {
                                 out.push('\n');
                             }
                             "assistant" => {
-                                out.push_str("### Assistant\n");
+                                out.push_str(
+                                    "### Assistant
+",
+                                );
+                                out.push_str(&entry.text);
+                                if !entry.text.ends_with('\n') {
+                                    out.push('\n');
+                                }
+                                out.push('\n');
+                            }
+                            "failure" => {
+                                out.push_str(
+                                    "### Failure
+",
+                                );
+                                out.push_str(&entry.text);
+                                if !entry.text.ends_with('\n') {
+                                    out.push('\n');
+                                }
+                                out.push('\n');
+                            }
+                            "compaction" => {
+                                out.push_str(
+                                    "### Context Summary
+",
+                                );
                                 out.push_str(&entry.text);
                                 if !entry.text.ends_with('\n') {
                                     out.push('\n');
@@ -882,12 +1029,14 @@ impl Owner {
                                 let st = entry.status.as_deref().unwrap_or("done");
                                 if let Some(path) = &entry.result_path {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {} (output: {path})\n",
+                                        "- [Tool {name} · {st}]: {} (output: {path})
+",
                                         entry.text
                                     ));
                                 } else {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {}\n",
+                                        "- [Tool {name} · {st}]: {}
+",
                                         entry.text
                                     ));
                                 }
@@ -898,7 +1047,7 @@ impl Owner {
                 }
             }
         }
-        Ok(out)
+        Ok((out, Some(pinned_through)))
     }
 
     pub async fn session_create_tool(
@@ -908,6 +1057,17 @@ impl Owner {
         scope: &Scope,
     ) -> Result<NativeMutation<SessionCreateOutput>, String> {
         if let Some(fork_source) = input.fork_from {
+            if input.kind.is_some()
+                || input.workspace.is_some()
+                || input.preset_id.is_some()
+                || input.backend.is_some()
+                || input.tools.is_some()
+                || input.automatic_title.is_some()
+            {
+                return Err(
+                    "forkFrom clones the source conversation's workspace, backend, and tool configuration; omit workspace, kind, presetId, backend, tools, and automaticTitle when forking".into(),
+                );
+            }
             let expected_revision = match fork_source.expected_revision {
                 Some(rev) => rev,
                 None => {
@@ -921,8 +1081,8 @@ impl Owner {
                 Some(turn_id) => ForkPosition::ThroughTurn { turn_id },
                 None => ForkPosition::End,
             };
-            let fork_res = self
-                .fork(
+            return self
+                .fork_for_session_create(
                     Fork {
                         session_id: fork_source.session_id,
                         expected_revision,
@@ -934,17 +1094,14 @@ impl Owner {
                     scope,
                 )
                 .await
-                .map_err(humanize_agent_error)?;
-            return Ok(fork_res.map(|res| match res {
-                ForkResult::Forked { session } => SessionCreateOutput::Forked { session },
-                ForkResult::RevisionConflict { expected, actual } => {
-                    SessionCreateOutput::RevisionConflict { expected, actual }
-                }
-                ForkResult::Rejected { reason } => SessionCreateOutput::Rejected { reason },
-            }));
+                .map_err(humanize_agent_error);
         }
 
-        let workspace = match input.workspace {
+        let kind = input.kind.unwrap_or(SessionKind::Agent);
+        let workspace_target = input.workspace.unwrap_or(SessionWorkspaceTarget::Same);
+        let automatic_title = input.automatic_title.unwrap_or(false);
+
+        let workspace = match workspace_target {
             SessionWorkspaceTarget::Same => {
                 let caller_id = scope
                     .identity
@@ -980,9 +1137,6 @@ impl Owner {
                 };
                 WorkspaceSelection::IsolatedGit { path: repo_path }
             }
-            SessionWorkspaceTarget::IsolatedGit { path } => {
-                WorkspaceSelection::IsolatedGit { path }
-            }
             SessionWorkspaceTarget::Directory { path } => WorkspaceSelection::Directory { path },
             SessionWorkspaceTarget::Session { session_id } => {
                 WorkspaceSelection::Session { session_id }
@@ -994,7 +1148,7 @@ impl Owner {
 
         let backend = match input.backend {
             Some(explicit) => Some(explicit),
-            None if matches!(input.kind, SessionKind::Agent) && input.preset_id.is_none() => {
+            None if matches!(kind, SessionKind::Agent) && input.preset_id.is_none() => {
                 if let Some(caller) = scope.identity.agent()
                     && !self.bot.is(&caller.session_id)
                 {
@@ -1009,28 +1163,22 @@ impl Owner {
             None => None,
         };
 
-        let created = self
-            .create(
-                Create {
-                    kind: input.kind,
-                    preset_id: input.preset_id,
-                    backend,
-                    automatic_title: input.automatic_title,
-                    tools: input.tools,
-                    title: input.title,
-                    labels: input.labels,
-                    workspace,
-                },
-                operation,
-                scope,
-            )
-            .await
-            .map_err(humanize_agent_error)?;
-
-        Ok(created.map(|res| match res {
-            Created::Created { session } => SessionCreateOutput::Created { session },
-            Created::Rejected { reason } => SessionCreateOutput::Rejected { reason },
-        }))
+        self.create_for_session_tool(
+            Create {
+                kind,
+                preset_id: input.preset_id,
+                backend,
+                automatic_title,
+                tools: input.tools,
+                title: input.title,
+                labels: input.labels,
+                workspace,
+            },
+            operation,
+            scope,
+        )
+        .await
+        .map_err(humanize_agent_error)
     }
 
     pub async fn session_send_tool(
@@ -1119,14 +1267,9 @@ impl Owner {
                 run_id: None,
             }));
         };
-        let res = self
-            .prepare_stop_run(&input.session_id, run_id, operation)
+        self.prepare_session_stop(&input.session_id, run_id, operation)
             .await
-            .map_err(humanize_agent_error)?;
-        Ok(res.map(move |stopped| SessionStopOutput {
-            requested: stopped.requested,
-            run_id: stopped.requested.then_some(run_id),
-        }))
+            .map_err(humanize_agent_error)
     }
 
     pub async fn session_manage_tool(
@@ -1173,7 +1316,7 @@ impl Owner {
                     )
                     .await
                     .map_err(humanize_agent_error)?;
-                Ok(res.map(|m| match m {
+                res.map_fixed(|m| match m {
                     MetadataResult::Committed { session } => SessionManageOutput::Updated {
                         session: Box::new(SessionSummary::from(*session)),
                     },
@@ -1181,7 +1324,7 @@ impl Owner {
                         SessionManageOutput::RevisionConflict { expected, actual }
                     }
                     MetadataResult::Rejected { reason } => SessionManageOutput::Rejected { reason },
-                }))
+                })
             }
             SessionManageAction::Archive { expected_revision }
             | SessionManageAction::Restore { expected_revision }
@@ -1225,7 +1368,7 @@ impl Owner {
                     )
                     .await
                     .map_err(humanize_agent_error)?;
-                Ok(res.map(|c| match c {
+                res.map_fixed(|c| match c {
                     SessionChanged::Changed { session } => SessionManageOutput::Updated {
                         session: Box::new(SessionSummary::from(*session)),
                     },
@@ -1236,7 +1379,7 @@ impl Owner {
                         SessionManageOutput::RevisionConflict { expected, actual }
                     }
                     SessionChanged::Rejected { reason } => SessionManageOutput::Rejected { reason },
-                }))
+                })
             }
             SessionManageAction::EditQueue {
                 edit,
@@ -1263,7 +1406,7 @@ impl Owner {
                     )
                     .await
                     .map_err(humanize_agent_error)?;
-                Ok(res.map(|result| SessionManageOutput::QueueEdited { result }))
+                res.map_fixed(|result| SessionManageOutput::QueueEdited { result })
             }
             SessionManageAction::ContinueRun {
                 model,
@@ -1305,7 +1448,7 @@ impl Owner {
                     )
                     .await
                     .map_err(humanize_agent_error)?;
-                Ok(res.map(|c| match c {
+                res.map_fixed(|c| match c {
                     ContinuationResult::Started { execution } => {
                         SessionManageOutput::ContinuationStarted {
                             execution: Box::new(execution),
@@ -1314,7 +1457,7 @@ impl Owner {
                     ContinuationResult::Rejected { reason } => {
                         SessionManageOutput::ContinuationRejected { reason }
                     }
-                }))
+                })
             }
         }
     }

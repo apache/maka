@@ -36146,8 +36146,15 @@ export const contracts: {
                 minLength: 1,
               },
               kind: {
-                $ref: '#/$defs/AgentSessionKind',
-                default: 'agent',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionKind',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
               },
               labels: {
                 type: 'array',
@@ -36157,10 +36164,15 @@ export const contracts: {
                 default: [],
               },
               workspace: {
-                $ref: '#/$defs/AgentSessionWorkspaceTarget',
-                default: {
-                  kind: 'same',
-                },
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionWorkspaceTarget',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
               },
               presetId: {
                 type: ['string', 'null'],
@@ -36179,8 +36191,8 @@ export const contracts: {
                 default: null,
               },
               automaticTitle: {
-                type: 'boolean',
-                default: false,
+                type: ['boolean', 'null'],
+                default: null,
               },
               tools: {
                 type: ['array', 'null'],
@@ -36241,21 +36253,6 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'isolated_git',
-                      },
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -38986,8 +38983,15 @@ export const contracts: {
                 default: 'turns',
               },
               position: {
-                $ref: '#/$defs/AgentSessionWindowPosition',
-                default: 'tail',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionWindowPosition',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
               },
               cursor: {
                 description:
@@ -39001,8 +39005,15 @@ export const contracts: {
                 default: null,
               },
               anchor: {
-                $ref: '#/$defs/AgentRoomAnchorMode',
-                default: 'at',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentRoomAnchorMode',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
               },
               row: {
                 description:
@@ -39444,6 +39455,9 @@ export const contracts: {
                   },
                   stopped: {
                     type: 'boolean',
+                  },
+                  error: {
+                    type: ['string', 'null'],
                   },
                   blockers: {
                     type: 'array',

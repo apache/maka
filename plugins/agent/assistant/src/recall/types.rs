@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_agent_ports::session::history::{HistoryField, Position, Read, Role, RowPosition};
+use maka_agent_ports::session::history::{Role, RowPosition};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
@@ -182,15 +182,6 @@ impl ResultSet {
             }
         }
         for passage in &self.passages {
-            let _ = Read {
-                session_id: passage.session_id.clone(),
-                through: Some(passage.through),
-                position: Position::Row {
-                    position: passage.anchor_position.clone(),
-                    field: HistoryField::Body,
-                },
-                include_thinking: false,
-            };
             let pointer = serde_json::json!({
                 "sessionId": passage.session_id,
                 "row": {

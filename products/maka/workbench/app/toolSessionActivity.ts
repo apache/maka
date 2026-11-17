@@ -136,7 +136,7 @@ const sessionDetails = (value: unknown, outcome?: MessageKey): ToolSection[] | n
         : activity
           ? status(activity)
           : []),
-    ...section('Workspace', record(session.workspace)?.path, 'code'),
+    ...section('Workspace', record(session.workspace)?.path ?? session.workspacePath, 'code'),
     ...model(session.backend),
     ...(permission ? section('Permissions', tr(permission)) : []),
   ];
@@ -424,6 +424,7 @@ export const sessionToolPresentations: Record<string, ActivityPresentation> = {
         ...section('Conversation', session.title),
         ...(session.archived === true ? status('Archived') : activity ? status(activity) : []),
         ...section('Workspace', session.workspacePath, 'code'),
+        ...section('Details', record(result.run)?.error),
         ...section('Final response', result.liveOutputPreview),
       ];
     }),
@@ -431,19 +432,7 @@ export const sessionToolPresentations: Record<string, ActivityPresentation> = {
   'maka.agent.Agent@1/sessionCreate': {
     title: () => tr('Create conversation'),
     icon: 'plus',
-    arguments: fromRecord((input, { returned }) =>
-      returned
-        ? []
-        : [
-            ...section('Conversation', input.title),
-            ...section(
-              'Workspace',
-              typeof input.workspace === 'string' ? input.workspace : record(input.workspace)?.path,
-              'code',
-            ),
-            ...model(input.backend),
-          ],
-    ),
+    arguments: newConversation,
     result: fromRecord((result) => {
       if (result.kind === 'created') return sessionDetails(result.session, 'Conversation created');
       if (result.kind === 'forked') return sessionDetails(result.session, 'Conversation forked');
@@ -477,13 +466,18 @@ export const sessionToolPresentations: Record<string, ActivityPresentation> = {
     arguments: fromRecord((input, context) => {
       const act = record(input.action);
       const kind = typeof act?.kind === 'string' ? act.kind : undefined;
-      const editKind = record(act?.edit)?.kind;
-      const labelKey =
+      const edit = record(act?.edit);
+      const editKind = edit?.kind;
+      const labelKey: MessageKey | undefined =
         kind === 'edit_queue' && typeof editKind === 'string'
           ? actions[editKind]
-          : kind
-            ? actions[kind]
-            : undefined;
+          : kind === 'continue_run'
+            ? 'Continue conversation run'
+            : kind === 'update'
+              ? 'Update conversation'
+              : kind
+                ? actions[kind]
+                : undefined;
       return [
         ...section('Action', labelKey ? tr(labelKey) : undefined),
         ...section('Title', act?.title),
@@ -491,15 +485,26 @@ export const sessionToolPresentations: Record<string, ActivityPresentation> = {
         ...(typeof act?.pinned === 'boolean'
           ? section('Pin', tr(act.pinned ? 'Pinned' : 'Unpinned'))
           : []),
+        ...section('Message', edit?.message),
+        ...model(act?.model),
         ...conversation(input.sessionId, context),
       ];
     }),
     result: fromRecord((result) => {
-      if (result.kind === 'updated') return sessionDetails(result.session, 'Conversation updated');
-      if (result.kind === 'changed') return sessionDetails(result.session);
+      if (result.kind === 'updated') {
+        const archived = record(result.session)?.archived === true;
+        return sessionDetails(result.session, archived ? undefined : 'Conversation updated');
+      }
       if (result.kind === 'removed') return status('Conversation deleted');
-      if (result.kind === 'continued') return status('Continuation started');
-      if (result.kind === 'queue_updated') return status('Conversation updated');
+      if (result.kind === 'continuation_started') return status('Continuation started');
+      if (result.kind === 'continuation_rejected') {
+        return rejection({ kind: 'rejected', reason: result.reason });
+      }
+      if (result.kind === 'queue_edited') {
+        const inner = record(result.result);
+        if (!inner) return null;
+        return inner.kind === 'committed' ? status('Queue updated') : rejection(inner);
+      }
       return rejection(result);
     }),
   },

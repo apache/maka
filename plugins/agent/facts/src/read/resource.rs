@@ -27,30 +27,28 @@ use maka_plugin_core::shell_result::RESOURCE_REF_PREFIX;
 const IMPORTED_TOOL_RESULT_PREFIX: &str = "maka://history/tool-result/";
 pub const SESSION_RESOURCE_PREFIX: &str = "maka://session/";
 const SESSION_TOOL_RESULT_SEGMENT: &str = "/tool-results/";
+const SESSION_IMPORTED_TOOL_RESULT_SEGMENT: &str = "/imported-tool-results/";
+const SESSION_THROUGH_QUERY_PREFIX: &str = "through=";
+const MAX_SAFE_THROUGH: u64 = (1 << 53) - 1;
 
-/// Only an address within a caller's actual source tree, never read authority.
-pub fn imported_tool_result_path(address: &HistoryRowAddress) -> Result<String, &'static str> {
+fn encode_imported_address(address: &HistoryRowAddress) -> Result<String, &'static str> {
     if !matches!(address, HistoryRowAddress::Imported { .. }) {
         return Err("Tool-result history addresses must identify an imported part");
     }
     address.validate()?;
     let bytes = serde_json::to_vec(address).map_err(|_| "Invalid imported tool-result address")?;
     let encoded_len = base64::encoded_len(bytes.len(), false)
-        .and_then(|length| length.checked_add(IMPORTED_TOOL_RESULT_PREFIX.len()))
         .ok_or("Imported tool-result address length overflow")?;
-    let mut path = String::with_capacity(encoded_len);
-    path.push_str(IMPORTED_TOOL_RESULT_PREFIX);
-    URL_SAFE_NO_PAD.encode_string(bytes, &mut path);
-    Ok(path)
+    let mut out = String::with_capacity(encoded_len);
+    URL_SAFE_NO_PAD.encode_string(bytes, &mut out);
+    Ok(out)
 }
 
-pub fn parse_imported_tool_result_path(
-    path: &str,
-) -> Result<Option<HistoryRowAddress>, &'static str> {
-    let Some(encoded) = path.strip_prefix(IMPORTED_TOOL_RESULT_PREFIX) else {
-        return Ok(None);
-    };
+fn decode_imported_address(encoded: &str) -> Result<HistoryRowAddress, &'static str> {
     let invalid = "Invalid imported tool-result address";
+    if encoded.is_empty() {
+        return Err(invalid);
+    }
     let capacity = encoded
         .len()
         .checked_div(4)
@@ -63,10 +61,25 @@ pub fn parse_imported_tool_result_path(
         .map_err(|_| invalid)?;
     let address: HistoryRowAddress =
         serde_json::from_slice(&bytes[..length]).map_err(|_| invalid)?;
-    if imported_tool_result_path(&address)? != path {
+    if encode_imported_address(&address)? != encoded {
         return Err(invalid);
     }
-    Ok(Some(address))
+    Ok(address)
+}
+
+/// Only an address within a caller's actual source tree, never read authority.
+pub fn imported_tool_result_path(address: &HistoryRowAddress) -> Result<String, &'static str> {
+    let encoded = encode_imported_address(address)?;
+    Ok(format!("{IMPORTED_TOOL_RESULT_PREFIX}{encoded}"))
+}
+
+pub fn parse_imported_tool_result_path(
+    path: &str,
+) -> Result<Option<HistoryRowAddress>, &'static str> {
+    let Some(encoded) = path.strip_prefix(IMPORTED_TOOL_RESULT_PREFIX) else {
+        return Ok(None);
+    };
+    decode_imported_address(encoded).map(Some)
 }
 
 /// A Session resource locator; resolving it never grants access to its content.
@@ -75,10 +88,17 @@ pub enum ResourceAddress {
     Attachment(String),
     Task(String),
     ToolResult(String),
-    Session(String),
+    Session {
+        session_id: String,
+        through: Option<u64>,
+    },
     SessionToolResult {
         session_id: String,
         event_id: String,
+    },
+    SessionImportedToolResult {
+        session_id: String,
+        address: HistoryRowAddress,
     },
 }
 
@@ -90,8 +110,8 @@ impl ResourceAddress {
                 .map(|address| Some(Self::ToolResult(address.event_id().to_owned())));
         }
         if let Some(rest) = path.strip_prefix(SESSION_RESOURCE_PREFIX) {
-            let rest = rest.strip_suffix('/').unwrap_or(rest);
             if let Some((session_id, event_id)) = rest.split_once(SESSION_TOOL_RESULT_SEGMENT) {
+                let event_id = event_id.strip_suffix('/').unwrap_or(event_id);
                 entity_id(session_id)?;
                 entity_id(event_id)?;
                 return Ok(Some(Self::SessionToolResult {
@@ -99,12 +119,50 @@ impl ResourceAddress {
                     event_id: event_id.into(),
                 }));
             }
-            entity_id(rest)?;
-            return Ok(Some(Self::Session(rest.into())));
+            if let Some((session_id, encoded)) =
+                rest.split_once(SESSION_IMPORTED_TOOL_RESULT_SEGMENT)
+            {
+                let encoded = encoded.strip_suffix('/').unwrap_or(encoded);
+                entity_id(session_id)?;
+                let address = decode_imported_address(encoded)?;
+                return Ok(Some(Self::SessionImportedToolResult {
+                    session_id: session_id.into(),
+                    address,
+                }));
+            }
+            if let Some((raw_id, query)) = rest.split_once('?') {
+                let id = raw_id.strip_suffix('/').unwrap_or(raw_id);
+                entity_id(id)?;
+                let Some(raw_through) = query.strip_prefix(SESSION_THROUGH_QUERY_PREFIX) else {
+                    return Err("Invalid Session resource query; only ?through=<u64> is supported");
+                };
+                if raw_through.is_empty() || !raw_through.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err("Invalid Session resource through watermark");
+                }
+                let through: u64 = raw_through
+                    .parse()
+                    .map_err(|_| "Invalid Session resource through watermark")?;
+                if through > MAX_SAFE_THROUGH {
+                    return Err("Invalid Session resource through watermark");
+                }
+                return Ok(Some(Self::Session {
+                    session_id: id.into(),
+                    through: Some(through),
+                }));
+            }
+            let id = rest.strip_suffix('/').unwrap_or(rest);
+            entity_id(id)?;
+            return Ok(Some(Self::Session {
+                session_id: id.into(),
+                through: None,
+            }));
         }
         if let Some(id) = path.strip_prefix("session:") {
             entity_id(id)?;
-            return Ok(Some(Self::Session(id.into())));
+            return Ok(Some(Self::Session {
+                session_id: id.into(),
+                through: None,
+            }));
         }
         for (short, full, attachment) in [
             ("attachment:", ATTACHMENT_RESOURCE_PREFIX, true),
@@ -132,16 +190,18 @@ impl ResourceAddress {
 
     pub fn id(&self) -> &str {
         match self {
-            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) | Self::Session(id) => id,
+            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) => id,
+            Self::Session { session_id, .. }
+            | Self::SessionImportedToolResult { session_id, .. } => session_id,
             Self::SessionToolResult { event_id, .. } => event_id,
         }
     }
 
     pub fn with_id(mut self, resolved: String) -> Self {
         match &mut self {
-            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) | Self::Session(id) => {
-                *id = resolved
-            }
+            Self::Attachment(id) | Self::Task(id) | Self::ToolResult(id) => *id = resolved,
+            Self::Session { session_id, .. }
+            | Self::SessionImportedToolResult { session_id, .. } => *session_id = resolved,
             Self::SessionToolResult { event_id, .. } => *event_id = resolved,
         }
         self
@@ -158,9 +218,18 @@ impl ResourceAddress {
                 Ok(format!("{RESOURCE_REF_PREFIX}{id}"))
             }
             Self::ToolResult(id) => ToolResultAddress::event_path(id),
-            Self::Session(id) => {
-                entity_id(id)?;
-                Ok(format!("{SESSION_RESOURCE_PREFIX}{id}"))
+            Self::Session {
+                session_id,
+                through,
+            } => {
+                entity_id(session_id)?;
+                match through {
+                    Some(t) if *t <= MAX_SAFE_THROUGH => {
+                        Ok(format!("{SESSION_RESOURCE_PREFIX}{session_id}?through={t}"))
+                    }
+                    Some(_) => Err("Invalid Session resource through watermark"),
+                    None => Ok(format!("{SESSION_RESOURCE_PREFIX}{session_id}")),
+                }
             }
             Self::SessionToolResult {
                 session_id,
@@ -170,6 +239,16 @@ impl ResourceAddress {
                 entity_id(event_id)?;
                 Ok(format!(
                     "{SESSION_RESOURCE_PREFIX}{session_id}{SESSION_TOOL_RESULT_SEGMENT}{event_id}"
+                ))
+            }
+            Self::SessionImportedToolResult {
+                session_id,
+                address,
+            } => {
+                entity_id(session_id)?;
+                let encoded = encode_imported_address(address)?;
+                Ok(format!(
+                    "{SESSION_RESOURCE_PREFIX}{session_id}{SESSION_IMPORTED_TOOL_RESULT_SEGMENT}{encoded}"
                 ))
             }
         }
@@ -184,17 +263,60 @@ mod tests {
     fn parses_session_and_actionable_uri_diagnostics() {
         assert_eq!(
             ResourceAddress::parse("maka://session/ma_123").unwrap(),
-            Some(ResourceAddress::Session("ma_123".into()))
+            Some(ResourceAddress::Session {
+                session_id: "ma_123".into(),
+                through: None,
+            })
+        );
+        assert_eq!(
+            ResourceAddress::parse("maka://session/ma_123?through=42").unwrap(),
+            Some(ResourceAddress::Session {
+                session_id: "ma_123".into(),
+                through: Some(42),
+            })
+        );
+        assert_eq!(
+            ResourceAddress::Session {
+                session_id: "ma_123".into(),
+                through: Some(42),
+            }
+            .canonical_path()
+            .unwrap(),
+            "maka://session/ma_123?through=42"
         );
         assert_eq!(
             ResourceAddress::parse("session:ma_123").unwrap(),
-            Some(ResourceAddress::Session("ma_123".into()))
+            Some(ResourceAddress::Session {
+                session_id: "ma_123".into(),
+                through: None,
+            })
         );
         assert_eq!(
             ResourceAddress::parse("maka://session/ma_123/tool-results/evt_456").unwrap(),
             Some(ResourceAddress::SessionToolResult {
                 session_id: "ma_123".into(),
                 event_id: "evt_456".into(),
+            })
+        );
+        let imported: HistoryRowAddress = serde_json::from_value(serde_json::json!({
+            "kind": "imported",
+            "path": [],
+            "snapshot": "00000000-0000-0000-0000-000000000001",
+            "messageOrdinal": 3,
+            "partOrdinal": 0
+        }))
+        .unwrap();
+        let imported_uri = ResourceAddress::SessionImportedToolResult {
+            session_id: "ma_123".into(),
+            address: imported.clone(),
+        }
+        .canonical_path()
+        .unwrap();
+        assert_eq!(
+            ResourceAddress::parse(&imported_uri).unwrap(),
+            Some(ResourceAddress::SessionImportedToolResult {
+                session_id: "ma_123".into(),
+                address: imported,
             })
         );
         let http_err = ResourceAddress::parse("https://github.com/apache/maka").unwrap_err();

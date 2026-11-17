@@ -814,13 +814,42 @@ impl Owner {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
                 let purpose = match input.kind {
-                    SessionKind::Agent => creation::Purpose::Session,
-                    SessionKind::Room => creation::Purpose::Room,
+                    SessionKind::Agent => creation::Purpose::Session {
+                        session_create_tool: false,
+                    },
+                    SessionKind::Room => creation::Purpose::Room {
+                        session_create_tool: false,
+                    },
                 };
                 owner
                     .create_inner(input, &operation, &scope, purpose)
                     .await
                     .map(creation::PreparedCreation::into_session)
+            })
+        })
+        .await
+    }
+    pub(super) async fn create_for_session_tool(
+        self: &Arc<Self>,
+        input: Create,
+        operation: &maka_plugin_core::operation::RecoveryRef,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<NativeMutation<SessionCreateOutput>, String> {
+        let operation = operation.clone();
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                let purpose = match input.kind {
+                    SessionKind::Agent => creation::Purpose::Session {
+                        session_create_tool: true,
+                    },
+                    SessionKind::Room => creation::Purpose::Room {
+                        session_create_tool: true,
+                    },
+                };
+                owner
+                    .create_inner(input, &operation, &scope, purpose)
+                    .await
+                    .map(creation::PreparedCreation::into_session_create)
             })
         })
         .await
@@ -835,7 +864,7 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(creation::PreparedCreation::Rejected(reason));
         }
-        let is_room = matches!(purpose, creation::Purpose::Room);
+        let is_room = matches!(purpose, creation::Purpose::Room { .. });
         if is_room && (input.preset_id.is_some() || input.backend.is_some()) {
             return Err("agent_room_has_no_backend".into());
         }

@@ -83,6 +83,9 @@ pub(super) fn render_message_text(
     language: maka_agent_facts::language::Language,
 ) -> Result<String, Error> {
     let mut sections = Vec::new();
+    if !content.text.is_empty() {
+        sections.push(content.text.clone());
+    }
     if let Some(quotes) = content.quotes.as_deref().filter(|q| !q.is_empty()) {
         sections.push(
             maka_agent_facts::input::render_quotes(quotes, language).map_err(Error::Invalid)?,
@@ -97,9 +100,6 @@ pub(super) fn render_message_text(
             maka_agent_facts::input::render_directory_references(dirs, language)
                 .map_err(Error::Invalid)?,
         );
-    }
-    if !content.text.is_empty() {
-        sections.push(content.text.clone());
     }
     if let Some(rendered) =
         maka_agent_facts::input::render_session_references(&content.text, language)

@@ -115,6 +115,7 @@ pub fn extract_session_references(text: &str) -> Vec<SessionReference> {
         let mut j = label_start;
         let mut raw_label = String::new();
         let mut closed = false;
+        let mut nested_open = None;
         while j < bytes.len() {
             let ch = text[j..].chars().next().unwrap();
             if ch == '\\' && j + 1 < bytes.len() {
@@ -122,6 +123,10 @@ pub fn extract_session_references(text: &str) -> Vec<SessionReference> {
                 raw_label.push(next);
                 j += 1 + next.len_utf8();
                 continue;
+            }
+            if ch == '[' {
+                nested_open = Some(j);
+                break;
             }
             if ch == ']' {
                 closed = true;
@@ -133,6 +138,10 @@ pub fn extract_session_references(text: &str) -> Vec<SessionReference> {
             }
             raw_label.push(ch);
             j += ch.len_utf8();
+        }
+        if let Some(next_bracket) = nested_open {
+            i = next_bracket;
+            continue;
         }
         if !closed || !text[j..].starts_with("(maka://session/") {
             i += 1;
@@ -273,4 +282,23 @@ pub fn render_session_references(
     }
     out.push_str("</session_references>");
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_open_bracket_preserves_inner_room_or_conversation_kind() {
+        let refs =
+            extract_session_references("参考 [见之前 [#Reviewers](maka://session/ma_123)] 的结论");
+        assert_eq!(
+            refs,
+            vec![SessionReference {
+                kind: SessionReferenceKind::Room,
+                label: "Reviewers".into(),
+                session_id: "ma_123".into(),
+            }]
+        );
+    }
 }

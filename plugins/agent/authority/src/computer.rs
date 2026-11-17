@@ -89,8 +89,9 @@ pub trait NativeCallAccess: Access {
     fn render_session_resource<'a>(
         &'a self,
         session_id: &'a str,
+        through: Option<u64>,
         context: &'a Context,
-    ) -> BoxFuture<'a, Result<String, ToolError>>;
+    ) -> BoxFuture<'a, Result<(String, Option<u64>), ToolError>>;
 }
 
 /// Callback bound to one real native producer and its captured accepted SQL ingress.

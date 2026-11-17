@@ -123,9 +123,9 @@ pub(super) async fn desktop_composer_references_a_room_without_posting() {
     desktop.press("Open conversation review json-render").await;
     desktop.press("Focus message composer").await;
     desktop.paste("Read context from @").await;
+    let file_row = desktop.control("Windows-CI.md").await;
     let room_row = desktop.control("环境信息共享群").await;
     let agent_row = desktop.control("Windows CI 验证").await;
-    let file_row = desktop.control("Windows-CI.md").await;
     assert!(room_row.top() < agent_row.top() && agent_row.top() < file_row.top());
     desktop.artifact("room-reference-picker");
     desktop.press("环境信息共享群").await;

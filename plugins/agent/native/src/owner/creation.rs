@@ -26,9 +26,20 @@ use maka_event_log::{
 use maka_plugin_core::storage::{Mutation, Record};
 use maka_sandbox::workspace::BindingRef;
 
+#[derive(Clone, Copy)]
+enum ReplyFormat {
+    Created,
+    SessionCreate,
+    Bot,
+}
+
 pub(super) enum Purpose {
-    Session,
-    Room,
+    Session {
+        session_create_tool: bool,
+    },
+    Room {
+        session_create_tool: bool,
+    },
     Bot {
         guard: Arc<tokio::sync::OwnedMutexGuard<()>>,
         mutations: Vec<Mutation>,
@@ -43,6 +54,14 @@ impl PreparedCreation {
     pub(super) fn into_session(self) -> NativeMutation<Created> {
         match self {
             Self::Rejected(reason) => NativeMutation::Returned(Created::Rejected { reason }),
+            Self::Ready(change) => NativeMutation::Computed { change },
+        }
+    }
+    pub(super) fn into_session_create(self) -> NativeMutation<SessionCreateOutput> {
+        match self {
+            Self::Rejected(reason) => {
+                NativeMutation::Returned(SessionCreateOutput::Rejected { reason })
+            }
             Self::Ready(change) => NativeMutation::Computed { change },
         }
     }
@@ -76,11 +95,31 @@ impl Owner {
     where
         F: FnOnce(BindingRef) -> StoredSessionConfiguration + std::marker::Send + 'static,
     {
-        let is_room = matches!(purpose, Purpose::Room);
-        let (guard, mutations) = match purpose {
-            Purpose::Session => (None, self.prepare_bot_watch(scope, id).await?),
-            Purpose::Room => (None, Vec::new()),
-            Purpose::Bot { guard, mutations } => (Some(guard), mutations),
+        let is_room = matches!(purpose, Purpose::Room { .. });
+        let (reply_format, guard, mutations) = match purpose {
+            Purpose::Session {
+                session_create_tool,
+            } => (
+                if session_create_tool {
+                    ReplyFormat::SessionCreate
+                } else {
+                    ReplyFormat::Created
+                },
+                None,
+                self.prepare_bot_watch(scope, id).await?,
+            ),
+            Purpose::Room {
+                session_create_tool,
+            } => (
+                if session_create_tool {
+                    ReplyFormat::SessionCreate
+                } else {
+                    ReplyFormat::Created
+                },
+                None,
+                Vec::new(),
+            ),
+            Purpose::Bot { guard, mutations } => (ReplyFormat::Bot, Some(guard), mutations),
         };
         let writer = match scope.identity.agent() {
             Some(execution) => {
@@ -132,6 +171,7 @@ impl Owner {
                     extra,
                     planned,
                     source,
+                    reply_format,
                     guard,
                     caller,
                     bot: self.bot.clone(),
@@ -149,6 +189,7 @@ struct Creation<S, B> {
     extra: Option<(Option<usize>, B)>,
     planned: maka_agent_state::session_catalog::PlannedCatalog,
     source: DataSource,
+    reply_format: ReplyFormat,
     guard: Option<Arc<tokio::sync::OwnedMutexGuard<()>>>,
     caller: Option<maka_agent_state::CallerFence>,
     bot: Arc<bot::Bot>,
@@ -167,13 +208,15 @@ struct CreationCommit<T, E> {
     bot: Arc<bot::Bot>,
     registration: Option<bot::Registration>,
 }
-fn creation_reply(is_bot: bool, reason: Rejection) -> Result<Value, StoreError> {
-    Ok(if is_bot {
-        serde_json::to_value(BotOpened::Rejected {
+fn creation_reply(format: ReplyFormat, reason: Rejection) -> Result<Value, StoreError> {
+    Ok(match format {
+        ReplyFormat::Bot => serde_json::to_value(BotOpened::Rejected {
             reason: BotRejection::CreationRejected,
-        })?
-    } else {
-        serde_json::to_value(Created::Rejected { reason })?
+        })?,
+        ReplyFormat::Created => serde_json::to_value(Created::Rejected { reason })?,
+        ReplyFormat::SessionCreate => {
+            serde_json::to_value(SessionCreateOutput::Rejected { reason })?
+        }
     })
 }
 impl<S, B> Statement for Creation<S, B>
@@ -209,13 +252,13 @@ where
         self,
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<Self::Value>, StoreError> {
-        let is_bot = self.guard.is_some();
+        let reply_format = self.reply_format;
         if let Some(fence) = &self.preset
             && let Some(reason) = fence.check(connection)?
         {
             return Ok(Prepared {
                 value: CreationResult {
-                    reply: creation_reply(is_bot, reason)?,
+                    reply: creation_reply(reply_format, reason)?,
                     success: None,
                 },
                 changed: false,
@@ -233,7 +276,7 @@ where
             if let Some(reason) = reason {
                 return Ok(Prepared {
                     value: CreationResult {
-                        reply: creation_reply(is_bot, reason)?,
+                        reply: creation_reply(reply_format, reason)?,
                         success: None,
                     },
                     changed: false,
@@ -267,21 +310,29 @@ where
                 }
                 let mut record = self.planned.record(creation.value.clone())?;
                 record.is_room = is_room;
-                let reply = if is_bot {
-                    serde_json::to_value(BotOpened::Opened {
+                let reply = match reply_format {
+                    ReplyFormat::Bot => serde_json::to_value(BotOpened::Opened {
                         session_id: record.metadata.id,
                         created: true,
-                    })?
-                } else {
-                    let session = crate::service::summary_for(&self.source, record).map_err(
-                        |diagnostic| StoreError::StatementRejected {
-                            cause: Arc::new(StoreError::InvalidTransition(diagnostic.clone())),
-                            diagnostic,
-                        },
-                    )?;
-                    serde_json::to_value(Created::Created {
-                        session: Box::new(session),
-                    })?
+                    })?,
+                    ReplyFormat::Created | ReplyFormat::SessionCreate => {
+                        let session = crate::service::summary_for(&self.source, record).map_err(
+                            |diagnostic| StoreError::StatementRejected {
+                                cause: Arc::new(StoreError::InvalidTransition(diagnostic.clone())),
+                                diagnostic,
+                            },
+                        )?;
+                        match reply_format {
+                            ReplyFormat::SessionCreate => {
+                                serde_json::to_value(SessionCreateOutput::Created {
+                                    session: Box::new(session),
+                                })?
+                            }
+                            _ => serde_json::to_value(Created::Created {
+                                session: Box::new(session),
+                            })?,
+                        }
+                    }
                 };
                 Ok(Prepared {
                     value: CreationResult {
@@ -303,7 +354,7 @@ where
             Ok(success) => Ok(success),
             Err(reason) => Ok(Prepared {
                 value: CreationResult {
-                    reply: creation_reply(is_bot, reason)?,
+                    reply: creation_reply(reply_format, reason)?,
                     success: None,
                 },
                 changed: false,

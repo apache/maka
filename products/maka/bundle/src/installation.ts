@@ -240,12 +240,12 @@ export function installation(
     [
       'sessionCreate',
       'SessionCreate',
-      'Create a new Agent conversation or shared Room (kind="room"), or branch from an existing conversation via forkFrom. Choose a specific, recognizable task title (e.g. "Fix queued-message cancellation"). Workspace defaults to "same" (reuses your workspace); pass "worktree" for an isolated Git worktree, "isolated_git" for a fresh repo, or { kind: "directory", path } for another allowed root. For a reusable role, pass presetId from SubagentPresetList and omit backend (report an unavailable requested preset without substituting); otherwise omit backend to inherit defaults or pass a ModelList selection. Follow up with SessionSend to dispatch the task.',
+      'Create a new Agent conversation or shared Room (kind="room"), or branch from an existing conversation via forkFrom (when using forkFrom, omit workspace, kind, presetId, backend, tools, and automaticTitle, which are cloned from the source). Choose a specific, recognizable task title (e.g. "Fix queued-message cancellation"). Workspace defaults to { kind: "same" } (reuses your workspace); pass { kind: "worktree" } for an isolated Git worktree or { kind: "directory", path } for another allowed root. For a reusable role, pass presetId from SubagentPresetList and omit backend (report an unavailable requested preset without substituting); otherwise omit backend to inherit defaults or pass a ModelList selection. Follow up with SessionSend to dispatch the task.',
     ],
     [
       'sessionSend',
       'SessionSend',
-      'Send a message to a worker Agent session you created, or post to a Room. For Room posts, replyTo threads your reply and mentions wakes listed Agent session IDs. For Agent workers, state the objective, context, constraints, and expected deliverable (workers do not share your chat history unless forked). Delivery defaults to "steer" to guide an active turn immediately; use "queue" to wait until the current turn ends. For Agent callers, onComplete defaults to "notify_caller", waking you automatically with an inline <worker_result> summary when the worker finishes or needs attention—do other work or finish your turn instead of polling.',
+      'Send a message to an Agent conversation (a worker you created or an existing conversation when requested) or post to a Room. For Room posts, replyTo threads your reply and mentions wakes listed Agent session IDs. For Agent workers, state the objective, context, constraints, and expected deliverable (workers do not share your chat history unless forked). Delivery defaults to "steer" to guide an active turn immediately; use "queue" to wait until the current turn ends. For Agent callers, onComplete defaults to "notify_caller", waking you automatically with an inline <worker_result> summary when the target finishes or needs attention—do other work or finish your turn instead of polling.',
     ],
     [
       'respond',
@@ -260,7 +260,7 @@ export function installation(
     [
       'sessionManage',
       'SessionManage',
-      'Manage Session metadata, lifecycle, queued messages, or native-model Run continuation via action: update (title, labels, pinned), archive, restore, remove (deletes history permanently; not needed to hide workers, which are already hidden from the main sidebar), edit_queue (retract, promote, update, or reorder messages sent by your Session), or continue_run (continue an eligible terminal native-model Run). Omit expectedRevision/expectedQueueRevision to apply against current state, or pass them for optimistic concurrency.',
+      'Manage Session metadata, lifecycle, queued messages, or native-model Run continuation via action: update (title, labels, pinned), archive, restore, remove (deletes history permanently; not needed to hide workers, which are already hidden from the main sidebar), edit_queue (retract, promote, update, or reorder messages sent by your Session), or continue_run (continue an eligible terminal native-model Run). Omit expectedRevision to apply against current state, or pass it for optimistic concurrency.',
     ],
   ] as const satisfies readonly (readonly [keyof ServiceMethods['agent'], string, string])[])
     tools.push({

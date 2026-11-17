@@ -133,6 +133,73 @@ impl Notice<'_> {
 }
 
 impl Owner {
+    pub(super) async fn history_run_snippet(
+        &self,
+        session_id: &str,
+        run: RunId,
+        terminal: &Terminal,
+    ) -> Option<String> {
+        use maka_agent_ports::session::history as wire;
+        let native_scope = maka_capabilities::call::Issuer::default()
+            .issue(maka_capabilities::call::Identity::Native, self.stop.clone())
+            .ok()?;
+        let page = crate::service::history_read_for_tool(
+            self,
+            &native_scope,
+            crate::contract::History {
+                session_id: session_id.to_owned(),
+                through: None,
+                position: wire::Position::Tail,
+                include_thinking: false,
+                view: wire::HistoryView::Conversation,
+            },
+        )
+        .await
+        .ok()?;
+        let crate::contract::HistoryPage::Ready { chunks, .. } = page else {
+            return None;
+        };
+        let target_role = if matches!(terminal, Terminal::Failed) {
+            wire::Role::Failure
+        } else {
+            wire::Role::Assistant
+        };
+        let mut combined = String::new();
+        for chunk in chunks {
+            if chunk.run_id == Some(run)
+                && chunk.field == wire::HistoryField::Body
+                && chunk.role == target_role
+                && !chunk.text.is_empty()
+            {
+                combined.push_str(&chunk.text);
+            }
+        }
+        if combined.trim().is_empty()
+            && matches!(terminal, Terminal::Failed)
+            && let Ok(Some(view)) = self.session_run(session_id, run).await
+            && let Some(failure) = view.recovery_failure()
+        {
+            combined = serde_json::to_value(failure)
+                .ok()
+                .and_then(|v| {
+                    v.get("diagnostic")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .or_else(|| serde_json::to_string(failure).ok())
+                .unwrap_or_default();
+        }
+        let trimmed = combined.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut out: String = trimmed.chars().take(1600).collect();
+        if trimmed.chars().count() > 1600 {
+            out.push_str("\n… [truncated]");
+        }
+        Some(out)
+    }
+
     pub(super) async fn completion_request(
         &self,
         scope: &maka_capabilities::call::Scope,
@@ -327,7 +394,7 @@ impl Owner {
                             .ok_or("agent_completion_run_missing")?;
                         match (&state.terminal, &state.attention) {
                             (Some(terminal), _) => {
-                                let snippet = self
+                                let mut snippet = self
                                     .durable
                                     .work(run, 0, 4096)
                                     .await
@@ -346,6 +413,11 @@ impl Owner {
                                         }
                                         out
                                     });
+                                if snippet.is_none() {
+                                    snippet = self
+                                        .history_run_snippet(&entry.session_id, run, terminal)
+                                        .await;
+                                }
                                 Notice::Finished {
                                     terminal: terminal.clone(),
                                     snippet,

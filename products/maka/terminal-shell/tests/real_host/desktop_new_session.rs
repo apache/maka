@@ -1159,9 +1159,11 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
     let mut request = desktop.request(&mut fixture).await;
     let message = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(message["role"], "user");
-    assert_eq!(
-        message["content"].as_str().unwrap().trim_end(),
-        text.trim_end()
+    let user_content = message["content"].as_str().unwrap();
+    assert!(user_content.starts_with(text.trim_end()), "{user_content}");
+    assert!(
+        user_content.contains("<session_references>"),
+        "{user_content}"
     );
     request
         .delta(&format!(

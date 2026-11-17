@@ -422,13 +422,14 @@ impl NativeCallAccess for BoundCall {
     fn render_session_resource<'a>(
         &'a self,
         session_id: &'a str,
+        through: Option<u64>,
         context: &'a Context,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
+    ) -> BoxFuture<'a, Result<(String, Option<u64>), ToolError>> {
         Box::pin(async move {
             self.current().await?;
             let owner = self.access.owner().map_err(ToolError::Failed)?;
             owner
-                .render_session_markdown(session_id, context.scope())
+                .render_session_markdown(session_id, through, context.scope())
                 .await
                 .map_err(ToolError::Failed)
         })

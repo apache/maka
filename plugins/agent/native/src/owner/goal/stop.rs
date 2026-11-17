@@ -28,6 +28,21 @@ impl Owner {
         run: RunId,
         change: Change,
     ) -> Result<NativeMutation<Stopped>, String> {
+        self.prepare_stop_with_goal_mapped(session, run, change, std::convert::identity)
+            .await
+    }
+
+    pub(in crate::owner) async fn prepare_stop_with_goal_mapped<U, M>(
+        self: &Arc<Self>,
+        session: &str,
+        run: RunId,
+        change: Change,
+        map: M,
+    ) -> Result<NativeMutation<U>, String>
+    where
+        U: Serialize + std::marker::Send + 'static,
+        M: FnOnce(Stopped) -> U + std::marker::Send + 'static,
+    {
         let gate = Arc::new(self.goals.gate.clone().lock_owned().await);
         let pause = match self.goals.repository.read(session).await.map_err(reason)? {
             Some(mut saved) if saved.goal.status == Status::Active => {
@@ -52,6 +67,7 @@ impl Owner {
                     writer,
                     gate,
                     goals: self.goals.clone(),
+                    map,
                 })
             })
             .map_err(reason)?;
@@ -59,23 +75,28 @@ impl Owner {
     }
 }
 
-struct StopWithGoal {
+struct StopWithGoal<M> {
     stop: StopRun,
     pause: Vec<Mutation>,
     writer: DataWriter,
     gate: Arc<tokio::sync::OwnedMutexGuard<()>>,
     goals: Arc<Goals>,
+    map: M,
 }
 #[derive(Serialize)]
 #[serde(transparent)]
-struct StopCompletion {
-    result: Stopped,
+struct StopCompletion<U> {
+    result: U,
     #[serde(skip)]
     changed_goal: Option<Arc<Goals>>,
 }
-impl Statement for StopWithGoal {
-    type Value = StopCompletion;
-    type Output = Stopped;
+impl<U, M> Statement for StopWithGoal<M>
+where
+    U: Serialize + std::marker::Send + 'static,
+    M: FnOnce(Stopped) -> U + std::marker::Send + 'static,
+{
+    type Value = StopCompletion<U>;
+    type Output = U;
 
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
         vec![self.gate.clone()]
@@ -101,18 +122,17 @@ impl Statement for StopWithGoal {
         } else {
             None
         };
+        let requested = !matches!(stopped.value, StopOutcome::Inactive);
         Ok(Prepared {
             value: StopCompletion {
-                result: Stopped {
-                    requested: !matches!(stopped.value, StopOutcome::Inactive),
-                },
+                result: (self.map)(Stopped { requested }),
                 changed_goal,
             },
             changed,
             notification,
         })
     }
-    fn committed(value: Self::Value) -> Stopped {
+    fn committed(value: Self::Value) -> U {
         if let Some(goals) = value.changed_goal {
             goals.written();
         }

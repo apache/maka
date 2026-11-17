@@ -962,10 +962,6 @@ export type AgentSessionCreateInput_AgentSessionWorkspaceTarget =
       path?: string | null;
     }
   | {
-      kind: 'isolated_git';
-      path: string;
-    }
-  | {
       kind: 'directory';
       path: string;
     }
@@ -3010,12 +3006,12 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: {
         title: string;
-        kind?: AgentSessionCreateInput_AgentSessionKind & string;
+        kind?: AgentSessionCreateInput_AgentSessionKind | null;
         labels?: string[];
-        workspace?: AgentSessionCreateInput_AgentSessionWorkspaceTarget;
+        workspace?: AgentSessionCreateInput_AgentSessionWorkspaceTarget | null;
         presetId?: string | null;
         backend?: AgentSessionCreateInput_AgentBackendPreference | null;
-        automaticTitle?: boolean;
+        automaticTitle?: boolean | null;
         tools?: string[] | null;
         /**
          * Seed the new conversation from an existing Session prefix instead of starting empty.
@@ -3123,7 +3119,7 @@ export interface ServiceMethods {
          */
         sessionId?: string | null;
         view?: AgentSessionReadInput_AgentSessionTranscriptView & string;
-        position?: AgentSessionReadInput_AgentSessionWindowPosition & string;
+        position?: AgentSessionReadInput_AgentSessionWindowPosition | null;
         /**
          * Opaque pagination token (beforeCursor or afterCursor) from a previous SessionRead.
          */
@@ -3132,7 +3128,7 @@ export interface ServiceMethods {
          * Jump to or around a specific Room messageId.
          */
         messageId?: string | null;
-        anchor?: AgentSessionReadInput_AgentRoomAnchorMode & string;
+        anchor?: AgentSessionReadInput_AgentRoomAnchorMode | null;
         /**
          * Exact historical row lookup emitted by Recall or Code Mode cell references.
          */
@@ -5092,6 +5088,7 @@ export interface AgentSessionReadOutput_AgentSessionRunOverview {
   runId: AgentSessionReadOutput_RunId;
   state: string;
   stopped: boolean;
+  error?: string | null;
   blockers?: string[];
 }
 export interface AgentSessionReadOutput_InteractionRecord {

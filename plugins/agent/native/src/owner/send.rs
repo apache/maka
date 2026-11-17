@@ -40,14 +40,14 @@ pub(crate) enum NativeMutation<T> {
     },
 }
 impl<T> NativeMutation<T> {
-    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> NativeMutation<U> {
+    pub(crate) fn map_fixed<U>(self, f: impl FnOnce(T) -> U) -> Result<NativeMutation<U>, String> {
         match self {
-            Self::Returned(value) => NativeMutation::Returned(f(value)),
-            Self::Commit { value, change } => NativeMutation::Commit {
+            Self::Returned(value) => Ok(NativeMutation::Returned(f(value))),
+            Self::Commit { value, change } => Ok(NativeMutation::Commit {
                 value: f(value),
                 change,
-            },
-            Self::Computed { change } => NativeMutation::Computed { change },
+            }),
+            Self::Computed { .. } => Err("agent_computed_mutation_requires_typed_statement".into()),
         }
     }
 }

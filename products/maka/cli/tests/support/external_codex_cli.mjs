@@ -313,7 +313,7 @@ async function acp(id, method, params) {
     const start = text.indexOf('MAKA_EXTERNAL_CASE ');
     if (start === -1) return reply(id, { stopReason: 'end_turn' });
     if (job) throw Error('Duplicate ACP task prompt');
-    job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length));
+    job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
     const checkpoint = `ACP checkpoint ${job.label}`;
     if (job.label !== 'ACP-followup') {
       await event('session/update', {
@@ -438,7 +438,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         const text = params.input.find((part) => part.type === 'text').text,
           marker = text.lastIndexOf('MAKA_EXTERNAL_CASE ');
         if (marker < 0) throw Error('Missing closed test input');
-        job = JSON.parse(text.slice(marker + 'MAKA_EXTERNAL_CASE '.length));
+        job = JSON.parse(text.slice(marker + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
         if (!['A', 'B', 'C', 'D'].includes(job.label)) throw Error('Unknown test scenario');
         turn = randomUUID();
         await reply(id, { turn: { id: turn } });
