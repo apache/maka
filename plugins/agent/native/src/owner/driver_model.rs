@@ -937,41 +937,39 @@ impl DriverModel {
                     )
                     .await?;
             } else {
-                match input {
+                previous_checkpoint_id = match input {
                     RunInput::Continuation { claim, .. } => {
-                        previous_checkpoint_id = self
-                            .inherited_messages(
-                                target,
-                                reader,
-                                claim.source.execution.run_id,
-                                view.spec.language,
-                                model.supports_vision,
-                                &mut system,
-                                &mut messages,
-                            )
-                            .await?
-                    }
-                    _ => {
-                        previous_checkpoint_id = self
-                            .canonical_messages(
-                                target,
-                                &source_evidence.cut,
-                                model.supports_vision,
-                                view.spec.language,
-                                &mut messages,
-                            )
-                            .await?;
-                        self.project_message_input(
+                        self.inherited_messages(
+                            target,
                             reader,
-                            view,
-                            input,
+                            claim.source.execution.run_id,
+                            view.spec.language,
                             model.supports_vision,
-                            false,
+                            &mut system,
                             &mut messages,
                         )
-                        .await?;
+                        .await?
                     }
-                }
+                    _ => {
+                        self.canonical_messages(
+                            target,
+                            &source_evidence.cut,
+                            model.supports_vision,
+                            view.spec.language,
+                            &mut messages,
+                        )
+                        .await?
+                    }
+                };
+                self.project_message_input(
+                    reader,
+                    view,
+                    input,
+                    model.supports_vision,
+                    false,
+                    &mut messages,
+                )
+                .await?;
                 recovered_cells = self
                     .semantic_tail(
                         target,
@@ -1133,6 +1131,10 @@ impl DriverModel {
                 return Err(unsupported(
                     "history-source-requires-bound-snapshot-projection",
                 ));
+            }
+            if matches!(input, RunInput::Continuation { .. }) {
+                append_continuation_cue(view.spec.language, messages).await?;
+                return Ok(());
             }
             if let RunInput::Message {
                 content,
@@ -1348,18 +1350,30 @@ impl DriverModel {
             after = page.last().expect("nonempty history").revision;
             history.extend(page);
         }
-        let first_step = history
-            .iter()
-            .find_map(|item| match item.fact {
-                Fact::StepPrepared { step, .. } => Some(step),
-                _ => None,
-            })
-            .ok_or_else(|| RunError::InvalidInput("continuation source has no request".into()))?;
-        let first = self.state.request(source_run, first_step).await?;
-        let capture: RequestSource = self.decode(source_run, &first.source_capture).await?;
+        let cut = match history.iter().find_map(|item| match item.fact {
+            Fact::StepPrepared { step, .. } => Some(step),
+            _ => None,
+        }) {
+            Some(first_step) => {
+                let first = self.state.request(source_run, first_step).await?;
+                let capture: RequestSource = self.decode(source_run, &first.source_capture).await?;
+                capture.cut
+            }
+            None => {
+                let source_input: RunInput = self.decode(source_run, &original.spec.input).await?;
+                let root = self.ancestry_root(source_run, &source_input).await?;
+                self.state
+                    .session_history(
+                        original.spec.owner.clone(),
+                        original.spec.session_id.clone(),
+                    )
+                    .capture_before(root)
+                    .await?
+            }
+        };
         let base = SessionBase {
-            high_water: capture.cut.through_sequence,
-            digest: capture.cut.digest.clone(),
+            high_water: cut.through_sequence,
+            digest: cut.digest,
         };
         let model = self.source.capture().await?;
         let target = ReplayTarget::new(&model, ModelOperation::Inference);
@@ -1369,8 +1383,8 @@ impl DriverModel {
             &self.cancellation,
         )
         .await?;
-        if let Err(original) = self
-            .inherited_messages(
+        if let Err(original) = async {
+            self.inherited_messages(
                 target,
                 reader,
                 source_run,
@@ -1379,7 +1393,16 @@ impl DriverModel {
                 &mut system,
                 &mut messages,
             )
-            .await
+            .await?;
+            append_continuation_cue(original.spec.language, &mut messages).await?;
+            if !messages.has_non_system_messages() {
+                return Err(RunError::InvalidInput(
+                    "continuation source has no user prompt".into(),
+                ));
+            }
+            Ok(())
+        }
+        .await
         {
             return Err(match messages.close().await {
                 Ok(()) => original,
@@ -3601,4 +3624,27 @@ fn recovery_for_failure(
         });
     }
     Ok(blocked())
+}
+
+async fn append_continuation_cue(
+    language: maka_agent_facts::language::Language,
+    messages: &mut preparation::PromptBuilder,
+) -> Result<(), RunError> {
+    if messages.needs_continuation_cue() {
+        let cue = match language {
+            maka_agent_facts::language::Language::En => {
+                "Continue from where the previous response stopped without repeating text already output."
+            }
+            maka_agent_facts::language::Language::ZhCn => {
+                "请紧接上一段中断处继续，不要重复已经输出的内容。"
+            }
+            maka_agent_facts::language::Language::ZhTw => {
+                "請緊接上一段中斷處繼續，不要重複已經輸出的內容。"
+            }
+        };
+        messages
+            .append(maka_model::prompt::Message::user(cue))
+            .await?;
+    }
+    Ok(())
 }

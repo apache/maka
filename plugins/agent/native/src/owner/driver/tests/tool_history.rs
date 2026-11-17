@@ -1908,3 +1908,413 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
     );
     assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()> {
+    use maka_agent_engine::ports::Preparation;
+    use maka_agent_facts::tool_output::{DurableToolProjection, ToolSuccess};
+
+    #[derive(Clone, Copy)]
+    enum Scenario {
+        SettledToolThenOrphanThinking,
+        PartialAssistantText,
+        LateReceiptUnacceptedToolCall,
+        StoppedBeforeFirstStep,
+    }
+
+    for scenario in [
+        Scenario::SettledToolThenOrphanThinking,
+        Scenario::PartialAssistantText,
+        Scenario::LateReceiptUnacceptedToolCall,
+        Scenario::StoppedBeforeFirstStep,
+    ] {
+        let mut rig = Rig::new()?;
+        let (request_tx, mut captured) = tokio::sync::mpsc::channel(2);
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let request_tx = request_tx.clone();
+                async move {
+                    let _ = request_tx.try_send(
+                        serde_json::from_slice::<Value>(&body).expect("model request JSON"),
+                    );
+                    let sse = format!(
+                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"id":"cont","choices":[{"index":0,"delta":{"role":"assistant","content":"Continued cleanly."},"finish_reason":null}]}),
+                        json!({"id":"cont","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                    );
+                    ([("content-type", "text/event-stream")], sse)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let stop = CancellationToken::new();
+        let server_stop = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(server_stop.cancelled_owned())
+                .await
+        });
+
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let run = driver.access.execution().run_id;
+
+            match scenario {
+                Scenario::SettledToolThenOrphanThinking => {
+                    let (_, first_attempt, _) =
+                        rig.record_model_request(Preparation::Initial).await?;
+                    let (tool, _) = rig
+                        .tool(first_attempt, "ordinary", "call-settled", json!({}))
+                        .await?;
+                    rig.finish_model_request(first_attempt, None).await?;
+                    let returned = super::super::effects::publish_return_for_test(
+                        &driver.state,
+                        &driver.access,
+                        &tool,
+                        ToolSuccess::projected(
+                            ToolOutput::Json(json!({"status": "ok"})),
+                            DurableToolProjection::Text {
+                                text: "settled tool output".into(),
+                            },
+                        ),
+                        None,
+                    )
+                    .await?;
+                    let Fact::LocalToolReturned {
+                        result: local_ref, ..
+                    } = returned
+                    else {
+                        return Err("missing local tool return".into());
+                    };
+                    let accepted =
+                        ContentBlob::json(&AcceptedToolResult::Local { result: local_ref })?;
+                    rig.append(
+                        vec![Fact::ToolResultAccepted {
+                            tool,
+                            result: accepted.reference().clone(),
+                            outcome: AcceptedResult::Succeeded,
+                        }],
+                        vec![accepted],
+                    )
+                    .await?;
+
+                    let (_, timed_out_attempt, _) =
+                        rig.record_model_request(Preparation::Initial).await?;
+                    rig.append(
+                        vec![
+                            Fact::ModelObserved {
+                                attempt: timed_out_attempt,
+                                index: 0,
+                                part: ModelPart::Text {
+                                    text_kind: maka_agent_facts::model::TextKind::Thinking,
+                                    text: "unfinished orphan reasoning".to_string().into(),
+                                    provider_options: None,
+                                },
+                                continuation: None,
+                            },
+                            Fact::ModelCleanupObserved {
+                                attempt: timed_out_attempt,
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                            Fact::ModelInterrupted {
+                                attempt: timed_out_attempt,
+                                diagnostic:
+                                    "provider failed (TimedOut): model stream idle timeout exceeded"
+                                        .into(),
+                            },
+                            Fact::RunTerminated {
+                                terminal: Terminal::Failed,
+                                diagnostic: Some(
+                                    "provider failed (TimedOut): model stream idle timeout exceeded"
+                                        .into(),
+                                ),
+                            },
+                        ],
+                        vec![],
+                    )
+                    .await?;
+                }
+                Scenario::PartialAssistantText => {
+                    let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+                    rig.append(
+                        vec![
+                            Fact::ModelObserved {
+                                attempt,
+                                index: 0,
+                                part: ModelPart::Text {
+                                    text_kind: maka_agent_facts::model::TextKind::Text,
+                                    text: "First half of answer.".to_string().into(),
+                                    provider_options: None,
+                                },
+                                continuation: None,
+                            },
+                            Fact::ModelCleanupObserved {
+                                attempt,
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                            Fact::ModelInterrupted {
+                                attempt,
+                                diagnostic: "stream idle timeout".into(),
+                            },
+                            Fact::RunTerminated {
+                                terminal: Terminal::Failed,
+                                diagnostic: Some("stream idle timeout".into()),
+                            },
+                        ],
+                        vec![],
+                    )
+                    .await?;
+                }
+                Scenario::LateReceiptUnacceptedToolCall => {
+                    use maka_agent_facts::operation::inline_reply;
+                    use maka_plugin_core::operation::{
+                        OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+                    };
+
+                    let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+                    let (tool, _) = rig
+                        .tool(attempt, "ordinary", "call-late", json!({}))
+                        .await?;
+                    rig.finish_model_request(attempt, None).await?;
+                    let owner = driver.state.frontier(run).await?.spec.owner;
+                    let digest = format!("sha256-{}", "a".repeat(64));
+                    let reference = RecoveryRef {
+                        source: maka_plugin_core::deployment::DeploymentRef {
+                            state_domain: "b".repeat(64),
+                            deployment: owner.deployment,
+                            revision: 1,
+                        },
+                        namespace: owner.namespace,
+                        export: "computer".into(),
+                        method: "evaluate".into(),
+                        operation: Uuid::new_v4(),
+                        fingerprint: digest.clone(),
+                        contract: RecoveryContract {
+                            name: "maka.workspace.Computer".into(),
+                            version: 1,
+                            transport: maka_plugin_core::contract::Transport::Remote,
+                            digest,
+                        },
+                        recovery: RecoveryProtocol::JournalV1,
+                    };
+                    let observed = |outcome| Fact::OperationObserved {
+                        tool: tool.clone(),
+                        reply: inline_reply(OperationReply {
+                            reference: reference.clone(),
+                            receipt: Receipt::Recorded {
+                                outcome,
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                        }),
+                    };
+                    rig.append(
+                        vec![
+                            Fact::ToolOriginalBound {
+                                tool: tool.clone(),
+                                reference: reference.clone(),
+                            },
+                            observed(OperationOutcome::Unknown {
+                                diagnostic: "Launch outcome unknown".into(),
+                            }),
+                            Fact::Blocked {
+                                blocker: BlockerId::new(),
+                                reason: BlockerKind::OperationUnknown {
+                                    tool: tool.clone(),
+                                    reference: reference.clone(),
+                                },
+                            },
+                            Fact::RunTerminated {
+                                terminal: Terminal::Failed,
+                                diagnostic: Some("Launch outcome unknown".into()),
+                            },
+                        ],
+                        vec![],
+                    )
+                    .await?;
+
+                    // While the unknown operation is unresolved, continuationAvailability rejects cleanly.
+                    let before_receipt = query(
+                        &rig,
+                        "continuationAvailability",
+                        json!({ "sessionId": session, "runId": run }),
+                    )
+                    .await?;
+                    assert_eq!(
+                        before_receipt,
+                        json!({ "kind": "rejected", "reason": "safety_check_failed" })
+                    );
+
+                    // Late authoritative receipt settles the operation after termination.
+                    driver
+                        .state
+                        .observe(
+                            run,
+                            vec![Change::new(
+                                observed(OperationOutcome::Returned {
+                                    result: OperationResult::Failure {
+                                        diagnostic: "Window launch did not match app identity."
+                                            .into(),
+                                    },
+                                }),
+                                at(),
+                            )],
+                            vec![],
+                        )
+                        .await?;
+                }
+                Scenario::StoppedBeforeFirstStep => {
+                    rig.append(
+                        vec![Fact::RunTerminated {
+                            terminal: Terminal::Cancelled,
+                            diagnostic: Some("user_requested_stop".into()),
+                        }],
+                        vec![],
+                    )
+                    .await?;
+                }
+            }
+
+            let frontier = driver.state.frontier(run).await?;
+            let BackendSpec::Model { binding, .. } = frontier.spec.backend else {
+                return Err("fixture model binding missing".into());
+            };
+            let client = rig.client.as_ref().unwrap();
+            let availability = query(
+                &rig,
+                "continuationAvailability",
+                json!({ "sessionId": session, "runId": run }),
+            )
+            .await
+            .map_err(|e| format!("availability failed: {e}"))?;
+            assert_eq!(availability["kind"], "ready", "{availability}");
+
+            let continued = model_recovery::call(
+                client,
+                "agent",
+                "continueRun",
+                json!({
+                    "sessionId": session,
+                    "sourceRunId": run,
+                    "sourceHighWater": frontier.revision,
+                    "model": { "connectionId": binding.connection_id, "modelId": binding.model },
+                }),
+            )
+            .await
+            .map_err(|e| format!("continueRun failed: {e}"))?;
+            assert_eq!(continued["kind"], "started", "{continued}");
+            assert_ne!(continued["execution"]["runId"], json!(run));
+
+            let request = captured
+                .recv()
+                .await
+                .ok_or("continuation did not reach the model")?;
+            let messages = request["messages"]
+                .as_array()
+                .ok_or("model messages missing")?;
+
+            match scenario {
+                Scenario::SettledToolThenOrphanThinking => {
+                    assert!(
+                        messages.iter().any(|msg| msg["tool_calls"]
+                            .as_array()
+                            .is_some_and(|calls| calls
+                                .iter()
+                                .any(|call| call["id"] == "call-settled"))),
+                        "settled tool call must remain in history: {request}"
+                    );
+                    assert_eq!(
+                        messages.last().and_then(|msg| msg["role"].as_str()),
+                        Some("tool"),
+                        "orphan reasoning attempt must not dangle after settled tool output: {request}"
+                    );
+                    assert!(
+                        messages
+                            .last()
+                            .and_then(|msg| msg["content"].as_str())
+                            .unwrap_or_default()
+                            .contains("settled tool output"),
+                        "{request}"
+                    );
+                    assert!(!request.to_string().contains("unfinished orphan reasoning"));
+                }
+                Scenario::PartialAssistantText => {
+                    assert!(
+                        messages.iter().any(|msg| msg["role"] == "assistant"
+                            && msg["content"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .contains("First half of answer.")),
+                        "partial assistant text must remain in context: {request}"
+                    );
+                    assert_eq!(
+                        messages.last().and_then(|msg| msg["role"].as_str()),
+                        Some("user"),
+                        "partial assistant continuation must end with user cue: {request}"
+                    );
+                }
+                Scenario::LateReceiptUnacceptedToolCall => {
+                    let idx = messages
+                        .iter()
+                        .position(|msg| {
+                            msg["tool_calls"].as_array().is_some_and(|calls| {
+                                calls.iter().any(|call| call["id"] == "call-late")
+                            })
+                        })
+                        .ok_or_else(|| format!("late-settled tool call missing: {request}"))?;
+                    assert_eq!(messages[idx + 1]["role"], "tool", "{request}");
+                    assert_eq!(messages[idx + 1]["tool_call_id"], "call-late");
+                    assert!(
+                        messages[idx + 1]["content"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .contains("Window launch did not match app identity."),
+                        "{request}"
+                    );
+                }
+                Scenario::StoppedBeforeFirstStep => {
+                    assert_eq!(
+                        messages.last().and_then(|msg| msg["role"].as_str()),
+                        Some("user"),
+                        "{request}"
+                    );
+                    assert!(
+                        request
+                            .to_string()
+                            .contains("native wait original read failure"),
+                        "{request}"
+                    );
+                }
+            }
+
+            let target = json!({ "kind": "run", "runId": continued["execution"]["runId"] });
+            loop {
+                let work = model_recovery::call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({ "sessionId": session, "target": target }),
+                )
+                .await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("completed") => break,
+                    Some("failed" | "cancelled") => {
+                        return Err(format!("continuation failed: {work}").into());
+                    }
+                    _ => tokio::task::yield_now().await,
+                }
+            }
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        server.await??;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+    Ok(())
+}

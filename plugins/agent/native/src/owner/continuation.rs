@@ -22,7 +22,7 @@ use super::*;
 use maka_agent_engine::cleanup::Evidence;
 use maka_agent_facts::{
     continuation::ContinuationClaim,
-    durable::{RunId, RunOrigin, UnixMillis},
+    durable::{BackendSpec, RunId, RunOrigin, Trigger, UnixMillis},
     input::RunInput,
 };
 use maka_agent_state::{Admission, fold::RunView};
@@ -94,7 +94,14 @@ impl Owner {
                 ContinuationRejection::SourceNotTerminal,
             ));
         }
-        if actual.spec.origin != RunOrigin::Local || actual.blocks_followup() {
+        if actual.spec.origin != RunOrigin::Local
+            || !matches!(actual.spec.backend, BackendSpec::Model { .. })
+            || matches!(
+                actual.spec.trigger,
+                Trigger::ContextCompact | Trigger::HistorySource
+            )
+            || actual.blocks_followup()
+        {
             return Ok(ContinuationReadiness::Rejected(
                 ContinuationRejection::SafetyCheckFailed,
             ));
@@ -281,7 +288,22 @@ impl Owner {
         // Its model/arena work must close before dropping capabilities and releasing pins.
         drop(original_model);
         lease.finish();
-        let prepared = prepared.map_err(|error| error.to_string())?;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(RunError::ContinuationChanged) => {
+                return rejected(ContinuationRejection::SourceChanged);
+            }
+            Err(error @ (RunError::ReconciliationRequired(_) | RunError::InvalidInput(_))) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    source_run = %actual.run,
+                    %error,
+                    "continuation rejected during preparation"
+                );
+                return rejected(ContinuationRejection::SafetyCheckFailed);
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         if prepared.source.high_water != actual.revision
             || prepared.source.execution.run_id != actual.run
             || prepared.source.execution.session_id != session_id

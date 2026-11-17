@@ -62,20 +62,29 @@ pub async fn validate_continuation(
             "continuation source is not the exact sealed canonical boundary",
         ));
     }
-    let first_step = history
-        .iter()
-        .find_map(|item| match item.fact {
-            Fact::StepPrepared { step, .. } => Some(step),
-            _ => None,
-        })
-        .ok_or_else(|| invalid("continuation has no prepared source request"))?;
-    let first = state.request(original.run, first_step).await?;
-    let source_bytes = state.content(original.run, first.source_capture).await?;
-    let source: crate::preparation::RequestSource =
-        serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
-    if source.cut.through_sequence != claim.base.high_water
-        || source.cut.digest != claim.base.digest
-    {
+    let cut = match history.iter().find_map(|item| match item.fact {
+        Fact::StepPrepared { step, .. } => Some(step),
+        _ => None,
+    }) {
+        Some(first_step) => {
+            let first = state.request(original.run, first_step).await?;
+            let source_bytes = state.content(original.run, first.source_capture).await?;
+            let source: crate::preparation::RequestSource =
+                serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
+            source.cut
+        }
+        None => {
+            let root = ancestry_root(state, &original).await?;
+            state
+                .session_history(
+                    original.spec.owner.clone(),
+                    original.spec.session_id.clone(),
+                )
+                .capture_before(root)
+                .await?
+        }
+    };
+    if cut.through_sequence != claim.base.high_water || cut.digest != claim.base.digest {
         return Err(invalid("continuation canonical base changed"));
     }
     validate_replay_boundary(prompt).await?;
@@ -116,4 +125,34 @@ pub async fn validate_replay_boundary(prompt: &PreparedPrompt) -> Result<(), Run
         ));
     }
     Ok(())
+}
+
+async fn ancestry_root(
+    state: &Store,
+    original: &maka_agent_state::fold::RunView,
+) -> Result<RunId, RunError> {
+    let mut run = original.run;
+    let bytes = state.content(run, original.spec.input.clone()).await?;
+    let input: maka_agent_facts::input::RunInput =
+        serde_json::from_slice(&bytes).map_err(RunError::Json)?;
+    let mut prior = input
+        .inherited_claim()
+        .map(|claim| claim.source.execution.run_id);
+    let mut seen = std::collections::BTreeSet::from([run]);
+    while let Some(source) = prior {
+        if !seen.insert(source) {
+            return Err(RunError::ReconciliationRequired(
+                "cyclic continuation ancestry".into(),
+            ));
+        }
+        run = source;
+        let view = state.frontier(run).await?;
+        let bytes = state.content(run, view.spec.input).await?;
+        let input: maka_agent_facts::input::RunInput =
+            serde_json::from_slice(&bytes).map_err(RunError::Json)?;
+        prior = input
+            .inherited_claim()
+            .map(|claim| claim.source.execution.run_id);
+    }
+    Ok(run)
 }

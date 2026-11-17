@@ -201,17 +201,13 @@ export function TurnSummary(props: {
     const outcome = turnOutcome(turn);
     const time = duration(turn, clock());
     const status =
-      outcome === 'failed'
+      outcome === 'aborted'
         ? time
-          ? tr('Failed after {duration}', { duration: time })
-          : tr('Failed')
-        : outcome === 'aborted'
-          ? time
-            ? tr('Stopped after {duration}', { duration: time })
-            : tr('Stopped')
-          : time
-            ? tr('Worked for {duration}', { duration: time })
-            : '';
+          ? tr('Stopped after {duration}', { duration: time })
+          : tr('Stopped')
+        : time
+          ? tr('Worked for {duration}', { duration: time })
+          : '';
     const counts =
       platform.idiom !== 'terminal' && props.canFold()
         ? turn.foldedWork
@@ -256,12 +252,7 @@ export function TurnSummary(props: {
           style={[
             {
               ...disclosureTitleStyle,
-              color:
-                turnOutcome(props.turn()) === 'failed'
-                  ? C.danger
-                  : running()
-                    ? C.secondary
-                    : C.muted,
+              color: running() ? C.secondary : C.muted,
             },
             { numberOfLines: 1 },
           ]}

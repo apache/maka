@@ -1123,8 +1123,7 @@ export function Conversation(props: ConversationProps) {
           (row?.role === 'compaction' && turn.foldedWork) ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
-          (row?.role === 'failure' &&
-            (platform.idiom !== 'terminal' || outcome === 'completed' || foldedWork))) &&
+          (row?.role === 'failure' && (turn.active || outcome === 'completed' || foldedWork))) &&
         !summaries.has(turn.turnKey) &&
         (platform.idiom !== 'terminal' || outcome !== null || foldedWork)
       ) {
@@ -2750,7 +2749,7 @@ export function Conversation(props: ConversationProps) {
       current = false;
     };
   });
-  const continuation = computed<ComposerContinuation | null>(() => {
+  const continuationCandidate = computed<ComposerContinuation['source'] | null>(() => {
     const source = execution();
     if (
       !ready() ||
@@ -2764,6 +2763,61 @@ export function Conversation(props: ConversationProps) {
       source.runId !== executionSource() ||
       !terminal(source) ||
       source.state.kind === 'completed'
+    )
+      return null;
+    return source;
+  });
+  const continuationReady = signal<{ runId: RunId; highWater: number } | null>(null);
+  effect(() => {
+    const candidate = continuationCandidate();
+    workspace();
+    executionRevision();
+    readState().through;
+    let current = true;
+    untracked(() => {
+      if (!candidate) {
+        continuationReady.set(null);
+        return;
+      }
+      if (
+        continuationReady()?.runId !== candidate.runId ||
+        continuationReady()?.highWater !== candidate.highWater
+      )
+        continuationReady.set(null);
+      void host
+        .query('agent', 'continuationAvailability', { sessionId, runId: candidate.runId })
+        .then((result) => {
+          if (
+            !alive ||
+            !current ||
+            continuationCandidate()?.runId !== candidate.runId ||
+            continuationCandidate()?.highWater !== candidate.highWater
+          )
+            return;
+          if (
+            result.kind === 'ready' &&
+            result.source.runId === candidate.runId &&
+            result.source.highWater === candidate.highWater
+          )
+            continuationReady.set({ runId: candidate.runId, highWater: candidate.highWater });
+          else continuationReady.set(null);
+        })
+        .catch(() => {
+          if (alive && current) continuationReady.set(null);
+        });
+    });
+    return () => {
+      current = false;
+    };
+  });
+  const continuation = computed<ComposerContinuation | null>(() => {
+    const source = continuationCandidate();
+    const verified = continuationReady();
+    if (
+      !source ||
+      !verified ||
+      verified.runId !== source.runId ||
+      verified.highWater !== source.highWater
     )
       return null;
     return { source };

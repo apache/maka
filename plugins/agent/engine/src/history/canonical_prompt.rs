@@ -180,6 +180,7 @@ pub(crate) struct Builder {
     cancellation: CancellationToken,
     count: usize,
     tail: u64,
+    last_non_system_stable: Option<bool>,
     mcp: McpSet,
     prefix: Sha256,
     breakdown: PreparedContextBreakdown,
@@ -208,10 +209,17 @@ impl Builder {
             cancellation,
             count: 0,
             tail: u64::MAX,
+            last_non_system_stable: None,
             mcp: McpSet::default(),
             prefix,
             breakdown: PreparedContextBreakdown::default(),
         })
+    }
+    pub fn has_non_system_messages(&self) -> bool {
+        self.last_non_system_stable.is_some()
+    }
+    pub fn needs_continuation_cue(&self) -> bool {
+        self.last_non_system_stable == Some(false)
     }
     pub fn resident_bytes() -> usize {
         std::mem::size_of::<Self>() + std::mem::size_of::<Directory>() + 4096
@@ -313,6 +321,13 @@ impl Builder {
         record[7] = names.len as u64;
         record[8] = settled.offset;
         record[9] = settled.len as u64;
+        let message_role = role(record[2])?;
+        if message_role != MessageRole::System {
+            self.last_non_system_stable = Some(
+                matches!(message_role, MessageRole::User | MessageRole::Tool)
+                    || (message_role == MessageRole::Assistant && description.last_is_tool_result),
+            );
+        }
         record[10] = u64::from(description.last_is_tool_result);
         put_digest(&mut record[11..15], description.commitment);
         self.prefix.update(description.commitment);

@@ -142,26 +142,36 @@ pub(crate) fn admit_continuation(
             "continuation does not name the exact sealed canonical source",
         ));
     }
-    let first = crate::sql::request(
-        c,
-        source,
-        first_step.ok_or_else(|| invalid("continuation source has no actual prepared request"))?,
-    )?;
-    let bytes = crate::sql::owned_content(c, source, &first.source_capture)?;
-    if content_digest(&bytes) != first.source_capture.digest {
-        return Err(invalid(
-            "continuation source capture bytes differ from their canonical reference",
-        ));
-    }
-    let capture: RequestSource = serde_json::from_slice(&bytes)?;
-    if capture.cut.through_sequence != claim.base.high_water
-        || capture.cut.digest != claim.base.digest
-    {
+    let cut = match first_step {
+        Some(first_step) => {
+            let first = crate::sql::request(c, source, first_step)?;
+            let bytes = crate::sql::owned_content(c, source, &first.source_capture)?;
+            if content_digest(&bytes) != first.source_capture.digest {
+                return Err(invalid(
+                    "continuation source capture bytes differ from their canonical reference",
+                ));
+            }
+            let capture: RequestSource = serde_json::from_slice(&bytes)?;
+            capture.cut
+        }
+        None => {
+            let root = ancestry_root(c, &original)?;
+            sql::capture(
+                c,
+                &HistoryNamespace {
+                    owner: view.spec.owner.clone(),
+                    session: view.spec.session_id.clone(),
+                },
+                Some(root),
+            )?
+        }
+    };
+    if cut.through_sequence != claim.base.high_water || cut.digest != claim.base.digest {
         return Err(invalid(
             "continuation changed its actual source request base",
         ));
     }
-    sql::validate_cut(c, &view.spec.owner, &view.spec.session_id, &capture.cut)?;
+    sql::validate_cut(c, &view.spec.owner, &view.spec.session_id, &cut)?;
     let prior: Option<String> = c
         .query_row(
             "SELECT run FROM agent_continuation_successors WHERE source_run=?",
@@ -185,6 +195,29 @@ pub(crate) fn admit_continuation(
     // Prepared prompt/input_digest/route checks occur at the real first target
     // request boundary in Engine, not before such a request exists at admission.
     Ok(())
+}
+
+fn ancestry_root(c: &Connection, original: &RunView) -> Result<RunId, StoreError> {
+    let mut run = original.run;
+    let bytes = crate::sql::owned_content(c, run, &original.spec.input)?;
+    let input: RunInput = serde_json::from_slice(&bytes)?;
+    let mut prior = input
+        .inherited_claim()
+        .map(|claim| claim.source.execution.run_id);
+    let mut seen = std::collections::BTreeSet::from([run]);
+    while let Some(source) = prior {
+        if !seen.insert(source) {
+            return Err(invalid("cyclic continuation ancestry"));
+        }
+        run = source;
+        let view = crate::sql::load(c, run, &[], false)?;
+        let bytes = crate::sql::owned_content(c, run, &view.spec.input)?;
+        let input: RunInput = serde_json::from_slice(&bytes)?;
+        prior = input
+            .inherited_claim()
+            .map(|claim| claim.source.execution.run_id);
+    }
+    Ok(run)
 }
 struct Hasher(Sha256);
 impl Write for Hasher {
