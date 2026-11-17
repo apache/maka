@@ -25,7 +25,7 @@
 
 ## 1. 实际交付
 
-新增 Agent Host 服务方法 `changeMemory`、`memory`、`memories`、`memoryHistory`。用户可以手动创建记忆、按 ID 更正、切换常驻管理标记、删除，以及明确重新保存已删除的条目。所有写入通过原 Root 数据库及 Host 操作事务完成，不创建独立 memory.sqlite。
+新增 Agent Host 服务方法 `changeMemory`、`memory`、`memories`、`memoryHistory`、`memorySource`、`memoryEvidence`。用户可以手动创建记忆、按 ID 更正、切换常驻管理标记、删除，以及明确重新保存已删除的条目。所有写入通过原 Root 数据库及 Host 操作事务完成，不创建独立 memory.sqlite。
 
 这里的“常驻”仅指持久化的 `user_always` 管理状态。本 PR 不将内容放入模型上下文，也不实现 PR4 的聚合预算检查。调用方不能据此宣称记忆已随某个 Run 加载。
 
@@ -35,10 +35,11 @@
 
 | 文件 | 修改及目的 |
 | --- | --- |
-| `plugins/agent/facts/src/memory.rs` | 定义 MemoryId、MemoryRevision、管理方式、生命周期、记录、断言版本、用户操作来源及确定性修改结果。 |
+| `plugins/agent/facts/src/memory.rs` | 定义 MemoryId、MemoryRevision、管理方式、生命周期、断言元数据、用户操作及会话来源、证据和确定性修改结果。 |
 | `plugins/agent/api/src/contract/memory.rs` | 定义范围选择、详情、分页、历史及修改请求；拒绝未知字段。 |
 | `plugins/agent/api/src/contract.rs` | 注册真实 Agent 服务方法及 schema。 |
 | `plugins/agent/state/migrations/0043_memory.sql` | 在原 Root 中建立条目、断言版本、范围版本和索引。42 已由 Root checkpoint repository 使用。 |
+| `plugins/agent/state/migrations/0044_memory_metadata.sql`、`0045_memory_evidence.sql` | 增加断言元数据、独立证据关联及分页索引，并迁移已有用户操作来源。 |
 | `plugins/agent/state/src/lib.rs` | 注册 migration；升级测试同时覆盖旧库缺少记忆表的情形。 |
 | `plugins/agent/state/src/memory.rs` | 实现有界读取和事务修改，包含 CAS、来源、纠正关系、抑制索引与范围版本维护。 |
 | `plugins/agent/native/src/owner/memory.rs` | 将真实调用身份、Host namespace、当前会话 workspace 及策略绑定到读写操作。 |
@@ -59,7 +60,29 @@
 
 断言保存原正文、用户操作来源、`corrects` 关系、精确匹配摘要及匹配用途。正文和来源不被后续编辑覆盖；用途可由 current 变为 corrected 或 suppressed。旧证据始终属于旧正文。直接手动输入来源为 `user_operation`，包含 Host 提供的 operation UUID 和观察时间，不声称存在聊天逐字引用。
 
-本 PR 每个新断言只有一个真实用户操作来源。没有实现自动补证、聊天引用验证、关键词候选、时间关系裁决或语义合并；后续扩展不能将此单来源字段当成无限证据数组。
+每个新断言先关联一个真实用户操作来源。migration 44 增加不可变断言元数据及生成方式；migration 45 建立独立的证据关联表，并迁入已有用户操作来源。`memoryEvidence` 按正文版本和游标分页，不在详情中携带无界来源数组。
+
+断言的 `metadata` 保存 kind、statement 和 temporal。没有用户输入时明确记为 unspecified；temporal 可表示未知、无时间限制或前闭后开的 Unix 毫秒区间，结束时间必须晚于开始时间。`generation=user_input` 表示正文来自用户输入，`corrects` 标明更正关系。这些数据随正文版本保留，不能用操作观察时间代替事实有效时间。
+
+客户端先从公开 history 接口取得消息位置和原文，再调用 `memorySource`，由 Host 校验选中片段并解析 fact UUID 和全文指纹；不要求客户端读取数据库或猜测内部身份。该来源解析入口仅对管理身份开放。
+
+`changeMemory.add_evidence` 指定预期操作版本及正文 assertion。会话引用包含 session ID、sequence、item index、原始 fact UUID、全文 SHA-256、UTF-8 字节区间和原文。Host 检查所属会话和项目范围；事务内重新核对来源绑定、真实消息身份、指纹及片段，并拒绝隐身来源。来源时间取真实消息时间，关联操作身份取 Host 回执。范围比较及事务提交复用同一份已捕获的目标和来源绑定，不在比较之后再次解析出不同的提交范围。
+
+追加证据递增操作版本和范围版本，不改变正文版本、管理方式或排序时间。同一正文的相同引用幂等，不同事实可以引用同一来源。用户更正只给新正文关联新的用户操作来源，旧聊天证据仍绑定旧正文。普通证据分页过滤 suppressed 条目和版本，显式恢复也不暴露此前被抑制的证据。
+
+引用校验证明原文真实，不等于自动证明语义蕴含。这里由用户明确关联证据；自动判定、冻结会话提取和关键词候选仍由后续 PR 实现。
+
+新增表 `agent_memory_evidence` 的字段含义如下：
+
+| 字段 | 作用 |
+| --- | --- |
+| `sequence` | 数据库分配的关联行 ID，用作稳定分页游标，不表示消息时间或事实优先级。 |
+| `namespace / scope / id` | 定位所属 Host、Agent、范围及记忆条目。 |
+| `assertion` | 引用不可变正文版本，与版本表构成外键，不能使用仅因切换常驻而递增的操作版本。 |
+| `source` | 已验证来源的 JSON：用户操作，或含消息地址、指纹、原文定位、观察时间及关联操作身份的会话引用。 |
+| `source_key` | 同一断言内的引用去重键。会话引用使用固定长度 SHA-256，避免把长原文重复放入唯一索引；不把本次关联 operation ID 当成来源身份，因此重复关联不会生成重复证据。 |
+
+唯一约束限定在同一条目和正文版本内，不宣称语义唯一；分页索引以前四个定位字段及 sequence 排序。migration 44/45 通过原迁移账本执行，已有 43 版本数据库保留正文，以 unspecified 补入未知语义字段，并迁入原用户操作来源，不根据旧文本猜测事实时间。
 
 ### 3.2 提交顺序
 
@@ -92,7 +115,7 @@ namespace 使用 Host deployment 与 Agent instance 的组合。个人范围使�
 
 模型读取首先检查真实 Run access、当前 `MemoryPolicy.enabled` 和 `agent_read_enabled`。只允许本地普通会话；有 parent 或受限 tools 的会话不因拥有服务访问能力而获得个人记忆读取权。项目查询只能选择调用者自己的 session。管理端不受模型读取开关影响，用户仍可纠错和删除。
 
-当前基线没有可接入的隐身会话字段。本 PR 不新增一个无法贯穿 Run 生命周期的影子开关，也不宣称已实现隐身运行语义。新增隐身入口时必须同时约束读取、写入和在途请求。
+`create.incognito` 在会话创建时确定并持久保存，不能通过 metadata 修改。派生会话继承隐身限制。记忆读取检查真实执行会话的配置；隐身执行不能读取记忆，也不能借用户管理入口写入记忆，隐身会话不能作为新增证据来源。Session DTO 暴露该状态。该字段约束记忆使用，不承诺物理删除聊天记录；后续自动提取、常驻投影和在途请求路径仍须接入同一边界。
 
 设置服务的既有 `assistantPreferences`/`updateAssistantPreferences` 入口新增 memory 字段与 memory mutation，使用原配置 revision CAS 更新 `enabled` 和 `agentReadEnabled`；没有增加第二份记忆策略库。默认仍是 enabled=true、agentReadEnabled=false，不自动开启模型读取。
 
@@ -142,17 +165,35 @@ PR1 不阻止用户通过新的 create 再次输入相同或同义正文，也�
 
 | 验证 | 结果 |
 | --- | --- |
-| `cargo check --offline -p maka-agent-native --tests`、`cargo fmt --all -- --check` | 通过。 |
-| `cargo test --offline -p maka-agent-state --lib` | 11 项通过，包括迁移新建/升级/重开、事务回滚、范围隔离和索引分页。 |
-| native `memory_management_cas_sources_deletion_and_restart` | 真实 Host 验收通过：同项目跨会话、子目录隔离、配置 CAS、禁用模型读取后继续管理、双窗口更正、来源版本、常驻切换、删除、旧回执及重启恢复。 |
-| native `project_scope_rejects_directory_replacement_after_authorization`、`project_scope_rejects_redirection_after_authorization` | 通过：授权后的目录替换及符号链接重定向均拒绝解析为记忆范围。 |
-| `cargo test --offline -p maka-app-client --lib pending_preset_settings_survive_reopen_and_fence_repeated_writes` | 通过，既有恢复测试扩展覆盖 changeMemory。 |
-| `node packages/plugin-sdk/scripts/generate.mjs check` | 5 个 runtime declaration 文件一致性检查通过。 |
-| SDK acceptance 与 product bundle TypeScript 检查 | 均通过。 |
-| 本次新增文件许可证头及 `git diff --check` | 通过。 |
+| facts / API / state / client 的完整库测试 | 53 项通过（32 / 2 / 14 / 5），包含已有数据升级、回滚、证据语义及客户端 pending operation 恢复。 |
+| `cargo nextest run --offline -p maka-agent-native --lib --no-fail-fast -j 2` | 105 项运行，104 项通过，1 项 preset 用例因通道中断失败；该用例随后单独连续复跑两次通过。 |
+| 最终 memory / project_scope 专项回归 | 5 项通过，包含隐身 fork 及最终捕获绑定；其中 1 项为过滤器同时命中的既有 inventory 用例。 |
+| `cargo check --offline -p maka-app-client -p maka-cli -p maka-workbench --tests -j 1` | 通过。 |
+| `node packages/plugin-sdk/scripts/generate.mjs check` 与 SDK / product bundle TypeScript | 5 个生成文件一致，两个 TypeScript 检查通过。 |
+| `cargo fmt --all -- --check`、差异空白检查 | 通过。 |
+| 暂存新增文件 ASF 许可证头 | 通过。 |
 
-native 测试首次因执行沙箱禁止本地 IPC/socket 而无法初始化 Rig；对同一已构建测试二进制放开该环境限制后，测试完整通过。全仓许可证扫描包含已有未跟踪的 apps、packages 和 perf-results 产物，出现与本次修改无关的分类/头部问题；本 PR 仅提交自身文件，未改写这些产物。
+测试使用项目既有 nextest 入口，并允许真实 Host fixture 所需的本地 IPC/socket。早期直接从仓库根目录运行 native 二进制导致产品 fixture 相对路径错误；正式回归改用 nextest 提供正确 crate 工作目录。原测试 fixture 随机捕获第二个 Agent 的问题已改为按主实例身份捕获，再重新验证。
 
-没有运行全仓 `just check`，没有宣称覆盖完整隐身生命周期或大规模性能验收。
+完整 native 首轮失败的用例为 `preset_execution_uses_durable_role_and_explicit_model_selection`，错误为 `Application channel ended before a complete frame`；两个独立 nextest 复跑均通过，未修改该用例或放宽超时。首次中断原因尚未定位，不能把整轮结果写成 105/105 通过。
 
-后续 PR 仍需完成：多来源证据关联、自动写入权限、语义去重和冲突、跨条目关系抑制、Recall 过滤、常驻预算与冻结投影、发送前撤销、旧数据显式导入、增量提取和管理界面。PR1 的枚举不代表上述自动行为已实现。
+没有运行全仓 `just check` 或所有 CI 分片，也没有完成大规模性能、后续自动提取或上下文撤销路径的验收。这里的通过结论仅针对明确列出的检查。
+
+后续 PR 仍需完成：自动写入权限、语义去重和冲突、跨条目关系抑制、Recall 过滤、常驻预算与冻结投影、发送前撤销、旧数据显式导入、增量提取和管理界面。PR1 的枚举不代表上述自动行为已实现。
+
+## 9. 审计后补齐工作
+
+2026-11-17 补齐逐版本证据、断言元数据和会话隐身边界；以下逐项对应审计确认的缺口。
+
+| 审计缺口 | 本轮实现和验收路径 |
+| --- | --- |
+| 来源与证据 | 新增 migration 45、`memorySource` 和逐 assertion 的 `memoryEvidence`；真实 Host 从 history 原文开始关联，拒绝伪造片段及隐身来源。状态测试覆盖幂等、跨事实复用、更正隔离和删除过滤。 |
+| 断言元数据 | migration 44 保存 kind、statement、temporal 和 generation；创建/更正/恢复及 SDK 接通，验证版本保留和非法有效区间拒绝。 |
+| Incognito | 创建时持久化、派生继承，实际 Agent Run 读取和来源入口执行限制；额外验证 fork 保留隐身状态。 |
+| 原操作恢复 | 重开 Host/client 后通过真实 `receipts.read` 多次读取同一操作；ID/版本一致，删除正文不会因旧回执重新暴露。 |
+| 读取权限 | 用真实 Run 的 Agent 身份分别检查两个开关、正常读取、越会话拒绝和用户写通道拒绝。管理端仍可在禁用时操作。 |
+| 真实范围隔离 | 双 Host、双 Agent、共同 Git worktree、显式子目录，以及授权绑定变更后旧提交失败。 |
+| 其余行为 | active 内容跨重启、恢复不暴露旧 suppressed 历史、常驻更正保持模式、列表/历史/证据游标翻页，以及已有 43 版本数据库升级。 |
+
+
+最终执行结果见第 8 节。

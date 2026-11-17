@@ -237,6 +237,16 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "scoped ordinary memory",
         sql: include_str!("../migrations/0043_memory.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 44,
+        description: "memory assertion metadata",
+        sql: include_str!("../migrations/0044_memory_metadata.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 45,
+        description: "memory version evidence",
+        sql: include_str!("../migrations/0045_memory_evidence.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -258,6 +268,8 @@ mod migration_tests {
                     .filter(|m| {
                         m.description != "checkpoint repository"
                             && m.description != "scoped ordinary memory"
+                            && m.description != "memory assertion metadata"
+                            && m.description != "memory version evidence"
                     })
                     .copied()
                     .collect();

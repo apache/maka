@@ -308,6 +308,14 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "memorySource" => {
+                    encode(owner.memory_source(decode(input)?, context.scope()).await?)
+                }
+                "memoryEvidence" => encode(
+                    owner
+                        .memory_evidence(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "memoryHistory" => encode(
                     owner
                         .memory_history(decode(input)?, context.scope())

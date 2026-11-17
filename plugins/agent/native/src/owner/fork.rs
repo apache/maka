@@ -241,6 +241,7 @@ impl Owner {
         let workspace = candidate.reference();
         let stamp = candidate.stamp();
         let configuration = StoredSessionConfiguration {
+            incognito: parent.incognito || policy.incognito,
             parent_session_id: scope
                 .identity
                 .agent()

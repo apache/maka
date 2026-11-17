@@ -393,6 +393,14 @@ impl Rig {
             maka_files_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
         }
+        let primary_agent = store
+            .load_application(deployment)
+            .await?
+            .ok_or("test deployment missing")?
+            .source()
+            .input
+            .instances["agent"]
+            .key;
         let capture = self.captured.clone();
         let completion_gate = self.completion_gate.clone();
         let helper = std::env::current_exe()?;
@@ -413,7 +421,9 @@ impl Rig {
                                 Some(observe) => owner.with_model_observation(observe),
                                 None => owner,
                             };
-                            *capture.lock().unwrap() = Some(owner.clone());
+                            if owner.run_owner().namespace == InstanceId(vec![primary_agent]) {
+                                *capture.lock().unwrap() = Some(owner.clone());
+                            }
                             let service = Arc::new(crate::service::Agent(owner));
                             NativeActivation {
                                 exports: Ok(BTreeMap::from([(
@@ -440,6 +450,8 @@ impl Rig {
                 "memories",
                 "memory",
                 "memoryHistory",
+                "memoryEvidence",
+                "memorySource",
                 "changeMemory",
                 "presets",
                 "preset",
@@ -504,6 +516,17 @@ impl Rig {
         )]);
         if model_test {
             endpoints.insert(
+                "receipts".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "receipts".into(),
+                    grant: Grant {
+                        methods: ["read".into()].into(),
+                        recovery: true,
+                    },
+                },
+            );
+            endpoints.insert(
                 "web".into(),
                 HostEndpoint {
                     consumer: InstanceId(vec![gateway_key]),
@@ -527,6 +550,26 @@ impl Rig {
                             "updateAssistantPreferences".into(),
                         ]
                         .into(),
+                        recovery: false,
+                    },
+                },
+            );
+        }
+        if model_test
+            && store
+                .load_application(deployment)
+                .await?
+                .is_some_and(|loaded| loaded.source().input.instances.contains_key("memory_peer"))
+        {
+            endpoints.insert(
+                "memory_peer".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "memory_peer".into(),
+                    grant: Grant {
+                        methods: ["create", "memory", "changeMemory"]
+                            .map(String::from)
+                            .into(),
                         recovery: false,
                     },
                 },
@@ -3206,6 +3249,12 @@ mod model_recovery {
             }]);
         }
         configure(&mut configuration);
+        let memory_peer = configuration
+            .as_object_mut()
+            .unwrap()
+            .remove("memoryTestPeer")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -3247,37 +3296,64 @@ mod model_recovery {
             maka_settings_native::native(),
             BTreeMap::new(),
         )?;
-        let client = package(
-            "maka.tests.model-client",
-            gateway_native(),
-            BTreeMap::from([
-                (
-                    "web".into(),
-                    Import {
-                        contract: maka_web_api::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-                (
-                    "agent".into(),
-                    Import {
-                        contract: maka_agent_api::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-                (
-                    "settings".into(),
-                    Import {
-                        contract: maka_settings_native::contract::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-            ]),
+        let receipts = package(
+            "maka.tests.memory-receipts",
+            maka_host_runtime::application::operations::native(),
+            BTreeMap::new(),
         )?;
-        let input = Input {
+        let mut client_imports = BTreeMap::from([
+            (
+                "receipts".into(),
+                Import {
+                    contract: maka_plugin_core::operation::receipt_reader_contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "web".into(),
+                Import {
+                    contract: maka_web_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "agent".into(),
+                Import {
+                    contract: maka_agent_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "settings".into(),
+                Import {
+                    contract: maka_settings_native::contract::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+        ]);
+        if memory_peer {
+            client_imports.insert(
+                "memory_peer".into(),
+                Import {
+                    contract: maka_agent_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            );
+        }
+        let client = package("maka.tests.model-client", gateway_native(), client_imports)?;
+        let mut input = Input {
             base: None,
             ui: None,
             instances: BTreeMap::from([
+                (
+                    "receipts".into(),
+                    node(
+                        Uuid::new_v4(),
+                        receipts.application_ref(),
+                        json!({}),
+                        BTreeMap::new(),
+                    ),
+                ),
                 (
                     "files".into(),
                     node(
@@ -3333,6 +3409,13 @@ mod model_recovery {
                         json!({}),
                         BTreeMap::from([
                             (
+                                "receipts".into(),
+                                vec![Target::Instance {
+                                    path: vec!["receipts".into()],
+                                    export: "Receipts".into(),
+                                }],
+                            ),
+                            (
                                 "web".into(),
                                 vec![Target::Instance {
                                     path: vec!["web".into()],
@@ -3358,6 +3441,18 @@ mod model_recovery {
                 ),
             ]),
         };
+        if memory_peer {
+            let mut peer = input.instances["agent"].clone();
+            peer.key = Uuid::new_v4();
+            input.instances.insert("memory_peer".into(), peer);
+            input.instances.get_mut("client").unwrap().bindings.insert(
+                "memory_peer".into(),
+                vec![Target::Instance {
+                    path: vec!["memory_peer".into()],
+                    export: "agent".into(),
+                }],
+            );
+        }
         let store = root(base, true).await?;
         store
             .commit_application(
@@ -3365,7 +3460,7 @@ mod model_recovery {
                 0,
                 input,
                 vec![],
-                vec![agent, settings, client, files, web],
+                vec![agent, settings, client, files, web, receipts],
             )
             .await?;
         let loaded = store
@@ -3450,7 +3545,7 @@ mod model_recovery {
                 cleanup?;
                 result?
             }
-            _ => return Err("unexpected test service reply variant".into()),
+            reply => return Err(format!("{endpoint}.{method}: unexpected reply {reply:?}").into()),
         };
         call.close().await?;
         Ok(value)

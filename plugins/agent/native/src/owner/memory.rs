@@ -57,6 +57,66 @@ impl Owner {
         }
         .map_err(|e| e.to_string())
     }
+    pub(crate) async fn memory_source(
+        self: &Arc<Self>,
+        selection: MemorySourceSelection,
+        scope: &Scope,
+    ) -> Result<MemoryEvidenceReference, String> {
+        management(scope)?;
+        self.resource_work(scope, move |owner, _| {
+            Box::pin(async move {
+                let scope = owner
+                    .memory_scope(MemoryScope::Project {
+                        session_id: selection.session_id.clone(),
+                    })
+                    .await?;
+                owner
+                    .store
+                    .data_writer()
+                    .map_err(|e| e.to_string())?
+                    .query(stored::CaptureEvidence { scope, selection })
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .await
+    }
+    pub(crate) async fn memory_evidence(
+        self: &Arc<Self>,
+        input: MemoryEvidenceRead,
+        scope: &Scope,
+    ) -> Result<MemoryEvidencePage, String> {
+        management(scope)?;
+        if !(1..=100).contains(&input.limit) {
+            return Err("agent_memory_page_limit".into());
+        }
+        self.resource_work(scope, move |owner, _| {
+            Box::pin(async move {
+                let scope = owner.memory_scope(input.scope).await?;
+                let mut evidence = owner
+                    .store
+                    .data_writer()
+                    .map_err(|e| e.to_string())?
+                    .query(stored::Evidence {
+                        scope,
+                        id: input.id,
+                        assertion: input.assertion,
+                        after: input.after,
+                        limit: input.limit + 1,
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let next = if evidence.len() > input.limit as usize {
+                    evidence.pop();
+                    evidence.last().map(|e| e.id)
+                } else {
+                    None
+                };
+                Ok(MemoryEvidencePage { evidence, next })
+            })
+        })
+        .await
+    }
     pub(crate) async fn memory_history(
         self: &Arc<Self>,
         input: MemoryHistoryRead,
@@ -138,6 +198,9 @@ impl Owner {
                 return Err("agent_memory_read_disabled".into());
             }
             let session = self.session(&execution.session_id).await?;
+            if session.configuration.incognito {
+                return Err("agent_memory_incognito".into());
+            }
             if session.configuration.parent_session_id.is_some()
                 || session.configuration.tools.is_some()
                 || !matches!(
@@ -216,11 +279,30 @@ impl Owner {
         let operation = operation.operation;
         self.resource_work(scope, move |owner, _| {
             Box::pin(async move {
+                let project = matches!(&input.scope, MemoryScope::Project { .. });
                 let scope = owner.memory_scope(input.scope).await?;
+                let source_scope = if let MemoryEdit::AddEvidence { reference, .. } = &input.edit {
+                    let source = owner.session(&reference.session_id).await?;
+                    if source.configuration.incognito {
+                        return Err("agent_memory_incognito_source".into());
+                    }
+                    let origin = owner
+                        .memory_scope(MemoryScope::Project {
+                            session_id: reference.session_id.clone(),
+                        })
+                        .await?;
+                    if project && scope.location != origin.location {
+                        return Err("agent_memory_evidence_scope".into());
+                    }
+                    Some(origin)
+                } else {
+                    None
+                };
                 let writer = owner.store.data_writer().map_err(|e| e.to_string())?;
                 let change = writer
                     .prepare_result(|_| {
                         Ok(stored::UserChange {
+                            source_scope,
                             scope,
                             edit: input.edit,
                             operation,

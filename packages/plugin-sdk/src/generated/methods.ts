@@ -30,14 +30,23 @@ export type AgentChangeMemoryInput_MemoryScope =
     };
 export type AgentChangeMemoryInput_MemoryEdit =
   | {
+      kind: 'add_evidence';
+      id: string;
+      expectedRevision: number;
+      assertion: number;
+      reference: AgentChangeMemoryInput_MemoryEvidenceReference;
+    }
+  | {
       kind: 'create';
       body: string;
+      metadata?: AgentChangeMemoryInput_MemoryMetadata;
     }
   | {
       kind: 'correct';
       id: string;
       expectedRevision: number;
       body: string;
+      metadata?: AgentChangeMemoryInput_MemoryMetadata;
     }
   | {
       kind: 'set_always';
@@ -55,6 +64,29 @@ export type AgentChangeMemoryInput_MemoryEdit =
       id: string;
       expectedRevision: number;
       body: string;
+      metadata?: AgentChangeMemoryInput_MemoryMetadata;
+    };
+export type AgentChangeMemoryInput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentChangeMemoryInput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentChangeMemoryInput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
     };
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
@@ -680,6 +712,24 @@ export type AgentMemoriesInput_MemoryScope =
     };
 export type AgentMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
 export type AgentMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentMemoriesOutput_MemoryKind = 'unspecified' | 'fact' | 'preference' | 'instruction';
+export type AgentMemoriesOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentMemoriesOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
 export type AgentMemoryInput_MemoryScope =
   | {
       kind: 'personal';
@@ -690,6 +740,44 @@ export type AgentMemoryInput_MemoryScope =
     };
 export type AgentMemoryOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
 export type AgentMemoryOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentMemoryOutput_MemoryKind = 'unspecified' | 'fact' | 'preference' | 'instruction';
+export type AgentMemoryOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentMemoryOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentMemoryEvidenceInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoryEvidenceOutput_MemorySource =
+  | {
+      kind: 'conversation';
+      reference: AgentMemoryEvidenceOutput_MemoryEvidenceReference;
+      observedAt: number;
+      operationId: string;
+    }
+  | {
+      kind: 'user_operation';
+      operationId: string;
+      observedAt: number;
+    };
 export type AgentMemoryHistoryInput_MemoryScope =
   | {
       kind: 'personal';
@@ -698,11 +786,41 @@ export type AgentMemoryHistoryInput_MemoryScope =
       kind: 'project';
       sessionId: string;
     };
-export type AgentMemoryHistoryOutput_MemorySource = {
-  kind: 'user_operation';
-  operationId: string;
-  observedAt: number;
-};
+export type AgentMemoryHistoryOutput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentMemoryHistoryOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentMemoryHistoryOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentMemoryHistoryOutput_MemorySource =
+  | {
+      kind: 'conversation';
+      reference: AgentMemoryHistoryOutput_MemoryEvidenceReference;
+      observedAt: number;
+      operationId: string;
+    }
+  | {
+      kind: 'user_operation';
+      operationId: string;
+      observedAt: number;
+    };
+export type AgentMemoryHistoryOutput_MemoryGeneration = 'user_input';
 export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
@@ -2001,6 +2119,20 @@ export interface ServiceMethods {
       };
       output: AgentMemoryOutput_MemoryRecord | null;
     };
+    memoryEvidence: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoryEvidenceInput_MemoryScope;
+        id: string;
+        assertion: number;
+        after?: number | null;
+        limit: number;
+      };
+      output: {
+        evidence: AgentMemoryEvidenceOutput_MemoryEvidence[];
+        next?: number | null;
+      };
+    };
     memoryHistory: {
       mode: 'query';
       input: {
@@ -2012,6 +2144,30 @@ export interface ServiceMethods {
       output: {
         versions: AgentMemoryHistoryOutput_MemoryVersion[];
         next?: number | null;
+      };
+    };
+    memorySource: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        sequence: number;
+        itemIndex: number;
+        start: number;
+        end: number;
+        quote: string;
+      };
+      output: {
+        sessionId: string;
+        sequence: number;
+        itemIndex: number;
+        factId: string;
+        fingerprint: string;
+        /**
+         * UTF-8 byte offsets into the immutable message text.
+         */
+        start: number;
+        end: number;
+        quote: string;
       };
     };
     metadata: {
@@ -3375,6 +3531,24 @@ export interface AgentBotOutboxOutput_AgentBotMessage {
    */
   turnId?: string | null;
 }
+export interface AgentChangeMemoryInput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
+}
+export interface AgentChangeMemoryInput_MemoryMetadata {
+  kind: AgentChangeMemoryInput_MemoryKind;
+  statement: AgentChangeMemoryInput_MemoryStatement;
+  temporal: AgentChangeMemoryInput_MemoryTemporal;
+}
 export interface AgentCheckpointReceiptInput_RecoveryRef {
   source: AgentCheckpointReceiptInput_DeploymentRef;
   namespace: AgentCheckpointReceiptInput_InstanceId;
@@ -3781,28 +3955,79 @@ export interface AgentMarkBotReadOutput_AgentBotMessage {
   turnId?: string | null;
 }
 export interface AgentMemoriesOutput_MemoryRecord {
+  assertion: number;
   id: string;
   revision: number;
   mode: AgentMemoriesOutput_MemoryMode;
   state: AgentMemoriesOutput_MemoryState;
   body: string;
+  metadata: AgentMemoriesOutput_MemoryMetadata;
   createdAt: number;
   modifiedAt: number;
 }
+export interface AgentMemoriesOutput_MemoryMetadata {
+  kind: AgentMemoriesOutput_MemoryKind;
+  statement: AgentMemoriesOutput_MemoryStatement;
+  temporal: AgentMemoriesOutput_MemoryTemporal;
+}
 export interface AgentMemoryOutput_MemoryRecord {
+  assertion: number;
   id: string;
   revision: number;
   mode: AgentMemoryOutput_MemoryMode;
   state: AgentMemoryOutput_MemoryState;
   body: string;
+  metadata: AgentMemoryOutput_MemoryMetadata;
   createdAt: number;
   modifiedAt: number;
+}
+export interface AgentMemoryOutput_MemoryMetadata {
+  kind: AgentMemoryOutput_MemoryKind;
+  statement: AgentMemoryOutput_MemoryStatement;
+  temporal: AgentMemoryOutput_MemoryTemporal;
+}
+export interface AgentMemoryEvidenceOutput_MemoryEvidence {
+  id: number;
+  source: AgentMemoryEvidenceOutput_MemorySource;
+}
+export interface AgentMemoryEvidenceOutput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
 }
 export interface AgentMemoryHistoryOutput_MemoryVersion {
   revision: number;
   body: string;
+  metadata: AgentMemoryHistoryOutput_MemoryMetadata;
   source: AgentMemoryHistoryOutput_MemorySource;
+  generation: AgentMemoryHistoryOutput_MemoryGeneration;
   corrects?: number | null;
+}
+export interface AgentMemoryHistoryOutput_MemoryMetadata {
+  kind: AgentMemoryHistoryOutput_MemoryKind;
+  statement: AgentMemoryHistoryOutput_MemoryStatement;
+  temporal: AgentMemoryHistoryOutput_MemoryTemporal;
+}
+export interface AgentMemoryHistoryOutput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
 }
 export interface AgentPresetOutput_PresetDetail {
   preset: AgentPresetOutput_Preset;

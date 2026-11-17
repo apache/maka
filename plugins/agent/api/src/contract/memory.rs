@@ -72,3 +72,19 @@ pub struct MemoryHistoryPage {
     pub versions: Vec<MemoryVersion>,
     pub next: Option<MemoryRevision>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryEvidenceRead {
+    pub scope: MemoryScope,
+    pub id: MemoryId,
+    pub assertion: MemoryRevision,
+    pub after: Option<u64>,
+    pub limit: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryEvidencePage {
+    pub evidence: Vec<MemoryEvidence>,
+    pub next: Option<u64>,
+}

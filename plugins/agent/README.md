@@ -44,6 +44,8 @@ The Agent service exposes `memories`, `memory`, `memoryHistory` and `changeMemor
 
 The existing settings preferences API controls `memory.enabled` and `memory.agentReadEnabled`. Model reads require current execution authority and both switches; user management remains available when model reading is disabled. This stage does not expose a model write tool, inject always-used records, or perform semantic deduplication. Those consumers must use the same records and suppression boundary.
 
+Clients resolve selected conversation text with `memorySource`, page evidence with `memoryEvidence`, and attach it to a specific assertion with `changeMemory.add_evidence`. The Host verifies the owned conversation, immutable message identity, fingerprint and text span at commit. Assertion metadata records kind, statement and temporal validity. `create.incognito` establishes an immutable memory privacy boundary inherited by derived sessions; it does not erase conversation history.
+
 ## Subagent preset management
 
 The Agent service exposes `presets`, `preset`, `createPreset`, `updatePreset` and `deletePreset`; see the [wire contract](api/src/preset.rs). Presets start empty and persist within the Host's Agent scope. Lists omit instructions; details preserve the complete text. Model references contain no credentials.

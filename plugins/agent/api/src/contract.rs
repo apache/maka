@@ -319,6 +319,9 @@ pub enum SessionKind {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCreate")]
 pub struct Create {
+    /// Immutable memory privacy boundary; descendants inherit it.
+    #[serde(default)]
+    pub incognito: bool,
     /// Rooms receive messages without running a model. Their mentions address Agent sessions.
     #[serde(default)]
     pub kind: SessionKind,
@@ -824,6 +827,8 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    #[serde(default)]
+    pub incognito: bool,
     pub kind: SessionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_preset: Option<crate::preset::AppliedPreset>,
@@ -2008,6 +2013,8 @@ pub fn contract() -> Contract {
             methods: BTreeMap::from([
                 ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
                 ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("memorySource".into(), method::<MemorySourceSelection, MemoryEvidenceReference>(MethodMode::Query)),
+                ("memoryEvidence".into(), method::<MemoryEvidenceRead, MemoryEvidencePage>(MethodMode::Query)),
                 ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),
                 ("memories".into(), method::<MemoriesRead, MemoryPage>(MethodMode::Query)),
                 ("memory".into(), method::<MemoryRead, Option<MemoryRecord>>(MethodMode::Query)),

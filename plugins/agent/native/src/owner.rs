@@ -187,6 +187,7 @@ impl Runs {
     }
 }
 struct CreationPolicy {
+    incognito: bool,
     permissions: WorkspacePermissions,
     tools: Option<Vec<String>>,
     caller: Option<maka_agent_state::CallerFence>,
@@ -747,6 +748,7 @@ impl Owner {
     ) -> Result<CreationPolicy, String> {
         let Some(invocation) = scope.identity.agent() else {
             return Ok(CreationPolicy {
+                incognito: false,
                 permissions: self.settings.permissions.clone(),
                 tools: None,
                 caller: None,
@@ -793,6 +795,7 @@ impl Owner {
             expected_basis: Some(view.spec.permission_basis),
         };
         Ok(CreationPolicy {
+            incognito: caller.incognito,
             permissions: caller.permissions,
             // The Bot delegates workers; its own conversational tool list is not their ceiling.
             tools: if self.settings.bot && self.bot.is(&invocation.session_id) {
@@ -1055,6 +1058,7 @@ impl Owner {
                 revision: p.revision,
             }),
             move |binding| StoredSessionConfiguration {
+                incognito: input.incognito || policy.incognito,
                 parent_session_id,
                 backend,
                 applied_preset,

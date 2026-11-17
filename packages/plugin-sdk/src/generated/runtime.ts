@@ -7165,6 +7165,10 @@ export interface AgentList {
 }
 export interface AgentCreate {
   /**
+   * Immutable memory privacy boundary; descendants inherit it.
+   */
+  incognito?: boolean;
+  /**
    * Rooms receive messages without running a model. Their mentions address Agent sessions.
    */
   kind?: AgentSessionKind & string;
@@ -7353,6 +7357,7 @@ export interface AgentRecallPage {
   gaps: string[];
 }
 export interface AgentSession {
+  incognito?: boolean;
   kind: AgentSessionKind;
   appliedPreset?: AppliedPreset | null;
   /**
