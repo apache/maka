@@ -63,3 +63,5 @@ pub mod external_publication;
 pub mod external_steering;
 
 pub mod history_snapshot;
+
+pub mod memory;

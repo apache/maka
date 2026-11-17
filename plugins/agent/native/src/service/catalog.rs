@@ -171,6 +171,7 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         } else {
             SessionKind::Agent
         },
+        incognito: session.configuration.incognito,
         parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,

@@ -151,6 +151,7 @@ impl Owner {
             .await
             .map_err(|_| Failure::Unavailable)?;
         let configuration = StoredSessionConfiguration {
+            incognito: policy.incognito,
             parent_session_id: scope
                 .identity
                 .agent()

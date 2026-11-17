@@ -901,6 +901,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -1831,6 +1835,426 @@ export const contracts: {
           },
           resources: {},
         },
+        changeMemory: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryChange',
+            type: 'object',
+            properties: {
+              scope: {
+                $ref: '#/$defs/MemoryScope',
+              },
+              edit: {
+                $ref: '#/$defs/MemoryEdit',
+              },
+            },
+            additionalProperties: false,
+            required: ['scope', 'edit'],
+            $defs: {
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              MemoryEdit: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'add_evidence',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      assertion: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      reference: {
+                        $ref: '#/$defs/MemoryEvidenceReference',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'assertion', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'create',
+                      },
+                      body: {
+                        type: 'string',
+                      },
+                      metadata: {
+                        $ref: '#/$defs/MemoryMetadata',
+                        default: {
+                          kind: 'unspecified',
+                          statement: 'unspecified',
+                          temporal: {
+                            kind: 'unspecified',
+                          },
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'body'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'correct',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      body: {
+                        type: 'string',
+                      },
+                      metadata: {
+                        $ref: '#/$defs/MemoryMetadata',
+                        default: {
+                          kind: 'unspecified',
+                          statement: 'unspecified',
+                          temporal: {
+                            kind: 'unspecified',
+                          },
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'body'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'set_always',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      always: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'always'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delete',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'restore',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      body: {
+                        type: 'string',
+                      },
+                      metadata: {
+                        $ref: '#/$defs/MemoryMetadata',
+                        default: {
+                          kind: 'unspecified',
+                          statement: 'unspecified',
+                          temporal: {
+                            kind: 'unspecified',
+                          },
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'body'],
+                  },
+                ],
+              },
+              MemoryEvidenceReference: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  factId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  start: {
+                    description: 'UTF-8 byte offsets into the immutable message text.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  end: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  quote: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'sessionId',
+                  'sequence',
+                  'itemIndex',
+                  'factId',
+                  'fingerprint',
+                  'start',
+                  'end',
+                  'quote',
+                ],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'deleted',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                  actual: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_found',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_state',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {},
+        },
         changeSession: {
           mode: 'mutation',
           input: {
@@ -1931,6 +2355,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -6202,6 +6630,11 @@ export const contracts: {
             title: 'AgentCreate',
             type: 'object',
             properties: {
+              incognito: {
+                description: 'Immutable memory privacy boundary; descendants inherit it.',
+                type: 'boolean',
+                default: false,
+              },
               kind: {
                 description:
                   'Rooms receive messages without running a model. Their mentions address Agent sessions.',
@@ -6469,6 +6902,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -10301,6 +10738,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -11077,6 +11518,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -15865,6 +16310,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -17058,6 +17507,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -19275,6 +19728,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -24001,6 +24458,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -24776,6 +25237,979 @@ export const contracts: {
           },
           resources: {},
         },
+        memories: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoriesRead',
+            type: 'object',
+            properties: {
+              scope: {
+                $ref: '#/$defs/MemoryScope',
+              },
+              after: {
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
+              limit: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['scope', 'limit'],
+            $defs: {
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryPage',
+            type: 'object',
+            properties: {
+              records: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/MemoryRecord',
+                },
+              },
+              next: {
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
+            },
+            additionalProperties: false,
+            required: ['records'],
+            $defs: {
+              MemoryRecord: {
+                type: 'object',
+                properties: {
+                  assertion: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  mode: {
+                    $ref: '#/$defs/MemoryMode',
+                  },
+                  state: {
+                    $ref: '#/$defs/MemoryState',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  metadata: {
+                    $ref: '#/$defs/MemoryMetadata',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  modifiedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'assertion',
+                  'id',
+                  'revision',
+                  'mode',
+                  'state',
+                  'body',
+                  'metadata',
+                  'createdAt',
+                  'modifiedAt',
+                ],
+              },
+              MemoryMode: {
+                type: 'string',
+                enum: ['auto_recall', 'user_recall', 'user_always'],
+              },
+              MemoryState: {
+                type: 'string',
+                enum: ['active', 'unresolved', 'suppressed'],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        memory: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryRead',
+            type: 'object',
+            properties: {
+              scope: {
+                $ref: '#/$defs/MemoryScope',
+              },
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+            additionalProperties: false,
+            required: ['scope', 'id'],
+            $defs: {
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_MemoryRecord',
+            anyOf: [
+              {
+                $ref: '#/$defs/MemoryRecord',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              MemoryRecord: {
+                type: 'object',
+                properties: {
+                  assertion: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  mode: {
+                    $ref: '#/$defs/MemoryMode',
+                  },
+                  state: {
+                    $ref: '#/$defs/MemoryState',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  metadata: {
+                    $ref: '#/$defs/MemoryMetadata',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  modifiedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'assertion',
+                  'id',
+                  'revision',
+                  'mode',
+                  'state',
+                  'body',
+                  'metadata',
+                  'createdAt',
+                  'modifiedAt',
+                ],
+              },
+              MemoryMode: {
+                type: 'string',
+                enum: ['auto_recall', 'user_recall', 'user_always'],
+              },
+              MemoryState: {
+                type: 'string',
+                enum: ['active', 'unresolved', 'suppressed'],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        memoryEvidence: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryEvidenceRead',
+            type: 'object',
+            properties: {
+              scope: {
+                $ref: '#/$defs/MemoryScope',
+              },
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+              assertion: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              after: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+              limit: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['scope', 'id', 'assertion', 'limit'],
+            $defs: {
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryEvidencePage',
+            type: 'object',
+            properties: {
+              evidence: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/MemoryEvidence',
+                },
+              },
+              next: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['evidence'],
+            $defs: {
+              MemoryEvidence: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  source: {
+                    $ref: '#/$defs/MemorySource',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'source'],
+              },
+              MemorySource: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conversation',
+                      },
+                      reference: {
+                        $ref: '#/$defs/MemoryEvidenceReference',
+                      },
+                      observedAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      operationId: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference', 'observedAt', 'operationId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'user_operation',
+                      },
+                      operationId: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      observedAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'operationId', 'observedAt'],
+                  },
+                ],
+              },
+              MemoryEvidenceReference: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  factId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  start: {
+                    description: 'UTF-8 byte offsets into the immutable message text.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  end: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  quote: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'sessionId',
+                  'sequence',
+                  'itemIndex',
+                  'factId',
+                  'fingerprint',
+                  'start',
+                  'end',
+                  'quote',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        memoryHistory: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryHistoryRead',
+            type: 'object',
+            properties: {
+              scope: {
+                $ref: '#/$defs/MemoryScope',
+              },
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+              after: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+              limit: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['scope', 'id', 'limit'],
+            $defs: {
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryHistoryPage',
+            type: 'object',
+            properties: {
+              versions: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/MemoryVersion',
+                },
+              },
+              next: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['versions'],
+            $defs: {
+              MemoryVersion: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  metadata: {
+                    $ref: '#/$defs/MemoryMetadata',
+                  },
+                  source: {
+                    $ref: '#/$defs/MemorySource',
+                  },
+                  generation: {
+                    $ref: '#/$defs/MemoryGeneration',
+                  },
+                  corrects: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'body', 'metadata', 'source', 'generation'],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
+                ],
+              },
+              MemorySource: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conversation',
+                      },
+                      reference: {
+                        $ref: '#/$defs/MemoryEvidenceReference',
+                      },
+                      observedAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      operationId: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reference', 'observedAt', 'operationId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'user_operation',
+                      },
+                      operationId: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      observedAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'operationId', 'observedAt'],
+                  },
+                ],
+              },
+              MemoryEvidenceReference: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  factId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  start: {
+                    description: 'UTF-8 byte offsets into the immutable message text.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  end: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  quote: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'sessionId',
+                  'sequence',
+                  'itemIndex',
+                  'factId',
+                  'fingerprint',
+                  'start',
+                  'end',
+                  'quote',
+                ],
+              },
+              MemoryGeneration: {
+                type: 'string',
+                enum: ['user_input'],
+              },
+            },
+          },
+          resources: {},
+        },
+        memorySource: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemorySourceSelection',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              sequence: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              itemIndex: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              start: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+              end: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+              quote: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'sequence', 'itemIndex', 'start', 'end', 'quote'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryEvidenceReference',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              sequence: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              itemIndex: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              factId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              fingerprint: {
+                type: 'string',
+              },
+              start: {
+                description: 'UTF-8 byte offsets into the immutable message text.',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+              end: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+              quote: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: [
+              'sessionId',
+              'sequence',
+              'itemIndex',
+              'factId',
+              'fingerprint',
+              'start',
+              'end',
+              'quote',
+            ],
+          },
+          resources: {},
+        },
         metadata: {
           mode: 'mutation',
           input: {
@@ -24917,6 +26351,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -26188,6 +27626,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -29323,6 +30765,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -34185,6 +35631,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -41734,6 +43184,10 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  incognito: {
+                    type: 'boolean',
+                    default: false,
+                  },
                   kind: {
                     $ref: '#/$defs/AgentSessionKind',
                   },
@@ -58109,6 +59563,9 @@ export const contracts: {
               workspaceInstructions: {
                 type: 'boolean',
               },
+              memory: {
+                $ref: '#/$defs/MemoryPolicy',
+              },
               defaultSandboxMode: {
                 $ref: '#/$defs/Mode',
               },
@@ -58128,6 +59585,7 @@ export const contracts: {
               'displayName',
               'avatar',
               'workspaceInstructions',
+              'memory',
               'defaultSandboxMode',
               'shell',
             ],
@@ -58178,6 +59636,19 @@ export const contracts: {
               ProfileAvatar: {
                 type: 'string',
                 enum: ['blue', 'green', 'rose', 'amber'],
+              },
+              MemoryPolicy: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  agentReadEnabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['enabled', 'agentReadEnabled'],
               },
               Mode: {
                 description:
@@ -63122,6 +64593,20 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'memory',
+                      },
+                      value: {
+                        $ref: '#/$defs/MemoryPolicy',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workspace_instructions',
                       },
                       enabled: {
@@ -63202,6 +64687,19 @@ export const contracts: {
               ProfileAvatar: {
                 type: 'string',
                 enum: ['blue', 'green', 'rose', 'amber'],
+              },
+              MemoryPolicy: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  agentReadEnabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['enabled', 'agentReadEnabled'],
               },
               Mode: {
                 description:

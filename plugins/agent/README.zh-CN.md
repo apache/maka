@@ -38,6 +38,14 @@
 
 房间消息与成功接纳的 @ 投递在同一事务中提交，回执会列出无法投递的目标。恢复原操作不会重复发言或唤醒。`SessionRead`（以及面向 `maka://session/<id>` 的 `Read`）返回带稳定 ID 的房间消息并支持游标翻页，具体见[公共契约](api/src/contract.rs)和[房间存储](state/src/room.rs)。
 
+## 普通记忆记录
+
+Agent 服务提供 `memories`、`memory`、`memoryHistory` 和 `changeMemory`，见[协议](api/src/contract/memory.rs)。可信管理调用方可在个人或 Host 解析的项目范围内创建、更正、标记常驻、删除和明确恢复记录。修改使用版本 CAS；正文版本、用户操作来源及不含正文的回执在原 Root 上提交。删除保留匹配内容，但普通读取和历史不返回这些正文。
+
+现有设置偏好 API 控制 `memory.enabled` 和 `memory.agentReadEnabled`。模型读取同时检查有效执行权限及两个开关；禁用模型读取不影响用户管理。本阶段不开放模型写入工具、不注入常驻记录、不执行语义去重，后续消费者必须复用同一记录和抑制边界。
+
+客户端通过 `memorySource` 解析选中的会话原文，通过 `memoryEvidence` 分页读取指定正文版本的证据；`changeMemory.add_evidence` 在提交时核对所属会话、消息身份、指纹及原文片段。断言元数据记录类别、声明类型和有效时间。`create.incognito` 是派生会话继承的不可变记忆隐私边界，不表示物理删除聊天记录。
+
 ## 子 Agent 预设管理
 
 Agent 服务提供 `presets`、`preset`、`createPreset`、`updatePreset` 和 `deletePreset`，字段见[协议](api/src/preset.rs)。预设初始为空，持久化在业务 Host 的 Agent 作用域内。列表不加载 instruction，详情保留完整正文；模型引用不保存凭据。

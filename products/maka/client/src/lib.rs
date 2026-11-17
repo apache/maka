@@ -127,6 +127,7 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
                     | "createPreset"
                     | "updatePreset"
                     | "deletePreset"
+                    | "changeMemory"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
@@ -1900,7 +1901,12 @@ mod preset_settings_tests {
 
     #[tokio::test]
     async fn pending_preset_settings_survive_reopen_and_fence_repeated_writes() {
-        for method in ["createPreset", "updatePreset", "deletePreset"] {
+        for method in [
+            "createPreset",
+            "updatePreset",
+            "deletePreset",
+            "changeMemory",
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("client.sqlite");
             let host = DeploymentRef {

@@ -40,6 +40,7 @@ pub struct ResolvedProject {
     pub path: PathBuf,
     pub kind: ProjectKind,
     pub name: String,
+    pub observation: crate::directory::Observation,
 }
 
 impl ResolvedProject {
@@ -93,7 +94,12 @@ pub async fn resolve_selected(path: &Path) -> io::Result<ResolvedProject> {
         }
         host_path(&path)?;
         let name = default_name(&path, &kind)?;
-        let resolved = ResolvedProject { path, kind, name };
+        let resolved = ResolvedProject {
+            path,
+            kind,
+            name,
+            observation: identity,
+        };
         resolved.identity()?;
         Ok(resolved)
     })

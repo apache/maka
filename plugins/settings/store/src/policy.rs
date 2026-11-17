@@ -30,6 +30,15 @@ use maka_agent_facts::configuration::validation::revision;
 use rusqlite::{Connection, OptionalExtension};
 
 impl ConfigurationStore {
+    pub async fn set_memory(
+        &self,
+        expected_revision: u64,
+        value: maka_agent_facts::configuration::policy::MemoryPolicy,
+    ) -> Result<RuntimePolicyMutationResult> {
+        self.update_policy(expected_revision, move |policy| policy.memory = value)
+            .await
+    }
+
     pub async fn set_message_predictions(
         &self,
         expected_revision: u64,
