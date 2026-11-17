@@ -29891,6 +29891,16 @@ export const contracts: {
                   },
                 ],
               },
+              latestRunId: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/RunId',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               through: {
                 type: 'integer',
                 format: 'uint64',

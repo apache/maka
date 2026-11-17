@@ -334,6 +334,7 @@ async fn describe_with(
     let mut local_tool_names = Identifiers::new(part_capacity, owner.clone(), store).await?;
     let mut settled = Identifiers::new(part_capacity, owner, store).await?;
     let mut last_is_tool_result = false;
+    let mut is_native_checkpoint = false;
     let role = match &recipe {
         MessageRecipe::System {
             content,
@@ -358,8 +359,12 @@ async fn describe_with(
             provider_options,
         } => {
             measure.marker(b"assistant");
+            let mut saw_part = false;
+            let mut all_compaction = true;
             let mut cursor = content.open(0);
             while let Some(part) = cursor.next().await? {
+                saw_part = true;
+                all_compaction &= matches!(part, AssistantRecipe::CodexCompaction { .. });
                 last_is_tool_result = matches!(part, AssistantRecipe::ToolResult(_));
                 match part {
                     AssistantRecipe::CodexCompaction { item } => {
@@ -437,6 +442,7 @@ async fn describe_with(
                 }
             }
             measure.marker(b"assistant-end");
+            is_native_checkpoint = saw_part && all_compaction;
             measure.options(provider_options).await?;
             MessageRole::Assistant
         }
@@ -472,6 +478,7 @@ async fn describe_with(
         recipe,
         role,
         last_is_tool_result,
+        is_native_checkpoint,
         local_tool_names: local_tool_names.finish(),
         settled_tool_call_ids: settled.finish(),
         breakdown,

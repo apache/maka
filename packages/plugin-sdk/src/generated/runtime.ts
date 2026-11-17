@@ -8091,6 +8091,7 @@ export interface AgentObservation {
   compacting: AgentCompactionProgress | null;
   rememberedBackend?: AgentBackendPreference | null;
   metrics?: AgentSessionMetrics | null;
+  latestRunId?: RunId | null;
   through: number;
   run?: AgentRun | null;
   parts: AgentPart[];

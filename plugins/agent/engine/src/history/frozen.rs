@@ -35,6 +35,7 @@ pub(crate) struct MessageDescriptor {
     pub recipe: MessageRecipe,
     pub role: MessageRole,
     pub last_is_tool_result: bool,
+    pub is_native_checkpoint: bool,
     pub local_tool_names: Arc<dyn RecipeSource<IdentifiedText>>,
     pub settled_tool_call_ids: Arc<dyn RecipeSource<IdentifiedText>>,
     pub breakdown: PreparedContextBreakdown,
@@ -119,6 +120,7 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
                 settled_tool_call_ids: message.settled_tool_call_ids.clone(),
                 local_tool_names: message.local_tool_names.clone(),
                 last_is_tool_result: message.last_is_tool_result,
+                is_native_checkpoint: message.is_native_checkpoint,
             };
             self.position += 1;
             Ok(Some(result))
@@ -196,6 +198,7 @@ mod tests {
             },
             role: MessageRole::System,
             last_is_tool_result: false,
+            is_native_checkpoint: false,
             local_tool_names: Arc::new(Items::new(Vec::new(), Arc::new(()))),
             settled_tool_call_ids: Arc::new(Items::new(Vec::new(), Arc::new(()))),
             breakdown: PreparedContextBreakdown::default(),
@@ -254,6 +257,7 @@ mod tests {
             },
             role: MessageRole::User,
             last_is_tool_result: false,
+            is_native_checkpoint: false,
             local_tool_names: Arc::new(Items::new(Vec::new(), Arc::new(()))),
             settled_tool_call_ids: Arc::new(Items::new(Vec::new(), Arc::new(()))),
             breakdown: PreparedContextBreakdown::default(),

@@ -47,34 +47,20 @@ pub async fn validate_continuation(
     {
         return Err(invalid("continuation source boundary or workspace changed"));
     }
-    let mut history = Vec::new();
-    let mut after = 0;
-    loop {
-        let page = state.history(original.run, after, 256).await?;
-        if page.is_empty() {
-            break;
-        }
-        after = page.last().expect("nonempty history").revision;
-        history.extend(page);
-    }
-    if crate::digest(&history)? != claim.source.digest {
+    let resolved = state
+        .session_history(
+            original.spec.owner.clone(),
+            original.spec.session_id.clone(),
+        )
+        .continuation_source(original.run, claim.source.high_water)
+        .await?;
+    if resolved.digest != claim.source.digest {
         return Err(invalid(
             "continuation source is not the exact sealed canonical boundary",
         ));
     }
-    let first_step = history
-        .iter()
-        .find_map(|item| match item.fact {
-            Fact::StepPrepared { step, .. } => Some(step),
-            _ => None,
-        })
-        .ok_or_else(|| invalid("continuation has no prepared source request"))?;
-    let first = state.request(original.run, first_step).await?;
-    let source_bytes = state.content(original.run, first.source_capture).await?;
-    let source: crate::preparation::RequestSource =
-        serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
-    if source.cut.through_sequence != claim.base.high_water
-        || source.cut.digest != claim.base.digest
+    if resolved.base.through_sequence != claim.base.high_water
+        || resolved.base.digest != claim.base.digest
     {
         return Err(invalid("continuation canonical base changed"));
     }
@@ -96,21 +82,21 @@ pub async fn validate_replay_boundary(prompt: &PreparedPrompt) -> Result<(), Run
     let directory = prompt
         .recipes()
         .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
-    let checkpoint = prompt.native_checkpoint_identity();
     let mut cursor = directory.open_metadata(0);
-    let mut first_is_user = None;
+    let mut first_valid = None;
     let mut last_stable = false;
     while let Some(message) = cursor.next().await? {
-        if first_is_user.is_none() && checkpoint == Some(message.logical_identity.as_ref()) {
-            continue;
+        if message.role != MessageRole::System {
+            if first_valid.is_none() {
+                first_valid =
+                    Some(message.role == MessageRole::User || message.is_native_checkpoint);
+            }
+            last_stable = matches!(message.role, MessageRole::User | MessageRole::Tool)
+                || (message.role == MessageRole::Assistant
+                    && (message.last_is_tool_result || message.is_native_checkpoint));
         }
-        if message.role != MessageRole::System && first_is_user.is_none() {
-            first_is_user = Some(message.role == MessageRole::User);
-        }
-        last_stable = matches!(message.role, MessageRole::User | MessageRole::Tool)
-            || (message.role == MessageRole::Assistant && message.last_is_tool_result);
     }
-    if first_is_user != Some(true) || !last_stable {
+    if first_valid != Some(true) || !last_stable {
         return Err(invalid(
             "continuation requires stable user/tool replay boundaries",
         ));
