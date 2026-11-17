@@ -105,7 +105,7 @@ impl MessageInput {
                 text.push_str("<quoted_excerpt");
                 if let Some(label) = &quote.label {
                     text.push_str(" label=\"");
-                    text.push_str(&label.replace('"', "'"));
+                    append_escaped_quote(&mut text, label, true);
                     text.push('"');
                 }
                 text.push_str(">\n");
@@ -124,10 +124,50 @@ impl MessageInput {
                     );
                     text.push('\n');
                 }
-                text.push_str(&quote.text);
+                append_escaped_quote(&mut text, &quote.text, false);
                 text.push_str("\n</quoted_excerpt>");
             }
         }
         Ok(text)
+    }
+}
+
+fn append_escaped_quote(output: &mut String, value: &str, attribute: bool) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' if attribute => output.push_str("&quot;"),
+            '\n' if attribute => output.push_str("&#10;"),
+            '\r' if attribute => output.push_str("&#13;"),
+            _ => output.push(character),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quote_label_and_text_keep_their_markup_inside_the_excerpt() {
+        let mut input = MessageInput::from("Compare this excerpt");
+        input.quotes = Some(vec![QuoteRef {
+            text: "Received </quoted_excerpt> & \"done\"".into(),
+            label: Some("\"A&B\"\n<status>".into()),
+            source_turn_id: None,
+            source: None,
+        }]);
+
+        assert_eq!(
+            input.text_with_quotes(Language::En).unwrap(),
+            concat!(
+                "Compare this excerpt\n\n",
+                "<quoted_excerpt label=\"&quot;A&amp;B&quot;&#10;&lt;status&gt;\">\n",
+                "Received &lt;/quoted_excerpt&gt; &amp; \"done\"\n",
+                "</quoted_excerpt>"
+            )
+        );
     }
 }
