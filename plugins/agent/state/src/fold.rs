@@ -353,7 +353,7 @@ impl RunView {
         self.cells.get(&id)
     }
 
-    pub fn original_cell_id(&self, tool: &Tool) -> Option<maka_agent_facts::cells::CellId> {
+    pub(crate) fn original_cell_id(&self, tool: &Tool) -> Option<maka_agent_facts::cells::CellId> {
         if !tool.admitted || tool.original.is_some() || tool.call.provider_executed {
             return None;
         }

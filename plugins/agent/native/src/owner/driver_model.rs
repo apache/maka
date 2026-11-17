@@ -359,10 +359,19 @@ impl DriverModel {
                     .await?,
             )
         };
+        let notifications = if summary {
+            Vec::new()
+        } else {
+            self.state
+                .cells()
+                .notifications(view.run, None, 128)
+                .await?
+        };
         let prefix_attempt = match &mode {
             Preparation::Prefix { attempt, .. }
                 if !view.model_steered(*attempt)
-                    && cut.as_ref().is_none_or(|cut| cut.entries.is_empty()) =>
+                    && cut.as_ref().is_none_or(|cut| cut.entries.is_empty())
+                    && notifications.is_empty() =>
             {
                 Some(*attempt)
             }
@@ -474,14 +483,6 @@ impl DriverModel {
                     .map(|entry| entry.request.id.clone())
                     .collect(),
             });
-        let notifications = if summary {
-            Vec::new()
-        } else {
-            self.state
-                .cells()
-                .notifications(view.run, None, 128)
-                .await?
-        };
         let notification_through = view.revision;
         let mut notification_sources = Vec::with_capacity(notifications.len());
         for notice in &notifications {

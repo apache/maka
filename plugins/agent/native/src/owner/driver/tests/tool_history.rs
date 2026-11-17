@@ -221,10 +221,39 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
         let session = rig.start().await?;
         rig.assemble(&session).await?;
         let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
-        let (img_tool, _) = rig.tool(attempt, "ordinary", "snap-1", json!({})).await?;
+        let (img_tool, _) = rig.tool(attempt, "exec", "snap-1", json!({"code":"1"})).await?;
+        let (cell_tool, _) = rig.tool(attempt, "exec", "cell-1", json!({"code":"1"})).await?;
         let (tool, _) = rig.tool(attempt, "computer", "click-1", json!({})).await?;
-        rig.finish_model_request(attempt, None).await?;
         let driver = rig.driver.as_ref().unwrap();
+        let view = driver.state.frontier(driver.access.execution().run_id).await?;
+        let link = AgentStepLink { run: view.run, step: view.attempts[&attempt].step, attempt };
+        let img_cell = CellId::for_agent(link, &img_tool.call);
+        let rec_cell = CellId::for_agent(link, &cell_tool.call);
+        let src = ContentBlob::new(b"1".to_vec());
+        let interrupted = ContentBlob::json(&maka_agent_facts::cells::CellInterruption {
+            cell: img_cell,
+            diagnostic: "post-yield stop".into(),
+            children: Default::default(),
+            prior_output: None,
+        })?;
+        let completed = ContentBlob::json(&CellObservation::Completed {
+            cell_id: rec_cell,
+            content: vec![],
+            result: json!({"ok":"recovered-cell-ok"}),
+        })?;
+        driver.state.append(
+            driver.access.claim(),
+            (&view).into(),
+            vec![
+                Change { id: img_cell.started_fact_id(), at: at(), fact: Fact::Cell { event: CellEvent::Started { cell: img_cell, owner: CellOwner::Agent { link, call: img_tool.call.clone() }, source: src.reference().clone() } } },
+                Change { id: rec_cell.started_fact_id(), at: at(), fact: Fact::Cell { event: CellEvent::Started { cell: rec_cell, owner: CellOwner::Agent { link, call: cell_tool.call.clone() }, source: src.reference().clone() } } },
+                Change::new(Fact::Cell { event: CellEvent::VmBound { cell: rec_cell, binding: maka_agent_facts::cells::CellVmBinding { runtime: "fixture".into(), version: 1, descriptor: src.reference().clone() } } }, at()),
+                Change::new(Fact::Cell { event: CellEvent::Interrupted { cell: img_cell, report: interrupted.reference().clone() } }, at()),
+                Change::new(Fact::Cell { event: CellEvent::Completed { cell: rec_cell, result: completed.reference().clone(), publication: maka_agent_facts::cells::SessionPublication { values: BTreeMap::new(), loaded_tools: None } } }, at()),
+            ],
+            vec![src, interrupted, completed],
+        ).await?;
+        rig.finish_model_request(attempt, None).await?;
         super::super::effects::publish_return_for_test(
             &driver.state,
             &driver.access,
@@ -353,7 +382,9 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
             })
             .collect();
         assert_eq!(exchange, ["call", "failure"]);
-        assert!(request.to_string().contains("image/png"), "unaccepted tool image lost: {request}");
+        let req_text = request.to_string();
+        assert!(req_text.contains("image/png"), "local_returned lost to RecoveredCell: {req_text}");
+        assert!(req_text.contains("recovered-cell-ok"), "RecoveredCell fallback missing: {req_text}");
         model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
@@ -1950,6 +1981,8 @@ async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()>
     let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<Value>(8);
     let steer_ready = Arc::new(tokio::sync::Notify::new());
     let steer_signal = steer_ready.clone();
+    let note_ready = Arc::new(tokio::sync::Notify::new());
+    let note_signal = note_ready.clone();
     let stop = CancellationToken::new();
     let ws_stop = stop.clone();
     let server = tokio::spawn(async move {
@@ -1960,9 +1993,10 @@ async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()>
                 _ = ws_stop.cancelled() => break,
                 accepted = listener.accept() => accepted?,
             };
-            let (req_tx, steer_signal, ws_stop, step) = (
+            let (req_tx, steer_signal, note_signal, ws_stop, step) = (
                 req_tx.clone(),
                 steer_signal.clone(),
+                note_signal.clone(),
                 ws_stop.clone(),
                 step.clone(),
             );
@@ -2002,7 +2036,12 @@ async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()>
                                 "name": "exec",
                                 "input": format!(
                                     r#"// @exec: {{"yield_time_ms": 30000}}
-image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control(); await new Promise((r) => setTimeout(r, 30000));"#
+image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control();
+for (let i = 0; i < 40; i++) {{
+  await new Promise((r) => setTimeout(r, 50));
+  notify('bg-note');
+}}
+await new Promise((r) => setTimeout(r, 30000));"#
                                 )
                             });
                             vec![
@@ -2011,13 +2050,26 @@ image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control(); await new Promise
                                 json!({"type":"response.completed","response":{"id":"r-1","model":"llama3.2","output":[hold_call],"usage":{"input_tokens":50,"output_tokens":10}}}),
                             ]
                         }
-                        2..=4 => continue,
-                        5 => vec![
+                        2 => {
+                            for ev in [
+                                json!({"type":"response.created","response":{"id":"r-2"}}),
+                                json!({"type":"response.output_item.done","item":{"type":"reasoning","id":"rs-bg-prefix","encrypted_content":"enc-bg","summary":[{"type":"summary_text","text":"bg"}]}}),
+                            ] {
+                                ws.send(WsMessage::text(ev.to_string())).await?;
+                            }
+                            tokio::select! {
+                                _ = ws_stop.cancelled() => {}
+                                _ = note_signal.notified() => {}
+                            }
+                            return Ok(());
+                        }
+                        3..=5 => continue,
+                        6 => vec![
                             json!({"type":"response.created","response":{"id":"r-5"}}),
                             json!({"type":"response.output_item.done","item":{"type":"reasoning","id":"rs-orphan","encrypted_content":"enc-orphan","summary":[{"type":"summary_text","text":"orphan"}]}}),
                             json!({"type":"response.incomplete","response":{"id":"r-5","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
                         ],
-                        6 => vec![
+                        7 => vec![
                             json!({"type":"response.created","response":{"id":"r-6"}}),
                             json!({"type":"response.output_item.done","item":{"type":"message","id":"m-half","role":"assistant","content":[{"type":"output_text","text":"First half."}]}}),
                             json!({"type":"response.incomplete","response":{"id":"r-6","model":"llama3.2","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}),
@@ -2100,6 +2152,14 @@ image({PIXEL_PNG:?}); text('pixel-ok'); await yield_control(); await new Promise
         assert!(!steered_req.to_string().contains("rs-steer"), "{steered_req}");
         let step3_req = req_rx.recv().await.ok_or("post-yield request missing")?;
         assert!(step3_req.to_string().contains("input_image"), "{step3_req}");
+        while owner.durable.cells().notifications(r1, None, 1).await?.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        note_ready.notify_one();
+        let note_req = req_rx.recv().await.ok_or("post-notification request missing")?;
+        let note_text = note_req.to_string();
+        assert!(note_text.contains("bg-note"), "{note_text}");
+        assert!(!note_text.contains("rs-bg-prefix"), "prefix reasoning leaked before notification: {note_text}");
         model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":r1})).await?;
         let r1_exec = wait_terminal(client, &session, json!(r1)).await?;
         assert_eq!(r1_exec["state"]["kind"], "cancelled");

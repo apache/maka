@@ -430,7 +430,26 @@ async fn unaccepted_tool_output(
     tool: &maka_agent_state::fold::Tool,
     vision: bool,
 ) -> Result<ToolOutput, RunError> {
-    if let Some((cell, cell_view)) = view.original_cell_id(tool).zip(view.original_cell(tool))
+    if let Some(local) = tool
+        .local_returned
+        .as_ref()
+        .filter(|local| local.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown)
+    {
+        return driver
+            .project_accepted(
+                reader,
+                view,
+                view.revision,
+                original_cells,
+                AcceptedToolResult::Local {
+                    result: local.result.clone(),
+                },
+                vision,
+                view.spec.language,
+            )
+            .await;
+    }
+    if let Some(cell_view) = view.original_cell(tool)
         && !cell_view.has_unsettled_effects()
     {
         let evidence = match &cell_view.status {
@@ -453,31 +472,15 @@ async fn unaccepted_tool_output(
                     view,
                     view.revision,
                     original_cells,
-                    AcceptedToolResult::RecoveredCell { cell, evidence },
+                    AcceptedToolResult::RecoveredCell {
+                        cell: cell_view.id,
+                        evidence,
+                    },
                     vision,
                     view.spec.language,
                 )
                 .await;
         }
-    }
-    if let Some(local) = tool
-        .local_returned
-        .as_ref()
-        .filter(|local| local.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown)
-    {
-        return driver
-            .project_accepted(
-                reader,
-                view,
-                view.revision,
-                original_cells,
-                AcceptedToolResult::Local {
-                    result: local.result.clone(),
-                },
-                vision,
-                view.spec.language,
-            )
-            .await;
     }
     if let Some(host) = &tool.host_returned {
         return driver
