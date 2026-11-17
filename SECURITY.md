@@ -17,20 +17,19 @@
   under the License.
 -->
 
-# Security
+# Security Policy
 
-Report vulnerabilities privately to **security@maka.app**, including the Maka version, affected crate, operating system and a minimal reproduction. Do not disclose vulnerabilities in public issues.
+Report security vulnerabilities privately to **security@maka.app** with the Maka version, affected component, operating system, and a minimal reproduction. Do not open public GitHub issues for undisclosed vulnerabilities.
 
-## Boundaries
+## Trust boundaries
 
-The Runtime Host owns operation admission, execution scopes, canonical state and resource settlement. Clients and model output cannot grant themselves capabilities. Plugin invocations use the capabilities granted to their owner and current execution scope.
+- **Runtime Host authority** — The Host owns call admission, capability scopes, canonical SQLite state, and resource cleanup. Neither UI clients nor model outputs can escalate their own capabilities; every service call executes strictly within the grants bound to its activation and invocation scope.
+- **OS sandboxing** — Native workspace tools enforce filesystem, subprocess, and network restrictions using Seatbelt on macOS, bubblewrap + network namespaces on Linux, and Microsoft MXC (or restricted low-privilege job accounts) on Windows; see [platform/sandbox](platform/sandbox/README.md). User approval authorizes one concrete capability grant without trusting untrusted text or stale observations.
+- **Code Mode isolation** — Code Mode runs JavaScript in an embedded V8 isolate and optional Python in a bounded Monty subprocess. Neither guest runtime has ambient filesystem, network, or subprocess APIs; every external action goes through authorized Host tool bindings, and cancelled cells wait for admitted effects to settle.
+- **Plugins and MCP servers** — Installed Host/UI plugins and configured MCP servers are trusted extensions. Stdio MCP servers run under the Host OS account outside session filesystem sandboxes, and HTTP MCP servers control their own remote side effects. Session permissions and per-call approvals gate tool invocation, not server startup; only explicitly configured secrets are passed beyond a minimal stdio environment. See [MCP servers](plugins/agent/README.md#mcp-servers).
+- **Computer Use** — Native desktop and browser automation run in a dedicated session lifecycle gated by platform accessibility/screen-recording permissions and Host domain authorization; see [platform/computer-use](platform/computer-use/README.md).
+- **State and credentials** — Conversation history and configuration live under the selected State Root. Credentials flow through dedicated Host secret capabilities—never store raw secrets in plugin configuration, tool output, or UI state.
 
-Native tools enforce filesystem, process and network restrictions through the relevant operating-system mechanisms. Approval grants a specific capability; it does not validate untrusted text or make a stale observation executable.
+## Release integrity
 
-Code Mode defaults to JavaScript in an embedded V8 isolate with explicit host bindings. Models can opt into Python through a bundled Monty worker process. Each Python cell has fresh interpreter state, bounded allocation and execution time, and no direct filesystem, network or subprocess access. Both languages call the same authorized Host tools and wait for admitted effects to settle after cancellation. Installed Host plugins are trusted extensions. Configured MCP servers are also trusted installation extensions: stdio processes run as the Host user outside session filesystem confinement, and HTTP servers own their remote effects. Per-call approval and session permissions gate tool dispatch, not server startup or independent server behavior. Only explicitly configured credentials are forwarded beyond a minimal stdio environment. See [MCP trust and lifecycle](plugins/agent/mcp/README.md). Computer Use has a separate session and observation lifecycle, and requires the corresponding platform permissions.
-
-Configuration and event data remain under the selected state root. Secrets are handled through credential capabilities; plugin state, tool output and application UI must not be treated as secret stores.
-
-## Distribution
-
-Native npm packages are checked against their target, version, archive integrity and source identity before publication. The launcher selects an exact-version platform package. Source archives have SHA-512 sidecars; ASF release signatures and source-review instructions are documented in [.github/ASF_SOURCE_RELEASE.md](.github/ASF_SOURCE_RELEASE.md).
+Native npm preview packages verify target platform, version, archive hashes, and source provenance before publication, and the `@maka-agent/cli` launcher binds to an exact-version native package. Official ASF source release signing and verification procedures are documented in [.github/ASF_SOURCE_RELEASE.md](.github/ASF_SOURCE_RELEASE.md).

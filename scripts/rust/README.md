@@ -17,25 +17,21 @@
   under the License.
 -->
 
-# Native build tooling
+# Native Build and CI Tooling
 
 [简体中文](README.zh-CN.md)
 
-These scripts build source-bound native packages and their npm launcher. The public command sequence is in [packages/cli](../../packages/cli/README.md).
+Scripts under `scripts/rust/` and `scripts/ci/` manage native cross-platform packaging, V8 prebuilt caching, third-party license/notice verification, and CI suite execution. See [`packages/cli`](../../packages/cli/README.md) for end-to-end release commands.
 
-Native macOS packaging requires Xcode 26 or newer. Linux needs GLib, X11/XCB, xkbcommon, Wayland, Fontconfig and FreeType development files, plus cargo-zigbuild and Zig. The [native CI workflow](../../.github/workflows/npm-publication.yml) records the build environment.
+## Toolchain and V8 prebuilts
 
-Rust builds require libclang to generate SQLite preupdate-hook bindings, including when a cached V8 bundle is available.
+- **macOS** — Xcode 26+ and `libclang` (required by SQLite preupdate-hook bindgen).
+- **Linux** — GLib, X11/XCB, `xkbcommon`, Wayland, Fontconfig, FreeType dev headers, `libclang`, `cargo-zigbuild`, and Zig (exact versions match [`.github/workflows/npm-publication.yml`](../../.github/workflows/npm-publication.yml)).
+- **V8 cache** — Release builds pull pinned V8 archives (with LGPL glibc math disabled) from [`v8-prebuilts.json`](v8-prebuilts.json) into `target/v8` (`$CARGO_TARGET_DIR/v8`) and verify SHA-256 digests. A missing pin falls back to a full V8 source build (requires Python, Git, Clang/libclang 19+, and significant disk/CPU).
 
-Release packages use pinned V8 builds with optional LGPL glibc math disabled. Completed libraries, bindings and notices are cached in `target/v8`, or `$CARGO_TARGET_DIR/v8`. On a miss, the builder downloads the bundle named by [v8-prebuilts.json](v8-prebuilts.json) and checks its digest. A corrupt cache or broken pin fails explicitly. An absent pin triggers a source build, which also needs Python, Git, Clang/libclang 19 or newer, a C++ toolchain, substantial disk space and time.
+## Dependency and notice inventories
 
-A cache key identifies the V8 source, target, features and producer code. For a new key, use the exact archives emitted by a completed native workflow. Publish them as versioned dependency prerelease assets, then record their URLs, hashes and validation evidence in the manifest. Preserve existing assets and key meanings. Native link and smoke checks still run for each package.
-
-Native agents run installed CLI commands directly; native packages do not bundle external agent CLIs or a JavaScript worker runtime.
-
-PR CI uses `node scripts/rust/notices.mjs check-reviewed` to check the main Maka Cargo dependencies on all five distribution platforms. Release `check --target TRIPLE` verifies the selected target.
-
-After dependency changes:
+After changing Cargo or bundled JavaScript dependencies, regenerate and verify the license inventories:
 
 ```sh
 node scripts/rust/dependencies.mjs generate
@@ -44,64 +40,36 @@ node scripts/rust/dependencies.mjs check
 node scripts/rust/notices.mjs check
 ```
 
-Review the generated inventory and license texts. [notices-sources.json](notices-sources.json) records reviewed upstream exceptions. Release assembly also includes notices from the actual V8 build and Rust standard library. The TSV inventory does not replace full license texts.
-
-`notices.json` records reviewed component identities, sources and license-data digests. `notices check` resolves the Rust dependency closure and builds a temporary product bundle to identify embedded JavaScript packages; it does not download license texts. First-party source edits alone do not invalidate coverage, while importing an unreviewed package already present in the lockfile does. Native packaging checks its target's components and the actual Cargo-produced bundle inputs before packing, reusing that build instead of bundling again. The reviewed catalog may cover additional platforms.
-
-For offline comparisons of the production Rust and TypeScript Hosts on Linux,
-use [host-comparison](host-comparison/README.md). It drives real public clients
-against a loopback SSE fixture, verifies canonical output, and retains per-process
-and system telemetry. Background-agent capacity probes distinguish requested
-sessions, actual active executions, confirmed completions and unknown outcomes.
-
-Terminal behavior uses the [terminal-shell tests](../../products/maka/terminal-shell/tests/real_host/mod.rs). Run them with `cargo nextest run -p maka-cli --test integration -E 'test(terminal::)'`. These cover current component and product interactions; compare release rendering separately with a fixed terminal protocol, viewport and workload.
-
-For long-history performance, build the retained [Engine fixture](../../plugins/agent/engine/tests/integration/long_task_perf.rs) in release mode and compare identical fixture sources and dependency features:
-
-```sh
-cargo test --release -p maka-agent-engine --test integration --no-run
-python3 scripts/rust/benchmark-long-task.py \
-  --baseline /tmp/engine-before --candidate /tmp/engine-after \
-  --sizes 250,1000 --runs 5 --output /tmp/maka-long-task
-```
-
-`--checkpoint` measures requests after actual context compaction. The script alternates revisions, verifies equal completed work, and retains raw samples, medians and ranges. Fixture setup is excluded from request/completion timings. This measures Engine APIs and the controlled HTTP provider, not Host IPC, rendering, inference or energy.
-
-For larger histories, set `MAKA_ENGINE_PERF_FIXTURE_DIR` to a disposable directory and `MAKA_ENGINE_PERF_FIXTURE_TAG` to a revision label. Closed snapshots are keyed by workload settings and fixture source; preserve both when comparing retained executables. Seeding is separate from request latency and may take much longer. Run without competing builds and collect CPU profiles separately.
+`notices.json` tracks reviewed Rust and bundled JS components across all distribution targets; [`notices-sources.json`](notices-sources.json) records reviewed upstream license URLs.
 
 ## CI
 
-The [suite catalog](../ci/suites.mjs) defines maintained build and test scopes. `just` and the [workflow](../../.github/workflows/ci.yml) use the same [executor](../ci.mjs). Inspect committed changes or reproduce a suite after `just setup`:
+Suite definitions live in [`scripts/ci/suites.mjs`](../ci/suites.mjs) and run identically in local `just` recipes and [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) via [`scripts/ci.mjs`](../ci.mjs):
 
 ```sh
 node scripts/ci.mjs plan --base origin/rust-preview
 node scripts/ci.mjs run bridge
 ```
 
-PR plans follow Cargo reverse dependencies and declared runtime inputs; shared or unclassified changes select the full maintained set. Branch pushes and manual runs select the full set. Package filtering preserves each suite's workspace/features build recipe. Native desktop and terminal pixel regressions run on macOS and Windows. GTK tests run on Linux under Xvfb, and the shared native terminal transport tests run with the NSH suite.
+PR plans trace reverse Cargo dependencies plus declared runtime assets (`skills/`, product bundles, helper binaries); shared build inputs select the full suite matrix. The root build job produces a single `cargo nextest` archive (including embedded runtime assets) that downstream OS test runners partition and execute.
 
-The root producer creates a nextest archive, including runtime product assets. Test workers execute partitions of that same artifact; the final `test` check requires all selected work to succeed. Cargo caches accelerate builds and are not test artifacts.
+## Benchmarks
 
-## Windows State Root ownership
+[`host-comparison/`](host-comparison/README.md) provides an offline Linux harness for comparing end-to-end Host throughput, RSS, and CPU usage against a local loopback SSE model fixture.
 
-New State Root directories are created with an explicit current-account owner and a private ACL. An elevated Windows token can otherwise default the owner to the Administrators group. Existing directories retain their permissions until Root validation; nonempty, unrecognized directories are not adopted.
+## Windows State Root ownership recovery
 
-Older TypeScript and Rust installations share `%LOCALAPPDATA%\Maka\state-root-owners` and `%LOCALAPPDATA%\Maka\runtime-hosts`. If an existing directory is owned by Administrators, startup reports its path and the actual/expected owner SIDs. The program deliberately does not take ownership automatically.
-
-For a directory you recognize as your own Maka state, stop all local TypeScript and Rust Hosts before recovery. Review the path from the error and its contents, then use an elevated PowerShell to back up its security descriptor and change only that directory's owner to the current account:
+Maka creates State Root directories under `%LOCALAPPDATA%\Maka` owned by the current Windows user with a private ACL. If an older elevated process left `state-root-owners` or `runtime-hosts` owned by `Administrators` (`S-1-5-32-544`), Maka refuses to adopt it automatically and prints both SIDs. To recover your own directory after stopping all local Hosts, run in an elevated PowerShell:
 
 ```powershell
 $path = 'C:\Users\YOUR_ACCOUNT\AppData\Local\Maka\state-root-owners'
 $acl = Get-Acl -LiteralPath $path
-$acl | Format-List Owner,AccessToString
 if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544') {
-    throw 'This recovery step is only for a reviewed Administrators-owned directory.'
+    throw 'Expected an Administrators-owned directory.'
 }
 $backup = [System.IO.Path]::GetTempFileName()
 $acl.Sddl | Set-Content -LiteralPath $backup
 $acl.SetOwner([System.Security.Principal.WindowsIdentity]::GetCurrent().User)
 Set-Acl -LiteralPath $path -AclObject $acl
-Write-Output "Previous security descriptor: $backup"
+Write-Output "Backed up previous SDDL to: $backup"
 ```
-
-Retry startup; it will validate the directory and restrict access to the current account and SYSTEM. Review each subsequent reported directory separately, including an empty Root left by an earlier failed startup. Keep the backup until startup succeeds. Do not delete or replace lock files, recursively take ownership of state, or change the owner of an unrecognized directory.

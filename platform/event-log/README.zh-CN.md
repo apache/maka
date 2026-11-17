@@ -21,55 +21,28 @@
 
 [English](README.md)
 
-负责 State Root 的 SQLite 数据库、物理写租约、应用记录、Session 资源和检查点发布。
-Agent 事实、历史、索引和内容所有权由
-[`maka-agent-state`](../../plugins/agent/state) 负责。
+`maka-event-log` 管理单个 State Root 的底层存储：操作系统级独占进程锁（`RootOwner`）、SQLite 数据库（`RootStore`）、两阶段 Host 操作账本，以及不可变检查点（Checkpoint）发布。上层 Agent 事实表与索引由 [`maka-agent-state`](../../plugins/agent/state/src/lib.rs) 通过组合迁移挂载到同一个 `RootStore` 上。
 
-- [`root`](src/root.rs) 和 [`root_store`](src/root_store.rs) 将工作绑定到当前 Root，
-  并协调关闭与已接纳操作的结算。
-- [`connection`](src/connection.rs) 在专用线程上运行有界写队列和读取通道。
-  [`writeback`](src/writeback.rs) 提交类型化语句，仅在确认提交后发布限定范围的变更提示。
-- [`root_store::data`](src/root_store/data.rs) 提供 Root 和 Session 范围的 SQL 访问。
-  领域状态可以与原始 Host 操作回执在同一事务中提交。
-- [`applications`](src/applications.rs) 保存应用来源、部署、意图和操作结果。
-- [`checkpoints`](src/checkpoints.rs) 和
-  [`root_store::checkpoints`](src/root_store/checkpoints.rs) 发布不可变快照与 Workspace 对象，
-  校验精确 Head，并在进程重启后结算已准备的恢复操作。历史快照由所属领域提供。
-- [`schema`](src/schema.rs) 定义当前 Root schema；
-  [`migration`](src/migration.rs) 校验组合后的迁移账本。
-  产品在打开存储时组合 Root 与领域 migrations。
+## 核心模块
 
-## Checkpoint 仓库装配
+- [`root.rs`](src/root.rs) 与 [`root_store.rs`](src/root_store.rs) — 持有 State Root 独占锁，并在停机时等待已接纳的在途操作结清。
+- [`connection.rs`](src/connection.rs) 与 [`writeback.rs`](src/writeback.rs) — 独立线程运行单写者 FIFO 队列与并发只读快照通道，仅在事务确认提交后广播缓存失效信号。
+- [`root_store/data.rs`](src/root_store/data.rs) — 提供按 Root 或 Session 隔离的 SQL 执行接口，支持原生服务将业务状态变更与 Host 操作回执放在同一写事务内原子提交。
+- [`applications.rs`](src/applications.rs) — 存储部署源、调用方意图（`CallerIntent`）以及区分业务结果与物理清理的操作回执。
+- [`checkpoints/`](src/checkpoints.rs) — 工作区与对话历史的内容寻址快照发布、Head CAS 推进以及崩溃后恢复结算。
+- [`schema.rs`](src/schema.rs) 与 [`migration.rs`](src/migration.rs) — 基础表结构定义与多领域组合迁移校验。
 
-[`checkpoints::repository`](src/checkpoints/repository.rs) 将不可变对象与逻辑 Session
-身份、Head CAS、原提交回执分开。Session/agent 绑定持久保存，Root/scope/native Session
-保留为来源信息。缺省 expected revision 表示仅当 Head 不存在时创建；冲突不自动改用
-新 Head 重试。精确读取验证对象字节与 Workspace 依赖闭包，将 Manifest 来源与持久化的
-逻辑 Session Binding 比对，并拒绝验证期间已移动的 Head 或 Binding；历史格式与语义校验仍由原生历史所属领域负责。
+## 检查点仓库（Checkpoint Repository）
 
-现有发布与读取路径实际使用这些接口。`RootStore::open` 默认使用本地适配和原 Head 表。
-可信装配层可以在打开 Host 前，通过 `RootStore::open_with_checkpoint_storage` 注入
-`Storage`。`FileRepository::open` 提供独立于 worker Root 的持久参考实现：SQLite
-仲裁独立进程，对象文件保存不可变内容。每个适配器持有有界的常驻连接工作线程，克隆共享线程，
-独立适配器和进程由 SQLite 仲裁。仓库 schema 与身份列独立于 Root 的迁移目录。
-初始化需放在物理 I/O 线程；首版支持 Unix
-本地文件系统，不提供网络文件系统或分布式数据库租约保证。
+`checkpoints::repository` 将不可变对象存储与逻辑会话绑定、Head CAS 提交解耦：
 
-共享模式的 Root 只保留捕获与恢复记录，不写本地 Head。仓库同时提交 Head 与原回执；
-响应丢失时查询原操作，不重新捕获。对象读取的临时故障保留已准备发布的可恢复状态；
-缺失或非法材料不能推进 Head。读取 Head 不会认领新的来源 scope。
-启动必须装配同一仓库、对象库和 agent 绑定。
-已有本地发布需要显式迁移才能切换 authority。参考仓库目录必须私有且位于捕获的
-Workspace 之外。对象尚无 GC；外部流式发布先生成独立临时副本，再确认持久化。
-本地适配器直接晋升已验证的私有暂存文件，在记录 Prepared 前同步对象目录。
-同轮本地提交复用捕获的验证凭据；恢复和外部发布重新验证保留字节。
-Root 私有 SQL 位于 `root_store::checkpoints::local`，Root 装配位于 `authority`。
+- **默认本地模式（`RootStore::open`）** — Head 表保存在当前 Root 库内，已校验的私有暂存文件经目录 `fsync` 后直接硬链接晋升，避免重复拷贝。
+- **外部仓库模式（`RootStore::open_with_checkpoint_storage`）** — 注入自定义 `Storage` 实现。`FileRepository::open` 提供了独立于工作 Root 的本地多进程参考实现，用独立 SQLite 仲裁并发进程并用文件系统保存不可变对象。
 
-`Storage::checkout_exact` 可在源 Root 消失后读取逻辑 Session，但只选择当前保留的 Head：
-发布 r2 后，即使 r1 的对象和原回执仍在，也不能再检出 r1。读取不授予执行权。
-共享加载/恢复、Activation 租约、跨 Root 接管和具体云端传输仍是后续工作。
-本地恢复及归档导出保持原行为，当前 operator CLI 不提供外部仓库配置入口。
-checkpoint 未增加凭据、运行镜像或完整辅助 Agent 状态。
+`Storage::checkout_exact` 在检出当前 Head 前会完整校验对象摘要、工作区闭包以及逻辑会话绑定来源，且仅提供只读数据检出，不授予任何执行权限。
 
-使用 `cargo nextest run -p maka-event-log` 运行已注册的测试。
-`root_lease`、`checkpoint_restore` 和 `checkpoint_repository` 独立集成测试二进制将跨进程检查与其他测试的 Root 租约隔离。
+## 测试
+
+```sh
+cargo nextest run -p maka-event-log
+```

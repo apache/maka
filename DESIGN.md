@@ -7,7 +7,7 @@
   "License"); you may not use this file except in compliance
   with the License.  You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+      http://www.apache.org/licenses/LICENSE-2.0
 
   Unless required by applicable law or agreed to in writing,
   software distributed under the License is distributed on an
@@ -17,120 +17,77 @@
   under the License.
 -->
 
-# Maka design
+# UI Design Specification
 
-Maka is a desktop workspace for directing and supervising agents. The interface is calm, native and compact: generous around reading and decisions, dense where comparison matters. The task stays central; activity, permissions, failures and produced work stay inspectable without turning the window into a dashboard.
+Maka is a desktop and terminal workspace for directing and supervising agents. The layout stays quiet, native, and compact: spacious where users read or make decisions, dense where side-by-side comparison matters. Activity, permissions, failures, and artifacts remain inspectable inline without turning the window into a telemetry dashboard.
 
-The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the baseline. This file records what Maka decides on top of it. [`ui.tsx`](products/maka/workbench/app/ui.tsx) owns the values; when this file and the source disagree, fix the wrong one in the same change. The terminal shares the workbench but keeps its cell grid, so desktop geometry stays behind `platform.idiom === 'terminal'`.
+The [NSH design guide](third-party/nsh/website/docs/design-guides.md) sets the foundation; this document specifies Maka's rules on top of it. [`ui.tsx`](products/maka/workbench/app/ui.tsx) is the source of truth for design tokens—when prose and code diverge, update the wrong one in the same change. Terminal mode runs the same workbench on a character grid, gating desktop-only pixel geometry behind `platform.idiom === 'terminal'`.
 
-## Hierarchy
+## Visual hierarchy
 
-- One region has one focus. An element earns its place by changing what the user does next.
-- With accent and decoration removed, the primary task, current selection and next step must still read.
+- Every region has one focal point. An element earns its space only if it informs what the user does next.
+- Strip away accent colors and decoration: the primary task, active selection, and next action must still read clearly from layout and contrast alone.
 
-## Surfaces and lines
+## Surfaces and borders
 
-- Depth comes from the `background`, `surface` and `raised` tokens first, then a line, then a shadow.
-- Each boundary uses one separator: a fill step, a line or a shadow, never two on the same edge.
-- In both appearances the sidebar sits one step below the panel, and what rests on the panel (the composer, message bubbles, tool cards, code) one step above it (`card`, then `cardRaised` for what is filled on a card). `ui.tsx` maps these regions onto the tokens; call sites inside the panel use the regions, not the tokens.
-- Resting surfaces are flat. Shadows belong to what floats (menus, popovers, dialogs), and that family shares one recipe.
-- Generic gradients, glowing borders, neon edges, glassmorphism, sparkle and decorative "thinking" are out.
+- Establish depth with surface fills (`background`, `surface`, `raised`) first, a hairline border second, and shadow last.
+- Use at most one separator per boundary—either a fill step, a border line, or a shadow, never two on the same edge.
+- In both light and dark themes, the sidebar sits one step below the main panel, while cards resting on the panel (composer, user bubbles, tool cards, code blocks) sit one step above (`card`, and `cardRaised` for interactive fills inside a card). Components inside the panel consume semantic region tokens from `ui.tsx` rather than raw palette steps.
+- Resting surfaces stay flat. Shadows are reserved for floating overlays (menus, popovers, modal dialogs) using one shared elevation recipe.
+- Avoid decorative gradients, glowing borders, neon accents, glassmorphism, sparkles, or ornamental "thinking" animations.
 
-## Ink and color
+## Color and typography
 
-- Text uses `text`, `secondary` and `muted`. Further hierarchy comes from size, weight and space.
-- One accent identifies interaction and the current selection. Status colors only mean their status.
-- Call sites read colors from `C`. Raw colors belong in theme definitions and in content whose color is the data.
+- Foreground hierarchy uses `text`, `secondary`, and `muted`, reinforced by size, weight, and spacing.
+- A single accent color marks interactive affordances and current selection. Semantic status colors (`warning`, `danger`, `success`) appear only to communicate actual state.
+- Components read colors from `C`; literal color values belong only in theme definitions or data-driven content.
 
-## Geometry
+## Geometry and alignment
 
-- Spacing: 2, 4, 8, 12, 16, 24, 32. Equal spacing means an equal relationship; a control's parts sit closer than controls, and controls closer than groups.
-- Radius: 4 inline, 8 controls, 12 surfaces, 16 and 24 for large or conversational surfaces, full for round controls and pills.
-- Nested corners are concentric: inner radius = outer radius − inset.
-- Control height: 24, 28 or 32, with 32 as the default. Text uses the styles in `ui.tsx`.
-- The container owns its inset and the parent owns the gap between children. Fix a drift at that owner, never with a local offset.
+- **Spacing scale**: `2, 4, 8, 12, 16, 24, 32`. Tighter spacing binds related parts: parts inside a control sit closer than sibling controls, and sibling controls closer than distinct groups.
+- **Corner radii**: `4` inline, `8` controls, `12` panels and popovers, `16`/`24` large cards and composer surfaces, `full` for circular buttons and pills. Nested corners stay concentric (`inner_radius = outer_radius - inset`).
+- **Control heights**: `24`, `28`, or `32` (default `32`). Containers own their padding; parents own the gap between children—never patch alignment drift with ad-hoc local margins.
+- **Shared axes**: Sibling elements snap to shared edges and centerlines; a 1 px misalignment between intended shared edges is a bug. In the composer (`radius 24`, `inset 8`, `32 pt` round buttons), the `+` icon aligns with the first character of the input, the send button sits equidistant from the right and bottom edges, toolbar items share one centerline, and the composer card aligns flush with both edges of the reading column. Icon buttons and disclosure rows extend `8 pt` outside the reading column so their glyphs land directly on the text edge.
 
-## Alignment
+## Interactive states
 
-Every surface has a few shared edges and center lines, and siblings land on them. Two edges meant to be equal and one rendered pixel apart are a defect.
+- Every interactive control implements hover, active/press, keyboard focus, disabled, and (where applicable) selected states via `ui.tsx`.
+- Hover-revealed actions must also appear on keyboard focus, reserve their layout slot while hidden, and remain reachable from the context menu.
+- Loading states match the exact bounding box of their ready state so transitions cause zero layout shift.
 
-The composer is the reference:
+## Window shell
 
-- The card has radius 24 and inset 8, so its 32-point round buttons (radius 16) are concentric with it.
-- The `+` glyph and the first character of the message share a left edge.
-- The send button sits the same distance from the right and bottom edges, in the empty state and in a conversation.
-- Toolbar controls share one center line, with labels and chevrons at one spacing.
-- The card and the reading column share both edges.
+The desktop shell forms an inverted L: the sidebar and top strip share the `chrome` base fill, framing a rounded `panel` (`radius 12`, `inset 8` on top, right, and bottom). The sidebar and main panel separate by fill step alone; side-by-side split panes inside the panel separate with a `1 px` `line`.
 
-Elsewhere the same rule holds: icon buttons and disclosure rows reach 8 points past the reading column so their glyphs land on its edges, sidebar icons, workspace names and conversation titles share one left edge, and table text starts where code block text does.
+Window chrome occupies a single `32 pt` top row: window controls and the sidebar toggle sit above the sidebar (moving into the panel header when the sidebar collapses), while each pane header aligns on the same vertical center—showing title, workspace badge, and a trailing segmented view switcher without repeating the title elsewhere.
 
-## States
+Sidebar navigation rows use `secondary` text and `muted` icons so conversation titles (`text`) stand out. Selected rows use `raised` fill and `500` weight. A fixed `16 pt` trailing slot holds the unread dot, active spinner, or hover `More` button so titles never shift horizontally.
 
-- Every control shows hover, press, focus and disabled through the shared styles in `ui.tsx`, and selected where it applies.
-- Hover only reveals. Actions that show on hover also show on keyboard focus, keep their space while hidden, and stay in a context menu with the same commands.
-- A loading state occupies the box of its ready state: the switch causes no layout shift.
-- Feedback reports real state. Immediate actions get no ceremony.
+## Conversation stream
 
-## Shell
+- Assistant prose renders directly on the reading column without avatars.
+- Inter-agent messages render inside tool activity rows rather than user speech bubbles, collapsed by default with expandable source links and payloads.
+- Each turn renders a single summary header from start to finish: `Working for 22s` while running, updating in place to `Worked for 37s · 2 thoughts · 3 tools` and auto-collapsing to the final answer on clean completion (unless the user manually toggled it). Turns that fail, stop, or pause for user input lead with their terminal status (`Stopped after 12s`) and stay expanded.
+- Consecutive internal steps between assistant messages fold into an activity group (`Read files, ran commands`). On desktop, turns use two unindented lanes: a `24 pt` leading icon lane aligned with the reading column's left edge, and a content lane to its right. Expanded steps sit one lane inward behind a vertical guide line under the group icon.
+- Step status occupies a fixed trailing slot and surfaces only errors, rejections, stops, or active spinners. Shell tool cards show the working directory once, prefix commands with `$`, label output only for `stderr`, and display exit codes only when non-zero.
 
-The desktop window is an inverted L: the sidebar and the window's top edge share one base (`chrome`), and the content is one `panel`, radius 12, inset 8 from the window's top, right and bottom edges. The sidebar, the panel and the panel's header part by fill alone; panes side by side in the panel part by a line.
+## Floating overlays
 
-The shell keeps one header line. The window controls' row holds only the controls and the sidebar toggle at the sidebar's end (the panel's header takes the toggle while the sidebar is away). Each pane's header is the panel's first row, 32 points high, so its center is the window controls' center: the title, the workspace, then the pane's views as a compact segmented control at its end. Nothing else repeats the title.
+Menus, selects, context menus, popovers, and modal dialogs are the only surfaces that combine a `line` border (`radius 12`) with drop shadow (`floatingStyle`, `menuRowStyle`, `ModalDialog.tsx`).
 
-The sidebar recedes behind the conversations: navigation rows read in `secondary` with `muted` icons, conversation titles in `text`. Selected is a `raised` fill with the title at weight 500; unread and running show in one 16-point lane at the row's end (an accent dot, the loading indicator), the More button's place, so titles never move.
+- **Menus and popovers** — `floating` surface with `4 pt` inset and `32 pt` concentric rows (`radius 8`, hover/focus `floatingRaised`). Rows use three lanes: `16 pt` icon at `12 pt`, label at `36 pt`, and trailing check/switch/shortcut/chevron. Every command in a menu uses a distinct icon; destructive actions sit last in `danger`; commands that open a prompt end with `…`. Active choices show an `accent` checkmark (never radio buttons). Press outside or `Escape` dismisses; menus carry neither title bars nor close buttons.
+- **Dialogs** — `ModalDialog` centers over a scrim on `surface` fill (`inset 16`). Titles state the concrete action and target (`Delete “Roadmap”?`, weight `600`); body text adds only scope or consequence. Primary actions sit bottom-right (`Cancel` followed by a specific verb like `Delete` or `Save`—never generic `OK`/`Confirm`), with initial focus on `Cancel` for destructive prompts. `Escape` cancels; clicking the scrim dismisses lightweight launchers (command palette, search) but never discards form edits or active work.
+- **Tooltips** — `tooltipStyle` / `richTooltipStyle` in floating tokens without shadow or color inversion. Menu rows never carry tooltips; essential context belongs inline.
 
-## Conversation
+## Settings pages
 
-- Assistant messages stay quiet and free of avatars. Language and continuity carry the product's character.
-- Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion.
-- A turn has one summary row from its first step to its end, and finishing changes only its text and fold. While it runs, the row reads `Working for 22s` and the messages between its steps follow in order below it. The consecutive steps between two messages fold into one group row that names what they did (`Read files, ran commands`) and opens to the steps; while the group runs, its row shows the step in progress with a band of light passing over it. Once it completes it reads what it took and what it did (`Worked for 37s · 2 thoughts · 3 tools`) and folds to the final answer, unless the user has already opened or folded it. A turn that failed, stopped or took the user's input midway leads with its status (`Stopped after 12s`) and stays open, since it does not fold.
-- A turn is not indented. On desktop it has two lanes: the icon lane on the reading column's left edge holds the summary chevron and each group's icon, its latest step's; the text lane, 24 points to its right (`disclosureContentInset`), holds the summary text and the group names, each followed by its chevron. An open group's steps sit one lane in, behind a `line` rule under the group's icon, and keep the same two lanes there. Thinking and tool steps share one row style and differ only by icon; a thinking step with nothing beyond its title does not expand.
-- A step's state sits in one fixed lane at the row's trailing edge and shows only error, rejection, stop or progress. A tool card names its tool and directory once, prefixes the command with `$`, and labels output only when it is stderr; an exit code shows only when non-zero.
+All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx) without custom per-page layouts:
 
-## Floating surfaces
+- Left rail selects the category; the panel header shows the category title (with Back navigation when nested) and at most one primary page action.
+- Grouped rows sit on `surface` over `background` with aligned left text edges: label on the left, control on the right, and helper copy only when the label alone would be ambiguous.
+- Switches and discrete pickers apply immediately; text inputs (names, keys, URLs, prompts) and coupled multi-field forms (server/model/proxy configs) commit via a sticky footer `Save` bar that appears once dirty. Navigating away with unsaved edits prompts for confirmation.
+- Pages load on mount and window focus without manual Refresh buttons; failed loads surface an inline `Retry` action and error reason. Healthy rows stay quiet; actionable issues highlight in `warning`.
 
-Menus, selects, context menus, popovers and dialogs share one edge: a `line` border, radius 12 and a shadow, the only edge where a line and a shadow meet. `ui.tsx` and `ModalDialog.tsx` own the recipes.
+## Visual verification
 
-### Menus and popovers
-
-Menus, selects, context menus and popovers share one surface and one row (`floatingStyle`, `menuRowStyle`).
-
-- The surface sits one step above the panel (`floating`); inset 4 keeps its rows (radius 8) concentric. Rows inside it hover and take focus with `floatingRaised`.
-- A row is 32 points high with three lanes: a 16-point icon 12 points from the surface's edge, the text at 36, and a trailing lane for the check, a switch, a shortcut or a submenu chevron. Detail follows the title in `muted`, on the same line in a list to scan (completions) or on a second 12-point line where it explains a choice (sandbox levels). A shortcut is never the detail.
-- Each command has its own icon in `secondary`; no two commands in one menu share an icon. A destructive row is `danger`, icon and text, and comes last. A command that asks for more input ends with `…`.
-- The current choice is a check in the trailing lane in `accent`; menus draw no radio buttons. A two-state setting is a switch row.
-- No title and no close button: the trigger names the menu, and a press outside or Escape closes it. A list that mixes kinds (commands and skills) names each section, and keeps the name when only one kind matches. Section names and notes start on the icon's edge; separators are inset 8 and part groups by purpose. A search field is the first row, borderless, with a separator below.
-- A list of recent items keeps the latest ten, so it has no command to remove one.
-
-### Dialogs
-
-Dialogs share `ModalDialog`: the scrim, a width that follows the decision (alert, form, editor or page), inset 16 and a deeper shadow than a menu's. The card keeps `surface`, the fill its controls' `raised` and `background` are set against.
-
-- Choose the smallest surface that holds the decision (NSH, Feedback and overlays); exploring belongs in a page.
-- The title names the decision and its object (`Delete “Roadmap”?`), weight 600; the detail adds only scope, consequence or recovery. Header and footer parts sit 8 apart.
-- Actions sit at the bottom right: Cancel, then the result (`Delete`, `Create fork`, `Save`), never `OK` or `Confirm`. A destructive result reads in `danger` and focus starts on Cancel. A view with nothing to decide has only Close. A secondary choice sits at the bottom left.
-- One way out: Escape does what Cancel or Close does; a press on the scrim does too only for a launcher, so a stray click loses no input or running work. No close button in the title row.
-- A confirmation takes `AlertDialog`'s shape but is drawn by Maka: in the terminal surface the system's alert would open on a hidden window. Progress and failure stay in the dialog until it closes.
-- A launcher (the command palette, conversation search) opens an eighth of the window down, so typing does not move it, and has no title; the palette's list follows the menu rules.
-- A page-sized dialog (model settings) is shaped as a window, its pane 8 in and concentric with its corner.
-
-### Tooltips
-
-Tooltips keep NSH's bubble (`tooltipStyle`, `richTooltipStyle` for more than a line) in the floating colors: no shadow and no inverted colors. A menu row carries no tooltip; what it would say belongs in the row.
-
-## Settings
-
-Settings pages are built from the parts in [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx); a page adds no layout of its own.
-
-- The rail names the page; the panel's title row repeats that name at the root, adds back when nested, and holds the page's one action. Nothing else repeats the title.
-- Rows put the label on the left and the control on the right. Rows sit in groups on `surface` over the panel's `background`, one inset line between rows; a group may carry a section name. The title, section names, row text and notes start on one left edge, the group's text inset; only group backgrounds reach past it. Descriptions only where the label alone would mislead.
-- Choose the control by purpose: a switch for on/off, a select for one of several (side-by-side buttons when there are two or three short ones), a chevron row for a page below, a button for a command. Destructive commands are a danger row at the end of the last group; lists open an item's page rather than carry per-row commands.
-- Switches and selections apply on change; typed values (names, keys, URLs, prompts) wait for Save in the page footer, which stays in view while the page scrolls and appears on a saved item only once something changed. A switch flipped while typed changes are unsaved joins them and waits for the same Save. A page whose values only make sense together (a server, a model, a proxy) is a form: there every control for those values waits for Save, while a switch that sets something outside the form, such as the default model, still applies on change. Leaving with unsaved changes asks first.
-- There is no Refresh control. A page reads its data when it opens and again when the window returns to the foreground, unless a draft or confirmation is open. A failed read shows Retry where the data would have been; the reason shows under the title.
-- A row shows state only when it needs action, in `warning`. A healthy state is silent.
-- Search appears once a list is too long to scan, about eight items.
-- Multi-line text is sized in whole lines and fades at the bottom while more text is hidden.
-
-## Verification
-
-A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as the desktop tests' `shell_shares_its_lines` does: a screenshot judged by eye does not prove alignment. On macOS the headless test platform draws text in Helvetica rather than the system font, so judge typography and the centering of text beside icons with the real text system.
+Inspect UI changes in the native desktop renderer across both light and dark themes at narrow and wide viewport widths. Shared-edge invariants belong in automated layout-bound assertions (such as `shell_shares_its_lines` in the desktop integration suite) rather than eyeball checks alone. On macOS, the offscreen test backend rasterizes Helvetica rather than SF Pro, so check optical text-to-icon centering in a real desktop window.
