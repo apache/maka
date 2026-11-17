@@ -21,15 +21,13 @@
 
 [简体中文](README.zh-CN.md)
 
-Minimal Harbor evaluation runner for native Maka Host inside Docker containers.
+`maka-eval` runs containerized [Harbor](https://github.com/laude-institute/harbor) benchmark trials against the native Maka Host inside Docker.
 
-[Source](src/main.rs) · [Cargo manifest](Cargo.toml)
+## Subcommands
 
-## Overview
+- **`maka-eval run`** ([`src/harbor.rs`](src/harbor.rs)) — Writes the embedded [`MakaHostAgent`](harbor/maka_host_agent.py) adapter and Harbor job config into `--out`, bind-mounts a Linux binary bundle (`maka`, `maka-python-worker`, `maka-eval`) read-only at `/opt/maka-agent`, invokes `harbor run`, settles whole-root Host usage and per-request `Quote` pricing into `run-summary.json` (`metering`: `complete` or `lower_bound`, `costUsd` / `meteringError`, plus paths to `guest-result.json`, `transcript.json`, and Harbor's `result.json`), and validates trial evidence completeness.
+- **`maka-eval guest-run`** ([`src/guest.rs`](src/guest.rs)) — Executed inside the trial container. Initializes a fresh State Root (`maka host init --settings-stdin`), starts `maka host serve --root`, drives the task directly over `HostClient` / `maka-app-client`, waits for terminal `agent.execution` state, reconciles token usage across the root session and any spawned subagents into `guest-result.json`, and exports the full transcript to `transcript.json`.
 
-- **`maka-eval run`** ([`harbor.rs`](src/harbor.rs)): Materializes the embedded [`MakaHostAgent`](harbor/maka_host_agent.py) plugin and Harbor job configuration into `--out`, mounts a Linux target binary bundle (`maka`, `maka-python-worker`, `maka-eval`) read-only at `/opt/maka-agent`, executes the container trial via `harbor run`, always writes a concise `run-summary.json` indexing `guest-result.json`, `transcript.json`, and Harbor `result.json`, and validates trial evidence completeness through `validate_trial_evidence`.
-- **`maka-eval guest-run`** ([`guest.rs`](src/guest.rs)): Invoked inside the Harbor container by [`MakaHostAgent`](harbor/maka_host_agent.py). It bootstraps an isolated State Root with `maka host init --settings-stdin` (`chatDefaults.sandboxMode`, `projectDirectoryRoots`, model connection, and default target), spawns `maka host serve --root`, drives the session directly through `HostClient` and `maka-app-client` (without ACP or an external HTTP proxy), waits for terminal `agent.execution` state, settles whole-root `settings.usageSummary` across the main session and any delegated subagents, collects all `settings.usage` attempt pages on the same `through` fence into `guest-result.json`, and exports paginated `agent.history` to `transcript.json`.
+## Trial settlement
 
-## Execution vs. Verifier Boundary
-
-`GuestRunResult` separates infrastructure failures (`infraFailed`) from subject capability/policy stops (`subjectStopped`) and normal completion (`completed`). Unless `infraFailed` occurs, Harbor continues into Verifier scoring (`ctrf.json` / `reward`), and `validate_trial_evidence` accepts any finite Verifier `reward` provided no Harbor/Guest exception occurred, `transcript.json` was exported, completed runs left zero pending Host calls, and every successful model attempt reported complete input/output token counts. `completed` preserves the running Host and State Root across Verifier grading so background services survive until Harbor finalization tears down the trial environment, whereas `subjectStopped` and `infraFailed` retire the Host and remove the State Root immediately.
+`GuestRunResult` distinguishes harness/container failures (`infraFailed`) from model/policy stops (`subjectStopped`) and clean finishes (`completed`). Unless `infraFailed` occurs, Harbor proceeds to Verifier grading (`ctrf.json` / `reward`). `completed` trials keep the Host and State Root alive through Verifier execution so background processes started by the agent remain testable until container teardown.

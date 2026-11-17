@@ -419,6 +419,18 @@ impl Journal {
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', reply_to TEXT, quotes TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
+            for (column, add) in [
+                ("mentions", "ALTER TABLE drafts ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'"),
+                ("reply_to", "ALTER TABLE drafts ADD COLUMN reply_to TEXT"),
+                ("quotes", "ALTER TABLE drafts ADD COLUMN quotes TEXT NOT NULL DEFAULT '[]'"),
+            ] {
+                let present: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pragma_table_info('drafts') WHERE name=?)")
+                    .bind(column).fetch_one(&mut *transaction).await.map_err(error)?;
+                if !present {
+                    sqlx::query(add)
+                        .execute(&mut *transaction).await.map_err(|error| format!("client journal adding drafts.{column}: {error}"))?;
+                }
+            }
             sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 .execute(&mut *transaction).await.map_err(error)?;
             transaction

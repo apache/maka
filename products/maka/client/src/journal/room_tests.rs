@@ -120,3 +120,40 @@ async fn room_recovered_send_preserves_its_mentions_and_the_newer_draft() {
     assert_eq!(next.reply_to.as_deref(), Some("layout-message"));
     journal.pool.close().await;
 }
+
+#[tokio::test]
+async fn drafts_saved_before_rooms_still_load() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("client.sqlite");
+    let host = DeploymentRef {
+        state_domain: "a".repeat(64),
+        deployment: Uuid::new_v4(),
+        revision: 1,
+    };
+    let key = DraftKey::new(
+        &host,
+        &InstanceId(vec![Uuid::new_v4()]),
+        "agent",
+        "session",
+        "composer",
+    )
+    .unwrap();
+    {
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let mut connection = sqlx::ConnectOptions::connect(&options).await.unwrap();
+        sqlx::query("CREATE TABLE drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO drafts (owner, revision, text) VALUES (?, 3, 'kept')")
+            .bind(serde_json::to_string(&key).unwrap())
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    let journal = Journal::open(&path).await.unwrap();
+    let draft = journal.load_draft(&key).await.unwrap().unwrap();
+    assert_eq!((draft.revision, draft.text.as_str()), (3, "kept"));
+    assert!(draft.mentions.is_empty() && draft.reply_to.is_none());
+    assert!(draft.quotes.is_empty());
+}

@@ -17,47 +17,56 @@
   under the License.
 -->
 
-# Agent plugins
+# Agent Plugins
 
 [简体中文](README.zh-CN.md)
 
-This family owns Agent business behavior. Leaf `package.ts` files declare independently composable features. The Rust crates below support those declarations; their names describe code ownership, not implicit activation.
+`plugins/agent/` implements Maka's conversation engine, model protocols, collaboration Rooms, tool orchestration, and external agent integrations. Crates follow a strict one-way dependency order so persisted state, deterministic reconciliation, and live OS capabilities cannot tangle:
 
-- [facts](facts/README.md), [api](api/README.md) and [ports](ports/README.md) separate persisted data, wire contracts and business interfaces.
-- [authority](authority/README.md) checks the original invocation; [native](native/README.md) exposes Host services; [engine](engine/README.md) runs Agent work.
-- [provider-protocol](provider-protocol/README.md) owns the three wire codecs; [model](model/README.md) owns their execution adapters; [providers](providers/README.md) owns provider definitions, authentication and discovery.
-- [tool-catalog](tool-catalog/README.md) selects tools; [tools](tools/README.md) dispatches them and provides Code Mode.
-- [assistant](assistant/README.md), [goal](goal/README.md), [scheduler](scheduler/engine/README.md), [insights](insights/README.md), [session-import](session-import/README.md), [session-recap](session-recap/README.md) and [session-title](session-title/README.md) own their respective features.
-- [acp-executor](acp-executor/native/README.md) connects external ACP agents through explicit process and callback services.
+| Layer | Crates | Role |
+| --- | --- | --- |
+| Pure data & contracts | [`facts/`](facts/src/lib.rs), [`api/`](api/src/lib.rs), [`ports/`](ports/src/lib.rs) | Canonical persisted fact types, public RPC/tool schemas (`schemars`), and abstract execution traits |
+| Storage & folding | [`state/`](state/src/lib.rs) | SQLite migrations on `RootStore`, atomic fact commits, history snapshots, FTS/Recall indexes, and deterministic state projections |
+| Execution loop | [`engine/`](engine/src/lib.rs), [`tools/`](tools/src/lib.rs), [`tool-catalog/`](tool-catalog/src/lib.rs) | Durable obligation-frontier reconciler, context compaction, and V8/Python Code Mode cells |
+| Model & MCP protocols | [`provider-protocol/`](provider-protocol/src/lib.rs), [`model/`](model/src/lib.rs), [`providers/`](providers/src/lib.rs), [`mcp/`](mcp/src/lib.rs) | Pure-Rust OpenAI Responses, Chat Completions, Anthropic Messages, OAuth/API-key providers, and `rmcp` stdio/Streamable-HTTP clients |
+| Auxiliary features | [`assistant/`](assistant/src/lib.rs), [`goal/`](goal/src/lib.rs), [`scheduler/`](scheduler/engine/src/lib.rs), [`session-title/`](session-title/src/lib.rs), [`session-recap/`](session-recap/src/lib.rs), [`session-import/`](session-import/src/lib.rs), [`insights/`](insights/src/lib.rs), [`acp-executor/`](acp-executor/native/src/lib.rs) | System prompts & Recall tools, persistent Goals, cron/interval schedules, auto-titling, session recaps/imports, analytics, and ACP subprocess executors |
+| Live Host owner | [`authority/`](authority/src/lib.rs), [`native/`](native/src/lib.rs) | Activation custody, workspace permission intersection, RPC handlers, `Session*` tools, and built-in external CLI drivers |
 
-The [workbench](../../products/maka/workbench/README.md), which the terminal and desktop shells run, consumes these public Host contracts. Product assembly belongs to [products/maka](../../products/maka/README.md); the workbench owns its draft editor and interaction lifecycle.
+## Sessions, Rooms, and collaboration tools
 
-## Rooms
+Workbench clients consume granular RPC methods on [`maka-agent-api`](api/src/contract.rs) (`observe`, `history`, `watch`, `create`, `send`, `fork`, etc.), while agents interact with conversations and Rooms through seven human-symmetric tools plus `Read`:
 
-`SessionCreate` with `kind: "room"` creates a shared message journal without an Agent loop. The workbench's Rooms view keeps ordinary conversations and their drafts separate. Humans and agents both post through `SessionSend`; `mentions` addresses Agent session IDs, and `replyTo` links an existing message in the destination Room. Mentioned agents receive the original author, Room address and reply context, and use `SessionSend` to reply in that Room.
+- **`Read("maka://session/<id>")`** — Renders a clean Markdown digest of any readable Agent conversation or Room (pinned to a consistent `through` watermark across pages), linking full tool outputs at `maka://session/<id>/tool-results/<event-id>`.
+- **`SessionList` / `SessionRead`** — Search conversations or inspect metadata, active/latest `RunId` status, blockers, pending questions, queued messages, and paged transcripts in one call.
+- **`SessionCreate`** — Creates an Agent conversation or shared Room (`kind: "room"`), optionally branching via `forkFrom`, allocating a managed Git `worktree`, or applying a subagent `presetId`.
+- **`SessionSend`** — Posts to a Room (with atomic `@mentions` and `replyTo`) or sends/steers a message to an Agent session. Agent-to-worker sends default to `onComplete: "notify_caller"`, waking the caller with an inline `<worker_result>` summary when the worker finishes.
+- **`SessionRespond` / `SessionStop` / `SessionManage`** — Answer worker questions/approvals, stop active runs, edit queued messages, continue terminal runs, or update/archive/restore/remove sessions.
 
-Room messages and admitted mentions commit together. Delivery receipts distinguish unavailable targets; recovering an operation does not post or wake an agent twice. `SessionRead` (and `Read` on `maka://session/<id>`) reads Room messages with stable IDs and cursor paging. See [the public contract](api/src/contract.rs) and [Room storage](state/src/room.rs).
+## Memory records
 
-## Ordinary memory records
+User-controlled memory endpoints (`memories`, `memory`, `memoryHistory`, `changeMemory`, `memorySource`, and `memoryEvidence` in [`api/src/contract/memory.rs`](api/src/contract/memory.rs)) manage personal and project-scoped memory records on the State Root. Edits use revision CAS; suppressing a record hides matching content from ordinary reads and history while retaining the underlying audit record. Model reads require live execution authority plus both `memory.enabled` and `memory.agentReadEnabled` in settings preferences (disabling model reads leaves user management available). Assertions can bind verified conversation spans via `changeMemory.add_evidence`, and `create.incognito` marks an immutable memory-privacy boundary inherited by derived sessions.
 
-The Agent service exposes `memories`, `memory`, `memoryHistory` and `changeMemory`; see the [contract](api/src/contract/memory.rs). Trusted management callers can create, correct, mark as always-used, suppress and explicitly restore records in a personal or Host-resolved project scope. Updates use revision CAS; content versions, user-operation sources and body-free receipts commit on the original Root. Suppression retains matching content but hides it from normal reads and history.
+## Proactive discovery
 
-The existing settings preferences API controls `memory.enabled` and `memory.agentReadEnabled`. Model reads require current execution authority and both switches; user management remains available when model reading is disabled. This stage does not expose a model write tool, inject always-used records, or perform semantic deduplication. Those consumers must use the same records and suppression boundary.
+The current Bot can propose a discovery plan when Bot and scheduling are enabled. A user approves the workspace, model, and selected tool groups. New plans default to read-only. The Host pins approval to the concrete tool list, then intersects it with current permissions and file exclusions for each fresh worker. An automatic one-time follow-up inherits the original authority. A broader scope needs user approval.
 
-Clients resolve selected conversation text with `memorySource`, page evidence with `memoryEvidence`, and attach it to a specific assertion with `changeMemory.add_evidence`. The Host verifies the owned conversation, immutable message identity, fingerprint and text span at commit. Assertion metadata records kind, statement and temporal validity. `create.incognito` establishes an immutable memory privacy boundary inherited by derived sessions; it does not erase conversation history.
+One investigation occupies the shared slot through cleanup and report handoff. The worker calls `DiscoveryComplete` to settle quietly or hand findings to the Bot. The Bot decides whether to notify the user. The scheduler keeps plans, receipts, and shared investigation memory in its existing store. Recovery follows the original Run and receipt. Quoted user feedback can refer directly to the investigation record.
 
-## Subagent preset management
+See the [product guide](../../products/maka/README.md#proactive-discovery), [schedule contract](api/src/contract/scheduler.rs), and [Host tests](native/src/owner/driver/tests/model_recovery/discovery.rs).
 
-The Agent service exposes `presets`, `preset`, `createPreset`, `updatePreset` and `deletePreset`; see the [wire contract](api/src/preset.rs). Presets start empty and persist within the Host's Agent scope. Lists omit instructions; details preserve the complete text. Model references contain no credentials.
+## Subagent presets
 
-Updates and deletes require `expectedRevision`. Omitted update fields stay unchanged; `instruction: ""` clears the instruction and `thinkingLevel: {"kind":"default"}` restores the model default. A thinking level is set with `{"kind":"set","value":"high"}`. Model or thinking changes validate the selected native model; other edits and deletion remain available when a connection disappears. Names are trimmed and unique within the scope.
+Reusable subagent roles (`presets`, `preset`, `createPreset`, `updatePreset`, `deletePreset` in [`api/src/preset.rs`](api/src/preset.rs), exposed to agents as `SubagentPreset*` tools) store a name, selection description, system instruction, model target, and thinking level inside the Host's Agent scope. Mutations require `expectedRevision` and commit through the Host operation journal. Pass a preset ID to `SessionCreate.presetId` to spawn a worker prebound to that role.
 
-Each mutation and its result commit atomically through the Host operation journal. If a reply is lost, recover the original operation reference instead of issuing another mutation. The default product exposes these methods as `SubagentPresetList/Read/Create/Update/Delete` tools. `SessionCreate` applies a preset by ID; `SessionSend` supplies the task.
+## MCP servers
 
-### Settings and session details
+`maka-agent-mcp` connects to stdio and Streamable HTTP MCP servers via `rmcp`, surfacing their tools across direct calls, `tool_search`, and JavaScript/Python Code Mode under the same approval and receipt pipeline. Configure global or per-project servers in **Settings → MCP servers** (or `.maka/mcp.json` / `.agents/mcp.json` in the project or home directory); ACP clients can also attach ephemeral session-scoped MCP servers on session load.
 
-Open **Settings → Subagents** on desktop or in the terminal to create, edit, disable or delete a preset. Choose an explicit native connection/model and optional reasoning effort. Description explains when to use the role; the multiline role instruction accepts Markdown and may be empty. Model search uses the same catalog as conversation model selection; external executor models are excluded.
+Configured MCP servers are trusted extensions: stdio servers execute as the Host OS user outside workspace file sandboxes, receiving a minimal environment plus explicitly configured secrets.
 
-Settings and conversation tools share the same presets. Refresh the list to see changes made in conversation. An open editor keeps its draft: concurrent changes reject the save without overwriting either version. Return and discard the draft before reopening the latest saved preset. Pending operations recover their original receipt before another save is allowed; UI reload also retains the draft.
+## External CLI executors
 
-In a preset child conversation, open **Conversation details → Applied subagent** to read the captured role name, complete instruction and initial model. The current model is shown separately, including an explicit model switch. This record survives changes to, or deletion of, the source preset. The conversation itself retains the normal execution history.
+Enabling `claude`, `codex`, or `antigravity` under `agent.external.runtimes` lets sessions run installed native CLIs directly in the project workspace (Claude Code over an interactive PTY, Codex via its managed `app-server`, and Antigravity over ACP) while keeping Maka's durable session history, Host MCP bridge, editable message queue, and live steering:
+
+- **Native prompts & instruction sync** — External CLIs keep their own native system prompts. Maka delivers `<maka_system_instructions>` once per digest change without overriding native prompts or re-injecting unchanged instructions across background wake-up turns.
+- **Honest settlement** — Each task runs under `TaskOwner` custody. Process exit, silence, or EOF alone never marks a turn successful without protocol-level completion evidence, and unconfirmed interruptions never trigger blind prompt replay.

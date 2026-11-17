@@ -17,47 +17,56 @@
   under the License.
 -->
 
-# Agent plugins
+# Agent 插件域
 
 [English](README.md)
 
-这个插件族管理 Agent 行为及其界面。叶目录的 `package.ts` 声明可独立组合的功能；下列 Rust crate 支撑这些声明，目录名表示代码归属，不会自动激活功能。
+`plugins/agent/` 实现 Maka 的会话引擎、模型协议栈、多方协作 Room、工具编排以及外部 Agent CLI 接入。内部按严格的单向 crate 依赖分层，确保持久化事实、确定性状态机与底层系统句柄互不耦合：
 
-- [facts](facts/README.zh-CN.md)、[api](api/README.zh-CN.md) 和 [ports](ports/README.zh-CN.md)分别定义持久数据、协议契约和业务接口。
-- [authority](authority/README.zh-CN.md)检查原始调用权限，[native](native/README.zh-CN.md)提供 Host 服务，[engine](engine/README.zh-CN.md)执行 Agent 工作。
-- [provider-protocol](provider-protocol/README.zh-CN.md) 管理三种协议的编解码，[model](model/README.zh-CN.md) 管理执行适配器，[providers](providers/README.zh-CN.md) 管理提供商定义、认证和发现。
-- [tool-catalog](tool-catalog/README.zh-CN.md)选择工具，[tools](tools/README.zh-CN.md)分发调用并提供 Code Mode。
-- [assistant](assistant/README.zh-CN.md)、[goal](goal/README.zh-CN.md)、[scheduler](scheduler/engine/README.zh-CN.md)、[insights](insights/README.zh-CN.md)、[session-import](session-import/README.zh-CN.md)、[session-recap](session-recap/README.zh-CN.md) 和 [session-title](session-title/README.zh-CN.md)管理各自功能。
-- [acp-executor](acp-executor/native/README.zh-CN.md)通过显式进程与回调服务连接外部 ACP Agent。
+| 层级 | Crates | 职责 |
+| --- | --- | --- |
+| 纯数据与契约 | [`facts/`](facts/src/lib.rs)、[`api/`](api/src/lib.rs)、[`ports/`](ports/src/lib.rs) | 持久化事实结构、对外 RPC/工具协议契约（`schemars`）与抽象执行接口 |
+| 存储与状态折叠 | [`state/`](state/src/lib.rs) | `RootStore` 上的 SQLite 迁移、原子事实写入、历史快照、FTS/Recall 索引与同事务确定性状态投影 |
+| 执行循环与沙箱单元 | [`engine/`](engine/src/lib.rs)、[`tools/`](tools/src/lib.rs)、[`tool-catalog/`](tool-catalog/src/lib.rs) | 基于义务前沿（Obligation Frontier）的调谐驱动、上下文压缩，以及 V8/Python Code Mode 执行单元 |
+| 模型协议与 MCP | [`provider-protocol/`](provider-protocol/src/lib.rs)、[`model/`](model/src/lib.rs)、[`providers/`](providers/src/lib.rs)、[`mcp/`](mcp/src/lib.rs) | 纯 Rust 实现的 OpenAI Responses / Chat Completions / Anthropic Messages 协议栈、OAuth/API Key 提供商，以及基于 `rmcp` 的 stdio / Streamable HTTP 客户端 |
+| 扩展能力模块 | [`assistant/`](assistant/src/lib.rs)、[`goal/`](goal/src/lib.rs)、[`scheduler/`](scheduler/engine/src/lib.rs)、[`session-title/`](session-title/src/lib.rs)、[`session-recap/`](session-recap/src/lib.rs)、[`session-import/`](session-import/src/lib.rs)、[`insights/`](insights/src/lib.rs)、[`acp-executor/`](acp-executor/native/src/lib.rs) | 系统提示词与 Recall 检索、持久 Goal 循环、定时任务、自动标题、会话回顾/导入、统计分析与独立 ACP 执行器 |
+| 原生运行时宿主 | [`authority/`](authority/src/lib.rs)、[`native/`](native/src/lib.rs) | 活跃实例租约、工作区权限求交、RPC 服务路由、`Session*` 工具实现以及内置外部 CLI 驱动 |
 
-终端和桌面 shell 运行的[工作台](../../products/maka/workbench/README.zh-CN.md)消费这些公共 Host 契约。产品组装位于 [products/maka](../../products/maka/README.zh-CN.md)；工作台管理自己的草稿编辑器与交互生命周期。
+## 会话、Room 与协同工具
 
-## 房间
+前端工作台直接消费 [`maka-agent-api`](api/src/contract.rs) 的细粒度 RPC（`observe`、`history`、`watch`、`create`、`send`、`fork` 等）；面向模型的协同能力则收敛为 `Read` 加 7 个与人类操作对称的 `Session*` 工具：
 
-`SessionCreate` 的 `kind: "room"` 创建共享消息记录，不启动 Agent loop。工作台的房间视图与普通会话分别保留选择和草稿。人类和 agent 都通过 `SessionSend` 发言；`mentions` 指定接收消息的 Agent 会话 ID，`replyTo` 关联目标房间中已有的消息。被 @ 的 agent 收到真实作者、来源房间和回复上下文，再用 `SessionSend` 回到房间回复。
+- **`Read("maka://session/<id>")`** — 直接把任意可读会话或 Room 渲染为精炼的 Markdown 对话摘要（跨页翻阅自动锚定同一 `through` 水位线），工具大输出按需通过 `maka://session/<id>/tool-results/<event-id>` 无损调阅。
+- **`SessionList` / `SessionRead`** — 检索会话，或单次读取会话元数据、当前/最近一次 `RunId` 状态、阻塞原因、待处理审批、排队消息与分页历史。
+- **`SessionCreate`** — 创建 Agent 会话或共享 Room（`kind: "room"`），支持 `forkFrom` 分支、托管 Git `worktree` 隔离或直接套用子 Agent 预设 `presetId`。
+- **`SessionSend`** — 向 Room 发言（原子提交 `@mentions` 与 `replyTo`）或向 Agent 会话发消息/插话引导（Steer）。Agent 派发给子会话的消息默认开启 `onComplete: "notify_caller"`，完工后自动携带 `<worker_result>` 结论摘要唤醒调用方。
+- **`SessionRespond` / `SessionStop` / `SessionManage`** — 回复子会话提问与权限请求、终止运行、编辑待发队列、续跑已结束的原生模型轮次，以及改名/归档/恢复/删除会话。
 
-房间消息与成功接纳的 @ 投递在同一事务中提交，回执会列出无法投递的目标。恢复原操作不会重复发言或唤醒。`SessionRead`（以及面向 `maka://session/<id>` 的 `Read`）返回带稳定 ID 的房间消息并支持游标翻页，具体见[公共契约](api/src/contract.rs)和[房间存储](state/src/room.rs)。
+## 记忆记录（Memory）
 
-## 普通记忆记录
+用户可控的记忆接口（[`api/src/contract/memory.rs`](api/src/contract/memory.rs) 中的 `memories`、`memory`、`memoryHistory`、`changeMemory`、`memorySource` 与 `memoryEvidence`）在个人或项目作用域内管理持久化记忆。更新采用版本 CAS；抑制（Suppress）记录会将其从常规读取与历史展示中隐藏，同时保留底层审计记录。模型侧读取需同时具备有效执行权限并开启偏好设置中的 `memory.enabled` 与 `memory.agentReadEnabled`（关闭模型读取不影响用户管理）。客户端可通过 `changeMemory.add_evidence` 为断言绑定经校验的会话原文片段；会话创建参数 `create.incognito` 则声明由派生会话继承的不可变记忆隐私边界。
 
-Agent 服务提供 `memories`、`memory`、`memoryHistory` 和 `changeMemory`，见[协议](api/src/contract/memory.rs)。可信管理调用方可在个人或 Host 解析的项目范围内创建、更正、标记常驻、删除和明确恢复记录。修改使用版本 CAS；正文版本、用户操作来源及不含正文的回执在原 Root 上提交。删除保留匹配内容，但普通读取和历史不返回这些正文。
+## 主动发现
 
-现有设置偏好 API 控制 `memory.enabled` 和 `memory.agentReadEnabled`。模型读取同时检查有效执行权限及两个开关；禁用模型读取不影响用户管理。本阶段不开放模型写入工具、不注入常驻记录、不执行语义去重，后续消费者必须复用同一记录和抑制边界。
+启用 Bot 和定时任务后，当前 Bot 可提议发现计划。用户批准工作区、模型和所选工具分组，新计划默认只读。Host 记录批准时的具体工具清单，每次新建调查 worker 时再结合当前权限和资料排除规则。自动安排的一次性复查沿用原授权，扩大范围时需要用户批准。
 
-客户端通过 `memorySource` 解析选中的会话原文，通过 `memoryEvidence` 分页读取指定正文版本的证据；`changeMemory.add_evidence` 在提交时核对所属会话、消息身份、指纹及原文片段。断言元数据记录类别、声明类型和有效时间。`create.incognito` 是派生会话继承的不可变记忆隐私边界，不表示物理删除聊天记录。
+一次调查从启动到执行清理和报告交接期间占用同一个执行位。worker 调用 `DiscoveryComplete` 静默结算或将发现交给 Bot，由 Bot 决定是否通知用户。计划、回执和共享调查记忆复用调度器存储，恢复时沿用原 Run 和回执。用户可以通过引用将反馈关联到原调查记录。
 
-## 子 Agent 预设管理
+参见[产品指南](../../products/maka/README.zh-CN.md#主动发现)、[调度契约](api/src/contract/scheduler.rs)和 [Host 测试](native/src/owner/driver/tests/model_recovery/discovery.rs)。
 
-Agent 服务提供 `presets`、`preset`、`createPreset`、`updatePreset` 和 `deletePreset`，字段见[协议](api/src/preset.rs)。预设初始为空，持久化在业务 Host 的 Agent 作用域内。列表不加载 instruction，详情保留完整正文；模型引用不保存凭据。
+## 子 Agent 预设（Subagent Presets）
 
-修改和删除必须提供 `expectedRevision`。修改时省略字段表示保留；`instruction: ""` 清空指令，`thinkingLevel: {"kind":"default"}` 恢复模型默认，`{"kind":"set","value":"high"}` 设置思考强度。修改模型或思考强度时校验原生模型；连接失效后仍可修改其他字段或删除。名称去除首尾空白，并在作用域内保证唯一。
+可复用的子 Agent 角色定义在 [`api/src/preset.rs`](api/src/preset.rs)（对模型暴露为 `SubagentPresetList/Read/Create/Update/Delete`），持久化角色名、用途描述、专属指令、目标模型与思考强度。修改与删除通过 `expectedRevision` 做并发保护并走 Host 操作日志原子提交；在 `SessionCreate` 传入 `presetId` 即可按预设拉起子会话。
 
-持久化变更与返回结果通过 Host 操作日志原子提交。丢失响应时恢复原操作引用，不重新提交变更。默认产品通过 `SubagentPresetList/Read/Create/Update/Delete` 暴露这些方法。`SessionCreate` 按 ID 应用预设，`SessionSend` 提供本次任务。
+## MCP 服务接入
 
-### 设置与会话详情
+`maka-agent-mcp` 基于 `rmcp` 连接本地 stdio 与远端 Streamable HTTP MCP 服务，发现的工具统一接入直接调用、`tool_search` 以及 JS/Python Code Mode，并复用同一套审批与操作回执链路。可在 **Settings → MCP servers**（或项目目录及主目录下的 `.maka/mcp.json` / `.agents/mcp.json`）管理配置；ACP 客户端也可在加载会话时挂载当前会话生命周期内的临时 MCP 服务。
 
-在桌面或终端打开 **设置 → 子 Agent**，可创建、编辑、停用或删除预设。选择明确的原生连接/模型及可选思考强度。description 描述何时选择角色；多行角色指令支持 Markdown，也可以为空。模型搜索复用对话的模型目录，不包含外部执行器模型。
+已配置的 MCP 服务属于受信任扩展：stdio 进程以当前系统用户身份运行在会话文件沙箱之外，仅注入精简基础环境变量与显式配置的密钥。
 
-设置页和对话工具共享预设。刷新列表可查看对话中的修改。已打开的表单保留草稿；并发修改会拒绝保存，不覆盖任一版本。返回并放弃草稿后，重新打开可读取最新保存值。挂起操作恢复原回执后才允许再次保存；界面重载也保留草稿。
+## 内置外部 CLI 执行器
 
-在按预设创建的子会话中，打开 **对话详情 → 已应用的子 Agent**，可读取创建时的角色名称、完整指令和初始模型。当前模型单独展示，反映后续显式切换。修改或删除来源预设不会改变这份记录，普通执行历史仍保留在该会话中。
+在 `agent.external.runtimes` 中启用 `claude`、`codex` 或 `antigravity` 后，会话可直接在项目工作区内驱动本机已安装的原厂 CLI（Claude Code 走交互式 PTY、Codex 走托管 `app-server`、Antigravity 走 ACP），同时完整接入 Maka 的持久化历史、Host MCP 工具桥、可编辑消息队列与运行中插话（Steer）：
+
+- **保留原厂系统提示词与缓存前缀** — 外部 CLI 始终保留各自原厂系统提示词；Maka 将 `<maka_system_instructions>` 作为独立普通消息在摘要变化时同步一次，后台唤醒轮次自动继承既有指令摘要，绝不来回抖动破坏前缀缓存。
+- **严格结算边界** — 子进程由 `TaskOwner` 托管；单纯的进程退出、静默或 EOF 不会当作执行成功，未确认结果的异常中断也绝不触发盲目重放。

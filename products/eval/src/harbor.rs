@@ -21,7 +21,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
-use maka_agent_facts::accounting::{Activity, Outcome};
+use maka_agent_facts::accounting::{Activity, Outcome, Pending};
+use maka_settings_native::usage::Page as UsagePage;
 use serde_json::{Map, Value, json};
 use tokio::process::Command;
 use uuid::Uuid;
@@ -63,6 +64,12 @@ fn parse_sandbox_mode(raw: &str) -> Result<maka_sandbox::Mode, String> {
         .map_err(|_| "expected read-only, workspace-write, or danger-full-access".into())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum UsageSettlement {
+    Complete { cost_usd: Option<f64> },
+    LowerBound,
+}
+
 pub(crate) struct HarborRunOutcome {
     pub harbor_status: ExitStatus,
     pub reward: Option<f64>,
@@ -74,48 +81,125 @@ pub(crate) struct HarborRunOutcome {
 }
 
 impl HarborRunOutcome {
-    pub(crate) fn to_summary_json(&self) -> Value {
-        json!({
+    pub(crate) fn settle(&self) -> (Value, Result<(), String>) {
+        let (guest_json, validation) = match &self.guest_result {
+            None => (
+                Value::Null,
+                check_harbor_outcome(self)
+                    .and(Err("missing guest-result.json from trial artifacts".into())),
+            ),
+            Some(GuestRunResult::InfraFailed {
+                infra_error,
+                evidence,
+            }) => {
+                let evidenced = evidence.as_deref().map(|ev| {
+                    let s = &ev.host_usage.summary;
+                    let settlement =
+                        settle_usage(s.models.calls, &s.pending, &ev.host_usage_attempts, false);
+                    (ev, settlement)
+                });
+                (
+                    build_guest_json(
+                        "infraFailed",
+                        Some(("infraError", infra_error)),
+                        evidenced.as_ref().map(|(ev, s)| (*ev, s)),
+                    ),
+                    Err(format!("guest infrastructure failed: {infra_error}")),
+                )
+            }
+            Some(GuestRunResult::Completed { evidence }) => {
+                self.settle_evidenced("completed", None, evidence, true)
+            }
+            Some(GuestRunResult::SubjectStopped {
+                stop_reason,
+                evidence,
+            }) => self.settle_evidenced(
+                "subjectStopped",
+                Some(("stopReason", stop_reason)),
+                evidence,
+                false,
+            ),
+        };
+
+        let summary = json!({
             "reward": self.reward,
             "exceptionInfo": self.exception_info,
-            "guest": self.guest_result.as_ref().map(guest_summary_json),
+            "guest": guest_json,
             "guestResultPath": self.guest_result_path,
             "transcriptPath": self.transcript_path,
             "harborResultPath": self.harbor_result_path,
-        })
+        });
+        (summary, validation)
+    }
+
+    fn settle_evidenced(
+        &self,
+        status: &str,
+        reason_field: Option<(&str, &str)>,
+        evidence: &GuestEvidence,
+        is_completed: bool,
+    ) -> (Value, Result<(), String>) {
+        let s = &evidence.host_usage.summary;
+        let settlement = settle_usage(
+            s.models.calls,
+            &s.pending,
+            &evidence.host_usage_attempts,
+            is_completed,
+        );
+        let guest_json = build_guest_json(status, reason_field, Some((evidence, &settlement)));
+        let validation = self.validate_evidenced(evidence, settlement);
+        (guest_json, validation)
+    }
+
+    fn validate_evidenced(
+        &self,
+        evidence: &GuestEvidence,
+        settlement: Result<UsageSettlement, String>,
+    ) -> Result<(), String> {
+        check_harbor_outcome(self)?;
+        if !is_terminal_execution_state(&evidence.execution.state) {
+            let encoded = serde_json::to_string(&evidence.execution.state).unwrap_or_default();
+            return Err(format!(
+                "guest execution receipt missing terminal state: {encoded}"
+            ));
+        }
+        if !self.transcript_path.as_ref().is_some_and(|p| p.is_file()) {
+            return Err(format!(
+                "missing exported transcript.json artifact: {:?}",
+                self.transcript_path
+            ));
+        }
+        settlement.map(|_| ())
     }
 }
 
-fn guest_summary_json(guest: &GuestRunResult) -> Value {
-    let (status, reason_field, evidence): (&str, Option<(&str, &str)>, Option<&GuestEvidence>) =
-        match guest {
-            GuestRunResult::Completed { evidence } => ("completed", None, Some(evidence.as_ref())),
-            GuestRunResult::SubjectStopped {
-                stop_reason,
-                evidence,
-            } => (
-                "subjectStopped",
-                Some(("stopReason", stop_reason.as_str())),
-                Some(evidence.as_ref()),
-            ),
-            GuestRunResult::InfraFailed {
-                infra_error,
-                evidence,
-            } => (
-                "infraFailed",
-                Some(("infraError", infra_error.as_str())),
-                evidence.as_deref(),
-            ),
-        };
+fn build_guest_json(
+    status: &str,
+    reason_field: Option<(&str, &str)>,
+    evidenced: Option<(&GuestEvidence, &Result<UsageSettlement, String>)>,
+) -> Value {
     let mut map = Map::new();
     map.insert("status".into(), json!(status));
     if let Some((key, value)) = reason_field {
         map.insert(key.into(), json!(value));
     }
-    if let Some(ev) = evidence {
+    if let Some((ev, settlement)) = evidenced {
         map.insert("stepsObserved".into(), json!(ev.steps_observed));
         map.insert("execution".into(), json!(ev.execution));
         map.insert("usage".into(), json!(ev.host_usage.summary));
+        match settlement {
+            Ok(UsageSettlement::Complete { cost_usd }) => {
+                map.insert("costUsd".into(), json!(cost_usd));
+                map.insert("metering".into(), json!("complete"));
+            }
+            Ok(UsageSettlement::LowerBound) => {
+                map.insert("costUsd".into(), Value::Null);
+                map.insert("metering".into(), json!("lower_bound"));
+            }
+            Err(err) => {
+                map.insert("meteringError".into(), json!(err));
+            }
+        }
     }
     Value::Object(map)
 }
@@ -308,51 +392,18 @@ fn check_harbor_outcome(outcome: &HarborRunOutcome) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), String> {
-    let (is_completed, evidence) = match &outcome.guest_result {
-        Some(GuestRunResult::InfraFailed { infra_error, .. }) => {
-            return Err(format!("guest infrastructure failed: {infra_error}"));
-        }
-        Some(GuestRunResult::Completed { evidence }) => {
-            check_harbor_outcome(outcome)?;
-            (true, evidence.as_ref())
-        }
-        Some(GuestRunResult::SubjectStopped { evidence, .. }) => {
-            check_harbor_outcome(outcome)?;
-            (false, evidence.as_ref())
-        }
-        None => {
-            check_harbor_outcome(outcome)?;
-            return Err("missing guest-result.json from trial artifacts".into());
-        }
-    };
-
-    if !is_terminal_execution_state(&evidence.execution.state) {
-        let encoded = serde_json::to_string(&evidence.execution.state).unwrap_or_default();
-        return Err(format!(
-            "guest execution receipt missing terminal state: {encoded}"
-        ));
-    }
-    if !outcome
-        .transcript_path
-        .as_ref()
-        .is_some_and(|p| p.is_file())
-    {
-        return Err(format!(
-            "missing exported transcript.json artifact: {:?}",
-            outcome.transcript_path
-        ));
-    }
-
-    let summary = &evidence.host_usage.summary;
-    let attempts = &evidence.host_usage_attempts;
+fn settle_usage(
+    summary_calls: u64,
+    pending: &Pending,
+    attempts: &UsagePage,
+    is_completed: bool,
+) -> Result<UsageSettlement, String> {
     if attempts.next_cursor.is_some()
-        || attempts.total != summary.models.calls
-        || u64::try_from(attempts.attempts.len()).ok() != Some(summary.models.calls)
+        || attempts.total != summary_calls
+        || u64::try_from(attempts.attempts.len()).ok() != Some(summary_calls)
     {
         return Err(format!(
-            "inconsistent host usage attempts page: summary_calls={}, page_total={}, page_len={}, has_next={}",
-            summary.models.calls,
+            "inconsistent host usage attempts page: summary_calls={summary_calls}, page_total={}, page_len={}, has_next={}",
             attempts.total,
             attempts.attempts.len(),
             attempts.next_cursor.is_some(),
@@ -362,26 +413,64 @@ pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), 
     let mut successful_calls = 0u64;
     let mut input_missing = 0u64;
     let mut output_missing = 0u64;
+    let mut lower_bound = pending.models > 0;
+    let mut total_cost_usd = Some(0.0_f64);
+
     for item in &attempts.attempts {
         let Activity::Model(attempt) = item else {
             return Err("unexpected non-model activity in hostUsageAttempts".into());
         };
+        let u = &attempt.usage;
         if attempt.outcome == Outcome::Success {
             successful_calls += 1;
-            if attempt.usage.input_tokens.is_none() {
+            if u.input_tokens.is_none() {
                 input_missing += 1;
             }
-            if attempt.usage.output_tokens.is_none() {
+            if u.output_tokens.is_none() {
                 output_missing += 1;
             }
+        } else if matches!(attempt.outcome, Outcome::Aborted | Outcome::Unknown) {
+            lower_bound = true;
         }
+
+        let attempt_cost = match &attempt.quote {
+            Some(quote) => quote
+                .validate(&attempt.model_id)
+                .and_then(|()| quote.estimate(u))
+                .map_err(|e| {
+                    format!(
+                        "invalid host model quote on request {}: {e}",
+                        attempt.request_id
+                    )
+                })?,
+            None => None,
+        };
+        if attempt_cost.is_none()
+            && (u.input_tokens.is_none()
+                || u.output_tokens.is_none()
+                || attempt.quote.as_ref().is_some_and(|q| q.pricing.is_some()))
+        {
+            lower_bound = true;
+        }
+        total_cost_usd = match (total_cost_usd, attempt_cost) {
+            (Some(acc), Some(c)) => {
+                let sum = acc + c;
+                if sum.is_finite() {
+                    Some(sum)
+                } else {
+                    lower_bound = true;
+                    None
+                }
+            }
+            _ => None,
+        };
     }
 
     if is_completed {
-        if summary.pending.models != 0 || summary.pending.tools != 0 {
+        if pending.models != 0 || pending.tools != 0 {
             return Err(format!(
                 "incomplete host usage accounting: pending_models={}, pending_tools={}",
-                summary.pending.models, summary.pending.tools
+                pending.models, pending.tools
             ));
         }
         if successful_calls == 0 {
@@ -397,7 +486,14 @@ pub(crate) fn validate_trial_evidence(outcome: &HarborRunOutcome) -> Result<(), 
             "incomplete token usage on successful model call(s) ({successful_calls} total): input_missing={input_missing}, output_missing={output_missing}"
         ));
     }
-    Ok(())
+
+    if lower_bound {
+        Ok(UsageSettlement::LowerBound)
+    } else {
+        Ok(UsageSettlement::Complete {
+            cost_usd: total_cost_usd,
+        })
+    }
 }
 
 fn materialize_harbor_plugin(out_dir: &Path) -> Result<PathBuf, String> {
@@ -437,4 +533,122 @@ fn find_trial_result_json(job_dir: &Path) -> Result<Option<PathBuf>, String> {
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::accounting::{AuxiliarySource, ModelAttempt, Origin};
+    use maka_agent_facts::model::ModelUsage;
+    use maka_agent_facts::pricing::{Pricing, Quote};
+    use maka_agent_state::usage::UsageFence;
+
+    fn page_of(attempts: Vec<ModelAttempt>) -> UsagePage {
+        let total = attempts.len() as u64;
+        UsagePage {
+            through: UsageFence {
+                schema_version: 1,
+                state_domain: "eval".into(),
+                sequence: total,
+                auxiliary_sequence: 0,
+                cell_sequence: 0,
+                query_digest: "digest".into(),
+            },
+            attempts: attempts.into_iter().map(Activity::Model).collect(),
+            total,
+            next_cursor: None,
+        }
+    }
+
+    fn model_attempt(usage: ModelUsage, quote: Option<Quote>) -> ModelAttempt {
+        ModelAttempt {
+            request_id: "req-1".into(),
+            origin: Origin::Auxiliary {
+                source: AuxiliarySource::HostEffect { id: Uuid::nil() },
+            },
+            session_id: None,
+            binding: None,
+            model_id: "deepseek-chat".into(),
+            started_at: 1.0,
+            completed_at: 2.0,
+            outcome: Outcome::Success,
+            usage,
+            quote,
+            cost_usd: None,
+        }
+    }
+
+    #[test]
+    fn settle_usage_distinguishes_unpriced_missing_cache_zero_calls_and_invalid_quotes() {
+        let settled = Pending {
+            models: 0,
+            tools: 0,
+        };
+        let complete_usage = ModelUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            cache_read_tokens: Some(20),
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+        };
+        let unpriced = Quote {
+            provider_id: "ollama-cloud".into(),
+            revision: 0,
+            pricing: None,
+        };
+        let page = page_of(vec![model_attempt(complete_usage.clone(), Some(unpriced))]);
+        assert_eq!(
+            settle_usage(1, &settled, &page, true).unwrap(),
+            UsageSettlement::Complete { cost_usd: None }
+        );
+
+        let priced = Quote {
+            provider_id: "deepseek".into(),
+            revision: 1,
+            pricing: Some(Pricing {
+                model_key: "deepseek:deepseek-chat".into(),
+                input_usd_per_million: 0.28,
+                output_usd_per_million: 0.42,
+                cache_read_usd_per_million: Some(0.028),
+                cache_write_usd_per_million: None,
+            }),
+        };
+        let page = page_of(vec![model_attempt(
+            ModelUsage {
+                cache_read_tokens: None,
+                ..complete_usage.clone()
+            },
+            Some(priced),
+        )]);
+        assert_eq!(
+            settle_usage(1, &settled, &page, true).unwrap(),
+            UsageSettlement::LowerBound
+        );
+
+        let empty_page = page_of(vec![]);
+        assert_eq!(
+            settle_usage(0, &settled, &empty_page, false).unwrap(),
+            UsageSettlement::Complete {
+                cost_usd: Some(0.0)
+            }
+        );
+
+        let mismatched = Quote {
+            provider_id: "deepseek".into(),
+            revision: 1,
+            pricing: Some(Pricing {
+                model_key: "deepseek:other-model".into(),
+                input_usd_per_million: 0.28,
+                output_usd_per_million: 0.42,
+                cache_read_usd_per_million: None,
+                cache_write_usd_per_million: None,
+            }),
+        };
+        let page = page_of(vec![model_attempt(complete_usage, Some(mismatched))]);
+        assert!(
+            settle_usage(1, &settled, &page, true)
+                .unwrap_err()
+                .contains("invalid host model quote on request req-1")
+        );
+    }
 }
