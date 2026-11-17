@@ -1786,6 +1786,19 @@ async fn antigravity_automation_wakes_the_original_conversation_after_the_turn()
             rig.transcript(wake["pid"].as_u64().unwrap()),
         )
         .await?;
+        let wake_prompts: Vec<_> = transcript
+            .input
+            .iter()
+            .filter(|row| row["method"] == "session/prompt")
+            .map(|row| &row["params"]["prompt"][0]["text"])
+            .collect();
+        assert!(
+            matches!(
+                wake_prompts.as_slice(),
+                [prompt] if prompt.as_str().is_some_and(|text| text.contains("ACP-wake") && !text.contains("<maka_system_instructions>"))
+            ),
+            "wake-up turn must preserve instructions_digest without re-injecting system instructions: {wake_prompts:?}"
+        );
         assert!(
             transcript
                 .output

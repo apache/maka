@@ -164,16 +164,42 @@ impl Owner {
         } else {
             wire::Role::Assistant
         };
-        let mut combined = String::new();
+        let mut messages: Vec<(
+            Option<String>,
+            maka_agent_facts::history::HistoryRowAddress,
+            String,
+        )> = Vec::new();
         for chunk in chunks {
             if chunk.run_id == Some(run)
                 && chunk.field == wire::HistoryField::Body
                 && chunk.role == target_role
                 && !chunk.text.is_empty()
             {
-                combined.push_str(&chunk.text);
+                if let Some((last_id, last_pos, last_text)) = messages.last_mut()
+                    && ((chunk.message_id.is_some() && *last_id == chunk.message_id)
+                        || *last_pos == chunk.position)
+                {
+                    last_text.push_str(&chunk.text);
+                } else {
+                    messages.push((chunk.message_id, chunk.position, chunk.text));
+                }
             }
         }
+        let mut combined = if matches!(terminal, Terminal::Failed) {
+            messages
+                .into_iter()
+                .map(|(_, _, text)| text)
+                .filter(|t| !t.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            messages
+                .into_iter()
+                .rev()
+                .map(|(_, _, text)| text)
+                .find(|t| !t.trim().is_empty())
+                .unwrap_or_default()
+        };
         if combined.trim().is_empty()
             && matches!(terminal, Terminal::Failed)
             && let Ok(Some(view)) = self.session_run(session_id, run).await

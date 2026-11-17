@@ -813,10 +813,7 @@ impl Owner {
         match summary.kind {
             SessionKind::Room => {
                 out.push_str(&format!(
-                    "# Room: {} (maka://session/{})
-Workspace: {}
-
-",
+                    "# Room: {} (maka://session/{})\nWorkspace: {}\n\n",
                     summary.title, summary.id, summary.workspace_path
                 ));
                 let mut all_posts: Vec<RoomPostEntry> = Vec::new();
@@ -872,16 +869,11 @@ Workspace: {}
                         "cursor": cur,
                     });
                     out.push_str(&format!(
-                        "> Earlier Room messages omitted; call SessionRead({more_call}) for older posts.
-
-"
+                        "> Earlier Room messages omitted; call SessionRead({more_call}) for older posts.\n\n"
                     ));
                 }
                 if all_posts.is_empty() {
-                    out.push_str(
-                        "(No messages in this Room yet.)
-",
-                    );
+                    out.push_str("(No messages in this Room yet.)\n");
                 } else {
                     for post in all_posts {
                         let author = match &post.author {
@@ -908,10 +900,7 @@ Workspace: {}
             }
             SessionKind::Agent => {
                 out.push_str(&format!(
-                    "# Conversation: {} (maka://session/{})
-Workspace: {}
-
-",
+                    "# Conversation: {} (maka://session/{})\nWorkspace: {}\n\n",
                     summary.title, summary.id, summary.workspace_path
                 ));
                 let mut all_entries: Vec<AgentTranscriptEntry> = Vec::new();
@@ -967,24 +956,16 @@ Workspace: {}
                         "cursor": cur,
                     });
                     out.push_str(&format!(
-                        "> Earlier turns omitted; call SessionRead({more_call}) for older turns.
-
-"
+                        "> Earlier turns omitted; call SessionRead({more_call}) for older turns.\n\n"
                     ));
                 }
                 if all_entries.is_empty() {
-                    out.push_str(
-                        "(No messages in this Conversation yet.)
-",
-                    );
+                    out.push_str("(No messages in this Conversation yet.)\n");
                 } else {
                     for entry in all_entries {
                         match entry.role.as_str() {
                             "user" => {
-                                out.push_str(
-                                    "### User
-",
-                                );
+                                out.push_str("### User\n");
                                 out.push_str(&entry.text);
                                 if !entry.text.ends_with('\n') {
                                     out.push('\n');
@@ -992,10 +973,7 @@ Workspace: {}
                                 out.push('\n');
                             }
                             "assistant" => {
-                                out.push_str(
-                                    "### Assistant
-",
-                                );
+                                out.push_str("### Assistant\n");
                                 out.push_str(&entry.text);
                                 if !entry.text.ends_with('\n') {
                                     out.push('\n');
@@ -1003,10 +981,7 @@ Workspace: {}
                                 out.push('\n');
                             }
                             "failure" => {
-                                out.push_str(
-                                    "### Failure
-",
-                                );
+                                out.push_str("### Failure\n");
                                 out.push_str(&entry.text);
                                 if !entry.text.ends_with('\n') {
                                     out.push('\n');
@@ -1014,10 +989,7 @@ Workspace: {}
                                 out.push('\n');
                             }
                             "compaction" => {
-                                out.push_str(
-                                    "### Context Summary
-",
-                                );
+                                out.push_str("### Context Summary\n");
                                 out.push_str(&entry.text);
                                 if !entry.text.ends_with('\n') {
                                     out.push('\n');
@@ -1029,14 +1001,12 @@ Workspace: {}
                                 let st = entry.status.as_deref().unwrap_or("done");
                                 if let Some(path) = &entry.result_path {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {} (output: {path})
-",
+                                        "- [Tool {name} · {st}]: {} (output: {path})\n",
                                         entry.text
                                     ));
                                 } else {
                                     out.push_str(&format!(
-                                        "- [Tool {name} · {st}]: {}
-",
+                                        "- [Tool {name} · {st}]: {}\n",
                                         entry.text
                                     ));
                                 }

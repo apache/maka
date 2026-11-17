@@ -384,10 +384,10 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
         let base = rig.directory.path().to_path_buf();
         let ws = base.join("workspace");
         std::fs::create_dir_all(&ws)?;
-        let large_tail = "IMPORTED_PROJECTION_TAIL_MARKER";
+        let large_tail = "CROSS_SESSION_TOOL_RESULT_TAIL_MARKER";
         std::fs::write(
             ws.join("large_evidence.txt"),
-            format!("{}\n{large_tail}\n", "LINE_DATA_1234567890 ".repeat(900)),
+            format!("{}\n{large_tail}\n", "LINE_DATA_1234567890\n".repeat(120)),
         )?;
 
         // Initialize workspace as a Git repo so { kind: "worktree" } creates a real Git worktree.
@@ -522,6 +522,49 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
         let fork_out: Value = serde_json::from_str(fork_msgs[0]["content"].as_str().unwrap())?;
         assert_eq!(fork_out["kind"], "forked", "{fork_out}");
         let forked_id = fork_out["session"]["id"].as_str().unwrap().to_owned();
+
+        // Verify cross-session multi-page Read of src_id's tool-results/<event_id> reaches large_tail!
+        let src_read = call(
+            client,
+            "agent",
+            "sessionRead",
+            json!({"sessionId": src_id}),
+        )
+        .await?;
+        let src_tool_path = src_read["transcript"]["items"]
+            .as_array()
+            .ok_or("missing src transcript items")?
+            .iter()
+            .find_map(|item| item["resultPath"].as_str())
+            .ok_or_else(|| format!("missing src resultPath: {src_read}"))?
+            .to_owned();
+        let src_tr_raw = tool_round(
+            &rig,
+            &mut provider,
+            parent_id,
+            false,
+            "Read",
+            json!({"path": src_tool_path}),
+        )
+        .await?;
+        let src_tr_msgs: Vec<Value> = serde_json::from_str(&src_tr_raw)?;
+        let mut src_tr_page =
+            serde_json::from_str::<Value>(src_tr_msgs[0]["content"].as_str().unwrap())?["value"]
+                .clone();
+        let mut src_tr_combined = src_tr_page["content"].as_str().unwrap_or_default().to_owned();
+        while !src_tr_page["next"].is_null() {
+            let next_req = src_tr_page["next"].clone();
+            let next_raw = tool_round(&rig, &mut provider, parent_id, false, "Read", next_req).await?;
+            let next_msgs: Vec<Value> = serde_json::from_str(&next_raw)?;
+            src_tr_page =
+                serde_json::from_str::<Value>(next_msgs[0]["content"].as_str().unwrap())?["value"]
+                    .clone();
+            src_tr_combined.push_str(src_tr_page["content"].as_str().unwrap_or_default());
+        }
+        assert!(
+            src_tr_combined.contains(large_tail),
+            "Cross-session tool-result Read must reach tail marker"
+        );
 
         // Verify forked_id preserved the full pre-fork conversation snapshot!
         let forked_read = call(
