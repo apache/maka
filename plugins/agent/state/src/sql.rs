@@ -130,7 +130,10 @@ fn insert_blobs(c: &Connection, blobs: Vec<ContentBlob>) -> Result<(), StoreErro
     }
     Ok(())
 }
-fn decode<T: DeserializeOwned>(c: &Connection, reference: &ContentRef) -> Result<T, StoreError> {
+pub(super) fn decode<T: DeserializeOwned>(
+    c: &Connection,
+    reference: &ContentRef,
+) -> Result<T, StoreError> {
     content_id(c, reference)?;
     let bytes =
         content::read(c, &reference.digest)?.ok_or_else(|| invalid("missing canonical bytes"))?;
@@ -846,6 +849,7 @@ fn validate_request_lineage(
     incoming: &RequestSpec,
 ) -> Result<Option<StepId>, StoreError> {
     use maka_agent_facts::context::ModelPurpose;
+    crate::store::fallback::validate_codex_fallback(c, view, incoming)?;
     let previous = view.current_step.map(|step| {
         let (schema, original, purpose, recovery): (u32, String, String, Option<String>) = c.query_row(
             "SELECT json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),json_extract(CAST(b.payload AS TEXT),'$.step'),json_extract(CAST(b.payload AS TEXT),'$.accounting.purpose'),json_extract(CAST(b.payload AS TEXT),'$.compactionRecovery') FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",

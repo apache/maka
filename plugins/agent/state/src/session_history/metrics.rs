@@ -70,7 +70,25 @@ pub struct ModelCalibrationSample {
     pub previous_checkpoint_id: Option<String>,
 }
 
+pub struct CurrentModelContext {
+    pub source: HistoryDataSource,
+    pub path: Vec<RunId>,
+    pub run: RunId,
+    pub step: StepId,
+    pub tokens: Option<u64>,
+    pub continuation: Option<maka_agent_facts::context::CodexContinuation>,
+}
+
 impl SessionHistory {
+    pub async fn current_model_context(
+        &self,
+        cut: &HistoryCut,
+    ) -> Result<Option<CurrentModelContext>, StoreError> {
+        self.data
+            .query(ReadCurrentContext(self.clone(), cut.clone()))
+            .await
+    }
+
     pub async fn metrics(
         &self,
         cut: &HistoryCut,
@@ -1121,4 +1139,121 @@ fn changes(
         }
     };
     Ok((changed, reset))
+}
+
+struct ReadCurrentContext(SessionHistory, HistoryCut);
+impl Query for ReadCurrentContext {
+    type Output = Option<CurrentModelContext>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        use maka_agent_facts::context::{CheckpointContent, CompactedContext};
+        let tree = SourceTree::build_in_snapshot(
+            c,
+            HistoryDataSource::Live {
+                history: self.0,
+                cut: self.1,
+            },
+        )?;
+        for segment in tree.sections().iter().rev() {
+            let main = match &segment.source {
+                HistoryDataSource::Live { history, cut } => live(
+                    c,
+                    history,
+                    cut,
+                    segment.after_admission,
+                    Selection::LatestRequest,
+                )?,
+                HistoryDataSource::Snapshot(snapshot) => copied(
+                    c,
+                    snapshot,
+                    segment.after_admission,
+                    Selection::LatestRequest,
+                )?,
+            };
+            let checkpoint = latest_checkpoint(c, segment)?;
+            if let Some(item) = checkpoint.filter(|item| {
+                main.as_ref()
+                    .is_none_or(|main| item.sequence > main.prepared)
+            }) {
+                let Fact::ContextCompacted { baseline } = item.recorded.fact else {
+                    return Err(invalid("context marker kind"));
+                };
+                let material: CompactedContext =
+                    metadata(c, &segment.source, item.recorded.run, &baseline)?;
+                material.validate().map_err(invalid)?;
+                let Some(native) = material.native else {
+                    return Ok(None);
+                };
+                let tokens = match material.checkpoint.summary {
+                    CheckpointContent::CodexNative {
+                        estimated_tokens, ..
+                    } => Some(estimated_tokens),
+                    _ => None,
+                };
+                return Ok(Some(CurrentModelContext {
+                    source: segment.source.clone(),
+                    path: segment.path.clone(),
+                    run: material.summary_origin.map_or(item.recorded.run, |o| o.run),
+                    step: material.checkpoint.summary_step_id,
+                    tokens,
+                    continuation: native.continuation,
+                }));
+            }
+            if let Some(main) = main {
+                let tokens = main.closed.as_ref().and_then(|closed| {
+                    closed
+                        .usage
+                        .input_tokens
+                        .zip(closed.usage.output_tokens)
+                        .and_then(|(a, b)| a.checked_add(b))
+                });
+                return Ok(Some(CurrentModelContext {
+                    source: segment.source.clone(),
+                    path: segment.path.clone(),
+                    run: main.run,
+                    step: main.step,
+                    tokens,
+                    continuation: None,
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn latest_checkpoint(
+    c: &Connection,
+    segment: &super::source_tree::Segment,
+) -> Result<Option<HistoryItem>, StoreError> {
+    match &segment.source {
+        HistoryDataSource::Live { history, cut } => {
+            let sequence: Option<u64> = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_kind WHERE owner=? AND session=? AND kind='context_compacted' AND sequence<=? AND admission_sequence>? ORDER BY sequence DESC LIMIT 1", params![serde_json::to_string(&history.namespace.owner)?, history.namespace.session, sql::bind_u64(cut.through_sequence)?, sql::bind_u64(segment.after_admission)?], |row| sql::read_u64(row, 0)).optional()?;
+            sequence
+                .map(|sequence| sql::item(c, &history.namespace, cut, sequence))
+                .transpose()
+                .map(Option::flatten)
+        }
+        HistoryDataSource::Snapshot(snapshot) => {
+            let raw: Option<String> = c.query_row("SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND fact_kind='context_compacted' AND json_extract(entry_json,'$.admission_sequence')>? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![snapshot.id().to_string(),sql::bind_u64(segment.after_admission)?,sql::bind_u64(snapshot_bound(c, snapshot)?)?], |row| row.get(0)).optional()?;
+            let Some(raw) = raw else { return Ok(None) };
+            let maka_agent_facts::history_snapshot::Entry::Fact {
+                run,
+                sequence,
+                admission_sequence,
+                step,
+                attempt,
+                body,
+                ..
+            } = serde_json::from_str(&raw)?
+            else {
+                return Err(invalid("context marker entry kind"));
+            };
+            let recorded = snapshot.metadata_in_snapshot(c, run, &body)?;
+            Ok(Some(HistoryItem {
+                sequence,
+                admission_sequence,
+                scope: HistoryScope { step, attempt },
+                recorded,
+            }))
+        }
+    }
 }

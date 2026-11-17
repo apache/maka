@@ -3177,6 +3177,7 @@ mod source_recovery {
 
 mod model_recovery {
     mod bot_tools;
+    mod codex_switch;
     mod memory;
     mod predictions;
     mod preset_acceptance;

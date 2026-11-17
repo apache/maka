@@ -56,6 +56,7 @@ pub(crate) struct ModelLevel {
     pub compaction: CompactionLevel,
     pub failure: Option<maka_agent_facts::context::ModelFailureProtocol>,
     pub fallback_available: bool,
+    pub codex: bool,
 }
 pub(crate) enum CleanupAction {
     Done,
@@ -1526,7 +1527,13 @@ fn next_action(
         }
     }
     match &attempt.recovery {
+        Some(AttemptRecovery::CodexCompactionFallback) => {
+            Action::Prepare(Preparation::CodexFallback { attempt: id })
+        }
         Some(AttemptRecovery::ContextOverflow { observed_output }) => {
+            if model.is_some_and(|m| m.codex) {
+                return Action::Terminate(Terminal::Failed);
+            }
             if !observed_output
                 && let Some(CompactionLevel::Pending { attempt, .. }) =
                     model.map(|model| model.compaction)

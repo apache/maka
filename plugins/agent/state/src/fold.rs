@@ -956,11 +956,12 @@ impl RunView {
                             matches!(
                                 failed.recovery,
                                 Some(AttemptRecovery::ProjectPrefixSafe { .. })
+                                    | Some(AttemptRecovery::CodexCompactionFallback)
                                     | Some(AttemptRecovery::ContextOverflow {
                                         observed_output: false
                                     })
                             ) && (failed.closed.is_some() || failed.interrupted.is_some()),
-                            "new recovery step requires safe prefix, no-output context overflow or explicit human adjudication",
+                            "new recovery step requires safe prefix, native compaction fallback, no-output context overflow or explicit human adjudication",
                         )?;
                         require(
                             self.tools.values().all(|tool| tool.accepted.is_some()),
@@ -1342,6 +1343,16 @@ impl RunView {
                     current.admission.is_some(),
                     "recovery evidence has no original admitted model attempt",
                 )?;
+                if matches!(recovery, AttemptRecovery::CodexCompactionFallback) {
+                    require(
+                        !current.semantic
+                            && !current.has_tools
+                            && current.closed.as_ref().is_some_and(|closed| {
+                                closed.outcome == maka_agent_facts::accounting::Outcome::Error
+                            }),
+                        "native compaction fallback requires a closed failure without output",
+                    )?;
+                }
                 if let AttemptRecovery::ContextOverflow { observed_output } = recovery {
                     require(
                         current.interrupted.is_some(),
