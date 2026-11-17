@@ -775,6 +775,53 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     );
     quiet(&f, &listener, &mut socket).await;
     f.change(id, "approve").await;
+
+    f.send("Pause and then resume your discovery").await;
+    let (mut socket, _) = next(&listener).await;
+    for (mode, status) in [("pause", "paused"), ("resume", "active")] {
+        let revision = f.detail(id).await["revision"].clone();
+        tool(
+            &mut socket,
+            "ScheduledTask",
+            json!({"request":{"mode":mode,"taskId":id,"revision":revision}}),
+        )
+        .await;
+        let (reply, body) = next(&listener).await;
+        assert_eq!(output(&body)["taskId"], id, "{body}");
+        assert_eq!(f.detail(id).await["task"]["status"], status);
+        socket = reply;
+    }
+    quiet(&f, &listener, &mut socket).await;
+
+    f.change(id, "pause").await;
+    f.reopen().await;
+    f.send("Try to pause and resume the paused plan").await;
+    let (mut socket, _) = next(&listener).await;
+    tool(
+        &mut socket,
+        "ScheduledTask",
+        json!({"request":{"mode":"pause","taskId":id,"revision":f.detail(id).await["revision"]}}),
+    )
+    .await;
+    let (mut socket, body) = next(&listener).await;
+    assert_eq!(output(&body)["taskId"], id, "{body}");
+    tool(
+        &mut socket,
+        "ScheduledTask",
+        json!({"request":{"mode":"resume","taskId":id,"revision":f.detail(id).await["revision"]}}),
+    )
+    .await;
+    let (mut socket, body) = next(&listener).await;
+    assert!(
+        output(&body)
+            .to_string()
+            .contains("scheduler_user_resume_required"),
+        "{body}"
+    );
+    assert_eq!(f.detail(id).await["task"]["status"], "paused");
+    quiet(&f, &listener, &mut socket).await;
+
+    f.change(id, "resume").await;
     f.change(id, "trigger_now").await;
     let (mut worker, _) = next(&listener).await;
     tool(
