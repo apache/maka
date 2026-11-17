@@ -36,7 +36,7 @@
 
 `SessionCreate` 的 `kind: "room"` 创建共享消息记录，不启动 Agent loop。工作台的房间视图与普通会话分别保留选择和草稿。人类和 agent 都通过 `SessionSend` 发言；`mentions` 指定接收消息的 Agent 会话 ID，`replyTo` 关联目标房间中已有的消息。被 @ 的 agent 收到真实作者、来源房间和回复上下文，再用 `SessionSend` 回到房间回复。
 
-房间消息与成功接纳的 @ 投递在同一事务中提交，回执会列出无法投递的目标。恢复原操作不会重复发言或唤醒。`SessionHistory` 返回带稳定 ID 的房间消息并支持游标翻页，具体见[公共契约](api/src/contract.rs)和[房间存储](state/src/room.rs)。
+房间消息与成功接纳的 @ 投递在同一事务中提交，回执会列出无法投递的目标。恢复原操作不会重复发言或唤醒。`SessionRead`（以及面向 `maka://session/<id>` 的 `Read`）返回带稳定 ID 的房间消息并支持游标翻页，具体见[公共契约](api/src/contract.rs)和[房间存储](state/src/room.rs)。
 
 ## 子 Agent 预设管理
 
