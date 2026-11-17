@@ -490,6 +490,7 @@ export function Header(props: {
   browser: BrowserHeader;
   files?(): void;
   filesOpener?(node: ViewRef): void;
+  changes?(): void;
   /** Extra controls for this conversation, after the files button. */
   actions?: JSX.Element;
   views?: JSX.Element;
@@ -596,6 +597,34 @@ export function Header(props: {
             ]}
           >
             {workspaceName()}
+          </Text>
+        </Button>
+      </If>
+      <If when={props.changes}>
+        <Button
+          accessibilityLabel={tr('Review workspace changes')}
+          tooltip={textTooltip(() => tr('Review workspace changes'))}
+          onPress={props.changes}
+          style={{
+            ...toolbarControlStyle,
+            ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: desktop ? 4 : 6,
+            flexShrink: 0,
+          }}
+          hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
+          activeStyle={desktop ? quietActiveStyle() : undefined}
+          focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
+        >
+          <Icon name="code" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
+          <Text
+            style={{
+              ...captionTextStyle,
+              color: desktop ? C.muted : C.secondary,
+            }}
+          >
+            {tr('Review')}
           </Text>
         </Button>
       </If>

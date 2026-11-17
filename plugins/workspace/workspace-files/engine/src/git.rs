@@ -37,6 +37,8 @@ mod diff;
 pub(crate) mod image;
 mod repository;
 mod scan;
+#[cfg(test)]
+mod tests;
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -75,10 +77,21 @@ pub struct GitStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GitDiff {
-    Text { patch: String },
+    Text {
+        patch: String,
+        before: String,
+        after: String,
+    },
     Binary,
     Unchanged,
     Unsupported,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitWorkspaceDiff {
+    pub patch: String,
+    pub truncated: bool,
+    pub skipped_files: u64,
 }
 
 /// Blocking work: the caller retains its resource ticket and joins on cancellation.
@@ -119,6 +132,57 @@ pub fn diff(
         let result = diff::read(&repo, area, &bytes)?;
         repo.finish()?;
         Ok(Some(result))
+    })())
+}
+pub fn workspace_diff(
+    workspace: &Path,
+    identity: &Observation,
+    private_root: &Path,
+    binding: Option<&Binding>,
+    area: Option<GitArea>,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<Option<GitWorkspaceDiff>> {
+    const MAX_PATCH_BYTES: usize = 2 * 1024 * 1024;
+    expose((|| {
+        let Some(repo) =
+            repository::Repository::open(workspace, identity, private_root, binding, cancel)?
+        else {
+            return Ok(None);
+        };
+        let status = repo.status()?;
+        let mut combined = String::new();
+        let mut truncated = false;
+        let mut skipped_files = 0_u64;
+        for entry in status.entries {
+            interrupted(&repo.cancel)?;
+            if area.is_some_and(|wanted| wanted != entry.area) {
+                continue;
+            }
+            let bytes = entry
+                .path
+                .bytes()
+                .map_err(|_| failure("git_invalid_path"))?;
+            match diff::read(&repo, entry.area, &bytes)? {
+                GitDiff::Text { patch, .. } => {
+                    if combined.len() + patch.len() > MAX_PATCH_BYTES {
+                        truncated = true;
+                        skipped_files += 1;
+                    } else {
+                        combined.push_str(&patch);
+                    }
+                }
+                GitDiff::Binary | GitDiff::Unsupported => {
+                    skipped_files += 1;
+                }
+                GitDiff::Unchanged => {}
+            }
+        }
+        repo.finish()?;
+        Ok(Some(GitWorkspaceDiff {
+            patch: combined,
+            truncated,
+            skipped_files,
+        }))
     })())
 }
 

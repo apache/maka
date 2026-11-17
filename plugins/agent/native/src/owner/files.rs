@@ -459,7 +459,7 @@ impl Owner {
         .await
     }
 
-    async fn file_directory(
+    pub(super) async fn file_directory(
         &self,
         session: &str,
         path: Option<WorkspacePath>,
@@ -501,7 +501,7 @@ impl Owner {
         Ok((original, directory))
     }
 
-    async fn check_file_session(
+    pub(super) async fn check_file_session(
         &self,
         session: &str,
         original: &ResolvedConfiguration,

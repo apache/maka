@@ -141,25 +141,46 @@ fn staged_worktree_and_untracked_are_distinct_and_diff_literal_images() {
             ),
         ]
     );
-    let GitDiff::Text { patch } = f.diff(GitArea::Staged, b"file.txt") else {
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+    } = f.diff(GitArea::Staged, b"file.txt")
+    else {
         panic!("expected staged text")
     };
+    assert_eq!(before, "original\n");
+    assert_eq!(after, "staged\n");
     assert!(
         patch.contains("@@ -1,1 +1,1 @@\n-original\n+staged\n"),
         "{patch}"
     );
     assert!(!patch.contains("working"));
-    let GitDiff::Text { patch } = f.diff(GitArea::Worktree, b"file.txt") else {
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+    } = f.diff(GitArea::Worktree, b"file.txt")
+    else {
         panic!("expected working text")
     };
+    assert_eq!(before, "staged\n");
+    assert_eq!(after, "working\n");
     assert!(
         patch.contains("@@ -1,1 +1,1 @@\n-staged\n+working\n"),
         "{patch}"
     );
     assert_eq!(f.diff(GitArea::Untracked, b"file.txt"), GitDiff::Unchanged);
-    let GitDiff::Text { patch } = f.diff(GitArea::Untracked, b"untracked.txt") else {
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+    } = f.diff(GitArea::Untracked, b"untracked.txt")
+    else {
         panic!("expected untracked text")
     };
+    assert_eq!(before, "");
+    assert_eq!(after, "new content\n");
     assert!(
         patch.contains("--- /dev/null\n+++ \"b/untracked.txt\"\n@@ -1,0 +1,1 @@\n+new content\n"),
         "{patch}"
@@ -188,7 +209,7 @@ fn unborn_repository_uses_empty_head_and_prunes_ignored_dependency_tree() {
             ),
         ]
     );
-    let GitDiff::Text { patch } = f.diff(GitArea::Staged, b"new.txt") else {
+    let GitDiff::Text { patch, .. } = f.diff(GitArea::Staged, b"new.txt") else {
         panic!("expected unborn staged text")
     };
     assert!(patch.contains("+before commit\n"));
@@ -400,7 +421,7 @@ fn raw_names_and_link_content_roundtrip_without_following_control_file_escapes()
     ));
     fs::write(f.private.join("secret"), "private sentinel").unwrap();
     symlink(f.private.join("secret"), f.root.join("link")).unwrap();
-    let GitDiff::Text { patch } = f.diff(GitArea::Untracked, b"link") else {
+    let GitDiff::Text { patch, .. } = f.diff(GitArea::Untracked, b"link") else {
         panic!("expected link literal")
     };
     assert!(!patch.contains("private sentinel"));
@@ -605,4 +626,54 @@ fn disk_and_index_attributes_and_ignore_rules_are_read_without_mutation() {
         ]
     );
     assert_eq!(indexed_diff.unwrap().unwrap(), GitDiff::Unchanged);
+}
+
+#[test]
+fn workspace_diff_combines_changed_files_and_counts_binary_skips() {
+    let f = Fixture::new();
+    fs::write(
+        f.root.join("a.rs"),
+        "fn a() -> i32 { 1 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("b.rs"),
+        "fn b() -> i32 { 2 }
+",
+    )
+    .unwrap();
+    f.commit();
+    fs::write(
+        f.root.join("a.rs"),
+        "fn a() -> i32 { 10 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("b.rs"),
+        "fn b() -> i32 { 20 }
+",
+    )
+    .unwrap();
+    fs::write(f.root.join("bin.dat"), [0_u8, 1, 2, 3]).unwrap();
+    let all = workspace_diff(&f.root, &f.identity, &f.private, None, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert!(!all.truncated);
+    assert_eq!(all.skipped_files, 1);
+    assert!(all.patch.contains("a/a.rs"));
+    assert!(all.patch.contains("a/b.rs"));
+    let worktree_only = workspace_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        Some(GitArea::Worktree),
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(worktree_only.skipped_files, 0);
+    assert!(worktree_only.patch.contains("+fn a() -> i32 { 10 }"));
 }

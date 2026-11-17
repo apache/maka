@@ -626,6 +626,22 @@ impl Handler for Agent {
                 "watchFiles" => owner.watch_files(decode(input)?, context).await,
                 "readFile" => owner.read_file(decode(input)?, context).await,
                 "gitDiff" => encode(owner.git_diff(decode(input)?, context.scope()).await?),
+                "gitWorkspaceDiff" => encode(
+                    owner
+                        .git_workspace_diff(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "codeDefinition" => encode(
+                    owner
+                        .code_definition(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "codeReferences" => encode(
+                    owner
+                        .code_references(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "codeHover" => encode(owner.code_hover(decode(input)?, context.scope()).await?),
                 "readPatch" => encode(owner.read_patch(decode(input)?, context.scope()).await?),
                 "diagnostics" => diagnostics::query(&owner, decode(input)?, &context).await,
                 "watchDiagnostics" => diagnostics::watch(&owner, decode(input)?, &context).await,

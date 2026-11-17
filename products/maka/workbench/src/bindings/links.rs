@@ -26,67 +26,177 @@ use nsh_core::prelude::*;
 use std::sync::Arc;
 use url::Url;
 
-/// Exact relative selectors for the existing file reader and its parent watch.
+/// Exact relative selectors and optional zero-based line/column anchor for the file reader.
 #[derive(Clone, JsObject)]
 pub struct WorkspaceLink {
     pub path: String,
     pub parent: Option<String>,
+    #[prop(skip_none)]
+    pub line: Option<u32>,
+    #[prop(skip_none)]
+    pub end_line: Option<u32>,
+    #[prop(skip_none)]
+    pub column: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LinkAnchor {
+    line: Option<u32>,
+    end_line: Option<u32>,
+    column: Option<u32>,
 }
 
 enum Destination {
     Browser(Url),
-    Workspace(WorkspacePath, Option<WorkspacePath>),
+    Workspace(WorkspacePath, Option<WorkspacePath>, LinkAnchor),
+}
+
+fn parse_fragment_anchor(fragment: &str) -> LinkAnchor {
+    let trimmed = fragment.trim();
+    let Some(rest) = trimmed
+        .strip_prefix('L')
+        .or_else(|| trimmed.strip_prefix('l'))
+    else {
+        return LinkAnchor::default();
+    };
+    let (first, second) = rest.split_once('-').unwrap_or((rest, ""));
+    let (line, column) = parse_line_col_part(first);
+    let end_line = if second.is_empty() {
+        None
+    } else {
+        let stripped = second
+            .strip_prefix('L')
+            .or_else(|| second.strip_prefix('l'))
+            .unwrap_or(second);
+        parse_line_col_part(stripped).0
+    };
+    LinkAnchor {
+        line,
+        end_line,
+        column,
+    }
+}
+
+fn parse_line_col_part(part: &str) -> (Option<u32>, Option<u32>) {
+    if let Some((l, c)) = part.split_once(['C', 'c', ':']) {
+        let line = l.parse::<u32>().ok().filter(|v| *v >= 1).map(|v| v - 1);
+        let col = c.parse::<u32>().ok().filter(|v| *v >= 1).map(|v| v - 1);
+        (line, col)
+    } else {
+        let line = part.parse::<u32>().ok().filter(|v| *v >= 1).map(|v| v - 1);
+        (line, None)
+    }
+}
+
+fn split_colon_suffix(raw_path: &str) -> (&str, LinkAnchor) {
+    // Support `src/foo.rs:42` and `src/foo.rs:42:10` on relative paths.
+    let mut parts = raw_path.rsplitn(3, ':');
+    let Some(last) = parts.next() else {
+        return (raw_path, LinkAnchor::default());
+    };
+    let Ok(last_num) = last.parse::<u32>() else {
+        return (raw_path, LinkAnchor::default());
+    };
+    if last_num == 0 {
+        return (raw_path, LinkAnchor::default());
+    }
+    if let Some(mid) = parts.next() {
+        if let Ok(mid_num) = mid.parse::<u32>()
+            && mid_num >= 1
+            && let Some(prefix) = parts.next()
+            && !prefix.is_empty()
+        {
+            return (
+                prefix,
+                LinkAnchor {
+                    line: Some(mid_num - 1),
+                    end_line: None,
+                    column: Some(last_num - 1),
+                },
+            );
+        }
+        let prefix_len = raw_path.len() - last.len() - 1;
+        let prefix = &raw_path[..prefix_len];
+        if !prefix.is_empty() {
+            return (
+                prefix,
+                LinkAnchor {
+                    line: Some(last_num - 1),
+                    end_line: None,
+                    column: None,
+                },
+            );
+        }
+    }
+    (raw_path, LinkAnchor::default())
 }
 
 fn destination(target: &str) -> Result<Destination, String> {
     if target.is_empty() || target.chars().any(char::is_control) {
         return Err("The link is empty or contains control characters.".into());
     }
-    match Url::parse(target) {
-        Ok(url) => {
-            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-                return Err("Only HTTP(S) links can open in the system browser.".into());
-            }
-            Ok(Destination::Browser(url))
+    // Check relative colon syntax (e.g. `src/foo.rs:12:4`) before Url::parse mistakes `src/...` or `foo:12` for a scheme.
+    let looks_like_scheme = target.split_once(':').is_some_and(|(head, tail)| {
+        !head.is_empty()
+            && !head.contains(['/', '.', '\\'])
+            && head
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-'))
+            && (tail.starts_with('/') || !tail.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+    });
+    if looks_like_scheme || target.starts_with("//") {
+        let url = Url::parse(target)
+            .map_err(|_| "The link is not a valid URI or workspace-relative path.")?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err("Only HTTP(S) links can open in the system browser.".into());
         }
-        Err(url::ParseError::RelativeUrlWithoutBase) => {
-            if target.starts_with('/') {
-                return Err("A file link must be workspace-relative.".into());
-            }
-            // URI query/fragment delimiters are separated before percent decoding:
-            // `%23` names a file character, while `#L20` refers to that file.
-            // CurrentFile has no external line/heading seek; still open the file.
-            let path = target.split(['?', '#']).next().unwrap_or_default();
-            if path.is_empty() {
-                return Err("Links to a message heading are not yet supported.".into());
-            }
-            let bytes = percent_encoding::percent_decode_str(path).collect::<Vec<_>>();
-            let mut parts = Vec::new();
-            for part in bytes.split(|byte| *byte == b'/') {
-                match part {
-                    b"." => {}
-                    b".." => {
-                        parts
-                            .pop()
-                            .ok_or("The file link leaves the conversation workspace.")?;
-                    }
-                    b"" => return Err("The file link contains an empty path component.".into()),
-                    part => parts.push(part),
-                }
-            }
-            let bytes = parts.join(&b'/');
-            let path = WorkspacePath::from_bytes(&bytes)
-                .map_err(|_| "The file link is not a valid workspace-relative path.")?;
-            let parent = bytes
-                .iter()
-                .rposition(|byte| *byte == b'/')
-                .map(|end| WorkspacePath::from_bytes(&bytes[..end]))
-                .transpose()
-                .map_err(|_| "The file link has no valid workspace-relative parent.")?;
-            Ok(Destination::Workspace(path, parent))
-        }
-        Err(_) => Err("The link is not a valid URI or workspace-relative path.".into()),
+        return Ok(Destination::Browser(url));
     }
+    if target.starts_with('/') {
+        return Err("A file link must be workspace-relative.".into());
+    }
+    // URI query/fragment delimiters are separated before percent decoding:
+    // `%23` names a file character, while `#L20` refers to that file.
+    let fragment = target.split_once('#').map(|(_, frag)| frag).unwrap_or("");
+    let raw_before_query = target.split(['?', '#']).next().unwrap_or_default();
+    if raw_before_query.is_empty() {
+        return Err("Links to a message heading are not yet supported.".into());
+    }
+    let frag_anchor = parse_fragment_anchor(fragment);
+    let (path_slice, colon_anchor) = if frag_anchor.line.is_none() {
+        split_colon_suffix(raw_before_query)
+    } else {
+        (raw_before_query, LinkAnchor::default())
+    };
+    let anchor = if frag_anchor.line.is_some() {
+        frag_anchor
+    } else {
+        colon_anchor
+    };
+    let bytes = percent_encoding::percent_decode_str(path_slice).collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    for part in bytes.split(|byte| *byte == b'/') {
+        match part {
+            b"." => {}
+            b".." => {
+                parts
+                    .pop()
+                    .ok_or("The file link leaves the conversation workspace.")?;
+            }
+            b"" => return Err("The file link contains an empty path component.".into()),
+            part => parts.push(part),
+        }
+    }
+    let bytes = parts.join(&b'/');
+    let path = WorkspacePath::from_bytes(&bytes)
+        .map_err(|_| "The file link is not a valid workspace-relative path.")?;
+    let parent = bytes
+        .iter()
+        .rposition(|byte| *byte == b'/')
+        .map(|end| WorkspacePath::from_bytes(&bytes[..end]))
+        .transpose()
+        .map_err(|_| "The file link has no valid workspace-relative parent.")?;
+    Ok(Destination::Workspace(path, parent, anchor))
 }
 
 /// An image selector, without reading a file or activating a browser.
@@ -117,7 +227,7 @@ impl JsValue for MarkdownImageSource {
 
 pub(super) fn markdown_image(target: &str) -> Result<MarkdownImageSource, String> {
     match destination(target)? {
-        Destination::Workspace(path, _) => Ok(MarkdownImageSource::Workspace {
+        Destination::Workspace(path, _, _) => Ok(MarkdownImageSource::Workspace {
             path: path.bytes_base64,
         }),
         Destination::Browser(url) => Ok(MarkdownImageSource::Remote {
@@ -133,9 +243,12 @@ pub(super) async fn open(
     let destination = destination(&target)?;
     execute(owner, async move {
         match destination {
-            Destination::Workspace(path, parent) => Ok(Some(WorkspaceLink {
+            Destination::Workspace(path, parent, anchor) => Ok(Some(WorkspaceLink {
                 path: path.bytes_base64,
                 parent: parent.map(|path| path.bytes_base64),
+                line: anchor.line,
+                end_line: anchor.end_line,
+                column: anchor.column,
             })),
             Destination::Browser(url) => {
                 // Accept the OS handoff; do not make terminal shutdown wait for
@@ -166,20 +279,30 @@ mod tests {
             url.as_str(),
             "https://example.test/a?q=%E4%B8%AD%E6%96%87#part"
         );
-        let Destination::Workspace(path, parent) =
+        let Destination::Workspace(path, parent, anchor) =
             destination("./目录/../报告%20%E4%BD%A0%E5%A5%BD.txt").unwrap()
         else {
             panic!("expected Host workspace path")
         };
+        assert_eq!(anchor, LinkAnchor::default());
         assert_eq!(
             STANDARD.decode(path.bytes_base64).unwrap(),
             "报告 你好.txt".as_bytes()
         );
         assert!(parent.is_none());
-        let Destination::Workspace(path, parent) = destination("docs/报告%20你好.txt#L20").unwrap()
+        let Destination::Workspace(path, parent, anchor) =
+            destination("docs/报告%20你好.txt#L20-L35").unwrap()
         else {
             panic!("expected nested file")
         };
+        assert_eq!(
+            anchor,
+            LinkAnchor {
+                line: Some(19),
+                end_line: Some(34),
+                column: None,
+            }
+        );
         assert_eq!(
             STANDARD.decode(path.bytes_base64).unwrap(),
             "docs/报告 你好.txt".as_bytes()
@@ -187,6 +310,23 @@ mod tests {
         assert_eq!(
             STANDARD.decode(parent.unwrap().bytes_base64).unwrap(),
             b"docs"
+        );
+        let Destination::Workspace(colon_path, _, colon_anchor) =
+            destination("src/main.rs:12:5").unwrap()
+        else {
+            panic!("expected colon line/column link")
+        };
+        assert_eq!(
+            STANDARD.decode(colon_path.bytes_base64).unwrap(),
+            b"src/main.rs"
+        );
+        assert_eq!(
+            colon_anchor,
+            LinkAnchor {
+                line: Some(11),
+                end_line: None,
+                column: Some(4),
+            }
         );
         let Destination::Browser(url) = destination("https://user:password@example.test/").unwrap()
         else {
@@ -212,12 +352,13 @@ mod tests {
             "docs/image 你好.png".as_bytes()
         );
         for target in ["a.txt#L4", "a.txt?download=1#L4"] {
-            let Destination::Workspace(path, _) = destination(target).unwrap() else {
+            let Destination::Workspace(path, _, anchor) = destination(target).unwrap() else {
                 panic!("expected file component")
             };
             assert_eq!(STANDARD.decode(path.bytes_base64).unwrap(), b"a.txt");
+            assert_eq!(anchor.line, Some(3));
         }
-        let Destination::Workspace(path, _) = destination("a%23b.txt#L4").unwrap() else {
+        let Destination::Workspace(path, _, _) = destination("a%23b.txt#L4").unwrap() else {
             panic!("expected encoded filename")
         };
         assert_eq!(STANDARD.decode(path.bytes_base64).unwrap(), b"a#b.txt");

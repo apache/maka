@@ -18,7 +18,9 @@
  */
 
 use super::WorkspacePath;
-pub use maka_fs_tools::git::{GitArea, GitChangeKind, GitDiff, GitStatus, GitStatusEntry};
+pub use maka_fs_tools::git::{
+    GitArea, GitChangeKind, GitDiff, GitStatus, GitStatusEntry, GitWorkspaceDiff,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -29,4 +31,13 @@ pub struct GitDiffRead {
     pub session_id: String,
     pub area: GitArea,
     pub path: WorkspacePath,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitWorkspaceDiffRead")]
+pub struct GitWorkspaceDiffRead {
+    pub session_id: String,
+    #[serde(default)]
+    pub area: Option<GitArea>,
 }

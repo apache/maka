@@ -17,23 +17,53 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
-import { errorText, renderText, type UiText } from './text';
-import { tr } from './locale';
-import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
-import { Button } from 'nsh/base';
-import type { Host } from './host';
-import type { GitArea, GitDiff, WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
-import { parsePatch } from './patch';
-import { Icon } from './Icon';
+import { computed, inputAction, Scroll, signal, Text, View } from 'nsh';
 import {
-  C,
+  Button,
+  DiffView,
+  type DiffAnnotation,
+  type DiffLineRange,
+  type DiffSide,
+  type DiffStats,
+  type DiffViewRef,
+} from 'nsh/base';
+import type { GitArea } from '../../../../packages/plugin-sdk/src/index.js';
+import {
+  createCurrentDiff,
+  type CurrentDiffModel,
+  type CurrentDiffTarget,
+} from './currentDiffState';
+import { Icon } from './Icon';
+import { tr } from './locale';
+import {
+  AddLineNoteButton,
+  formatReviewNote,
+  InlineReviewComposer,
+  InlineReviewNoteCard,
+  lineRangeText,
+} from './ReviewComposer';
+import {
+  type CodeLocation,
+  extractLineIdentifiers,
+  type ReviewNote,
+  type ReviewStore,
+} from './reviewState';
+import { renderText } from './text';
+
+export { createCurrentDiff, type CurrentDiffModel, type CurrentDiffTarget };
+import {
   bodyTextStyle,
+  C,
   captionTextStyle,
   codeTextStyle,
-  controlStyle,
-  controlHoverStyle,
+  controlDisabledStyle,
   controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  quietActiveStyle,
+  quietFocusStyle,
+  quietHoverStyle,
+  textTooltip,
 } from './ui';
 
 export const gitAreaLabel: Record<GitArea, string> = {
@@ -48,102 +78,34 @@ export const gitAreaLabel: Record<GitArea, string> = {
   },
 };
 
-export type CurrentDiffTarget = {
-  sessionId: string;
-  area: GitArea;
-  path: WorkspacePath;
-  title: string;
-};
-type PatchRow = ReturnType<typeof parsePatch>[number];
-type DiffRow = {
-  key: string;
-  kind: PatchRow['kind'];
-  text: string;
-  old: number | null;
-  new: number | null;
+export type DiffReviewBridge = {
+  store: ReviewStore;
+  canPrompt: boolean;
+  deliverPrompt(text: string, mode: 'insert' | 'send'): boolean;
+  openFileAt?(line: number): void;
+  lookupSymbol?(kind: 'definition' | 'references', symbol: string, line: number): Promise<void>;
+  openLocation?(loc: CodeLocation): void;
 };
 
-// One native row per source line; Text wraps at the actual reader width.
-function diffRows(patch: string): DiffRow[] {
-  return parsePatch(patch).map((row, index) => ({
-    key: String(index),
-    kind: row.kind,
-    text: row.text,
-    old: 'old' in row ? row.old : null,
-    new: 'new' in row ? row.new : null,
-  }));
-}
-
-type DiffState =
-  | { kind: 'loading' }
-  | { kind: 'unavailable' }
-  | { kind: 'error'; message: UiText }
-  | { kind: 'text'; rows: DiffRow[] }
-  | Exclude<GitDiff, { kind: 'text' }>;
-export type CurrentDiffModel = {
-  target: CurrentDiffTarget;
-  state(): DiffState;
-  position: { x: number; y: number };
-  refresh(): Promise<void>;
-  dispose(): void;
+type DraftAnnotation = {
+  editId?: string;
+  side: DiffSide;
+  startLine: number;
+  endLine: number;
+  initialComment?: string;
 };
 
-// The resource tab owns this projection across dock/Dialog presentation changes.
-// The existing gitDiff query returns a whole patch without a size bound.
-export function createCurrentDiff(host: Host, target: CurrentDiffTarget): CurrentDiffModel {
-  const state = signal<DiffState>({ kind: 'loading' });
-  let generation = 0;
-  let alive = true;
-  let previous: GitDiff | null | undefined;
-  const refresh = async () => {
-    if (!alive) return;
-    const reading = ++generation;
-    state.set({ kind: 'loading' });
-    try {
-      const result: GitDiff | null = await host.query('agent', 'gitDiff', {
-        sessionId: target.sessionId,
-        area: target.area,
-        path: target.path,
-      });
-      if (!alive || reading !== generation) return;
-      const same =
-        previous !== undefined &&
-        (result === null
-          ? previous === null
-          : previous !== null &&
-            previous.kind === result.kind &&
-            (result.kind !== 'text' ||
-              (previous.kind === 'text' && previous.patch === result.patch)));
-      if (!same) model.position = { x: 0, y: 0 };
-      previous = result;
-      state.set(
-        result === null
-          ? { kind: 'unavailable' }
-          : result.kind === 'text'
-            ? { kind: 'text', rows: diffRows(result.patch) }
-            : result,
-      );
-    } catch (reason) {
-      if (alive && reading === generation)
-        state.set({ kind: 'error', message: errorText(reason, 'Could not read file changes.') });
-    }
-  };
-  const model: CurrentDiffModel = {
-    target,
-    state,
-    position: { x: 0, y: 0 },
-    refresh,
-    dispose() {
-      alive = false;
-      generation += 1;
-    },
-  };
-  void refresh();
-  return model;
-}
-
-export function CurrentDiff(props: { model: CurrentDiffModel }) {
+export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffReviewBridge }) {
   const model = props.model;
+  const layout = signal<'split' | 'unified'>('unified');
+  const softWrap = signal(false);
+  const expandedAll = signal(false);
+  const stats = signal<DiffStats>({ added: 0, deleted: 0, hunks: 0 });
+  const selectedRange = signal<DiffLineRange | null>(null);
+  const activeSymbol = signal<string | null>(null);
+  const draftNote = signal<DraftAnnotation | null>(null);
+  let diffRef: DiffViewRef | undefined;
+
   const notice = () => {
     const state = model.state();
     switch (state.kind) {
@@ -163,34 +125,467 @@ export function CurrentDiff(props: { model: CurrentDiffModel }) {
         return '';
     }
   };
+
+  const textState = computed(() => {
+    const cur = model.state();
+    return cur.kind === 'text' ? cur : null;
+  });
+
+  const extractExcerpt = (side: DiffSide, startLine: number, endLine: number): string => {
+    const cur = textState();
+    if (!cur) return '';
+    const source = side === 'old' ? cur.before : cur.after;
+    const lines = source.split('\n');
+    return lines.slice(startLine, endLine + 1).join('\n');
+  };
+
+  const selectedSymbols = computed(() => {
+    const range = selectedRange();
+    const cur = textState();
+    if (!range || !cur) return [];
+    const snippet = extractExcerpt(range.side, range.start, Math.min(range.end, range.start + 3));
+    return extractLineIdentifiers(snippet, 8);
+  });
+
+  const fileNotes = computed<ReviewNote[]>(() => {
+    const store = props.review?.store;
+    if (!store) return [];
+    return store
+      .notes(model.target.sessionId)
+      .filter(
+        (n) =>
+          n.path.bytesBase64 === model.target.path.bytesBase64 &&
+          (n.area === undefined || n.area === model.target.area),
+      );
+  });
+
+  const annotations = computed<DiffAnnotation[]>(() => {
+    const list: DiffAnnotation[] = fileNotes().map((note) => ({
+      id: note.id,
+      side: note.side,
+      line: note.endLine,
+    }));
+    const draft = draftNote();
+    if (draft && !draft.editId) {
+      list.push({
+        id: '__draft__',
+        side: draft.side,
+        line: draft.endLine,
+      });
+    }
+    return list;
+  });
+
+  const startDraft = (range: DiffLineRange) => {
+    draftNote.set({
+      side: range.side,
+      startLine: range.start,
+      endLine: range.end,
+    });
+  };
+
+  const buildNoteInput = (draft: DraftAnnotation, comment: string) => ({
+    ...(draft.editId ? { id: draft.editId } : {}),
+    sessionId: model.target.sessionId,
+    path: model.target.path,
+    pathLabel: model.target.title,
+    area: model.target.area,
+    side: draft.side,
+    startLine: draft.startLine,
+    endLine: draft.endLine,
+    excerpt: extractExcerpt(draft.side, draft.startLine, draft.endLine),
+    comment,
+  });
+
+  const toggleExpandAll = () => {
+    const next = !expandedAll();
+    expandedAll.set(next);
+    if (next) diffRef?.expandAll();
+    else diffRef?.collapseAll();
+  };
+
+  const openSourceAtSelection = async () => {
+    if (!props.review?.openFileAt) return;
+    const sel = selectedRange();
+    const hunks = diffRef ? await diffRef.hunks() : [];
+    const firstHunk = hunks[0];
+    const line =
+      sel?.side === 'new' ? sel.start : sel ? sel.start : firstHunk ? firstHunk.newStart : 0;
+    props.review.openFileAt(line);
+  };
+
   return (
-    <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="code" color={C.muted} />
+    <View style={{ flex: 1, minHeight: 0, gap: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <Icon name="code" size={14} color={C.muted} />
         <Text
+          tooltip={textTooltip(() => model.target.title)}
           style={[
-            { ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' },
+            { ...captionTextStyle, flex: 1, minWidth: 80, color: C.text, fontWeight: '500' },
             { numberOfLines: 1 },
           ]}
         >
           {model.target.title}
         </Text>
-        <Button
-          accessibilityLabel={tr('Refresh current diff')}
-          onPress={inputAction(model.refresh, null)}
-          tooltip={textTooltip(() =>
-            model.state().kind === 'error' ? tr('Retry current diff') : tr('Refresh current diff'),
-          )}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-        >
-          <Icon name="refresh" color={C.secondary} />
-        </Button>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>
+          {gitAreaLabel[model.target.area]}
+        </Text>
+        <If when={textState() !== null}>
+          <Text style={{ ...captionTextStyle, color: C.success }}>+{stats().added}</Text>
+          <Text style={{ ...captionTextStyle, color: C.danger }}>−{stats().deleted}</Text>
+        </If>
       </View>
-      <Text style={{ ...captionTextStyle, color: C.muted }}>
-        {tr('Current {area} diff', { area: gitAreaLabel[model.target.area].toLowerCase() })}
-      </Text>
+
+      <If when={textState() !== null}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+          <View
+            role="tablist"
+            style={{
+              flexDirection: 'row',
+              backgroundColor: C.card,
+              padding: 2,
+              borderRadius: 6,
+              gap: 2,
+            }}
+          >
+            <Button
+              role="tab"
+              selected={layout() === 'split'}
+              onPress={() => layout.set('split')}
+              style={{
+                height: 24,
+                paddingHorizontal: 8,
+                borderRadius: 4,
+                justifyContent: 'center',
+                backgroundColor: layout() === 'split' ? C.cardRaised : 'transparent',
+              }}
+              hoverStyle={quietHoverStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  color: layout() === 'split' ? C.text : C.secondary,
+                }}
+              >
+                {tr('Split')}
+              </Text>
+            </Button>
+            <Button
+              role="tab"
+              selected={layout() === 'unified'}
+              onPress={() => layout.set('unified')}
+              style={{
+                height: 24,
+                paddingHorizontal: 8,
+                borderRadius: 4,
+                justifyContent: 'center',
+                backgroundColor: layout() === 'unified' ? C.cardRaised : 'transparent',
+              }}
+              hoverStyle={quietHoverStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  color: layout() === 'unified' ? C.text : C.secondary,
+                }}
+              >
+                {tr('Unified')}
+              </Text>
+            </Button>
+          </View>
+
+          <Button
+            accessibilityLabel={tr('Previous change')}
+            tooltip={textTooltip(() => tr('Previous change'))}
+            disabled={stats().hunks === 0}
+            onPress={() => diffRef?.previousHunk()}
+            style={{
+              ...controlStyle,
+              width: 28,
+              minHeight: 28,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="up" size={14} color={C.secondary} />
+          </Button>
+          <Button
+            accessibilityLabel={tr('Next change')}
+            tooltip={textTooltip(() => tr('Next change'))}
+            disabled={stats().hunks === 0}
+            onPress={() => diffRef?.nextHunk()}
+            style={{
+              ...controlStyle,
+              width: 28,
+              minHeight: 28,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="down" size={14} color={C.secondary} />
+          </Button>
+
+          <Button
+            accessibilityLabel={
+              expandedAll() ? tr('Collapse unchanged lines') : tr('Expand unchanged lines')
+            }
+            tooltip={textTooltip(() =>
+              expandedAll() ? tr('Collapse unchanged lines') : tr('Expand unchanged lines'),
+            )}
+            selected={expandedAll()}
+            onPress={toggleExpandAll}
+            style={{
+              ...controlStyle,
+              width: 28,
+              minHeight: 28,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+              backgroundColor: expandedAll() ? C.cardRaised : 'transparent',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+          >
+            <Icon name="compaction" size={14} color={expandedAll() ? C.text : C.secondary} />
+          </Button>
+
+          <Button
+            accessibilityLabel={tr('Wrap lines')}
+            tooltip={textTooltip(() => tr('Wrap lines'))}
+            selected={softWrap()}
+            onPress={() => softWrap.set(!softWrap())}
+            style={{
+              ...controlStyle,
+              width: 28,
+              minHeight: 28,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+              backgroundColor: softWrap() ? C.cardRaised : 'transparent',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+          >
+            <Icon
+              name={softWrap() ? 'wrap' : 'nowrap'}
+              size={14}
+              color={softWrap() ? C.text : C.secondary}
+            />
+          </Button>
+
+          <View style={{ flex: 1 }} />
+
+          <If when={props.review !== undefined}>
+            <Button
+              accessibilityLabel={tr('Add review note')}
+              tooltip={textTooltip(() => tr('Add review note'))}
+              onPress={() => {
+                const sel = selectedRange();
+                if (sel) {
+                  startDraft(sel);
+                  return;
+                }
+                void (async () => {
+                  const hunks = diffRef ? await diffRef.hunks() : [];
+                  const line = hunks[0] ? hunks[0].newStart : 0;
+                  const range: DiffLineRange = { side: 'new', start: line, end: line };
+                  selectedRange.set(range);
+                  startDraft(range);
+                })();
+              }}
+              style={{
+                ...controlStyle,
+                width: 28,
+                minHeight: 28,
+                paddingHorizontal: 6,
+                alignItems: 'center',
+              }}
+              hoverStyle={quietHoverStyle()}
+              activeStyle={quietActiveStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Icon name="conversation" size={14} color={C.secondary} />
+            </Button>
+          </If>
+
+          <If when={props.review?.openFileAt !== undefined}>
+            <Button
+              accessibilityLabel={tr('Open source file')}
+              tooltip={textTooltip(() => tr('Open source file'))}
+              onPress={() => void openSourceAtSelection()}
+              style={{
+                ...controlStyle,
+                minHeight: 28,
+                height: 28,
+                paddingHorizontal: 8,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+              }}
+              hoverStyle={quietHoverStyle()}
+              activeStyle={quietActiveStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Icon name="file" size={13} color={C.secondary} />
+              <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Source file')}</Text>
+            </Button>
+          </If>
+
+          <Button
+            accessibilityLabel={tr('Refresh current diff')}
+            onPress={inputAction(model.refresh, null)}
+            tooltip={textTooltip(() =>
+              model.state().kind === 'error'
+                ? tr('Retry current diff')
+                : tr('Refresh current diff'),
+            )}
+            style={{
+              ...controlStyle,
+              width: 28,
+              minHeight: 28,
+              paddingHorizontal: 6,
+              alignItems: 'center',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+          >
+            <Icon name="refresh" size={14} color={C.secondary} />
+          </Button>
+        </View>
+      </If>
+
+      <If when={selectedRange() !== null && props.review !== undefined}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            paddingHorizontal: 8,
+            paddingVertical: 4,
+            borderRadius: 6,
+            backgroundColor: C.card,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Text style={{ ...captionTextStyle, color: C.secondary, fontWeight: '500' }}>
+            {lineRangeText(selectedRange()!.start, selectedRange()!.end)}
+          </Text>
+          <Button
+            accessibilityLabel={tr('Add review note')}
+            onPress={() => startDraft(selectedRange()!)}
+            style={{
+              ...controlStyle,
+              minHeight: 24,
+              height: 24,
+              paddingHorizontal: 8,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              backgroundColor: C.cardRaised,
+            }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+          >
+            <Icon name="plus" size={12} color={C.accent} />
+            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Comment')}</Text>
+          </Button>
+
+          <If when={selectedSymbols().length > 0 && props.review?.lookupSymbol !== undefined}>
+            <Scroll horizontal focusable={false} style={{ flex: 1, minWidth: 80 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Each of={selectedSymbols()} key={(sym) => sym}>
+                  {(sym) => (
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 2,
+                        borderRadius: 4,
+                        backgroundColor: activeSymbol() === sym() ? C.cardRaised : C.panel,
+                        paddingHorizontal: 4,
+                      }}
+                    >
+                      <Button
+                        accessibilityLabel={tr('Inspect symbol {symbol}', { symbol: sym() })}
+                        onPress={() => activeSymbol.set(activeSymbol() === sym() ? null : sym())}
+                        style={{
+                          minHeight: 22,
+                          height: 22,
+                          paddingHorizontal: 4,
+                          justifyContent: 'center',
+                        }}
+                        hoverStyle={quietHoverStyle()}
+                        focusStyle={quietFocusStyle()}
+                      >
+                        <Text style={{ ...codeTextStyle, fontSize: 11, color: C.text }}>
+                          {sym()}
+                        </Text>
+                      </Button>
+                      <If when={activeSymbol() === sym()}>
+                        <Button
+                          accessibilityLabel={tr('Go to definition')}
+                          onPress={() =>
+                            void props.review?.lookupSymbol?.(
+                              'definition',
+                              sym(),
+                              selectedRange()!.start,
+                            )
+                          }
+                          style={{
+                            minHeight: 20,
+                            height: 20,
+                            paddingHorizontal: 5,
+                            borderRadius: 4,
+                            justifyContent: 'center',
+                            backgroundColor: C.accent,
+                          }}
+                          hoverStyle={{ opacity: 0.9 }}
+                          focusStyle={controlFocusStyle()}
+                        >
+                          <Text style={{ ...captionTextStyle, fontSize: 11, color: C.chrome }}>
+                            {tr('Definition')}
+                          </Text>
+                        </Button>
+                        <Button
+                          accessibilityLabel={tr('Find references')}
+                          onPress={() =>
+                            void props.review?.lookupSymbol?.(
+                              'references',
+                              sym(),
+                              selectedRange()!.start,
+                            )
+                          }
+                          style={{
+                            minHeight: 20,
+                            height: 20,
+                            paddingHorizontal: 5,
+                            borderRadius: 4,
+                            justifyContent: 'center',
+                            backgroundColor: C.panel,
+                          }}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
+                        >
+                          <Text style={{ ...captionTextStyle, fontSize: 11, color: C.secondary }}>
+                            {tr('References')}
+                          </Text>
+                        </Button>
+                      </If>
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </Scroll>
+          </If>
+        </View>
+      </If>
+
       <If when={notice()}>
         <Text
           style={[
@@ -201,133 +596,147 @@ export function CurrentDiff(props: { model: CurrentDiffModel }) {
           {notice()}
         </Text>
       </If>
-      <If when={model.state().kind === 'text'}>
-        <DiffRows model={model} />
-      </If>
-    </View>
-  );
-}
 
-function DiffRows(props: { model: CurrentDiffModel }) {
-  const model = props.model;
-  const initialOffset = { ...model.position };
-  let mounted = true;
-  cleanup(() => {
-    mounted = false;
-  });
-  const rows = () => {
-    const state = model.state();
-    return state.kind === 'text' ? state.rows : [];
-  };
-  const digits = computed(() => {
-    let width = 1;
-    for (const row of rows()) {
-      if (row.old !== null) width = Math.max(width, String(row.old).length);
-      if (row.new !== null) width = Math.max(width, String(row.new).length);
-    }
-    return width;
-  });
-  return (
-    <View selectable style={{ flex: 1, minHeight: 0 }}>
-      <List
-        accessibilityLabel={tr('Current file diff')}
-        each={rows()}
-        keyExtractor={(row: DiffRow) => row.key}
-        estimatedItemSize={codeTextStyle.lineHeight}
-        contentOffset={initialOffset}
-        onScroll={(event) => {
-          if (mounted) model.position = { x: event.offset.x, y: event.offset.y };
-        }}
-        style={{ flex: 1, minHeight: 0, backgroundColor: C.card }}
-        empty={
-          <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-            {tr('The current patch has no displayable rows.')}
-          </Text>
-        }
-      >
-        {(row) => (
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'flex-start',
-              minWidth: 0,
-              backgroundColor:
-                row().kind === 'added' ? C.added : row().kind === 'removed' ? C.removed : undefined,
+      <If when={textState() !== null}>
+        <View
+          style={{
+            flex: 1,
+            minHeight: 0,
+            borderRadius: 8,
+            overflow: 'hidden',
+            backgroundColor: C.card,
+          }}
+        >
+          <DiffView
+            ref={(node) => {
+              diffRef = node;
             }}
-          >
-            <If when={row().kind !== 'hunk' && row().kind !== 'meta'}>
-              <Text
-                style={[
-                  {
-                    ...codeTextStyle,
-                    width: (digits() + 1) * 8,
-                    flexShrink: 0,
-                    paddingRight: 8,
-                    textAlign: 'right',
-                    color: C.muted,
-                  },
-                  { userSelect: 'none' },
-                ]}
-              >
-                {row().old ?? ''}
-              </Text>
-              <Text
-                style={[
-                  {
-                    ...codeTextStyle,
-                    width: (digits() + 1) * 8,
-                    flexShrink: 0,
-                    paddingRight: 8,
-                    textAlign: 'right',
-                    color: C.muted,
-                  },
-                  { userSelect: 'none' },
-                ]}
-              >
-                {row().new ?? ''}
-              </Text>
-              <Text
-                style={[
-                  {
-                    ...codeTextStyle,
-                    width: 8,
-                    flexShrink: 0,
-                    color:
-                      row().kind === 'added'
-                        ? C.success
-                        : row().kind === 'removed'
-                          ? C.danger
-                          : C.text,
-                  },
-                  { userSelect: 'none' },
-                ]}
-              >
-                {row().kind === 'added' ? '+' : row().kind === 'removed' ? '-' : ' '}
-              </Text>
-            </If>
-            <Text
-              style={[
-                {
-                  ...codeTextStyle,
-                  flex: 1,
-                  minWidth: 0,
-                  color:
-                    row().kind === 'added'
-                      ? C.success
-                      : row().kind === 'removed'
-                        ? C.danger
-                        : row().kind === 'context'
-                          ? C.text
-                          : C.muted,
-                },
-                { userSelect: 'text' },
-              ]}
-            >
-              {row().text}
-            </Text>
-          </View>
-        )}
-      </List>
+            language={model.target.title}
+            oldValue={(() => {
+              const cur = textState();
+              return cur && cur.before !== cur.after ? cur.before : undefined;
+            })()}
+            newValue={(() => {
+              const cur = textState();
+              return cur && cur.before !== cur.after ? cur.after : undefined;
+            })()}
+            patch={(() => {
+              const cur = textState();
+              return cur && cur.before === cur.after ? cur.patch : undefined;
+            })()}
+            layout={layout()}
+            inline="wordAlt"
+            indicators="bars"
+            lineNumbers
+            softWrap={softWrap()}
+            expandAll={expandedAll()}
+            fontSize={codeTextStyle.fontSize}
+            lineHeight={codeTextStyle.lineHeight}
+            onStatsChange={({ stats: next }) => stats.set(next)}
+            onLineSelectionChange={({ range }) => {
+              selectedRange.set(range);
+              activeSymbol.set(null);
+            }}
+            onLineNumberPress={({ line }) => {
+              selectedRange.set({ side: line.side, start: line.line, end: line.line });
+            }}
+            annotations={annotations()}
+            renderAddAnnotation={
+              props.review
+                ? (range) => <AddLineNoteButton onPress={() => startDraft(range)} />
+                : undefined
+            }
+            renderAnnotation={
+              props.review
+                ? (ann) => {
+                    const draft = draftNote();
+                    if (ann.id === '__draft__' && draft) {
+                      return (
+                        <InlineReviewComposer
+                          startLine={draft.startLine}
+                          endLine={draft.endLine}
+                          canPrompt={props.review!.canPrompt}
+                          onSave={(comment) => {
+                            props.review!.store.upsertNote(buildNoteInput(draft, comment));
+                            draftNote.set(null);
+                          }}
+                          onInsertPrompt={(comment) => {
+                            const text = formatReviewNote(buildNoteInput(draft, comment));
+                            if (props.review!.deliverPrompt(text, 'insert')) draftNote.set(null);
+                          }}
+                          onSendNow={(comment) => {
+                            const text = formatReviewNote(buildNoteInput(draft, comment));
+                            if (props.review!.deliverPrompt(text, 'send')) draftNote.set(null);
+                          }}
+                          onCancel={() => draftNote.set(null)}
+                        />
+                      );
+                    }
+                    const existing = fileNotes().find((n) => n.id === ann.id);
+                    if (!existing) return <View />;
+                    if (draft?.editId === existing.id) {
+                      return (
+                        <InlineReviewComposer
+                          startLine={existing.startLine}
+                          endLine={existing.endLine}
+                          initialComment={existing.comment}
+                          canPrompt={props.review!.canPrompt}
+                          onSave={(comment) => {
+                            props.review!.store.upsertNote({
+                              ...existing,
+                              comment,
+                            });
+                            draftNote.set(null);
+                          }}
+                          onInsertPrompt={(comment) => {
+                            const text = formatReviewNote({ ...existing, comment });
+                            if (props.review!.deliverPrompt(text, 'insert')) {
+                              props.review!.store.removeNote(existing.sessionId, existing.id);
+                              draftNote.set(null);
+                            }
+                          }}
+                          onSendNow={(comment) => {
+                            const text = formatReviewNote({ ...existing, comment });
+                            if (props.review!.deliverPrompt(text, 'send')) {
+                              props.review!.store.removeNote(existing.sessionId, existing.id);
+                              draftNote.set(null);
+                            }
+                          }}
+                          onCancel={() => draftNote.set(null)}
+                        />
+                      );
+                    }
+                    return (
+                      <InlineReviewNoteCard
+                        note={existing}
+                        canPrompt={props.review!.canPrompt}
+                        onEdit={() =>
+                          draftNote.set({
+                            editId: existing.id,
+                            side: existing.side,
+                            startLine: existing.startLine,
+                            endLine: existing.endLine,
+                            initialComment: existing.comment,
+                          })
+                        }
+                        onRemove={() =>
+                          props.review!.store.removeNote(existing.sessionId, existing.id)
+                        }
+                        onSendNow={() => {
+                          const text = formatReviewNote(existing);
+                          if (props.review!.deliverPrompt(text, 'send')) {
+                            props.review!.store.removeNote(existing.sessionId, existing.id);
+                          }
+                        }}
+                      />
+                    );
+                  }
+                : undefined
+            }
+            style={{ flex: 1, minHeight: 0 }}
+          />
+        </View>
+      </If>
     </View>
   );
 }

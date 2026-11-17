@@ -28,7 +28,8 @@ const native = {
   nsh: 'let tracking;\n    export const signal = initial => {\n      let value = initial;\n      const observers = new Set();\n      const read = () => { if (tracking) observers.add(tracking); return value; };\n      read.set = next => {\n        if (Object.is(value, next)) return;\n        value = next;\n        for (const observer of [...observers]) observer();\n      };\n      return read;\n    };\n    export const computed = fn => fn;\n    export const untracked = fn => { const previous = tracking; tracking = undefined; try { return fn(); } finally { tracking = previous; } };\n    export const effect = fn => {\n      let alive = true;\n      const run = () => {\n        if (!alive) return;\n        const previous = tracking;\n        tracking = run;\n        try { fn(); } finally { tracking = previous; }\n      };\n      globalThis.resourceScope.push(() => { alive = false; });\n      run();\n    };\n    export const cleanup = fn => globalThis.resourceScope.push(fn);',
   locale: `export const tr = key => key;`,
   workspaceFileState: `export const createWorkspaceFiles = (_host, options) => ({ sessionId: options.sessionId });`,
-  CurrentFile: `export const createCurrentFile = (_host, target) => ({target, activate() {}, suspend() {}, dispose() {this.disposed = true;}});`,
+  CurrentFile: `export const createCurrentFile = (_host, target) => ({target, anchorValue: target.anchor, setAnchor(next) { this.anchorValue = next; }, activate() {}, suspend() {}, dispose() {this.disposed = true;}});`,
+  currentDiffState: `export const createCurrentDiff = (_host, target) => ({target, state: () => ({ kind: 'loading' }), position: { x: 0, y: 0 }, refresh: async () => {}, dispose() { this.disposed = true; }});`,
   terminalState: `
     export const completed = reply => reply.value;
     export const terminalRunning = entry => entry.result.status === 'running';
@@ -201,4 +202,88 @@ test('window commands follow the focused pane and stop targeting a removed pane'
   focus = 'B';
   invokeFocusedConversation([a], 'models');
   assert.deepEqual(received.at(-1), { sessionId: 'A', id: 'models' });
+});
+
+test('review navigation preserves workspace file:// anchors, history back/forward, and review batch formatting', async (t) => {
+  const { formatReviewBatch, extractLineIdentifiers } = await import(
+    new URL('reviewState.ts', appRoot)
+  );
+  globalThis.resourceScope = [];
+  const sessions = signal(['A']);
+  const prompts = [];
+  const openedTargets = [];
+  const resources = createResources(
+    {
+      openLink: async (target) => {
+        openedTargets.push(target);
+        return { path, parent: null, line: 9, endLine: 14, column: 2 };
+      },
+      pathLabel: () => 'src/lib.rs',
+      query: async () => null,
+    },
+    {
+      sessions,
+      blocked: () => false,
+      directory: () => '/Users/test/project',
+      prompt: (sessionId, action) => {
+        prompts.push({ sessionId, ...action });
+        return true;
+      },
+      report: () => {},
+    },
+  );
+  const scope = globalThis.resourceScope;
+  t.after(() => {
+    for (const dispose of scope.toReversed()) dispose();
+  });
+
+  resources.openChanges({ sessionId: 'A' });
+  assert.equal(resources.active(), 'changes');
+
+  await resources.openLink('A', 'file:///Users/test/project/src/lib.rs#L10-L15', () => false);
+  assert.deepEqual(openedTargets, ['src/lib.rs#L10-L15']);
+  assert.equal(resources.activeTab().kind, 'file');
+  assert.equal(resources.activeTab().model.anchorValue.line, 9);
+  assert.equal(resources.activeTab().model.anchorValue.endLine, 14);
+
+  resources.openDiff({
+    sessionId: 'A',
+    area: 'worktree',
+    path,
+    title: 'src/lib.rs',
+  });
+  assert.equal(resources.activeTab().kind, 'diff');
+  assert.equal(resources.canGoBack(), true);
+
+  resources.goBack();
+  assert.equal(resources.activeTab().kind, 'file');
+  assert.equal(resources.canGoForward(), true);
+
+  resources.goForward();
+  assert.equal(resources.activeTab().kind, 'diff');
+
+  const note = resources.reviewStore.upsertNote({
+    sessionId: 'A',
+    path,
+    pathLabel: 'src/lib.rs',
+    area: 'worktree',
+    side: 'new',
+    startLine: 9,
+    endLine: 11,
+    excerpt: 'let lock = state.lock();\nio_work();',
+    comment: 'Move I/O outside the mutex guard.',
+  });
+  const formatted = formatReviewBatch([note]);
+  assert.match(formatted, /`src\/lib\.rs#L10-L12`:/);
+  assert.match(formatted, /```rust/);
+  assert.match(formatted, /Move I\/O outside the mutex guard\./);
+
+  assert.equal(resources.deliverPrompt('A', formatted, 'send'), true);
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].mode, 'send');
+  assert.deepEqual(extractLineIdentifiers('pub async fn read_git(repo: &Repository)'), [
+    'read_git',
+    'repo',
+    'Repository',
+  ]);
 });

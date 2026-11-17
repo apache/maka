@@ -47,8 +47,18 @@ pub(super) fn read(repo: &Repository, area: GitArea, name: &[u8]) -> io::Result<
         repo.repo.object_hash(),
     )?;
     interrupted(&repo.cancel)?;
+    let before_text = match before {
+        Some(image) => String::from_utf8(image.bytes).map_err(|_| failure("git_unsupported"))?,
+        None => String::new(),
+    };
+    let after_text = match after {
+        Some(image) => String::from_utf8(image.bytes).map_err(|_| failure("git_unsupported"))?,
+        None => String::new(),
+    };
     Ok(GitDiff::Text {
         patch: String::from_utf8(patch).map_err(|_| failure("git_unsupported"))?,
+        before: before_text,
+        after: after_text,
     })
 }
 fn images(

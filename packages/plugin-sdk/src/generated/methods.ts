@@ -179,6 +179,30 @@ export type AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceConsistency =
   | 'unverified';
 export type AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentCodeDefinitionOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
+export type AgentCodeHoverOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
+export type AgentCodeReferencesOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
 export type AgentCompactOutput_RunId = string;
 export type AgentCompactOutput_AgentExecutionState =
   | {
@@ -2458,6 +2482,47 @@ export interface ServiceMethods {
         publication?: AgentCheckpointReceiptOutput_AgentCheckpointPublication | null;
       };
     };
+    codeDefinition: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeDefinitionInput_WorkspacePath;
+        position: AgentCodeDefinitionInput_AgentCodePosition;
+        symbol?: string | null;
+        hoverOnly?: boolean;
+      };
+      output: {
+        backend: AgentCodeDefinitionOutput_AgentCodeBackend;
+        symbol: string;
+        originRange: AgentCodeDefinitionOutput_AgentCodeRange | null;
+        locations: AgentCodeDefinitionOutput_AgentCodeLocation[];
+      };
+    };
+    codeHover: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeHoverInput_WorkspacePath;
+        position: AgentCodeHoverInput_AgentCodePosition;
+      };
+      output: AgentCodeHoverOutput_AgentCodeHoverResult | null;
+    };
+    codeReferences: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeReferencesInput_WorkspacePath;
+        position: AgentCodeReferencesInput_AgentCodePosition;
+        symbol?: string | null;
+        includeDeclaration?: boolean;
+      };
+      output: {
+        backend: AgentCodeReferencesOutput_AgentCodeBackend;
+        symbol: string;
+        locations: AgentCodeReferencesOutput_AgentCodeLocation[];
+        truncated: boolean;
+      };
+    };
     compact: {
       mode: 'mutation';
       input: {
@@ -2679,6 +2744,14 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentSessionRead;
       output: Runtime.GitStatus | null;
+    };
+    gitWorkspaceDiff: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        area?: Runtime.GitArea | null;
+      };
+      output: AgentGitWorkspaceDiffOutput_GitWorkspaceDiff | null;
     };
     globalInstructions: {
       mode: 'query';
@@ -4638,6 +4711,91 @@ export interface AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceWarning;
 }
+export interface AgentCodeDefinitionInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeDefinitionInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeDefinitionOutput_AgentCodeRange {
+  start: AgentCodeDefinitionOutput_AgentCodePosition;
+  end: AgentCodeDefinitionOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeDefinitionOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeDefinitionOutput_AgentCodeLocation {
+  path: AgentCodeDefinitionOutput_WorkspacePath;
+  range: AgentCodeDefinitionOutput_AgentCodeRange;
+  preview: string;
+}
+export interface AgentCodeDefinitionOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentCodeHoverInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeHoverInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeHoverOutput_AgentCodeHoverResult {
+  backend: AgentCodeHoverOutput_AgentCodeBackend;
+  symbol: string;
+  range: AgentCodeHoverOutput_AgentCodeRange | null;
+  markdown: string;
+}
+export interface AgentCodeHoverOutput_AgentCodeRange {
+  start: AgentCodeHoverOutput_AgentCodePosition;
+  end: AgentCodeHoverOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeHoverOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeReferencesInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeReferencesInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeReferencesOutput_AgentCodeLocation {
+  path: AgentCodeReferencesOutput_WorkspacePath;
+  range: AgentCodeReferencesOutput_AgentCodeRange;
+  preview: string;
+}
+export interface AgentCodeReferencesOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentCodeReferencesOutput_AgentCodeRange {
+  start: AgentCodeReferencesOutput_AgentCodePosition;
+  end: AgentCodeReferencesOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeReferencesOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
 /**
  * Stable logical Run receipt, independent of activations and the current Session tip.
  */
@@ -4728,6 +4886,11 @@ export interface AgentExternalUsageLimitsOutput_UsageQuantity {
   used: number;
   limit: number;
   unit?: string | null;
+}
+export interface AgentGitWorkspaceDiffOutput_GitWorkspaceDiff {
+  patch: string;
+  truncated: boolean;
+  skippedFiles: number;
 }
 export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
   revision: string;

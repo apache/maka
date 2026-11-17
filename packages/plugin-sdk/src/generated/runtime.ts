@@ -3840,6 +3840,8 @@ export type GitDiff =
   | {
       kind: 'text';
       patch: string;
+      before: string;
+      after: string;
     }
   | {
       kind: 'binary';

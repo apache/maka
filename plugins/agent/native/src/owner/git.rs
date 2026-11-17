@@ -83,6 +83,34 @@ impl Owner {
         .await
     }
 
+    pub async fn git_workspace_diff(
+        self: &Arc<Self>,
+        input: GitWorkspaceDiffRead,
+        scope: &Scope,
+    ) -> Result<Option<GitWorkspaceDiff>, String> {
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                owner
+                    .read_git(
+                        &input.session_id,
+                        &scope,
+                        move |workspace, observed, private_root, cancel| {
+                            maka_fs_tools::git::workspace_diff(
+                                Path::new(&workspace.path),
+                                observed,
+                                private_root,
+                                workspace.worktree.as_deref(),
+                                input.area,
+                                cancel,
+                            )
+                        },
+                    )
+                    .await
+            })
+        })
+        .await
+    }
+
     async fn read_git<T: std::marker::Send + 'static>(
         &self,
         session_id: &str,

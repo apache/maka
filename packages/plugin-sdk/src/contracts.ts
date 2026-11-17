@@ -3747,6 +3747,515 @@ export const contracts: {
           },
           resources: {},
         },
+        codeDefinition: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeDefinitionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              position: {
+                $ref: '#/$defs/AgentCodePosition',
+              },
+              symbol: {
+                type: ['string', 'null'],
+                default: null,
+              },
+              hoverOnly: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'position'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeDefinitionResult',
+            type: 'object',
+            properties: {
+              backend: {
+                $ref: '#/$defs/AgentCodeBackend',
+              },
+              symbol: {
+                type: 'string',
+              },
+              originRange: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentCodeRange',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              locations: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentCodeLocation',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['backend', 'symbol', 'originRange', 'locations'],
+            $defs: {
+              AgentCodeBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'lsp',
+                      },
+                      server: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'server'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'indexed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCodeRange: {
+                type: 'object',
+                properties: {
+                  start: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                  end: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                },
+                additionalProperties: false,
+                required: ['start', 'end'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+              AgentCodeLocation: {
+                type: 'object',
+                properties: {
+                  path: {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  range: {
+                    $ref: '#/$defs/AgentCodeRange',
+                  },
+                  preview: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'range', 'preview'],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          resources: {},
+        },
+        codeHover: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeHoverRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              position: {
+                $ref: '#/$defs/AgentCodePosition',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'position'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentCodeHoverResult',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentCodeHoverResult',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentCodeHoverResult: {
+                type: 'object',
+                properties: {
+                  backend: {
+                    $ref: '#/$defs/AgentCodeBackend',
+                  },
+                  symbol: {
+                    type: 'string',
+                  },
+                  range: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentCodeRange',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  markdown: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['backend', 'symbol', 'range', 'markdown'],
+              },
+              AgentCodeBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'lsp',
+                      },
+                      server: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'server'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'indexed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCodeRange: {
+                type: 'object',
+                properties: {
+                  start: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                  end: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                },
+                additionalProperties: false,
+                required: ['start', 'end'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          resources: {},
+        },
+        codeReferences: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeReferencesRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              position: {
+                $ref: '#/$defs/AgentCodePosition',
+              },
+              symbol: {
+                type: ['string', 'null'],
+                default: null,
+              },
+              includeDeclaration: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'position'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeReferencesResult',
+            type: 'object',
+            properties: {
+              backend: {
+                $ref: '#/$defs/AgentCodeBackend',
+              },
+              symbol: {
+                type: 'string',
+              },
+              locations: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentCodeLocation',
+                },
+              },
+              truncated: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['backend', 'symbol', 'locations', 'truncated'],
+            $defs: {
+              AgentCodeBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'lsp',
+                      },
+                      server: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'server'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'indexed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCodeLocation: {
+                type: 'object',
+                properties: {
+                  path: {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  range: {
+                    $ref: '#/$defs/AgentCodeRange',
+                  },
+                  preview: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'range', 'preview'],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodeRange: {
+                type: 'object',
+                properties: {
+                  start: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                  end: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                },
+                additionalProperties: false,
+                required: ['start', 'end'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          resources: {},
+        },
         compact: {
           mode: 'mutation',
           input: {
@@ -12314,9 +12823,15 @@ export const contracts: {
                       patch: {
                         type: 'string',
                       },
+                      before: {
+                        type: 'string',
+                      },
+                      after: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'patch'],
+                    required: ['kind', 'patch', 'before', 'after'],
                   },
                   {
                     type: 'object',
@@ -12433,6 +12948,71 @@ export const contracts: {
               GitChangeKind: {
                 type: 'string',
                 enum: ['added', 'modified', 'deleted', 'type_changed', 'conflicted'],
+              },
+            },
+          },
+          resources: {},
+        },
+        gitWorkspaceDiff: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitWorkspaceDiffRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              area: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/GitArea',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+            $defs: {
+              GitArea: {
+                type: 'string',
+                enum: ['staged', 'worktree', 'untracked'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_GitWorkspaceDiff',
+            anyOf: [
+              {
+                $ref: '#/$defs/GitWorkspaceDiff',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              GitWorkspaceDiff: {
+                type: 'object',
+                properties: {
+                  patch: {
+                    type: 'string',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                  skippedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['patch', 'truncated', 'skippedFiles'],
               },
             },
           },

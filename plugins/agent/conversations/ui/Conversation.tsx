@@ -338,6 +338,7 @@ type ConversationProps = {
   foreground(): boolean;
   browser(): BrowserHeader;
   files?(): void;
+  changes?(): void;
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
@@ -4369,6 +4370,7 @@ export function Conversation(props: ConversationProps) {
         commands={props.commands}
         browser={props.browser()}
         files={props.files}
+        changes={props.changes}
         filesOpener={props.filesOpener}
         actions={
           bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (

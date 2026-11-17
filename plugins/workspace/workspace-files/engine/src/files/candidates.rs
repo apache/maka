@@ -144,6 +144,178 @@ impl Directory {
         self.validate_inner()?;
         Ok(())
     }
+
+    /// Visits regular UTF-8 files under the workspace while honoring ignore rules and capability boundaries.
+    pub(crate) fn visit_text_files(
+        &self,
+        max_file_bytes: u64,
+        max_files: usize,
+        cancel: &AtomicBool,
+        mut visit: impl FnMut(WorkspacePath, String, String) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        enum Work {
+            Enter(Arc<Dir>, PathBuf),
+            Child(Arc<Dir>, PathBuf, Vec<u8>, FileKind),
+            Leave,
+        }
+        interrupted(cancel)?;
+        self.validate_inner()?;
+        let target = self.anchors.last().expect("target anchor");
+        let mut pending = vec![Work::Enter(
+            Arc::new(target.directory.try_clone()?),
+            self.relative.clone(),
+        )];
+        let mut rules = Vec::new();
+        for anchor in &self.anchors[..self.anchors.len() - 1] {
+            let relative = anchor
+                .path
+                .strip_prefix(&self.anchors[0].path)
+                .map_err(|_| error("files_changed"))?;
+            rules.push(directory_rules(&anchor.directory, relative, cancel)?);
+        }
+        let mut visited = 0_usize;
+        while let Some(work) = pending.pop() {
+            interrupted(cancel)?;
+            if visited >= max_files {
+                break;
+            }
+            match work {
+                Work::Leave => {
+                    rules.pop();
+                }
+                Work::Enter(directory, relative) => {
+                    let entries = match directory.entries() {
+                        Ok(entries) => entries,
+                        Err(err) if disappeared(&err) => continue,
+                        Err(err) => return Err(err),
+                    };
+                    rules.push(directory_rules(&directory, &relative, cancel)?);
+                    pending.push(Work::Leave);
+                    let absolute = self.anchors[0].path.join(&relative);
+                    let mut children = Vec::new();
+                    for entry in entries {
+                        interrupted(cancel)?;
+                        let entry = match entry {
+                            Ok(entry) => entry,
+                            Err(err) if disappeared(&err) => continue,
+                            Err(err) => return Err(err),
+                        };
+                        let name = entry.file_name();
+                        if self.excluded_child(&absolute, &name) {
+                            continue;
+                        }
+                        let kind = match entry.file_type() {
+                            Ok(kind) => kind,
+                            Err(err) if disappeared(&err) => continue,
+                            Err(err) => return Err(err),
+                        };
+                        let kind = if kind.is_dir() {
+                            FileKind::Directory
+                        } else if kind.is_file() {
+                            FileKind::File
+                        } else {
+                            continue;
+                        };
+                        let path = relative.join(&name);
+                        if excluded(&rules, &path, kind == FileKind::Directory) {
+                            continue;
+                        }
+                        let bytes = gix::path::to_unix_separators_on_windows(
+                            gix::path::into_bstr(path.clone())
+                                .map_err(|_| error("files_unavailable"))?,
+                        )
+                        .into_owned();
+                        children.push((bytes.to_vec(), path, kind));
+                    }
+                    children.sort_by(|left, right| left.0.cmp(&right.0));
+                    for (bytes, path, kind) in children.into_iter().rev() {
+                        pending.push(Work::Child(directory.clone(), path, bytes, kind));
+                    }
+                }
+                Work::Child(directory, relative, _, FileKind::Directory) => {
+                    let name = relative.file_name().expect("directory entry name");
+                    let child = match directory.open_dir_nofollow(name) {
+                        Ok(child) => child,
+                        Err(err) if disappeared(&err) => continue,
+                        Err(err) => return Err(err),
+                    };
+                    pending.push(Work::Enter(Arc::new(child), relative));
+                }
+                Work::Child(directory, relative, bytes, FileKind::File) => {
+                    let Ok(display) = String::from_utf8(bytes.clone()) else {
+                        continue;
+                    };
+                    if skip_extension(&display) {
+                        continue;
+                    }
+                    let Some(name) = relative.file_name() else {
+                        continue;
+                    };
+                    let mut options = crate::workspace::options();
+                    options.read(true);
+                    let mut file = match directory.open_with(name, &options) {
+                        Ok(file) => file,
+                        Err(err) if disappeared(&err) => continue,
+                        Err(err) => return Err(err),
+                    };
+                    let metadata = match file.metadata() {
+                        Ok(metadata) => metadata,
+                        Err(err) if disappeared(&err) => continue,
+                        Err(err) => return Err(err),
+                    };
+                    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_file_bytes
+                    {
+                        continue;
+                    }
+                    let mut raw = Vec::with_capacity(metadata.len() as usize);
+                    if (&mut file)
+                        .take(max_file_bytes + 1)
+                        .read_to_end(&mut raw)
+                        .is_err()
+                        || raw.len() as u64 > max_file_bytes
+                        || raw.contains(&0)
+                    {
+                        continue;
+                    }
+                    let Ok(content) = String::from_utf8(raw) else {
+                        continue;
+                    };
+                    let Ok(ws_path) = WorkspacePath::from_bytes(&bytes) else {
+                        continue;
+                    };
+                    visited += 1;
+                    if !visit(ws_path, display, content)? {
+                        break;
+                    }
+                }
+                Work::Child(..) => {}
+            }
+        }
+        interrupted(cancel)?;
+        self.validate_inner()?;
+        Ok(())
+    }
+}
+
+fn skip_extension(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".min.js")
+        || lower.ends_with(".min.css")
+        || lower.ends_with(".map")
+        || lower.ends_with(".lock")
+        || lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".ico")
+        || lower.ends_with(".pdf")
+        || lower.ends_with(".woff")
+        || lower.ends_with(".woff2")
+        || lower.ends_with(".ttf")
+        || lower.ends_with(".wasm")
+        || lower.ends_with(".zst")
+        || lower.ends_with(".bin")
 }
 
 fn directory_rules(

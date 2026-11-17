@@ -41,6 +41,8 @@ mod fork;
 pub use fork::*;
 mod git;
 pub use git::*;
+mod symbols;
+pub use symbols::*;
 mod goal;
 mod imports;
 pub use goal::*;
@@ -2266,6 +2268,22 @@ pub fn contract() -> Contract {
                 (
                     "gitDiff".into(),
                     method::<GitDiffRead, Option<GitDiff>>(MethodMode::Query),
+                ),
+                (
+                    "gitWorkspaceDiff".into(),
+                    method::<GitWorkspaceDiffRead, Option<GitWorkspaceDiff>>(MethodMode::Query),
+                ),
+                (
+                    "codeDefinition".into(),
+                    method::<CodeDefinitionRead, CodeDefinitionResult>(MethodMode::Query),
+                ),
+                (
+                    "codeReferences".into(),
+                    method::<CodeReferencesRead, CodeReferencesResult>(MethodMode::Query),
+                ),
+                (
+                    "codeHover".into(),
+                    method::<CodeHoverRead, Option<CodeHoverResult>>(MethodMode::Query),
                 ),
                 (
                     "snapshotPatch".into(),

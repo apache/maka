@@ -234,6 +234,7 @@ export type ConversationWindow = {
   workspace: Signal<WorkspaceViewHandle | null>;
   sessions(): readonly string[];
   command(id: string): void;
+  prompt?(sessionId: string, input: { text: string; mode: 'insert' | 'send' }): boolean;
 };
 
 // A pane opened beside the main one shares its catalog read and leaves the
@@ -265,6 +266,8 @@ export function createConversationUi(
     shown: () => workspace()?.shown() ?? false,
     hide: () => workspace()?.hide(),
     openFiles: (target: { sessionId: string }) => workspace()?.openFiles(target),
+    openChanges: (target: { sessionId: string }) =>
+      workspace()?.openChanges ? workspace()!.openChanges!(target) : workspace()?.openFiles(target),
     attachOpener: (sessionId: string, node: ViewRef) => workspace()?.attachOpener(sessionId, node),
     focused: () => workspace()?.focused() ?? false,
   };
@@ -2192,6 +2195,28 @@ export function createConversationUi(
       );
     },
   };
+  const deliverPrompt = (input: { text: string; mode: 'insert' | 'send' }): boolean => {
+    const owner = handle();
+    const sid = selected();
+    if (!owner || !sid || !owner.editable()) return false;
+    if (input.mode === 'insert') {
+      const prev = owner.draft();
+      const sep =
+        prev.length === 0 || prev.endsWith('\n\n') ? '' : prev.endsWith('\n') ? '\n' : '\n\n';
+      owner.changeDraft(prev + sep + input.text);
+      owner.focus();
+      return true;
+    }
+    if (!owner.connected()) return false;
+    owner.sendRendered({
+      owner: sid,
+      text: input.text,
+      backend: owner.backend(),
+      attachments: [],
+      ...(owner.run() !== null ? { delivery: 'steer' as const } : {}),
+    });
+    return true;
+  };
   const previewHandle = {
     shown: resources.shown,
     close: () => workspace()?.close(),
@@ -2200,6 +2225,7 @@ export function createConversationUi(
   };
   return {
     sessionId: selected,
+    deliverPrompt,
     focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
     command: invokeOwn,
     browsing,
@@ -2218,6 +2244,7 @@ export function createConversationUi(
           sessions: window.sessions,
           directory: (id) =>
             browsing.sessions().find((session) => session.id === id)?.workspace.path,
+          prompt: (id, action) => window.prompt?.(id, action) ?? false,
           blocked: () => reloading() || !(shell()?.visible() ?? false),
           get docked() {
             return input.docked;
@@ -2584,6 +2611,13 @@ export function createConversationUi(
                     workspace()
                       ? inputAction(invokeCommand, {
                           id: 'files',
+                          sessionId: id(),
+                        })
+                      : undefined
+                  }
+                  changes={
+                    workspace()
+                      ? inputAction(resources.openChanges, {
                           sessionId: id(),
                         })
                       : undefined
