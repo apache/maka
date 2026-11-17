@@ -26,14 +26,14 @@ pub(crate) struct NativeCapture {
     pub driver: std::sync::Weak<tokio::sync::Mutex<crate::Driver>>,
     pub native_epoch: NativeEpochId,
     #[cfg(target_os = "windows")]
-    pub windows_source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
+    pub windows_source: crate::desktop::worker::native_owner::NativePresentationSource,
     pub binding: crate::ComputerAppBinding,
     pub subject: PreviewSubject,
-    pub execution: crate::ExecutionCorrelation,
 }
 impl NativeCapture {
     fn verify(&self) -> Result<(), ToolError> {
         let binding = &self.binding;
+        #[cfg(not(target_os = "windows"))]
         if crate::identity::process(binding.pid)? != binding.process_generation {
             return Err(failed("preview process generation changed"));
         }
@@ -59,10 +59,21 @@ impl NativeCapture {
             return Err(failed("preview requires the bound live X11 window"));
         }
         #[cfg(target_os = "windows")]
-        if platform_windows::win32::windows::window_owner_pid(binding.window_id)
-            != Some(binding.pid)
-        {
-            return Err(failed("preview window owner changed"));
+        match &self.subject {
+            PreviewSubject::Native { target, .. } => {
+                let observed = crate::windows_permission_subject::verify_window(
+                    target,
+                    binding.window_id,
+                    maka_agent_facts::language::Language::En,
+                )?;
+                if observed != *binding {
+                    return Err(failed("preview application binding changed"));
+                }
+            }
+            PreviewSubject::NativeWindow { .. } => {
+                crate::windows_permission_subject::verify_binding(binding)?;
+            }
+            _ => unreachable!("native capture retains a native subject"),
         }
         Ok(())
     }
@@ -74,14 +85,6 @@ impl Capture for NativeCapture {
         area: PresentationArea,
         stop: CancellationToken,
     ) -> PresentationFuture {
-        #[cfg(target_os = "windows")]
-        if self.windows_source.is_none() {
-            return Box::pin(async {
-                Err(failed(
-                    "Computer preview has no accepted Windows presentation source",
-                ))
-            });
-        }
         presentation::present(self.clone(), authority, area, stop)
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -94,7 +97,7 @@ impl Capture for NativeCapture {
                 return false;
             }
             self.binding == other.binding
-                && self.execution == other.execution
+                && self.subject.native_execution() == other.subject.native_execution()
                 && self.native_epoch == other.native_epoch
                 && std::sync::Weak::ptr_eq(&self.driver, &other.driver)
         })

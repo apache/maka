@@ -28,7 +28,14 @@ impl Session {
         let Some(target) = self.targets.get(handle) else {
             return;
         };
-        self.publish_window_preview(handle, &target.window, &target.process, invocation);
+        self.publish_window_preview(
+            handle,
+            &target.window,
+            &target.process,
+            invocation,
+            #[cfg(target_os = "windows")]
+            target.windows_source.clone(),
+        );
     }
     pub(super) fn publish_window_preview(
         &self,
@@ -36,6 +43,9 @@ impl Session {
         window: &WindowInfo,
         process: &str,
         invocation: &crate::InvocationContext<'_>,
+        #[cfg(target_os = "windows")] windows_source: Option<
+            crate::desktop::worker::native_owner::NativePresentationSource,
+        >,
     ) {
         let Some(pid) = window.pid else {
             return;
@@ -50,7 +60,7 @@ impl Session {
             window.app_name.clone(),
             invocation,
             #[cfg(target_os = "windows")]
-            None,
+            windows_source,
         );
     }
     pub(super) fn publish_binding_preview(
@@ -62,6 +72,15 @@ impl Session {
             crate::desktop::worker::native_owner::NativePresentationSource,
         >,
     ) {
+        #[cfg(target_os = "windows")]
+        let Some(windows_source) =
+            windows_source.filter(|source| source.matches_invocation(self.epoch, invocation))
+        else {
+            self.owner
+                .preview()
+                .remove(self.epoch, &binding_key(&binding));
+            return;
+        };
         let Some(operation_id) = invocation.operation_id() else {
             return;
         };
@@ -69,13 +88,15 @@ impl Session {
             Some(approved) => crate::preview::PreviewSubject::Native {
                 operation_id: operation_id.to_owned(),
                 target: approved.clone(),
+                execution: invocation.execution_correlation().clone(),
             },
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             None => crate::preview::PreviewSubject::NativeWindow {
                 operation_id: operation_id.to_owned(),
                 binding: binding.clone(),
+                execution: invocation.execution_correlation().clone(),
             },
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             None => return,
         };
         self.owner.preview().register(
@@ -90,7 +111,6 @@ impl Session {
                 windows_source,
                 binding,
                 subject,
-                execution: invocation.execution_correlation().clone(),
             }),
         );
     }

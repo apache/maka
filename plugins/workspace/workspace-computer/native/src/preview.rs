@@ -65,6 +65,10 @@ impl Authority {
     pub(super) fn execution(&self) -> &maka_agent_facts::durable::ExecutionIdentity {
         self.access.execution()
     }
+    pub(super) fn same_scope(&self, other: &Self) -> bool {
+        self.execution() == other.execution()
+            && self.access.permission_basis() == other.access.permission_basis()
+    }
     async fn current(&self, cancellation: &CancellationToken) -> Result<Arc<Computer>, ToolError> {
         if cancellation.is_cancelled()
             || self
@@ -98,15 +102,16 @@ impl PreviewAuthority for Authority {
                 PreviewSubject::Native {
                     operation_id,
                     target,
+                    execution,
                 } => {
-                    this.access.native_current().await?;
+                    this.access.native_current(&execution).await?;
                     let status = this.access.app_status(&operation_id, &target).await?;
                     if !status.granted || status.stopped {
                         return Err(failed("Computer preview app stopped or revoked"));
                     }
                 }
-                PreviewSubject::NativeWindow { .. } => {
-                    this.access.native_current().await?;
+                PreviewSubject::NativeWindow { execution, .. } => {
+                    this.access.native_current(&execution).await?;
                 }
                 PreviewSubject::Browser { access: browser } => {
                     let origin = browser
@@ -346,14 +351,17 @@ async fn watch_stage(
     context: &Context,
 ) -> Result<Value, ToolError> {
     let mut last = None;
-    let mut pulse = tokio::time::interval(Duration::from_millis(200));
+    let period = Duration::from_secs(1);
+    let mut pulse = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     pulse.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        tokio::select! { biased;
-            () = context.scope().cancellation.cancelled() => break,
-            () = owner.stopping.cancelled() => break,
-            _ = pulse.tick() => {},
-        }
+        let activity = owner.sessions.preview_changed.notified();
+        tokio::pin!(activity);
+        activity.as_mut().enable();
+        let mut registry = owner
+            .sessions
+            .preview_epoch(session)
+            .map(|epoch| epoch.preview.subscribe());
         let value = stage(owner, session, &context.scope().cancellation).await?;
         if last.as_ref() != Some(&value) {
             tokio::select! { biased;
@@ -362,6 +370,19 @@ async fn watch_stage(
                 result = context.emit(serde_json::to_value(&value).map_err(failed)?) => result.map_err(failed)?,
             }
             last = Some(value);
+        }
+        // Push known source changes; audit external liveness when no capture observes it.
+        tokio::select! { biased;
+            () = context.scope().cancellation.cancelled() => break,
+            () = owner.stopping.cancelled() => break,
+            () = &mut activity => {},
+            _ = async {
+                match registry.as_mut() {
+                    Some(changes) => { let _ = changes.changed().await; },
+                    None => std::future::pending::<()>().await,
+                }
+            } => {},
+            _ = pulse.tick() => {},
         }
     }
     serde_json::to_value(last.unwrap_or(StageSnapshot {

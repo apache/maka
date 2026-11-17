@@ -215,17 +215,9 @@ impl NativeOwner {
 }
 
 async fn verify_binding(binding: crate::ComputerAppBinding) -> Result<(), ToolError> {
-    tokio::task::spawn_blocking(move || {
-        if crate::identity::process(binding.pid)? != binding.process_generation
-            || platform_windows::win32::windows::window_owner_pid(binding.window_id)
-                != Some(binding.pid)
-        {
-            return Err(failed("native presentation window identity changed"));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(failed)?
+    tokio::task::spawn_blocking(move || crate::windows_permission_subject::verify_binding(&binding))
+        .await
+        .map_err(failed)?
 }
 
 pub(super) async fn execute(

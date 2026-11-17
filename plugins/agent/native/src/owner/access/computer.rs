@@ -458,6 +458,9 @@ impl ComputerPreviewAccess for RetainedPreview {
     fn execution(&self) -> &ExecutionIdentity {
         &self.execution
     }
+    fn permission_basis(&self) -> PermissionBasis {
+        self.basis
+    }
     fn current(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>> {
         Box::pin(async move {
             let access = self.access()?;
@@ -525,8 +528,16 @@ impl ComputerPreviewAccess for RetainedPreview {
             Ok(())
         })
     }
-    fn native_current(&self) -> BoxFuture<'_, Result<(), ToolError>> {
+    fn native_current<'a>(
+        &'a self,
+        execution: &'a maka_computer_use::ExecutionCorrelation,
+    ) -> BoxFuture<'a, Result<(), ToolError>> {
         Box::pin(async move {
+            if execution.as_str() != self.execution.run_id.to_string() {
+                return Err(ToolError::Failed(
+                    "Computer preview execution changed".into(),
+                ));
+            }
             self.current().await?;
             let access = self.access()?;
             if preview_store(&access)?

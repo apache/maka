@@ -357,6 +357,7 @@ mod tests {
     {
         let gates = Arc::new(Gates::default());
         let subject = || PreviewSubject::NativeWindow {
+            execution: crate::ExecutionCorrelation::new("retained-execution").unwrap(),
             operation_id: "original-observation".into(),
             binding: crate::ComputerAppBinding {
                 pid: 7,

@@ -318,7 +318,6 @@ impl Capture for BrowserCapture {
         Box::pin(async move {
             let socket = capture.socket(authority.browser_effect_scope())?;
             check_input(&stop)?;
-            capture.verify(&socket).await?;
             authority.authorize(capture.subject(), stop.clone()).await?;
             capture.verify(&socket).await?;
             check_input(&stop)

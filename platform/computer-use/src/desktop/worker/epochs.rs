@@ -1647,6 +1647,7 @@ fn dispatch(
         }
         #[cfg(target_os = "windows")]
         Request::NativeInvoke { .. }
+        | Request::NativePresent { .. }
         | Request::NativeDiscardAudio { .. }
         | Request::NativeRetire { .. } => Err(failed(
             "native-only request requires its actual dedicated process",

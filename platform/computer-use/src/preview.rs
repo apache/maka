@@ -40,6 +40,7 @@ pub enum PreviewSubject {
     Native {
         operation_id: String,
         target: ComputerAppTarget,
+        execution: crate::ExecutionCorrelation,
     },
     Browser {
         access: BrowserAccess,
@@ -47,7 +48,18 @@ pub enum PreviewSubject {
     NativeWindow {
         operation_id: String,
         binding: crate::ComputerAppBinding,
+        execution: crate::ExecutionCorrelation,
     },
+}
+impl PreviewSubject {
+    pub(crate) fn native_execution(&self) -> Option<&crate::ExecutionCorrelation> {
+        match self {
+            Self::Native { execution, .. } | Self::NativeWindow { execution, .. } => {
+                Some(execution)
+            }
+            Self::Browser { .. } => None,
+        }
+    }
 }
 
 /// Implemented by the Host using its retained, actually admitted call. A subject

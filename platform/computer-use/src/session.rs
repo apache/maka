@@ -20,6 +20,8 @@
 mod native_computer;
 mod preview;
 
+#[cfg(target_os = "windows")]
+use crate::driver::native_computer::RawTool;
 use crate::{driver::Driver, protocol::*};
 use cua_driver_contract::{
     AppInfo, ListAppsOutput, ListWindowsOutput, WindowInfo, WindowStateOutput,
@@ -58,6 +60,8 @@ enum EpochState {
     Closed,
 }
 struct Target {
+    #[cfg(target_os = "windows")]
+    windows_source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
     #[cfg(target_os = "macos")]
     macos: Option<crate::macos::controller::Window>,
     #[cfg(target_os = "macos")]
@@ -803,6 +807,8 @@ impl Session {
                 self.targets.insert(
                     handle.clone(),
                     Target {
+                        #[cfg(target_os = "windows")]
+                        windows_source: None,
                         #[cfg(target_os = "macos")]
                         macos,
                         #[cfg(target_os = "macos")]
@@ -1349,6 +1355,8 @@ impl Session {
         #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
         let linux_observation: Option<CallResult> = None;
         let native_linux_ax = linux_observation.is_some();
+        #[cfg(target_os = "windows")]
+        let mut windows_source = None;
         let result = if let Some(result) = frozen_result {
             result
         } else if let Some(result) = linux_observation {
@@ -1360,6 +1368,22 @@ impl Session {
                 arguments.as_object_mut().unwrap().remove("max_elements");
                 arguments["full_output"] = json!(true);
             }
+            #[cfg(target_os = "windows")]
+            {
+                let call = self
+                    .raw_windows_tool(
+                        RawTool::GetWindowState,
+                        arguments,
+                        false,
+                        cancellation,
+                        language,
+                        invocation,
+                    )
+                    .await?;
+                windows_source = call.source;
+                call.value
+            }
+            #[cfg(not(target_os = "windows"))]
             self.invoke_native(
                 "get_window_state",
                 arguments,
@@ -1548,6 +1572,10 @@ impl Session {
         target.window = window;
         target.snapshot = Some(snapshot);
         target.capture = capture;
+        #[cfg(target_os = "windows")]
+        {
+            target.windows_source = windows_source;
+        }
         Ok(Value::Object(output))
     }
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -2208,6 +2236,32 @@ impl Session {
         };
         let native_window_pixels = cfg!(any(target_os = "linux", target_os = "macos"))
             && (args.get("x").is_some() || name == "drag");
+        #[cfg(target_os = "windows")]
+        let result = {
+            let tool = match name {
+                "click" => RawTool::Click,
+                "drag" => RawTool::Drag,
+                "scroll" => RawTool::Scroll,
+                "press_key" => RawTool::PressKey,
+                "type_text" => RawTool::TypeText,
+                "set_value" => RawTool::SetValue,
+                _ => unreachable!("validated Windows App action"),
+            };
+            self.raw_windows_tool(
+                tool,
+                args,
+                native_window_pixels,
+                cancellation,
+                language,
+                invocation,
+            )
+            .await
+            .map(|call| {
+                self.targets.get_mut(handle).unwrap().windows_source = call.source;
+                call.value
+            })
+        };
+        #[cfg(not(target_os = "windows"))]
         let result = if native_window_pixels {
             self.invoke_native_window_pixels(
                 name,

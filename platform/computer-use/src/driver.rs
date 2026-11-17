@@ -1230,12 +1230,9 @@ impl Driver {
             current.admit_epoch(capture.native_epoch)?;
             current.native_owner.clone()
         };
-        let source = capture.windows_source.as_ref().ok_or_else(|| {
-            ToolError::Failed("native presentation has no accepted source".into())
-        })?;
         owner
             .present(
-                source,
+                &capture.windows_source,
                 &capture.binding,
                 capture.subject.clone(),
                 authority,

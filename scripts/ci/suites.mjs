@@ -331,6 +331,7 @@ export const suites = {
     filter: [
       'test(macos::controller::tests::)',
       'test(macos::tcc::tests::)',
+      'test(windows_permission_subject::tests::)',
       'test(system_permission::process::tests::)',
       'test(desktop::worker::macos::tests::)',
     ].join(' | '),

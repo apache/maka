@@ -88,6 +88,7 @@ impl Producer {
             authority
                 .authorize(
                     PreviewSubject::NativeWindow {
+                        execution: crate::ExecutionCorrelation::new("actual-execution").unwrap(),
                         operation_id: "actual-operation".into(),
                         binding: crate::ComputerAppBinding {
                             pid: 7,
@@ -116,6 +117,7 @@ impl Capture for Arc<Producer> {
             authority
                 .authorize(
                     PreviewSubject::NativeWindow {
+                        execution: crate::ExecutionCorrelation::new("actual-execution").unwrap(),
                         operation_id: "actual-operation".into(),
                         binding: crate::ComputerAppBinding {
                             pid: 7,

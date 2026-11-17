@@ -165,6 +165,18 @@ pub(crate) struct NativePresentationSource {
     generation: NativeGeneration,
     key: NativeKey,
 }
+impl NativePresentationSource {
+    pub(crate) fn matches_invocation(
+        &self,
+        epoch: NativeEpochId,
+        invocation: &crate::InvocationContext<'_>,
+    ) -> bool {
+        self.key.epoch == epoch.to_string()
+            && self.key.session == invocation.session()
+            && self.key.turn == invocation.turn()
+            && self.key.execution == *invocation.execution_correlation()
+    }
+}
 
 pub(crate) struct NativeReply {
     pub source: NativePresentationSource,

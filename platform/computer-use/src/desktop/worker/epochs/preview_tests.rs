@@ -43,6 +43,7 @@ impl Capture for Pixels {
             authority
                 .authorize(
                     PreviewSubject::NativeWindow {
+                        execution: crate::ExecutionCorrelation::new("retained-execution").unwrap(),
                         operation_id: "retained-operation".into(),
                         binding: crate::ComputerAppBinding {
                             pid: 7,
@@ -71,6 +72,7 @@ impl Capture for Pixels {
     ) -> crate::AuthorizationFuture {
         authority.authorize(
             PreviewSubject::NativeWindow {
+                execution: crate::ExecutionCorrelation::new("retained-execution").unwrap(),
                 operation_id: "retained-operation".into(),
                 binding: crate::ComputerAppBinding {
                     pid: 7,
@@ -215,12 +217,17 @@ async fn preview_rpc_is_owner_session_epoch_scoped_and_retirement_rejects_late_p
             request:
                 BrowserAuthorizationRequest::Preview(
                     super::super::preview::AuthorizationRequest::Subject(
-                        PreviewSubject::NativeWindow { operation_id, .. },
+                        PreviewSubject::NativeWindow {
+                            operation_id,
+                            execution,
+                            ..
+                        },
                     ),
                 ),
             reply,
         } => {
             assert_eq!(operation_id, "retained-operation");
+            assert_eq!(execution.as_str(), "retained-execution");
             reply.send(Err(Failure::Failed("revoked".into()))).unwrap();
         }
         _ => panic!("preview asked for something other than its readonly Host check"),

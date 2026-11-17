@@ -112,9 +112,13 @@ pub trait SessionAudioRetention: Send + Sync {
 /// original-call capsule or work lease can be obtained from this interface.
 pub trait ComputerPreviewAccess: Send + Sync {
     fn execution(&self) -> &maka_agent_facts::durable::ExecutionIdentity;
+    fn permission_basis(&self) -> maka_sandbox::workspace::PermissionBasis;
     fn current(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>>;
     fn granted<'a>(&'a self, target: &'a GrantTarget) -> BoxFuture<'a, Result<(), ToolError>>;
-    fn native_current(&self) -> BoxFuture<'_, Result<(), ToolError>>;
+    fn native_current<'a>(
+        &'a self,
+        execution: &'a maka_computer_use::ExecutionCorrelation,
+    ) -> BoxFuture<'a, Result<(), ToolError>>;
     /// Read-only status of an observed app in this exact execution and current
     /// permission basis, independent of the observing call's input obligation.
     /// This cannot request consent or authorize native input.

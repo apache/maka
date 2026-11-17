@@ -295,9 +295,12 @@ async fn retained_preview_after_input(stop: bool) {
         );
         input.run_current().await?;
         let revision = driver.state.frontier(execution.run_id).await?.revision;
+        let producer = maka_computer_use::ExecutionCorrelation::new(execution.run_id.to_string()).unwrap();
+        let other = maka_computer_use::ExecutionCorrelation::new("another-execution").unwrap();
+        assert!(matches!(preview.native_current(&other).await, Err(ToolError::Failed(_))));
         for _ in 0..3 {
             preview.granted(&target).await?;
-            preview.native_current().await?;
+            preview.native_current(&producer).await?;
         }
         assert_eq!(
             driver.state.frontier(execution.run_id).await?.revision,

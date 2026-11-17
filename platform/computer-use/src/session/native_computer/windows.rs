@@ -414,7 +414,7 @@ impl Session {
         Ok(call.map(|_| Value::Null))
     }
 
-    async fn raw_windows_tool(
+    pub(in crate::session) async fn raw_windows_tool(
         &self,
         tool: RawTool,
         arguments: Value,

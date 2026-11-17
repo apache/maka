@@ -32,6 +32,7 @@ pub(super) struct Sessions {
     pub input: Arc<tokio::sync::Mutex<()>>,
     pub driver: Arc<tokio::sync::Mutex<maka_computer_use::Driver>>,
     effects_changed: Arc<tokio::sync::Notify>,
+    pub(super) preview_changed: tokio::sync::Notify,
     tasks: tokio_util::task::TaskTracker,
 }
 pub(super) struct Interaction {
