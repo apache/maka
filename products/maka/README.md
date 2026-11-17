@@ -17,32 +17,52 @@
   under the License.
 -->
 
-# Maka product
+# Maka Product
 
 [简体中文](README.zh-CN.md)
 
-This directory turns reusable plugins and platform owners into the Maka application.
+`products/maka/` wires [platform](../../platform/README.md) runtimes and [plugins](../../plugins/README.md) into the shipped `maka` CLI, ACP server, and terminal/desktop workbench executables.
 
-| Directory | Role |
-| --- | --- |
-| [bundle](bundle/README.md) | Select packages and author Host/UI compositions |
-| [native](native/README.md) | Select compiled Host factories |
-| [cli](cli/README.md) | Start the terminal product and expose CLI commands |
-| [desktop-shell](desktop-shell/README.md) | Run the workbench in a desktop window against public Host services |
-| [acp](acp/README.md) | Serve editor clients over ACP |
+| Directory | Crate / Package | Role |
+| --- | --- | --- |
+| [`bundle/`](bundle/README.md) | `@maka-agent/product` | Selects built-in plugin packages and authors the default Host + UI composition |
+| [`native/`](native/src/lib.rs) | `maka-product-native` | Registers compiled Rust `HostService` factories available to deployments |
+| [`client/`](client/src/lib.rs) | `maka-app-client` | Typed Rust client helpers over public Host services |
+| [`workbench/`](workbench/package.ts) | `maka-workbench` | Shared TSX/NSH UI package (`app/App.tsx`) and native NSH host bindings (`src/bindings.rs`) |
+| [`terminal-shell/`](terminal-shell/src/lib.rs) | `maka-terminal-shell` | Runs the NSH workbench inside the terminal (Unicode cell grid or terminal graphics) |
+| [`desktop-shell/`](desktop-shell/src/main.rs) | `maka-desktop-shell` | Runs the same NSH workbench in a native OS window (AppKit on macOS, Direct2D on Windows, GTK on Linux) |
+| [`acp/`](acp/src/lib.rs) | `maka-acp` | Exposes Maka sessions to external editors and clients over the Agent Client Protocol |
+| [`cli/`](cli/src/main.rs) | `maka-cli` | Builds the `maka` binary: terminal entry, Host daemon (`host serve`), `desktop` launcher, `acp`, `sandbox`, `browser`, and `application` commands |
 
-Run `just run` from the repository root. Development build and check recipes depend on `just setup`, which reuses the installed JavaScript dependencies while their lockfile, workspace manifests and patches remain unchanged. Cargo compiles the selected plugins and shared workbench and embeds them in the CLI, in both debug and release builds. Rebuild after editing those sources; a separate product build is unnecessary.
+## Running and testing
 
-Build the CLI, desktop shell and Python worker with `just build` (`--release` and `--target` are supported). `--release` builds for the local system; explicit Linux release targets use Zig and the distribution’s glibc floor. Add `--timings` to record Cargo build timings. Both build and run honor Cargo’s configured artifact directory, including `CARGO_TARGET_DIR`; on macOS the shell is staged in `Maka.app`. Run `target/debug/maka desktop` to initialize or reopen the business Host at `~/.maka/application/host` and launch the desktop from any working directory; `--root HOST_ROOT` selects another Root. The launcher verifies its endpoint and epoch and retains its own client until the child exits; then it detaches, and the Host finishes the work it accepted.
+From the repository root:
 
-In the terminal interface, choose the shared language under **Settings → Appearance → Language**. It saves automatically in the business Root, separately from each terminal interface’s theme and custom colors. Other open terminal interfaces refresh their language when revisiting settings or using an explicit refresh; saving does not broadcast continuous updates. Previous per-interface language choices must be selected once again; appearance data is retained.
+```sh
+just setup
+just run                      # Launch terminal workbench (~/.maka/application/host)
+just build --release          # Build maka + maka-desktop-shell (stages Maka.app on macOS)
+target/release/maka desktop   # Open native desktop window
+```
 
-This preference also selects builtin Agent instructions for new work in existing conversations. Already accepted work retains its language; user content and custom instructions remain unchanged.
+Both debug and release `maka-cli` builds compile and embed the current plugin bundle and NSH workbench automatically. Vendored NSH crates live in [`third-party/nsh`](../../third-party/nsh/SOURCE.md) and build inline with Cargo.
 
-Sending during a response steers the current work in both Direct Mode and Code Mode. The send menu also offers **Add to queue** for a separate turn. Stop remains available beside Send. Sending frees the editor for a new draft; any failed message stays nearby for recovery or retry. Steering interrupts the current model request and tool observation, while already dispatched tools retain their original execution and later report their results.
+Targeted verification commands:
 
-Script automations run JavaScript or TypeScript using Maka's embedded Deno runtime from the conversation's working directory with its process sandbox. Print `true` or `false` on the last line of stdout. A change to `true` triggers the automation. Imports can use `npm:`, `jsr:`, and `node:`. Dependency downloads use the conversation’s network permissions.
+```sh
+# Workbench UI and Rust binding tests
+node --test products/maka/workbench/tests/*.test.mjs
+cargo nextest run -p maka-workbench
 
-**Settings → General → Message predictions** controls optional next-message suggestions. Predictions use the conversation's model and reasoning settings and extend its original model-request prefix. An unstarted prediction is skipped if the composer contains a draft or attachment; a prediction already in progress can finish. Accept a suggestion with Tab, Right Arrow, Enter or the suggestion button to put it in the draft; it is never sent automatically. Escape dismisses it, and normal typing or input-method composition hides the preview. Tab navigates normally when no prediction is visible; Shift+Tab always navigates backward. The settings table lets you change how often predictions run after a reply or when opening a conversation, customize the instructions, and restore the localized defaults.
+# Terminal CLI entrypoint checks
+cargo nextest run -p maka-cli --no-default-features --test integration -E 'test(terminal_shell::)'
 
-Bundled packages are installation inputs. Reopening an existing installation uses its committed source and package bytes; rebuilding the checkout does not overwrite a user's composition.
+# Offscreen native desktop integration tests (macOS / Windows, or `just test-desktop`)
+cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test native-desktop -E 'test(terminal::desktop_new_session::)'
+```
+
+## Computer Stage
+
+The conversation shows live cards for the admitted Computer targets. Drag the front card to a corner, select a rear card to promote it, or Pin/Follow the target. The front card presents the original bound native window or browser window for OS interaction. Clicking exposed Maka content brings Maka forward while the card stays in its corner. Hide/Show controls the viewer without stopping the producer.
+
+Preview remains read-only, bounded and temporary. Presentation is a separate client mutation; the UI does not forward screenshot coordinates, synthesize keyboard input or choose a PID/window/tab.

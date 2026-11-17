@@ -393,6 +393,14 @@ impl Rig {
             maka_files_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
         }
+        let primary_agent = store
+            .load_application(deployment)
+            .await?
+            .ok_or("test deployment missing")?
+            .source()
+            .input
+            .instances["agent"]
+            .key;
         let capture = self.captured.clone();
         let completion_gate = self.completion_gate.clone();
         let helper = std::env::current_exe()?;
@@ -413,7 +421,9 @@ impl Rig {
                                 Some(observe) => owner.with_model_observation(observe),
                                 None => owner,
                             };
-                            *capture.lock().unwrap() = Some(owner.clone());
+                            if owner.run_owner().namespace == InstanceId(vec![primary_agent]) {
+                                *capture.lock().unwrap() = Some(owner.clone());
+                            }
                             let service = Arc::new(crate::service::Agent(owner));
                             NativeActivation {
                                 exports: Ok(BTreeMap::from([(
@@ -437,6 +447,12 @@ impl Rig {
         )?;
         let methods: &[&str] = if model_test {
             &[
+                "memories",
+                "memory",
+                "memoryHistory",
+                "memoryEvidence",
+                "memorySource",
+                "changeMemory",
                 "presets",
                 "preset",
                 "createPreset",
@@ -449,6 +465,7 @@ impl Rig {
                 "interaction",
                 "respond",
                 "create",
+                "continuationAvailability",
                 "continueRun",
                 "models",
                 "observe",
@@ -460,6 +477,7 @@ impl Rig {
                 "compact",
                 "selectBackend",
                 "execution",
+                "stop",
                 "send",
                 "uploadAttachment",
                 "work",
@@ -485,6 +503,8 @@ impl Rig {
                 "search",
                 "fork",
                 "list",
+                "continuationAvailability",
+                "continueRun",
                 "execution",
                 "stop",
                 "goal",
@@ -512,6 +532,17 @@ impl Rig {
         )]);
         if model_test {
             endpoints.insert(
+                "receipts".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "receipts".into(),
+                    grant: Grant {
+                        methods: ["read".into()].into(),
+                        recovery: true,
+                    },
+                },
+            );
+            endpoints.insert(
                 "web".into(),
                 HostEndpoint {
                     consumer: InstanceId(vec![gateway_key]),
@@ -532,9 +563,30 @@ impl Rig {
                             "assistantPreferences".into(),
                             "connections".into(),
                             "create".into(),
+                            "update".into(),
                             "updateAssistantPreferences".into(),
                         ]
                         .into(),
+                        recovery: false,
+                    },
+                },
+            );
+        }
+        if model_test
+            && store
+                .load_application(deployment)
+                .await?
+                .is_some_and(|loaded| loaded.source().input.instances.contains_key("memory_peer"))
+        {
+            endpoints.insert(
+                "memory_peer".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "memory_peer".into(),
+                    grant: Grant {
+                        methods: ["create", "memory", "changeMemory"]
+                            .map(String::from)
+                            .into(),
                         recovery: false,
                     },
                 },
@@ -3125,6 +3177,7 @@ mod source_recovery {
 
 mod model_recovery {
     mod bot_tools;
+    mod memory;
     mod predictions;
     mod preset_acceptance;
     mod presets;
@@ -3136,17 +3189,17 @@ mod model_recovery {
 
     const CHILD_ENV: &str = "MAKA_NATIVE_MODEL_RECOVERY_CHILD";
     #[derive(serde::Serialize, serde::Deserialize)]
-    struct Boot {
-        deployment: Uuid,
-        agent: Uuid,
-        settings: Uuid,
-        gateway: Uuid,
+    pub(super) struct Boot {
+        pub(super) deployment: Uuid,
+        pub(super) agent: Uuid,
+        pub(super) settings: Uuid,
+        pub(super) gateway: Uuid,
         #[serde(default)]
-        web: Option<Uuid>,
-        source: Value,
-        base_url: String,
+        pub(super) web: Option<Uuid>,
+        pub(super) source: Value,
+        pub(super) base_url: String,
         #[serde(default)]
-        replay: bool,
+        pub(super) replay: bool,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Frozen {
@@ -3183,7 +3236,7 @@ mod model_recovery {
             RootStore::open(Arc::new(owner), &migrations).await?,
         ))
     }
-    async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
+    pub(super) async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
         bootstrap_with(base, base_url, |config| config["todo"] = json!(todo)).await
     }
     async fn bootstrap_with(
@@ -3212,6 +3265,12 @@ mod model_recovery {
             }]);
         }
         configure(&mut configuration);
+        let memory_peer = configuration
+            .as_object_mut()
+            .unwrap()
+            .remove("memoryTestPeer")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -3253,37 +3312,64 @@ mod model_recovery {
             maka_settings_native::native(),
             BTreeMap::new(),
         )?;
-        let client = package(
-            "maka.tests.model-client",
-            gateway_native(),
-            BTreeMap::from([
-                (
-                    "web".into(),
-                    Import {
-                        contract: maka_web_api::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-                (
-                    "agent".into(),
-                    Import {
-                        contract: maka_agent_api::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-                (
-                    "settings".into(),
-                    Import {
-                        contract: maka_settings_native::contract::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                ),
-            ]),
+        let receipts = package(
+            "maka.tests.memory-receipts",
+            maka_host_runtime::application::operations::native(),
+            BTreeMap::new(),
         )?;
-        let input = Input {
+        let mut client_imports = BTreeMap::from([
+            (
+                "receipts".into(),
+                Import {
+                    contract: maka_plugin_core::operation::receipt_reader_contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "web".into(),
+                Import {
+                    contract: maka_web_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "agent".into(),
+                Import {
+                    contract: maka_agent_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+            (
+                "settings".into(),
+                Import {
+                    contract: maka_settings_native::contract::contract(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+        ]);
+        if memory_peer {
+            client_imports.insert(
+                "memory_peer".into(),
+                Import {
+                    contract: maka_agent_api::contract(),
+                    cardinality: Cardinality::One,
+                },
+            );
+        }
+        let client = package("maka.tests.model-client", gateway_native(), client_imports)?;
+        let mut input = Input {
             base: None,
             ui: None,
             instances: BTreeMap::from([
+                (
+                    "receipts".into(),
+                    node(
+                        Uuid::new_v4(),
+                        receipts.application_ref(),
+                        json!({}),
+                        BTreeMap::new(),
+                    ),
+                ),
                 (
                     "files".into(),
                     node(
@@ -3339,6 +3425,13 @@ mod model_recovery {
                         json!({}),
                         BTreeMap::from([
                             (
+                                "receipts".into(),
+                                vec![Target::Instance {
+                                    path: vec!["receipts".into()],
+                                    export: "Receipts".into(),
+                                }],
+                            ),
+                            (
                                 "web".into(),
                                 vec![Target::Instance {
                                     path: vec!["web".into()],
@@ -3364,6 +3457,18 @@ mod model_recovery {
                 ),
             ]),
         };
+        if memory_peer {
+            let mut peer = input.instances["agent"].clone();
+            peer.key = Uuid::new_v4();
+            input.instances.insert("memory_peer".into(), peer);
+            input.instances.get_mut("client").unwrap().bindings.insert(
+                "memory_peer".into(),
+                vec![Target::Instance {
+                    path: vec!["memory_peer".into()],
+                    export: "agent".into(),
+                }],
+            );
+        }
         let store = root(base, true).await?;
         store
             .commit_application(
@@ -3371,7 +3476,7 @@ mod model_recovery {
                 0,
                 input,
                 vec![],
-                vec![agent, settings, client, files, web],
+                vec![agent, settings, client, files, web, receipts],
             )
             .await?;
         let loaded = store
@@ -3382,7 +3487,7 @@ mod model_recovery {
         store.shutdown().await?;
         Ok(boot)
     }
-    async fn attach(rig: &mut Rig, boot: &Boot) -> TestResult<()> {
+    pub(super) async fn attach(rig: &mut Rig, boot: &Boot) -> TestResult<()> {
         let store = root(rig.directory.path(), false).await?;
         let loaded = store
             .load_application(boot.deployment)
@@ -3456,7 +3561,7 @@ mod model_recovery {
                 cleanup?;
                 result?
             }
-            _ => return Err("unexpected test service reply variant".into()),
+            reply => return Err(format!("{endpoint}.{method}: unexpected reply {reply:?}").into()),
         };
         call.close().await?;
         Ok(value)
@@ -5556,6 +5661,64 @@ mod replay_origin_regressions {
             "compaction origin regression failed: {result:?}"
         );
         assert!(cleanup.is_empty(), "compaction fixture did not settle");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn codex_compaction_checkpoint_satisfies_continuation_replay_boundary() {
+        let mut rig = Rig::new().expect("owned fixture");
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let current = model(&rig, "model-a", Some("4000")).await?;
+            let origin = ReplayOrigin::observed(
+                "model-a",
+                current.context.as_ref().and_then(|value| value.codex.as_ref()),
+            );
+            let checkpoint = Message::Assistant {
+                content: vec![AssistantPart::CodexCompaction {
+                    item: json!({"type":"compaction","id":"cp-1","encrypted_content":"opaque-4000"}),
+                }],
+                provider_options: None,
+            };
+            let mut checkpoint_only = builder(&rig).await?;
+            append_observed(&mut checkpoint_only, checkpoint.clone(), origin.clone()).await?;
+            assert!(!checkpoint_only.needs_continuation_cue());
+            let prompt = finish(&rig, checkpoint_only, &current, ModelOperation::Inference).await?;
+            maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;
+            prompt.close().await?;
+
+            let mut with_partial = builder(&rig).await?;
+            append_observed(&mut with_partial, checkpoint, origin).await?;
+            with_partial
+                .append(Message::Assistant {
+                    content: vec![AssistantPart::Text {
+                        text: "Half output".into(),
+                        provider_options: None,
+                    }],
+                    provider_options: None,
+                })
+                .await?;
+            assert!(with_partial.needs_continuation_cue());
+            crate::owner::driver_model::append_continuation_cue(Language::ZhCn, &mut with_partial)
+                .await?;
+            assert!(!with_partial.needs_continuation_cue());
+            let prompt = finish(&rig, with_partial, &current, ModelOperation::Inference).await?;
+            maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;
+            prompt.close().await?;
+
+            let driver = rig.driver.as_ref().ok_or("driver missing")?;
+            let r0 = driver.access.execution().run_id;
+            rig.append(vec![Fact::RunTerminated { terminal: Terminal::Cancelled, diagnostic: None }], vec![]).await?;
+            let view = driver.state.frontier(r0).await?;
+            let history = driver.state.session_history(view.spec.owner, session);
+            assert_eq!(history.continuation_source(r0, view.revision).await?.base, history.capture_before(r0).await?);
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+        assert!(cleanup.is_empty());
     }
 }
 

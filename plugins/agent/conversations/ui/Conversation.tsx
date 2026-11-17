@@ -270,6 +270,7 @@ export type ConversationHandle = Omit<
   'attachments' | 'modelDetails' | 'permissions' | 'projectMcp' | 'completion' | 'checklist'
 > & {
   attachments: AttachmentDraft;
+  sendExternalPrompt(text: string): boolean;
   goal: ReturnType<typeof createSessionGoal>;
   modelDetails(): ModelDetails;
   permissions: ReturnType<typeof createSessionPermissions>;
@@ -338,6 +339,7 @@ type ConversationProps = {
   foreground(): boolean;
   browser(): BrowserHeader;
   files?(): void;
+  changes?(): void;
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
@@ -440,6 +442,7 @@ export function Conversation(props: ConversationProps) {
   );
   const toolProgress = (id: string) => toolProgressById().get(id) ?? null;
   const compacting = signal<AgentCompactionProgress | null>(null);
+  const latestRunId = signal<RunId | null>(null);
   const execution = signal<AgentExecution | null>(null);
   const continuing = signal(false);
   const confirmingContinuation = () => continuing() || props.continuationPending();
@@ -1123,8 +1126,7 @@ export function Conversation(props: ConversationProps) {
           (row?.role === 'compaction' && turn.foldedWork) ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
-          (row?.role === 'failure' &&
-            (platform.idiom !== 'terminal' || outcome === 'completed' || foldedWork))) &&
+          (row?.role === 'failure' && (outcome === 'completed' || foldedWork))) &&
         !summaries.has(turn.turnKey) &&
         (platform.idiom !== 'terminal' || outcome !== null || foldedWork)
       ) {
@@ -1898,6 +1900,7 @@ export function Conversation(props: ConversationProps) {
       });
       if (trigger === 'live') predictionTriggerTurn = completedTurn;
       metrics.set(observed.metrics ?? null);
+      latestRunId.set(observed.latestRunId ?? observed.run?.runId ?? null);
       if (observed.run) {
         run.set(observed.run.state);
         runId.set(observed.run.runId);
@@ -1906,7 +1909,7 @@ export function Conversation(props: ConversationProps) {
       } else if (runId() === null) {
         // Exact execution reads below distinguish terminal history from a Run
         // whose current activation is simply absent.
-        run.set(rows().length === 0 ? 'idle' : 'loading');
+        run.set(rows().length === 0 && !observed.latestRunId ? 'idle' : 'loading');
       }
       compacting.set(observed.compacting);
       messagePrediction.source(
@@ -2064,6 +2067,7 @@ export function Conversation(props: ConversationProps) {
             lastCompletedTurn.set(null);
             messagePrediction.source(null, 'live');
             run.set('admitted');
+            latestRunId.set(event.runId);
             runId.set(event.runId);
             runBackend.set(null);
             runTurn.set(event.turnId);
@@ -2093,6 +2097,7 @@ export function Conversation(props: ConversationProps) {
             predictionTriggerTurn = completedTurn;
             lastCompletedTurn.set(completedTurn);
             run.set('loading');
+            latestRunId.set(event.runId);
             runId.set(null);
             runBackend.set(null);
             compacting.set(null);
@@ -2695,7 +2700,7 @@ export function Conversation(props: ConversationProps) {
     const active = runId();
     if (active !== null) return active;
     if (!atHistoryTail() || (historyWindow()?.through ?? -1) < readState().through) return null;
-    return rows().findLast((row) => row.runId !== undefined)?.runId ?? null;
+    return latestRunId() ?? rows().findLast((row) => row.runId !== undefined)?.runId ?? null;
   });
   const acceptExecution = (value: AgentExecution) => {
     if (value.sessionId !== sessionId) throw new UiError('Host observed a different session.');
@@ -2713,6 +2718,7 @@ export function Conversation(props: ConversationProps) {
       }
     } else {
       // No live handle does not prove failure: a durable wait/blocker remains active.
+      latestRunId.set(value.runId);
       runId.set(value.runId);
       runTurn.set(value.turnId);
       switch (value.state.kind) {
@@ -2750,7 +2756,7 @@ export function Conversation(props: ConversationProps) {
       current = false;
     };
   });
-  const continuation = computed<ComposerContinuation | null>(() => {
+  const continuationCandidate = computed<ComposerContinuation['source'] | null>(() => {
     const source = execution();
     if (
       !ready() ||
@@ -2764,6 +2770,61 @@ export function Conversation(props: ConversationProps) {
       source.runId !== executionSource() ||
       !terminal(source) ||
       source.state.kind === 'completed'
+    )
+      return null;
+    return source;
+  });
+  const continuationReady = signal<{ runId: RunId; highWater: number } | null>(null);
+  effect(() => {
+    const candidate = continuationCandidate();
+    workspace();
+    executionRevision();
+    readState().through;
+    let current = true;
+    untracked(() => {
+      if (!candidate) {
+        continuationReady.set(null);
+        return;
+      }
+      if (
+        continuationReady()?.runId !== candidate.runId ||
+        continuationReady()?.highWater !== candidate.highWater
+      )
+        continuationReady.set(null);
+      void host
+        .query('agent', 'continuationAvailability', { sessionId, runId: candidate.runId })
+        .then((result) => {
+          if (
+            !alive ||
+            !current ||
+            continuationCandidate()?.runId !== candidate.runId ||
+            continuationCandidate()?.highWater !== candidate.highWater
+          )
+            return;
+          if (
+            result.kind === 'ready' &&
+            result.source.runId === candidate.runId &&
+            result.source.highWater === candidate.highWater
+          )
+            continuationReady.set({ runId: candidate.runId, highWater: candidate.highWater });
+          else continuationReady.set(null);
+        })
+        .catch(() => {
+          if (alive && current) continuationReady.set(null);
+        });
+    });
+    return () => {
+      current = false;
+    };
+  });
+  const continuation = computed<ComposerContinuation | null>(() => {
+    const source = continuationCandidate();
+    const verified = continuationReady();
+    if (
+      !source ||
+      !verified ||
+      verified.runId !== source.runId ||
+      verified.highWater !== source.highWater
     )
       return null;
     return { source };
@@ -3382,6 +3443,52 @@ export function Conversation(props: ConversationProps) {
       return;
     void send(text, expectedBackend, false, delivery);
   };
+  const sendExternalPrompt = (text: string): boolean => {
+    if (!alive || !text.trim()) return false;
+    if (sendBlockedReason()) {
+      notice.set(
+        uiMessage(
+          'This message was not sent. Your draft is kept; check the status below before trying again.',
+        ),
+      );
+      return false;
+    }
+    const delivery: 'steer' | 'queue' = 'steer';
+    if (modelLoading(delivery)) return false;
+    let selected: ReturnType<typeof sendSelection>;
+    try {
+      selected = sendSelection(delivery, backend() ?? undefined);
+    } catch (reason) {
+      report(reason, 'Could not send the message.');
+      return false;
+    }
+    const savedComposerEdit: AttachmentEdit & { text: string } = {
+      text: draft(),
+      ...attachments.snapshot(),
+    };
+    const externalEdit: AttachmentEdit & { text: string } = {
+      text,
+      attachments: [],
+      settledUploads: [],
+    };
+    const frozen: FrozenSend = {
+      id: `draft-send-${++sendSequence}`,
+      text,
+      files: [],
+      edit: externalEdit,
+      selection: selected,
+    };
+    pendingDraft = externalEdit;
+    heldDraft = savedComposerEdit;
+    holding = true;
+    error.set('');
+    if (props.compact) {
+      if (compactStart() === null) compactStart.set(latestQuestionKey());
+      followCompact = true;
+    }
+    void freezeSend(frozen);
+    return true;
+  };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
   const messagePrediction = createMessagePrediction({
@@ -3540,6 +3647,7 @@ export function Conversation(props: ConversationProps) {
       void send(event.text);
     },
     sendRendered,
+    sendExternalPrompt,
     run: runId,
     activeTurn: runTurn,
     activityTurn: () => {
@@ -4369,6 +4477,7 @@ export function Conversation(props: ConversationProps) {
         commands={props.commands}
         browser={props.browser()}
         files={props.files}
+        changes={props.changes}
         filesOpener={props.filesOpener}
         actions={
           bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (

@@ -29,6 +29,7 @@ mod patch;
 pub mod path;
 pub mod publication;
 mod scoped;
+pub mod symbols;
 pub mod workspace;
 pub mod worktree;
 mod write;

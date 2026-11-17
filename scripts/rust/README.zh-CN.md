@@ -17,25 +17,21 @@
   under the License.
 -->
 
-# Native build tooling
+# 原生构建与 CI 工具链
 
 [English](README.md)
 
-这些脚本从指定源码构建原生包及 npm 启动器。对外构建与发布顺序见 [packages/cli](../../packages/cli/README.zh-CN.md)。
+`scripts/rust/` 与 `scripts/ci/` 负责跨平台原生打包、V8 预编译缓存、第三方许可证审计以及 CI 测试套件编排。完整发包命令顺序见 [`packages/cli`](../../packages/cli/README.zh-CN.md)。
 
-macOS 原生打包需要 Xcode 26 或更新版本。Linux 需要 GLib、X11/XCB、xkbcommon、Wayland、Fontconfig 和 FreeType 开发文件，以及 cargo-zigbuild 与 Zig。[原生 CI 工作流](../../.github/workflows/npm-publication.yml)记录构建环境。
+## 编译环境与 V8 预编译包
 
-Rust 构建需要 libclang 来生成 SQLite preupdate-hook 绑定，即使已有 V8 缓存包也需要。
+- **macOS** — 需要 Xcode 26+ 以及 `libclang`（用于生成 SQLite preupdate-hook 绑定）。
+- **Linux** — 需要 GLib、X11/XCB、`xkbcommon`、Wayland、Fontconfig、FreeType 开发头文件、`libclang`、`cargo-zigbuild` 与 Zig（具体环境对齐 [`.github/workflows/npm-publication.yml`](../../.github/workflows/npm-publication.yml)）。
+- **V8 缓存** — Release 构建按 [`v8-prebuilts.json`](v8-prebuilts.json) 下载关闭了 LGPL glibc 数学库的预编译 V8 静态库并缓存至 `target/v8`（或 `$CARGO_TARGET_DIR/v8`），校验 SHA-256 摘要后复用；若未命中锁定配置则会回退到耗时的 V8 源码编译（需 Python、Git 与 Clang/libclang 19+）。
 
-发布包使用关闭可选 LGPL glibc 数学代码的固定 V8 构建。完成的库、绑定和 notices 缓存在 `target/v8` 或 `$CARGO_TARGET_DIR/v8`。缓存未命中时，构建器下载 [v8-prebuilts.json](v8-prebuilts.json)指定的包并校验摘要。缓存损坏或固定来源失效会直接报错；没有对应固定来源时才从源码构建。源码构建还需要 Python、Git、Clang/libclang 19 或更新版本、C++ 工具链，以及较多磁盘空间和时间。
+## 依赖与许可证清单
 
-缓存键标识 V8 源码、目标、特性和生成代码。新增键时，使用已完成原生工作流输出的精确归档，将其发布为带版本的依赖预发布资产，再把 URL、哈希和验证依据写入 manifest。保留已有资产及键的含义。每个包仍执行原生链接和 smoke 检查。
-
-原生 agent 直接执行已安装的 CLI 命令；原生包不包含外部 agent CLI 或 JavaScript worker 运行时。
-
-PR CI 通过 `node scripts/rust/notices.mjs check-reviewed` 核对 Maka 的五平台 Cargo 依赖；发行 `check --target TRIPLE` 核对所选目标。
-
-依赖变更后执行：
+增删改 Cargo 依赖或前端打包依赖后，重新生成并校验许可证与 Notice 清单：
 
 ```sh
 node scripts/rust/dependencies.mjs generate
@@ -44,58 +40,36 @@ node scripts/rust/dependencies.mjs check
 node scripts/rust/notices.mjs check
 ```
 
-检查生成的清单和许可证文本。[notices-sources.json](notices-sources.json)记录已审查的上游例外。发布组装还包含实际 V8 构建与 Rust 标准库的 notices。TSV 清单不能替代完整许可证文本。
-
-`notices.json` 记录已审核的组件身份、来源和许可证资料摘要。`notices check` 解析 Rust 依赖闭包，并构建临时产品 bundle 来识别内嵌 JavaScript 包；不会下载许可证文本。仅修改第一方业务源码不会使覆盖检查失效，但从已有 lockfile 中新引入未审核的包会被拒绝。原生打包在构建后、打包前核对当前目标的组件及 Cargo 实际生成的 bundle 输入，复用本次构建而不再次打包 JavaScript。审核清单可以覆盖额外平台。
-
-终端行为使用 [terminal-shell 测试](../../products/maka/terminal-shell/tests/real_host/mod.rs)。通过 `cargo nextest run -p maka-cli --test integration -E 'test(terminal::)'` 运行当前组件和产品交互检查。渲染性能另用固定终端协议、视口和负载的 release 产物比较。
-
-长历史性能使用保留的 [Engine 夹具](../../plugins/agent/engine/tests/integration/long_task_perf.rs)。构建 release 测试程序，比较相同夹具源码和依赖 feature：
-
-```sh
-cargo test --release -p maka-agent-engine --test integration --no-run
-python3 scripts/rust/benchmark-long-task.py \
-  --baseline /tmp/engine-before --candidate /tmp/engine-after \
-  --sizes 250,1000 --runs 5 --output /tmp/maka-long-task
-```
-
-`--checkpoint` 测量实际上下文压缩后的请求。脚本交替运行两个版本，核对实际工作一致，保留原始样本、中位数和范围。造数据不计入请求和完成耗时；这些指标覆盖 Engine API 与受控 HTTP provider，不是 Host IPC、渲染、模型推理或能耗。
-
-更大历史使用一次性目录 `MAKA_ENGINE_PERF_FIXTURE_DIR` 和明确版本标签 `MAKA_ENGINE_PERF_FIXTURE_TAG`。关闭的快照按负载设置与夹具源码索引，对比保留产物时保持两者一致。造数据与请求耗时分开，前者可能长得多。测量时停止竞争编译，CPU 剖析另行采集。
+`notices.json` 记录各目标平台已审阅的 Rust 及内嵌 JS 组件摘要，[`notices-sources.json`](notices-sources.json) 维护上游许可证文本映射。
 
 ## CI
 
-[套件目录](../ci/suites.mjs)定义已维护的构建和测试范围，`just` 与 [workflow](../../.github/workflows/ci.yml)使用同一[执行入口](../ci.mjs)。执行 `just setup` 后，可以查看已提交改动的计划或复现套件：
+测试套件统一在 [`scripts/ci/suites.mjs`](../ci/suites.mjs) 定义，本地 `just` 与 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 共用 [`scripts/ci.mjs`](../ci.mjs) 执行：
 
 ```sh
 node scripts/ci.mjs plan --base origin/rust-preview
 node scripts/ci.mjs run bridge
 ```
 
-PR 根据 Cargo 反向依赖和声明的运行时输入选择范围；共享或无法归属的变更执行完整已维护套件。分支 push 和手动运行也执行全量。包级测试筛选保留各套件原有的 workspace/features 编译配方。原生桌面和终端像素回归测试在 macOS、Windows 执行；GTK 测试在 Linux 的 Xvfb 中执行，共享原生终端传输测试随 NSH 套件运行。
+PR 计划根据 Cargo 反向依赖图以及声明的运行时资源（如内置 `skills/`、产品包与辅助子进程二进制）精准计算受影响套件；改动公共配置则触发全量矩阵。主构建任务产出一份包含运行时资源的 `cargo nextest` 归档，由各平台测试节点分片消费。
 
-根 producer 生成包含运行时产品资源的 nextest 归档；测试 worker 执行同一产物的分片。最终 `test` 检查要求所有选中工作成功。Cargo 缓存用于加速构建，不代替测试产物。
+## 性能基准测试
 
-## Windows State Root 所有权
+[`host-comparison/`](host-comparison/README.md) 提供离线 Linux 端到端压测工具，基于本地回环 SSE 模拟器对比不同构建的吞吐量、RSS 内存与 CPU 开销。
 
-新 State Root 目录在创建时就明确指定当前账号为所有者，并设置私有 ACL。否则，提权后的 Windows 令牌可能默认将所有者设为 Administrators 组。已有目录在 Root 校验前保持原有权限；程序不会接管非空且无法识别的目录。
+## Windows State Root 目录属主恢复
 
-旧 TypeScript 版和 Rust 版共用 `%LOCALAPPDATA%\Maka\state-root-owners` 与 `%LOCALAPPDATA%\Maka\runtime-hosts`。如果已有目录属于 Administrators，启动错误会报告路径、实际所有者和期望所有者的 SID。程序不会自动接管所有权。
-
-仅当你确认该目录是自己的 Maka 状态时，先停止本地全部 TypeScript 和 Rust Host。检查错误中的路径和目录内容，再在提权 PowerShell 中备份安全描述符，并只将该目录的所有者改为当前账号：
+Maka 在 `%LOCALAPPDATA%\Maka` 下新建目录时会显式绑定当前登录用户与私有 ACL。若早期提权运行导致 `state-root-owners` 或 `runtime-hosts` 属主落为 `Administrators`（`S-1-5-32-544`），启动时会拒绝自动接管并打印实际与预期 SID。确认目录属于本人后，先停止本机所有 Host 进程，再在管理员 PowerShell 中执行：
 
 ```powershell
 $path = 'C:\Users\YOUR_ACCOUNT\AppData\Local\Maka\state-root-owners'
 $acl = Get-Acl -LiteralPath $path
-$acl | Format-List Owner,AccessToString
 if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544') {
-    throw 'This recovery step is only for a reviewed Administrators-owned directory.'
+    throw 'Expected an Administrators-owned directory.'
 }
 $backup = [System.IO.Path]::GetTempFileName()
 $acl.Sddl | Set-Content -LiteralPath $backup
 $acl.SetOwner([System.Security.Principal.WindowsIdentity]::GetCurrent().User)
 Set-Acl -LiteralPath $path -AclObject $acl
-Write-Output "Previous security descriptor: $backup"
+Write-Output "Backed up previous SDDL to: $backup"
 ```
-
-重试启动；程序会校验目录，并将访问权限收紧为当前账号和 SYSTEM。后续若报告其他目录，应逐个检查，包括此前启动失败后遗留的空 Root。保留备份直到启动成功。不要删除或替换锁文件、递归接管状态目录，也不要修改无法确认来源的目录所有者。

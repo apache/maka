@@ -496,10 +496,10 @@ mod tests {
                 let mut state =
                     WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds));
                 let mut native = nsh_core::desktop::NativeDesktopBounds::default();
-                native.x = x;
-                native.y = 20.;
-                native.width = 900.;
-                native.height = 720.;
+                native.x = (x as f32).into();
+                native.y = 20_f32.into();
+                native.width = 900_f32.into();
+                native.height = 720_f32.into();
                 state.native_content_bounds = Some(native);
                 let control = app.engine().control();
                 control.set_environment(Environment {

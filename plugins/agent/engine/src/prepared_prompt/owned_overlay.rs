@@ -105,6 +105,7 @@ impl OwnedOverlay {
             logical_identity: identity,
             role,
             last_is_tool_result: false,
+            is_native_checkpoint: role == MessageRole::Assistant,
             local_tool_names: empty.clone(),
             settled_tool_call_ids: empty,
         };
@@ -183,9 +184,6 @@ impl OwnedOverlay {
         );
         metadata.message_index = index;
         metadata
-    }
-    pub fn is_native_checkpoint(&self) -> bool {
-        self.0.metadata.role == MessageRole::Assistant
     }
     pub fn identity(&self) -> &str {
         &self.0.metadata.logical_identity

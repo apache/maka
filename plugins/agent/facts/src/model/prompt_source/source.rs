@@ -633,6 +633,7 @@ pub struct MessageMetadata {
     pub logical_identity: Arc<str>,
     pub role: MessageRole,
     pub last_is_tool_result: bool,
+    pub is_native_checkpoint: bool,
     pub local_tool_names: Arc<dyn RecipeSource<IdentifiedText>>,
     pub settled_tool_call_ids: Arc<dyn RecipeSource<IdentifiedText>>,
 }

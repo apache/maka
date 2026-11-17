@@ -21,133 +21,45 @@
 
 [简体中文](README.zh-CN.md)
 
-Provides Maka's native app and browser API through an independent JavaScript REPL. `cua_repl` and `cua_reset` work with Code Mode disabled. The pinned Cua driver is selected in the [workspace manifest](../../Cargo.toml); the object API is documented in [src/api.md](src/api.md).
+`maka-computer-use` drives native desktop applications and browser tabs through a dedicated, session-scoped JavaScript REPL (`cua_repl` and `cua_reset`), independent of Code Mode. See [`src/api.md`](src/api.md) for the guest object reference and [`skills/maka-cua/SKILL.md`](skills/maka-cua/SKILL.md) for usage patterns.
 
-A Session owns its REPL variables, target bindings and observations. The Host owns permission checks and the native driver. Each operation uses current authority; keeping a JavaScript object does not keep a grant. The REPL has no ambient Node, filesystem or arbitrary network API.
-
-Native embedders pass a trusted `InvocationContext` to `Session::invoke`. HTTP(S) page reads and input require its `BrowserAuthorization`; navigation checks the destination. A raw Session without that callback refuses protected site access. The callback belongs to the Host's actual invocation and grant system, and cannot be supplied by REPL commands.
-
-For a fresh REPL, select an entrypoint and read its emitted state before acting:
+Each Agent session owns its REPL bindings and latest accessibility/screenshot observations, while the Host enforces live permission grants on every call. Holding a JavaScript handle across turns never bypasses current Host authorization, and the REPL exposes no ambient Node, filesystem, or network globals.
 
 ```js
+const state = await cua.getState();
 const app = await cua.getApp("Calculator");
 ```
 
-Subsequent calls use indices from that observation. `cua.getState()` lists available surfaces. App and tab observations emit automatically. The bundled [maka-cua skill](skills/maka-cua/SKILL.md) explains target selection, screenshots and input.
+## Browser connectors
 
-## Desktop and browser configuration
+Browser control supports configured CDP endpoints as well as Chrome/Chromium extension connectors (`cua.listBrowsers()`, `cua.getBrowser({ id })`):
 
-The `desktop` setting defaults to `auto`: the Windows host in WSL, otherwise the local desktop. `local` selects Linux inside WSL; `windows` requires the Windows helper. Native releases prepare their matching Windows helper through the verified distribution cache. WSL interoperability and an interactive Windows desktop are required.
-
-On macOS, `MAKA_COMPUTER_USE_ALWAYS_SIMULATE_CLICK` accepts `true` or `false` (the default): raw element clicks prefer `AXPick`/`AXPress` when eligible, otherwise mouse events; `true` forces mouse events for ordinary elements. The menu-bar fast path is independent of this setting.
-
-Browser providers include explicitly configured CDP endpoints for existing profiles and connected Extension browser providers. Use `cua.listBrowsers()` to discover their full IDs, then `cua.getBrowser({id})` to select one. Exact provider IDs take precedence. Only without an exact match do the `maka` and `chatgpt` shortcuts select one current Extension endpoint; multiple endpoints require its full ID. Direct CDP profiles retain their configured IDs. Missing providers do not restart a browser or enable remote debugging; native browser-window control remains available through `getApp`.
-
-Set up the Maka or ChatGPT Extension provider with a `native-desktop` Maka build on Google Chrome's OS and under the same user. Setup registers Chrome's current-user extension host; it is not forwarded by the WSL Windows bridge. On Linux and macOS, Chrome's default user configuration directory must already exist. Registration also writes installation metadata next to the selected Maka executable, so those paths must be writable.
-
-For Maka, export the bundled Chrome connector source to an absolute empty directory under an existing parent:
+- **Automatic ChatGPT connector handoff** — When the ChatGPT Chrome/Chromium extension is already installed on the host OS, Maka discovers it automatically (preferring Chrome) and leases the native-messaging channel on demand, restoring the original native host once the session releases the browser (`await browser.release()` or turn/session close). To explicitly pin an extension ID or target Chromium, run `maka browser install --provider chatgpt --extension-id <EXTENSION_ID> --on-demand [--browser chromium]`; run `maka browser restore` if an abnormal crash ever leaves a lease behind.
+- **Bundled Maka Chrome extension** — Export the extension source to an empty directory, load it unpacked in Google Chrome, then register its extension ID:
 
 ```sh
 maka browser extension --output /absolute/path/maka-browser-extension
+maka browser install --provider maka --extension-id <EXTENSION_ID>
 ```
 
-Load and enable that directory through Chrome's extension UI, then register its actual extension ID:
+Use `maka browser uninstall --provider maka|chatgpt` to remove native-host registration.
 
-```sh
-maka browser install --provider maka --extension-id ACTUAL_MAKA_EXTENSION_ID
-```
+Temporary tabs opened by a session close at turn end unless marked with `markDeliverable()` (keep open for the user) or `markHandoff()` (retain for subsequent turns).
 
-For an explicit permanent ChatGPT registration instead of automatic handoff:
+## Native desktop and WSL builds
 
-```sh
-maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID
-```
+Native desktop control uses the `native-desktop` Cargo feature (enabled by default in `maka-cli`), requiring Xcode Command Line Tools on macOS or X11 development libraries on Linux.
 
-These are alternative registration selections for an executable. Host installation refuses conflicting registrations. Re-export refuses to overwrite modified extension source. Setup does not install extensions, change browser policies or grant site access. Remove the matching extension-host registration with `maka browser uninstall --provider maka` for Maka or `maka browser uninstall --provider chatgpt` for ChatGPT; removal does not uninstall the extension or delete exported source.
-
-Maka automatically discovers an installed ChatGPT extension and its original native host in Chrome or Chromium. Selection takes over the connection on demand; no setup command is required. Chrome is preferred when both are installed. To explicitly select an extension or Chromium instead:
-
-```sh
-maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID --on-demand
-```
-
-The default is Google Chrome. Append `--browser chromium` to select Chromium's native-messaging namespace instead. Each executable's connector selection targets one browser family; their recovery records and user counts remain separate. On Linux, on-demand setup honors `XDG_CONFIG_HOME`.
-
-Setup leaves the original registration in place. Browser discovery lists the configured connector without taking it over; selecting or using it acquires a shared lease. Normal turn cleanup, Session close and `await browser.release()` return that Session's lease. The original host is restored after the last user releases it. A long-running Agent should release the browser before sleeping. `maka browser restore` recovers an abandoned registration; an active supervisor keeps its registration lock.
-
-Acquiring and returning the connector reconnect the extension to the selected native host. Browser operations already running in the previous host do not carry over to the new connection.
-
-Discovery is read-only. The separate Maka connector and explicit permanent selections remain available. With neither an installed ChatGPT connector nor a configured provider, `cua.listBrowsers()` returns an empty list.
-
-Extension providers expose `browser.user` for user-tab discovery and claiming. The [API reference](src/api.md) covers its permission rules, the `tab.ax` facade, Playwright, clipboard and downloads. Host `browserPreparation` defaults to `popup: false` and `requestHeaders: []`; nonempty headers also enable effective popup adoption/relay. These controls grant no site access and do not prove ChatGPT page hooks are off. See the [typed configuration](../../plugins/workspace/api/src/computer.rs).
-
-Customize the Maka connector through [facade.js](src/facade.js), typed commands in [protocol.rs](src/protocol.rs) and dispatch in [browser.rs](src/browser.rs). ChatGPT and stock OpenCLI integration is best effort. OpenCLI selection can fall back to one available provider before creating or claiming a tab; exact IDs and existing handles remain bound to their provider.
-
-Computer output recording requires the explicit Host configuration `audio: true`, which defaults to false. It adds `cua.computer.start_audio_recording`, `stop_audio_recording` and `nodeRepl.emitAudio`; recordings capture output audio and never select a microphone. macOS also requires separate audio Session consent. Reset and Session cleanup discard owned recordings.
-
-## Native and WSL development builds
-
-The CLI enables the `native-desktop` Cargo feature by default. It includes the local driver and cursor renderer for Linux, macOS or Windows. Native dependencies require Xcode Command Line Tools on macOS and X11 development libraries on Linux.
-
-Numeric wire tests enable `serde_json/arbitrary_precision` to match the full product's dependency graph. Decimal payloads buffered by tagged enums must pass through `protocol::deserialize_numbers` before typed decoding; this applies to nested commands and native helper replies as well as requests.
-
-`just run` automatically omits this feature in WSL, keeping the Windows bridge without compiling the Linux desktop driver. Set `MAKA_CUA_BUILD_MODE` to `auto` (the default), `native` or `bridge` to select the development build explicitly. For example, `MAKA_CUA_BUILD_MODE=native just run` includes the Linux driver in WSL. The runtime `desktop` setting still selects the destination; a bridge build rejects `local`, and `auto` requires WSL to select Windows.
-
-Source builds need a Windows `maka.exe` built from the same source with its default native features. Build it on Windows and provide its absolute path as visible from WSL:
+Inside WSL, `just run` omits `native-desktop` and bridges Computer Use to the Windows host desktop by default (`MAKA_CUA_BUILD_MODE=auto|native|bridge`). When running from source in WSL, point `MAKA_CUA_WINDOWS_EXECUTABLE` to a matching Windows `maka.exe`:
 
 ```sh
 MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 ```
 
-Plain `cargo run -p maka-cli` retains the native default. To build the bridge directly, use `cargo run --locked -p maka-cli --no-default-features -- ...`. Cargo features combine across selected packages, so another selected package enabling `native-desktop` restores native dependencies. `just build` and release packaging retain the full native product; the Linux desktop shell separately requires Linux GUI development libraries.
+Optional output-audio capture (`cua.computer.start_audio_recording` / `stop_audio_recording`) defaults to off and requires `audio: true` in Host configuration (never captures microphone input).
 
-For the opt-in retained-page hardware smoke, build `cargo build -p maka-computer-use --features native-desktop --example desktop-host` and `cargo test -p maka-computer-native --features maka-computer-use/native-desktop --lib real_host_retained_browser_pages_survive_handoff --no-run`. Pass the emitted test executable to the runner on macOS or Linux with the official extension and original native host already connected:
+## Computer Stage
 
-```sh
-python3 scripts/rust/browser-handoff-smoke.py --host target/debug/examples/desktop-host --test-binary /path/printed/by/cargo --extension-id ACTUAL_CHATGPT_EXTENSION_ID
-```
+`SessionOwner::preview()` exposes an independent, bounded registry of actual bound app/tab targets. Preview JPEGs are latest-only, limited to 1600 pixels per edge and 2 MiB, and never enter canonical model output automatically. Retained bytes must match the current source revision and pass `authorize()` at delivery; native owner/window and browser document/claim identities are rechecked. Retiring an epoch prevents late publication and old pixels or capabilities from returning.
 
-The runner uses real Host authorization and effect custody, creates only blank test pages, checks retained pages across native-host generations and verifies exact registration restoration. It supplies the larger worker stack needed by this debug test. `--browser chromium` selects that namespace for the smoke as well.
-
-## Lifetime
-
-Sessions own temporary tabs. At turn end, unmarked tabs close; `markDeliverable()` keeps a tab for the user, and `markHandoff()` preserves it for a later turn. Reusing a retained tab requires current authorization. Reset and disconnect request cleanup while preserving retention marks. Navigation and window changes can invalidate observations. Uncertain input is never replayed automatically.
-
-Native Computer Use requires an interactive desktop; Linux native methods require X11. On Windows, screenshot IDs select image coordinates; omitting the ID uses the window's logical viewport. Browser uploads accept authorized regular files; directory uploads and child-frame choosers are unsupported. Files still selected when the browser host exits are not reclaimed automatically.
-
-## Read-only Computer Stage preview
-
-`SessionOwner::preview()` returns an independent `preview::PreviewRegistry`; a Host
-service can keep it while the REPL is evaluating. Successful bound app/tab calls
-publish opaque targets (at most five recent targets). `snapshot()` and
-`subscribe()` expose inventory/active-target revisions; `capture()` returns a JPEG
-bounded to 1600 pixels per edge and 2 MiB. `PreviewTarget.revision` and
-`PreviewFrame.revision` identify the pixel-source generation, not agent observation
-or inventory revisions. Before serving retained bytes, compare that generation and
-call `authorize()` to recheck the real process/window or browser document/claim.
-
-The Host implements `PreviewAuthority` using its actual retained call, without
-prompting or manufacturing a grant from a target ID. Full-preparation browser
-adapters also need the current read-only Host `BrowserEffectScope`. Preview uses
-one-shot viewport screenshots; existing agent screencast ACK/stop custody is
-unchanged. Native capture only targets the bound window: macOS uses the existing
-window capture API and TCC checks, Linux requires X11, Windows uses WGC without a
-screen-region fallback. Windows remote-worker targets are mirrored through private
-`PreviewWatch` long-poll RPCs; `PreviewRead` obtains current authorization or bounded
-JPEG bytes from that same execution worker without borrowing its Session queue.
-The controller carries the real per-request `PreviewAuthority`, and the worker's
-`PreviewAuthorization` callbacks check that authority and its read-only preparation
-scope. Owner/Session/epoch plus opaque target/binding/source generation and original
-connection are checked across the boundary. No evaluate, journal mutation or native
-input is manufactured; no raw HWND reaches the UI. No preview bytes enter agent
-logs or context.
-
-Retire an epoch synchronously with `retire_epoch()` when sealing Stop/reset,
-before joining its native cleanup. Owner close and native epoch close already do
-this; a retired epoch cannot publish late targets. Capture or authorization
-failure removes the target instead of silently retrying it. Viewer cancellation
-(including dropping a capture future) preserves the shared target. Captures wait
-on the target's cancellation-aware serialization lock; native pixel reads and
-encoding retain that lock and their cleanup custody even if the viewer disappears.
-Owner/epoch cleanup joins its original remote watch request; worker restart cannot
-replay inventory or pixels from the old connection.
+The Host supplies read-only `PreviewAuthority` for the original producer execution and permission basis. Presenting a front card uses a separate client mutation and `ForegroundAuthority`, with its own work/effect custody. Windows targets retain the accepted native child source and complete owner/application stamp; metadata-only calls cannot supply a presentation source. Viewer cancellation preserves the shared target, while Stop, reset, permission and execution changes retire the applicable capabilities.

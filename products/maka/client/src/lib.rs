@@ -72,6 +72,8 @@ const CONTROL_METHODS: &[&str] = &[
     "openBot",
     "changeGoal",
     "schedule",
+    "githubSubmitReview",
+    "githubReplyComment",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
@@ -127,6 +129,9 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
                     | "createPreset"
                     | "updatePreset"
                     | "deletePreset"
+                    | "changeMemory"
+                    | "saveGitHubToken"
+                    | "deleteGitHubToken"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
@@ -679,6 +684,7 @@ impl Client {
         }
         if (endpoint == "settings" && matches!(method, "saveCredential" | "saveUsageCredential"))
             || (endpoint == "web" && method == "saveKey")
+            || (endpoint == "agent" && method == "saveGitHubToken")
         {
             if resources.len() != 1
                 || !resources.get("secret").is_some_and(|secret| {
@@ -1125,7 +1131,12 @@ impl Client {
             .pending_controls(&self.0.source, &owner)
             .await?
             .into_iter()
-            .filter(|operation| operation.method != "predictNextMessage")
+            .filter(|operation| {
+                !matches!(
+                    operation.method.as_str(),
+                    "predictNextMessage" | "githubSubmitReview" | "githubReplyComment"
+                )
+            })
             .collect())
     }
     /// Stop prompting for this original without cancelling, replaying, or changing its outcome.
@@ -1178,10 +1189,20 @@ impl Client {
                 .map(ServiceOwner::from_description)
                 .collect::<Vec<_>>()
         };
-        self.0
+        Ok(self
+            .0
             .journal
             .pending_settings(&self.0.source, &owners)
-            .await
+            .await?
+            .into_iter()
+            .filter(|operation| {
+                !(operation.endpoint == "agent"
+                    && matches!(
+                        operation.method.as_str(),
+                        "saveGitHubToken" | "deleteGitHubToken"
+                    ))
+            })
+            .collect())
     }
     /// Pending plugin operations belong to a stable UI instance, across package
     /// and binding updates. Endpoint aliases are never recovery identities.
@@ -1900,7 +1921,12 @@ mod preset_settings_tests {
 
     #[tokio::test]
     async fn pending_preset_settings_survive_reopen_and_fence_repeated_writes() {
-        for method in ["createPreset", "updatePreset", "deletePreset"] {
+        for method in [
+            "createPreset",
+            "updatePreset",
+            "deletePreset",
+            "changeMemory",
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("client.sqlite");
             let host = DeploymentRef {

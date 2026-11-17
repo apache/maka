@@ -59,6 +59,7 @@ mod external_setup;
 mod files;
 mod fork;
 mod git;
+mod github;
 mod global_instructions;
 mod goal;
 mod imports;
@@ -66,6 +67,7 @@ mod initialization;
 mod interactions;
 mod lifecycle;
 mod mcp;
+mod memory;
 mod models;
 mod notifications;
 mod patches;
@@ -81,6 +83,7 @@ mod scheduler;
 pub(crate) mod setup;
 mod skills;
 mod steering;
+mod symbols;
 mod system_permission;
 mod title;
 mod todo;
@@ -187,6 +190,7 @@ impl Runs {
     }
 }
 struct CreationPolicy {
+    incognito: bool,
     permissions: WorkspacePermissions,
     tools: Option<Vec<String>>,
     caller: Option<maka_agent_state::CallerFence>,
@@ -253,6 +257,8 @@ pub(crate) struct Owner {
     workers: TaskTracker,
     cleanup_workers: TaskTracker,
     producers: TaskTracker,
+    lsp_pool: maka_fs_tools::symbols::LspPool,
+    github: github::GitHubHub,
     producer_gate: Arc<Mutex<()>>,
     stop: CancellationToken,
 }
@@ -596,6 +602,8 @@ impl Owner {
             workers,
             cleanup_workers: TaskTracker::new(),
             producers: TaskTracker::new(),
+            lsp_pool: maka_fs_tools::symbols::LspPool::new(),
+            github: github::GitHubHub::default(),
             producer_gate: Arc::default(),
             stop,
         });
@@ -747,6 +755,7 @@ impl Owner {
     ) -> Result<CreationPolicy, String> {
         let Some(invocation) = scope.identity.agent() else {
             return Ok(CreationPolicy {
+                incognito: false,
                 permissions: self.settings.permissions.clone(),
                 tools: None,
                 caller: None,
@@ -793,6 +802,7 @@ impl Owner {
             expected_basis: Some(view.spec.permission_basis),
         };
         Ok(CreationPolicy {
+            incognito: caller.incognito,
             permissions: caller.permissions,
             // The Bot delegates workers; its own conversational tool list is not their ceiling.
             tools: if self.settings.bot && self.bot.is(&invocation.session_id) {
@@ -1084,6 +1094,7 @@ impl Owner {
                 revision: p.revision,
             }),
             move |binding| StoredSessionConfiguration {
+                incognito: input.incognito || policy.incognito,
                 parent_session_id,
                 backend,
                 applied_preset,
@@ -1318,12 +1329,14 @@ impl Owner {
     }
     pub fn retiring(&self) {
         self.mcp_projects.retire();
+        self.lsp_pool.shutdown_all();
     }
     pub fn close(self: &Arc<Self>) -> BoxFuture<'static, Result<(), String>> {
         let owner = self.clone();
         Box::pin(async move {
             // Wake pending external startup before waiting for lifecycle readers.
             owner.stop.cancel();
+            owner.lsp_pool.shutdown_all();
             {
                 let mut runs = owner.runs.lock().await;
                 runs.closing = true;

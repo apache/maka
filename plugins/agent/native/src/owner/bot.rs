@@ -725,6 +725,7 @@ impl Owner {
             },
         ];
         let create = Create {
+            incognito: false,
             kind: SessionKind::Agent,
             preset_id: None,
             backend: None,

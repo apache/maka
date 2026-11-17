@@ -38,7 +38,7 @@ use uuid::Uuid;
 // Keep admission and pending observations on the same immutable Settings owner.
 macro_rules! settings_owner_sql {
     () => {
-        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer','createPreset','updatePreset','deletePreset')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure','configureBatch')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential') OR (json_extract(context,'$.endpoint')='web' AND json_extract(context,'$.method') IN ('save','saveKey','deleteKey','checkKey')))"
+        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer','createPreset','updatePreset','deletePreset','changeMemory','saveGitHubToken','deleteGitHubToken')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure','configureBatch')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential') OR (json_extract(context,'$.endpoint')='web' AND json_extract(context,'$.method') IN ('save','saveKey','deleteKey','checkKey')))"
     };
 }
 
@@ -413,6 +413,17 @@ impl Journal {
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', reply_to TEXT)")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
+            for (column, add) in [
+                ("mentions", "ALTER TABLE drafts ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'"),
+                ("reply_to", "ALTER TABLE drafts ADD COLUMN reply_to TEXT"),
+            ] {
+                let present: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pragma_table_info('drafts') WHERE name=?)")
+                    .bind(column).fetch_one(&mut *transaction).await.map_err(error)?;
+                if !present {
+                    sqlx::query(add)
+                        .execute(&mut *transaction).await.map_err(|error| format!("client journal adding drafts.{column}: {error}"))?;
+                }
+            }
             sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 .execute(&mut *transaction).await.map_err(error)?;
             transaction

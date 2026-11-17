@@ -292,12 +292,6 @@ impl PreparedPrompt {
         wire::compile(self, language, provider, options, tools, cancellation).await
     }
 
-    pub fn native_checkpoint_identity(&self) -> Option<&str> {
-        self.prefix
-            .first()
-            .filter(|overlay| overlay.is_native_checkpoint())
-            .map(OwnedOverlay::identity)
-    }
     pub fn breakdown(&self) -> PreparedContextBreakdown {
         let mut result = self.body.breakdown().clone();
         for overlay in self

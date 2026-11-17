@@ -22,7 +22,9 @@ use HistoryRowAddress as RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 pub use maka_agent_ports::session::history::{HistoryOrder, HistoryRowAddress, HistoryView};
-use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+use maka_plugin_core::contract::{
+    Contract, Interface, Method, MethodMode, ResourceType, Transport,
+};
 pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,10 @@ mod fork;
 pub use fork::*;
 mod git;
 pub use git::*;
+mod github;
+pub use github::*;
+mod symbols;
+pub use symbols::*;
 mod goal;
 mod imports;
 pub use goal::*;
@@ -321,6 +327,9 @@ pub enum SessionKind {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCreate")]
 pub struct Create {
+    /// Immutable memory privacy boundary; descendants inherit it.
+    #[serde(default)]
+    pub incognito: bool,
     /// Rooms receive messages without running a model. Their mentions address Agent sessions.
     #[serde(default)]
     pub kind: SessionKind,
@@ -826,6 +835,8 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    #[serde(default)]
+    pub incognito: bool,
     pub kind: SessionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_preset: Option<crate::preset::AppliedPreset>,
@@ -1114,6 +1125,8 @@ pub struct Observation {
     pub remembered_backend: Option<BackendPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<SessionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_run_id: Option<maka_agent_facts::durable::RunId>,
     pub through: u64,
     pub run: Option<Run>,
     pub parts: Vec<Part>,
@@ -2010,6 +2023,12 @@ pub fn contract() -> Contract {
             methods: BTreeMap::from([
                 ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
                 ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("memorySource".into(), method::<MemorySourceSelection, MemoryEvidenceReference>(MethodMode::Query)),
+                ("memoryEvidence".into(), method::<MemoryEvidenceRead, MemoryEvidencePage>(MethodMode::Query)),
+                ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),
+                ("memories".into(), method::<MemoriesRead, MemoryPage>(MethodMode::Query)),
+                ("memory".into(), method::<MemoryRead, Option<MemoryRecord>>(MethodMode::Query)),
+                ("changeMemory".into(), method::<MemoryChange, MemoryResult>(MethodMode::Mutation)),
                 ("createPreset".into(), method::<PresetCreate, PresetResult>(MethodMode::Mutation)),
                 ("updatePreset".into(), method::<PresetUpdate, PresetResult>(MethodMode::Mutation)),
                 ("deletePreset".into(), method::<PresetDelete, PresetResult>(MethodMode::Mutation)),
@@ -2257,6 +2276,76 @@ pub fn contract() -> Contract {
                     method::<GitDiffRead, Option<GitDiff>>(MethodMode::Query),
                 ),
                 (
+                    "gitWorkspaceDiff".into(),
+                    method::<GitWorkspaceDiffRead, Option<GitWorkspaceDiff>>(MethodMode::Query),
+                ),
+                (
+                    "gitRevisions".into(),
+                    method::<SessionRead, Option<GitRevisions>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompare".into(),
+                    method::<GitCompareRead, Option<GitCompare>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompareDiff".into(),
+                    method::<GitCompareDiffRead, Option<GitDiff>>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequests".into(),
+                    method::<GitHubPullRequestsRead, GitHubPullRequestsResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestDetail".into(),
+                    method::<GitHubPullDetailRead, GitHubPullDetailResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestFileDiff".into(),
+                    method::<GitHubPullFileDiffRead, GitHubPullFileDiff>(MethodMode::Query),
+                ),
+                (
+                    "githubSubmitReview".into(),
+                    method::<GitHubSubmitReviewInput, GitHubSubmitReviewResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "githubReplyComment".into(),
+                    method::<GitHubReplyCommentInput, GitHubReplyCommentResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "saveGitHubToken".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "secret".into(),
+                            ResourceType {
+                                name: "maka.text.utf8".into(),
+                                version: 1,
+                            }
+                            .required(),
+                        )]),
+                        ..method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "deleteGitHubToken".into(),
+                    method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation),
+                ),
+                (
+                    "codeDefinition".into(),
+                    method::<CodeDefinitionRead, CodeDefinitionResult>(MethodMode::Query),
+                ),
+                (
+                    "codeReferences".into(),
+                    method::<CodeReferencesRead, CodeReferencesResult>(MethodMode::Query),
+                ),
+                (
+                    "codeHover".into(),
+                    method::<CodeHoverRead, Option<CodeHoverResult>>(MethodMode::Query),
+                ),
+                (
                     "snapshotPatch".into(),
                     method::<ExecutionRead, PatchResult>(MethodMode::Mutation),
                 ),
@@ -2419,3 +2508,6 @@ pub fn contract() -> Contract {
         },
     }
 }
+
+pub mod memory;
+pub use memory::*;

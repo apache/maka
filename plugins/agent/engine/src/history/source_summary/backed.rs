@@ -709,6 +709,7 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
                 logical_identity: hex::encode(&record[8..]).into(),
                 role: MessageRole::System,
                 last_is_tool_result: false,
+                is_native_checkpoint: false,
                 local_tool_names: self.directory.user_metadata.local_tool_names.clone(),
                 settled_tool_call_ids: self.directory.user_metadata.settled_tool_call_ids.clone(),
             }))
@@ -1098,6 +1099,7 @@ pub(super) async fn fit(
                 logical_identity: descriptor.logical_identity.clone(),
                 role: MessageRole::User,
                 last_is_tool_result: false,
+                is_native_checkpoint: false,
                 local_tool_names: descriptor.local_tool_names.clone(),
                 settled_tool_call_ids: descriptor.settled_tool_call_ids.clone(),
             };

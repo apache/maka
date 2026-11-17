@@ -55,7 +55,7 @@ pub enum ProfileAvatar {
     Rose,
     Amber,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MemoryPolicy {
     pub enabled: bool,

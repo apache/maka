@@ -116,6 +116,12 @@ impl PromptBuilder {
         self.builder.append_recipe(recipe).await?;
         Ok(())
     }
+    pub fn has_non_system_messages(&self) -> bool {
+        self.builder.has_non_system_messages()
+    }
+    pub fn needs_continuation_cue(&self) -> bool {
+        self.builder.needs_continuation_cue()
+    }
     pub async fn close(&self) -> std::io::Result<()> {
         self.arena.close().await
     }

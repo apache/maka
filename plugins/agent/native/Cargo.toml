@@ -65,6 +65,7 @@ maka-process.workspace = true
 maka-js-runtime.workspace = true
 maka-mcp.workspace = true
 maka-network.workspace = true
+reqwest.workspace = true
 maka-plugin-core.workspace = true
 maka-presentation.workspace = true
 maka-providers.workspace = true
