@@ -86,7 +86,7 @@ pub(crate) fn read_spec(
                 .ok_or_else(|| invalid("missing original steering source"))?,
         )?;
         original.validate().map_err(invalid)?;
-        source_inputs.push(attributed_source(original, run_spec.language));
+        source_inputs.push(original.into_attributed_input(run_spec.language));
     }
     if input != maka_agent_facts::message::aggregate(source_inputs.iter()) {
         return Err(invalid(

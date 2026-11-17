@@ -17,14 +17,12 @@
  * under the License.
  */
 
-use maka_sandbox::workspace::DirectoryIdentity;
 mod mcp_management;
 use HistoryRowAddress as RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 pub use maka_agent_ports::session::history::{HistoryOrder, HistoryRowAddress, HistoryView};
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
-use maka_sandbox::workspace::WorkspaceIdentity;
 pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,6 +63,8 @@ mod execution;
 pub use execution::*;
 mod compaction;
 pub use compaction::*;
+mod session_tools;
+pub use session_tools::*;
 
 mod interaction;
 pub use interaction::*;
@@ -451,10 +451,6 @@ pub struct Workspace {
     pub project_id: Option<uuid::Uuid>,
     #[schemars(length(min = 1))]
     pub path: String,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    pub directory_identity: DirectoryIdentity,
-    #[schemars(with = "String", regex(pattern = "^workspace:v1:[A-Fa-f0-9-]{36}$"))]
-    pub identity: WorkspaceIdentity,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -580,6 +576,9 @@ pub use maka_agent_facts::executor::BackendPreference;
 #[schemars(rename = "AgentModelChoice")]
 pub struct ModelChoice {
     pub selection: BackendPreference,
+    /// Previously published selections, including their implied thinking level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<BackendPreference>,
     pub source_name: String,
     pub label: String,
     pub thinking_levels: Vec<String>,
@@ -613,10 +612,18 @@ pub enum ModelsPage {
     Ready {
         revision: String,
         choices: Vec<ModelChoice>,
+        refreshing: bool,
         complete: bool,
         next: Option<ModelsCursor>,
     },
     Changed,
+}
+#[derive(Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentModelsWatch")]
+pub struct ModelsWatch {
+    #[serde(default)]
+    pub query: String,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1353,7 +1360,7 @@ pub struct QueueMutation {
     pub expected_revision: u64,
     pub edit: QueueAction,
 }
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -1444,6 +1451,8 @@ pub struct HistoryChunk {
     pub timing: Option<maka_agent_ports::session::history::TurnTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folded_work: Option<maka_agent_ports::session::history::FoldedWork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<Box<maka_agent_ports::session::history::WorkGroup>>,
     pub field: maka_agent_ports::session::history::HistoryField,
     pub message_id: Option<String>,
     pub turn_id: Option<String>,
@@ -1775,6 +1784,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                         .collect(),
                     timing: chunk.timing,
                     folded_work: chunk.folded_work,
+                    work: chunk.work,
                     field: chunk.field,
                     message_id: chunk.message_id,
                     turn_id: chunk.turn_id,
@@ -2273,6 +2283,7 @@ pub fn contract() -> Contract {
                     method::<Send, SendResult>(MethodMode::Mutation),
                 ),
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
+                ("watchModels".into(), method::<ModelsWatch, ModelsPage>(MethodMode::Subscription)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
                 ("externalAgents".into(),method::<crate::external::ExternalAgentsRead, crate::external::ExternalAgents>(MethodMode::Query)),
                 ("externalUsageLimits".into(),method::<crate::external::ExternalUsageLimitsRead, crate::external::ExternalUsageLimits>(MethodMode::Query)),
@@ -2375,6 +2386,30 @@ pub fn contract() -> Contract {
                 (
                     "respond".into(),
                     method::<InteractionRespond, InteractionResult>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionList".into(),
+                    method::<SessionListInput, SessionListOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionRead".into(),
+                    method::<SessionReadInput, SessionReadOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionCreate".into(),
+                    method::<SessionCreateInput, SessionCreateOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionSend".into(),
+                    method::<SessionSendInput, SendResult>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionStop".into(),
+                    method::<SessionStopInput, SessionStopOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionManage".into(),
+                    method::<SessionManageInput, SessionManageOutput>(MethodMode::Mutation),
                 ),
                 (
                     "watch".into(),

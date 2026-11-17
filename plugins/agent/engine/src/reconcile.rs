@@ -180,6 +180,7 @@ fn summary_effects_for(view: &RunView, id: ModelAttemptId) -> Option<Action> {
 #[derive(Default)]
 pub(crate) struct Live {
     pub work: BTreeSet<WorkKey>,
+    pub preparation_failure: Option<String>,
     pub proactive_preparation_failed: bool,
     pub rejected_summaries: Vec<SummaryOrigin>,
     /// At most one read per physical activation. Further observations are due waits.

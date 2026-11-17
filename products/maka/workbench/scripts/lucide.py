@@ -62,6 +62,8 @@ ICONS = [
     'loader-circle',
     'lock',
     'maximize',
+    'message-square',
+    'minus',
     'move-right',
     'move-up-right',
     'panel-left',
@@ -87,6 +89,7 @@ ICONS = [
     'trash',
     'type',
     'undo-2',
+    'user-round',
     'x',
 ]
 

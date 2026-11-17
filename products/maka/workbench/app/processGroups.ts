@@ -41,6 +41,7 @@ export type ProcessRow = Pick<
   | 'importedTurn'
   | 'timing'
   | 'foldedWork'
+  | 'work'
   | 'finalOutput'
   | 'finalAnswer'
   | 'origin'
@@ -65,6 +66,7 @@ export type ProcessGroup = {
   members: MemberRef[];
   rowIds: string[];
   toolIds: string[];
+  workRowId?: string;
   /** A presentation boundary, never evidence that a tool effect settled. */
   closed: boolean;
 };
@@ -157,6 +159,7 @@ export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] 
     if (lkey !== undefined && lkey === rkey && left.modelPart && right.modelPart)
       return (
         left.modelPart.ordinal - right.modelPart.ordinal ||
+        Number(!left.work) - Number(!right.work) ||
         Number(left.field === 'body') - Number(right.field === 'body')
       );
     const order = compareOptionalOrder(
@@ -338,11 +341,13 @@ export function projectProcessGroups(input: {
     // retains that owner's state only in the piece containing its first source.
     return JSON.stringify(['process', turnKey, ids[0]]);
   };
-  let current: { turnKey: string; members: MemberRef[] } | undefined;
+  let current:
+    | { turnKey: string; members: MemberRef[]; workRowId?: string; first?: string }
+    | undefined;
   const flush = (closed: boolean) => {
     if (!current) return;
     const presentation = turn(current.turnKey);
-    const { turnKey, members } = current;
+    const { turnKey, members, workRowId, first } = current;
     // A script is shown as the tools it ran, and as itself only when it fails.
     const callers = new Set(
       members.flatMap((member) => {
@@ -358,9 +363,15 @@ export function projectProcessGroups(input: {
     );
     entries.push({
       kind: 'process',
-      key: groupKey(turnKey, members),
+      key: groupKey(
+        turnKey,
+        first && !members.some((member) => memberId(member) === first)
+          ? [{ kind: 'row', rowId: first }, ...members]
+          : members,
+      ),
       turnKey,
       members,
+      workRowId,
       rowIds: shown.flatMap((member) => (member.kind === 'row' ? [member.rowId] : [])),
       toolIds: [
         ...new Set(shown.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
@@ -407,7 +418,7 @@ export function projectProcessGroups(input: {
             : compareOptionalOrder(
                 { path: [activity.startSequence], itemIndex: 0 },
                 position.order,
-              ) <= 0;
+              ) < Number(!row.work);
       if (!before) break;
       nextActivity += 1;
       append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
@@ -415,6 +426,22 @@ export function projectProcessGroups(input: {
     if (input.gapsBefore?.has(position.rowId)) flush(true);
     const rowTurn = historyTurnKey(row);
     if (current && current.turnKey !== rowTurn) flush(true);
+    if (row.work && rowTurn) {
+      flush(true);
+      current = {
+        turnKey: rowTurn,
+        members: [],
+        workRowId: position.rowId,
+        first: row.work.firstToolUseId
+          ? memberId({ kind: 'activity', toolUseId: row.work.firstToolUseId })
+          : stableRowId({ ...row, work: undefined }),
+      };
+      progressed.add(rowTurn);
+      const presentation = turn(rowTurn);
+      presentation.worked = true;
+      moveAnswerToWork(presentation);
+      continue;
+    }
     if (emptyThinking(row)) {
       // An encrypted or not-yet-streamed thought can resume work without a visible row.
       if (rowTurn) {

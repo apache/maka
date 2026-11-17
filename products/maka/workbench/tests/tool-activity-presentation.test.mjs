@@ -90,18 +90,23 @@ test('a rejected send shows its reason and a Host error shows a readable diagnos
     rejected.sections.map(({ text, tone }) => [text, tone]),
     [['Selected model is unavailable', 'error']],
   );
-  assert.deepEqual(
-    activityFailure({
-      receipt: {
-        kind: 'recorded',
-        outcome: {
-          kind: 'returned',
-          result: { kind: 'failure', diagnostic: 'agent_session_unavailable' },
+  for (const diagnostic of [
+    'agent_session_unavailable',
+    'Session or Room was not found or is archived; check the ID with SessionList',
+  ]) {
+    assert.deepEqual(
+      activityFailure({
+        receipt: {
+          kind: 'recorded',
+          outcome: {
+            kind: 'returned',
+            result: { kind: 'failure', diagnostic },
+          },
         },
-      },
-    }),
-    { kind: 'failure', message: 'Conversation is unavailable' },
-  );
+      }),
+      { kind: 'failure', message: 'Conversation is unavailable' },
+    );
+  }
 });
 
 test('checking work shows the captured wait or the final response', () => {
@@ -244,4 +249,150 @@ test('the typed observation of a script reads the same way', () => {
 test('text that is not a script reply is left to other views', () => {
   assert.equal(scriptResult('{"state":"completed"}'), null);
   assert.equal(scriptResult('plain text'), null);
+});
+
+test('human-symmetric Session* tool cards project real contract variants', () => {
+  const manage = activityPresentation('maka.agent.Agent@1/sessionManage');
+  assert.ok(manage);
+
+  // continue_run arguments + continuation_started / continuation_rejected results
+  assert.deepEqual(
+    activityProjection(
+      manage,
+      'arguments',
+      {
+        sessionId: 'ma_1',
+        action: {
+          kind: 'continue_run',
+          model: { connectionId: 'c1', modelId: 'claude-sonnet-4-6' },
+        },
+      },
+      { sessionTitle: () => 'Worker A' },
+    ),
+    {
+      kind: 'sections',
+      sections: [
+        { label: 'Action', text: 'Continue conversation run', style: undefined },
+        { label: 'Model', text: 'claude-sonnet-4-6', style: undefined },
+        { label: 'Conversation', text: 'Worker A', style: undefined },
+      ],
+    },
+  );
+  assert.deepEqual(
+    activityProjection(manage, 'result', { kind: 'continuation_started', runId: 'r1' }, {}),
+    {
+      kind: 'sections',
+      sections: [{ label: 'Status', text: 'Continuation started', tone: undefined }],
+    },
+  );
+  assert.deepEqual(
+    activityProjection(
+      manage,
+      'result',
+      { kind: 'continuation_rejected', reason: 'already_continued' },
+      {},
+    ),
+    {
+      kind: 'sections',
+      sections: [
+        { label: 'Status', text: 'Original run has already been continued', tone: 'error' },
+      ],
+    },
+  );
+
+  // queue_edited unwraps nested result
+  assert.deepEqual(
+    activityProjection(
+      manage,
+      'result',
+      { kind: 'queue_edited', result: { kind: 'committed', revision: 3 } },
+      {},
+    ),
+    { kind: 'sections', sections: [{ label: 'Status', text: 'Queue updated', tone: undefined }] },
+  );
+  assert.deepEqual(
+    activityProjection(
+      manage,
+      'result',
+      { kind: 'queue_edited', result: { kind: 'rejected', reason: 'in_flight' } },
+      {},
+    ),
+    {
+      kind: 'sections',
+      sections: [{ label: 'Status', text: 'Message is already being delivered', tone: 'error' }],
+    },
+  );
+
+  // updated preserves Archived status and reads SessionSummary.workspacePath
+  assert.deepEqual(
+    activityProjection(
+      manage,
+      'result',
+      {
+        kind: 'updated',
+        session: {
+          id: 'ma_1',
+          kind: 'agent',
+          title: 'Worker A',
+          activity: 'idle',
+          archived: true,
+          pinned: false,
+          hasUnread: false,
+          labels: [],
+          workspacePath: '/tmp/ws',
+          updatedAt: 1,
+          revision: 2,
+        },
+      },
+      {},
+    ),
+    {
+      kind: 'sections',
+      sections: [
+        { label: 'Conversation', text: 'Worker A', style: undefined },
+        { label: 'Status', text: 'Archived', tone: undefined },
+        { label: 'Workspace', text: '/tmp/ws', style: 'code' },
+      ],
+    },
+  );
+
+  // sessionRead surfaces run.error when latest run failed
+  const read = activityPresentation('maka.agent.Agent@1/sessionRead');
+  assert.deepEqual(
+    activityProjection(
+      read,
+      'result',
+      {
+        session: {
+          id: 'ma_2',
+          kind: 'agent',
+          title: 'Failed worker',
+          activity: 'idle',
+          archived: false,
+          pinned: false,
+          hasUnread: false,
+          labels: [],
+          workspacePath: '/tmp/ws2',
+          updatedAt: 1,
+          revision: 1,
+        },
+        run: {
+          runId: 'r2',
+          state: 'failed',
+          stopped: false,
+          error: 'model adapter failed: quota exhausted',
+        },
+      },
+      {},
+    ),
+    {
+      kind: 'sections',
+      sections: [
+        { label: 'Conversation', text: 'Failed worker', style: undefined },
+        { label: 'Status', text: 'Idle', tone: undefined },
+        { label: 'Workspace', text: '/tmp/ws2', style: 'code' },
+        { label: 'Details', text: 'model adapter failed: quota exhausted', style: undefined },
+      ],
+    },
+  );
 });

@@ -278,6 +278,7 @@ function CompletionComposer(props: { prediction?: boolean; switchBackend?: boole
       clearNotice() {},
     },
     completion: {
+      sessions: async () => [],
       async files(query, directory) {
         lookup.set(`files:${query}:${directory?.bytesBase64 ?? 'root'}`);
         let first = true;
@@ -385,8 +386,6 @@ function WorkspacePages(props: { busy: boolean }) {
     },
     workspace: {
       path: `/workspace/${workspace}`,
-      directoryIdentity: workspace,
-      identity: workspace,
     },
   });
   const scope = { kind: 'all' } as const;

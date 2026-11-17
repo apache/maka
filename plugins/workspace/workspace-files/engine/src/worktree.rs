@@ -42,8 +42,6 @@ pub struct Binding {
     id: String,
     common_dir: PathBuf,
     source: PathBuf,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    source_identity: maka_sandbox::workspace::DirectoryIdentity,
     base_commit: String,
     directory: PathBuf,
 }
@@ -54,9 +52,6 @@ impl Binding {
     }
     pub fn source(&self) -> &Path {
         &self.source
-    }
-    pub fn source_identity(&self) -> &maka_sandbox::workspace::DirectoryIdentity {
-        &self.source_identity
     }
     pub fn base_commit(&self) -> &str {
         &self.base_commit
@@ -111,26 +106,19 @@ impl Worktrees {
         checkout::supported(&repo)?;
         let base = repo.head_id().map_err(io::Error::other)?.detach();
         let base_commit = base.to_string();
-        let status = repo
+        let mut status = repo
             .status(gix::progress::Discard)
             .map_err(io::Error::other)?
             .untracked_files(gix::status::UntrackedFiles::Files)
             .should_interrupt_owned(cancel.clone())
             .into_iter(std::iter::empty())
             .map_err(io::Error::other)?;
-        for change in status {
-            let change = change.map_err(io::Error::other)?;
-            // The native directory owner creates this identity before task
-            // routing. It is metadata, not uncommitted source to omit.
-            if let gix::status::Item::IndexWorktree(
-                gix::status::index_worktree::Item::DirectoryContents { entry, .. },
-            ) = &change
-                && entry.status == gix::dir::entry::Status::Untracked
-                && entry.rela_path.as_slice() == crate::workspace::MARKER_FILE.as_bytes()
-                && crate::workspace::read_identity(&source).is_ok()
-            {
-                continue;
-            }
+        if status
+            .next()
+            .transpose()
+            .map_err(io::Error::other)?
+            .is_some()
+        {
             return Err(invalid(
                 "isolated execution requires a clean source worktree",
             ));
@@ -139,10 +127,10 @@ impl Worktrees {
         if repo.head_id().map_err(io::Error::other)? != base {
             return Err(invalid("source HEAD changed during worktree planning"));
         }
+        crate::directory::open(&source, &source_identity)?;
         Ok(Binding {
             id: id.into(),
             source,
-            source_identity,
             base_commit,
             common_dir: dunce::canonicalize(repo.common_dir())?,
             directory: self.root.join(id).join("worktree"),

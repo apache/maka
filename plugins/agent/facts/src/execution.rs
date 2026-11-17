@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_sandbox::workspace::{WorkspaceIdentity, WorkspaceOrigin};
+use maka_sandbox::workspace::WorkspaceOrigin;
 pub use maka_sandbox::{Approval as ApprovalPolicy, Mode as SandboxMode};
 use serde::{Deserialize, Serialize};
 
@@ -127,9 +127,6 @@ pub struct RunConfiguration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<SystemPrompt>,
     pub cwd: String,
-    /// Captured from the workspace marker, never reconstructed from a later path.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_identity: Option<WorkspaceIdentity>,
     /// Frozen shared-workspace authority; None only for non-Session execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<maka_sandbox::workspace::BindingStamp>,

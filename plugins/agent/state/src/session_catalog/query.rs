@@ -70,14 +70,13 @@ const BASE: &str = "WITH base AS (
  AND (?5 IS NULL OR json_extract(b.workspace_json,'$.path')=?5)
  AND (?6 IS NULL OR substr(s.id,1,length(?6))=?6)
  AND (?7 IS NULL OR json_extract(b.workspace_json,'$.projectId')=?7)
- AND (?8 IS NULL OR json_extract(b.workspace_json,'$.identity')=?8)
- AND instr(COALESCE(json_extract(s.configuration,'$.title'),''),?9)>0
- AND (?10 IS NULL OR json_extract(s.configuration,'$.parentSessionId')=?10)
- AND (?11=0 OR (?11=1 AND s.archived=0) OR (?11=2 AND s.archived=1))
- AND (?14 IS NULL OR (room.session IS NOT NULL)=?14)
+ AND instr(COALESCE(json_extract(s.configuration,'$.title'),''),?8)>0
+ AND (?9 IS NULL OR json_extract(s.configuration,'$.parentSessionId')=?9)
+ AND (?10=0 OR (?10=1 AND s.archived=0) OR (?10=2 AND s.archived=1))
+ AND (?13 IS NULL OR (room.session IS NOT NULL)=?13)
 ), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
 const FILTER: &str =
-    "(?12=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?13=0 OR needs_you=1)";
+    "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?12=0 OR needs_you=1)";
 const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
 
 #[derive(Clone)]
@@ -103,7 +102,6 @@ impl Selection {
         let mut cwd = None;
         let mut prefix = None;
         let mut project = None;
-        let mut identity = None;
         let mut title = String::new();
         let mut parent = None;
         match scope {
@@ -128,12 +126,9 @@ impl Selection {
                         parent = Some(id.clone());
                     }
                     CatalogSelection::Project(id) => project = Some(id.to_string()),
-                    CatalogSelection::Workspace {
-                        session_id,
-                        identity: id,
-                    } => {
+                    CatalogSelection::Workspace { session_id, path } => {
                         catalog.check_session(session_id)?;
-                        identity = Some(String::from(id.clone()));
+                        cwd = Some(path.clone());
                     }
                 }
             }
@@ -154,7 +149,6 @@ impl Selection {
                 nullable(cwd),
                 nullable(prefix),
                 nullable(project),
-                nullable(identity),
                 title.into(),
                 nullable(parent),
                 (if filter.base.archived_only {
@@ -201,7 +195,7 @@ impl Selection {
         let mut values = self.values.clone();
         values.push(id.to_owned().into());
         let sql =
-            format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?15");
+            format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?14");
         Ok(c.query_row(&sql, params_from_iter(values), |r| {
             Ok(Key {
                 unpinned: r.get(0)?,
@@ -226,7 +220,7 @@ impl Selection {
                 key.recency.into(),
                 key.id.clone().into(),
             ]);
-            format!("AND (unpinned,recency,id){operator}(?15,?16,?17)")
+            format!("AND (unpinned,recency,id){operator}(?14,?15,?16)")
         } else {
             String::new()
         };
@@ -283,7 +277,7 @@ impl Selection {
     }
     fn pending_count(&self, c: &Connection) -> Result<u64, StoreError> {
         let sql = format!(
-            "{BASE} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?12 IN(0,1) AND ?13 IN(0,1)"
+            "{BASE} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?11 IN(0,1) AND ?12 IN(0,1)"
         );
         let count: i64 = c.query_row(&sql, params_from_iter(self.values.iter()), |r| r.get(0))?;
         unsigned_integer(count)

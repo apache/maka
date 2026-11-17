@@ -23,7 +23,6 @@ use maka_agent_facts::execution::CollaborationMode;
 use maka_agent_facts::execution::ModelBinding;
 use maka_agent_facts::execution::SandboxMode;
 use maka_agent_facts::execution::ThinkingLevel;
-use maka_sandbox::workspace::WorkspaceIdentity;
 use maka_sandbox::workspace::WorkspaceTarget;
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +60,6 @@ impl Settings {
 pub struct RootTemplate {
     pub workspace: WorkspaceTarget,
     pub cwd: String,
-    pub workspace_identity: WorkspaceIdentity,
     pub model: ModelBinding,
     pub thinking_level: Option<ThinkingLevel>,
     pub sandbox_mode: SandboxMode,

@@ -225,25 +225,15 @@ fn capture(
     state_root: &Path,
     floor: &Sandbox,
 ) -> Result<Captured, ToolError> {
-    let path = PathBuf::from(&workspace.path);
-    let directory =
-        maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
-    if maka_fs_tools::workspace::read_directory_identity(
-        path.clone(),
-        directory.try_clone().map_err(failed)?,
-    )
-    .map_err(failed)?
-        != workspace.identity
-    {
-        return Err(failed("Workspace marker identity changed"));
-    }
+    let (path, directory, identity) =
+        maka_workspace_support::capture_selected(workspace).map_err(failed)?;
     let (sandbox, ceiling) =
         maka_workspace_support::sandbox(workspace, access, state_root).map_err(failed)?;
     let sandbox = sandbox.intersect(floor).map_err(failed)?;
     let ceiling = ceiling.intersect(floor).map_err(failed)?;
     // Policy resolution may inspect workspace metadata; never accept replacement
     // of the original directory during those reads.
-    maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
+    maka_fs_tools::directory::open(&path, &identity).map_err(failed)?;
     Ok(Captured {
         path,
         directory,
@@ -354,14 +344,17 @@ async fn execute(
             maka_agent_facts::read::ResourceAddress::parse(request.path()).map_err(failed)?
         {
             use maka_agent_facts::read::ResourceAddress;
-            match &address {
-                ResourceAddress::Task(_) => {
-                    return Err(failed("This Files service does not support task resources"));
-                }
-                _ => {}
-            }
             cancelled(cancellation)?;
             match address {
+                ResourceAddress::Task(id) => {
+                    let canonical = ResourceAddress::Task(id)
+                        .canonical_path()
+                        .unwrap_or_else(|_| "maka://runtime/background-tasks/<id>".into());
+                    let arg = serde_json::json!({ "ref": canonical });
+                    return Err(failed(format!(
+                        "Background shell task logs use ProcessRead({arg}), not Read"
+                    )));
+                }
                 ResourceAddress::Attachment(mut id) => {
                     let scope = maka_agent_state::artifacts::SessionScope {
                         owner: access.run_owner().clone(),
@@ -422,7 +415,132 @@ async fn execute(
                     cancelled(cancellation)?;
                     return serde_json::to_value(page).map(Output::Json).map_err(failed);
                 }
-                ResourceAddress::Task(_) => unreachable!("task resource rejected above"),
+                ResourceAddress::Session {
+                    session_id,
+                    through,
+                } => {
+                    let (rendered, pinned_through) = access
+                        .render_session_resource(&session_id, through, context)
+                        .await?;
+                    if !request.is_continuation() {
+                        request
+                            .bind_resource(&ResourceAddress::Session {
+                                session_id,
+                                through: pinned_through,
+                            })
+                            .map_err(failed)?;
+                    }
+                    let page = request
+                        .page_with_budget(&rendered, read_page_budget())
+                        .map_err(failed)?;
+                    cancelled(cancellation)?;
+                    return serde_json::to_value(page).map(Output::Json).map_err(failed);
+                }
+                ResourceAddress::SessionImportedToolResult {
+                    session_id,
+                    address,
+                } => {
+                    access.authorize_session_read(&session_id, context).await?;
+                    let writer = root
+                        .data_writer_for_work(custody.as_ref(), &tool_context.execution.session_id)
+                        .map_err(failed)?;
+                    let history = maka_agent_state::session_history::SessionHistory::new(
+                        writer,
+                        access.run_owner().clone(),
+                        session_id.clone(),
+                    );
+                    let cut = history.capture().await.map_err(failed)?;
+                    let tree = maka_agent_state::session_history::source_tree::SourceTree::live(
+                        &history, &cut,
+                    )
+                    .await
+                    .map_err(failed)?;
+                    let budget: Arc<dyn SourceBudget> = Arc::new(archive::Budget(Arc::new(
+                        tokio::sync::Semaphore::new(2 * 1024 * 1024),
+                    )));
+                    let selected = tree
+                        .imported_tool_result(&address, budget.clone(), cancellation)
+                        .await
+                        .map_err(failed)?;
+                    let maka_agent_state::session_history::tool_result_source::ToolResultSource::Returned(returned) =
+                        selected.result
+                    else {
+                        return Err(failed("Imported part lacks its original ToolReturn"));
+                    };
+                    let projection = returned
+                        .fields(budget.clone())
+                        .await
+                        .map_err(failed)?
+                        .projection(budget.clone())
+                        .await
+                        .map_err(failed)?
+                        .ok_or_else(|| failed("Original archived tool projection is missing"))?
+                        .into_json(budget.clone())
+                        .await
+                        .map_err(failed)?;
+                    let (name, length) =
+                        imported_tool_name(selected.name, budget.clone(), cancellation).await?;
+                    let name = std::str::from_utf8(&name.as_ref()[..length]).map_err(failed)?;
+                    if !request.is_continuation() {
+                        request
+                            .bind_resource(&ResourceAddress::SessionImportedToolResult {
+                                session_id,
+                                address,
+                            })
+                            .map_err(failed)?;
+                    }
+                    let page = maka_agent_facts::read::projection_page(
+                        projection,
+                        name,
+                        &request,
+                        read_page_budget(),
+                        budget,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(failed)?;
+                    cancelled(cancellation)?;
+                    return serde_json::to_value(page).map(Output::Json).map_err(failed);
+                }
+                ResourceAddress::SessionToolResult {
+                    session_id,
+                    event_id,
+                } => {
+                    access.authorize_session_read(&session_id, context).await?;
+                    let writer = root
+                        .data_writer_for_work(custody.as_ref(), &tool_context.execution.session_id)
+                        .map_err(failed)?;
+                    let history = maka_agent_state::session_history::SessionHistory::new(
+                        writer,
+                        access.run_owner().clone(),
+                        session_id.clone(),
+                    );
+                    let cut = history.capture().await.map_err(failed)?;
+                    let source = history
+                        .resolve_tool_result(&cut, &event_id)
+                        .await
+                        .map_err(failed)?
+                        .ok_or_else(|| failed("Tool result was not found in the target Session"))?;
+                    if !request.is_continuation() {
+                        request
+                            .bind_resource(&ResourceAddress::SessionToolResult {
+                                session_id,
+                                event_id: source.item.recorded.id.to_string(),
+                            })
+                            .map_err(failed)?;
+                    }
+                    let page = archive::read(
+                        &history,
+                        &cut,
+                        &source.item,
+                        &source.tool_name,
+                        &request,
+                        cancellation,
+                    )
+                    .await?;
+                    cancelled(cancellation)?;
+                    return serde_json::to_value(page).map(Output::Json).map_err(failed);
+                }
             }
         }
     }

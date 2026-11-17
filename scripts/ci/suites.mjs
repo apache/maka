@@ -24,6 +24,7 @@ export const taskHelperConsumers = [
   'maka-agent-native',
   'maka-agent-engine',
   'maka-computer-native',
+  'maka-eval',
 ];
 export const taskHelperBinaries = [
   { package: 'maka-cli', binary: 'maka', cargoArgs: ['--no-default-features'] },

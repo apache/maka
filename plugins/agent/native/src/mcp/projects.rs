@@ -241,19 +241,11 @@ impl Projects {
                     .map(|(directory, path)| (directory.as_ref(), path.as_path())),
             )?;
             let (identity, file) = if let Some(workspace) = workspace {
-                let path = Path::new(&workspace.path);
-                let directory = maka_fs_tools::directory::open(path, &workspace.directory_identity)
+                let (path, directory, observed) =
+                    maka_workspace_support::capture_selected(&workspace)?;
+                let file = files::layered(&directory, Path::new(&path))?;
+                maka_fs_tools::directory::open(&path, &observed)
                     .map_err(|error| error.to_string())?;
-                if maka_fs_tools::workspace::read_directory_identity(
-                    path.to_owned(),
-                    directory.try_clone().map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?
-                    != workspace.identity
-                {
-                    return Err("agent_workspace_unavailable".into());
-                }
-                let file = files::layered(&directory, path)?;
                 let identity = Self::workspace_key(&workspace);
                 (identity, file)
             } else {
@@ -404,12 +396,8 @@ impl Projects {
     }
     fn workspace_key(workspace: &Workspace) -> String {
         maka_agent_facts::artifact::content_digest(
-            &serde_json::to_vec(&(
-                &workspace.path,
-                &workspace.identity,
-                &workspace.directory_identity,
-            ))
-            .expect("workspace identity"),
+            &serde_json::to_vec(&(&workspace.path, &workspace.worktree))
+                .expect("workspace identity"),
         )
     }
     /// Compose only actual published capabilities. Files are proposals, not revocations.

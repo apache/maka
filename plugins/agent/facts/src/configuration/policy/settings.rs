@@ -40,10 +40,20 @@ pub struct NetworkProxy {
     pub bypass_list: Vec<String>,
     pub auto_bypass_domains: Vec<String>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Personalization {
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<ProfileAvatar>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileAvatar {
+    Blue,
+    Green,
+    Rose,
+    Amber,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

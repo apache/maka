@@ -20,12 +20,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { quietWaits, retrying } = await import(
+const { quietWaits, retrying, waitActivity } = await import(
   '../../../../plugins/agent/conversations/ui/runWaits.ts'
 );
 
 const waiting = (...kinds) => ({
-  state: { kind: 'waiting', waits: kinds.map((kind) => ({ kind })) },
+  state: { kind: 'waiting', waits: kinds.map((kind) => ({ kind })), authorityUnavailable: false },
 });
 
 test('a run waiting to retry the provider is still at work', () => {
@@ -48,4 +48,18 @@ test('a run that is not waiting has no quiet waits', () => {
   assert.deepEqual(quietWaits(null), []);
   assert.deepEqual(quietWaits({ state: { kind: 'running' } }), []);
   assert.deepEqual(quietWaits(waiting()), []);
+});
+
+test('the process group asks for a response only for a user wait', () => {
+  assert.equal(waitActivity('waiting', waiting('retry')), 'retrying');
+  assert.equal(waitActivity('waiting', waiting('provider_backoff')), 'retrying');
+  assert.equal(waitActivity('waiting', waiting('cell')), undefined);
+  assert.equal(waitActivity('waiting', waiting('model')), undefined);
+  assert.equal(waitActivity('waiting', null), undefined);
+  assert.equal(waitActivity('waiting_for_user', null), 'waiting_for_user');
+  assert.equal(waitActivity('waiting', waiting('retry', 'approval')), 'waiting_for_user');
+  assert.equal(waitActivity('waiting', waiting('blocker')), 'waiting_for_user');
+  const unavailable = waiting('retry');
+  unavailable.state.authorityUnavailable = true;
+  assert.equal(waitActivity('waiting', unavailable), 'waiting_for_user');
 });

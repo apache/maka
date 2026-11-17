@@ -42,6 +42,8 @@
 
 内置 `external` 执行器通过 PTY 驱动交互式 Claude Code，通过 ACP 驱动 agy，通过 app-server 驱动 Codex。在 `external.runtimes` 中启用对应 CLI，也可用 `external.commands` 配置程序、参数和环境。请先在原生 CLI 登录。CLI 使用当前账户配置和原工作区，原生工具使用完整权限，回调 Maka 的 MCP 工具仍受会话授权约束。
 
+模型菜单读取 Host 已发布的目录，不等待外部模型发现。各 Native CLI 来源独立刷新，并发读取复用已接纳的发现任务；刷新或暂时失败时保留上次成功结果。打开的菜单订阅目录发布，翻页校验目录版本且不启动发现。目录状态限定在同一工作区与激活实例内。
+
 原生 assistant 输出保留 agy ACP 的轮次和工具身份、Codex item ID 和 Claude API 的 `message.id`。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。agy、Codex 和 Claude 的思考内容与最终答复分别保存。
 
 每次任务拥有自己的原生进程、协议流和 Host bridge。Codex 执行使用前台 app-server，发现使用 daemon/proxy。agy 每次 new/resume 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 使用Maka 指定的会话 UUID 和 `--dangerously-skip-permissions`，先启动真正的空白读屏 PTY。Maka 自动处理原生主题、安全说明和绕过权限确认；仅当信任对话框明确指向本轮已获授权工作区的精确 canonical 路径时才确认信任，由 Claude 自己保存决定，不直接改写全局信任记录。登录仍由用户完成。交互提示和本轮 Host MCP 工具目录均就绪后，逐张粘贴 PNG/JPEG/GIF/WebP 上传的不可变临时文件路径，等待原生图片编号确认，再粘贴文字并只发送一次 Enter。JSONL 接纳必须匹配正文、原生图片标签及完整 image block 数量。终端控制字符转为可见形式，CRLF 归一化；Maka 说明通过独立普通 user 消息传入，不覆盖原生系统提示词；原生接入初始化只做一次，已交付说明摘要持久化，内容不变时不重复提交，变更或清空时明确替代旧说明。原生提问／计划回调仍须使用已捕获的 Host 对应工具；未识别的对话框显式失败，不猜测用户答案。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
@@ -50,7 +52,7 @@
 
 三家都保留原生系统提示词。捕获的 Maka 说明用 `<maka_system_instructions>` 包裹，作为实际任务之前的一条独立普通 user 消息，不拼进任务正文。Codex 通过原生 `thread/inject_items` 追加该消息，不额外启动模型轮次；Claude 在同一 PTY 确认说明消息及其结果后再提交任务，初始化答复不作为用户任务答案。
 
-agy 从原生 `agy models` 读取模型目录，从 `/usage` 读取分组额度。执行通过 [agy ACP](https://antigravity.google/docs/ide/extensions/acp/) 新建或续接会话，使用当前登录的账号和原工作区。建连时直接注册本轮 Host MCP，续接时刷新凭据，工具命名空间保持一致，无需额外工作区或 hook。已有会话沿用原生 ID 和已保存的历史。升级前，请在旧版中让正在运行的 headless 任务完成或停止并结算。Maka 说明在首次交付或变更时通过独立的 user 消息发送，图片通过 ACP image block 传入。工具摘要、思考片段和本轮用量随执行事件记录。
+agy 从原生 `agy models` 读取模型目录，从 `/usage` 读取分组额度。执行通过 [agy ACP](https://antigravity.google/docs/ide/extensions/acp/) 新建或续接会话，使用当前登录的账号和原工作区。建连时直接注册本轮 Host MCP，续接时刷新凭据，工具命名空间保持一致，无需额外工作区或 hook。已有会话沿用原生 ID 和已保存的历史。升级前，请在旧版中让正在运行的 headless 任务完成或停止并结算。Maka 说明在首次交付或变更时通过独立的 user 消息发送，图片通过 ACP image block 传入。工具摘要、思考片段和本轮用量随执行事件记录。 多个已公布的思考档位只有在模型 ID 与显示名称同时匹配时才合并成一个模型，强度独立选择。孤立后缀与未知格式保留原身份，不虚构提供方默认档位。目录携带原组合选择及其隐含强度，旧对话无需重写历史即可保留策略。模型发现不会创建 ACP 对话。
 
 启用 Antigravity 时，Maka 会在 `~/.gemini/config/agents/` 安装 `maka` 定义。最后一个使用 Antigravity 的 Maka 实例关闭该功能时会移除定义。新 AGY 会话使用该定义，文件、进程和自动化工具通过 Maka 的 MCP 桥提供，同时保留 AGY 的原生网页搜索和子 agent 工具。已有 AGY 会话继续使用创建时的 agent。
 

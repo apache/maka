@@ -106,6 +106,7 @@ fn base(
             compaction: None,
             timing: None,
             folded_work: None,
+            work: None,
             field: HistoryField::Body,
             imported_turn: None,
             message_id: Some(item.recorded.id.to_string()),
@@ -688,13 +689,8 @@ pub(super) async fn project(
                     row
                 }
                 ExternalEffectEvent::Returned { output, .. } => {
-                    let (is_error, settlement) = super::stream::external_result_metadata(
-                        reader,
-                        item.recorded.run,
-                        output,
-                        stop,
-                    )
-                    .await?;
+                    let (is_error, settlement) =
+                        super::stream::external_result_metadata(reader, item, output, stop).await?;
                     let mut row = base(item, turn, 0, Role::ToolResult, address)?;
                     tool(&mut row, id, None, Some(is_error));
                     row.chunk
@@ -902,11 +898,25 @@ pub(super) async fn project(
             diagnostic: Some(diagnostic),
             ..
         } => {
+            let recovery = if matches!(
+                item.recorded.fact,
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    ..
+                }
+            ) {
+                reader
+                    .recovery_failure_at(item)
+                    .await
+                    .map_err(|error| error.to_string())?
+            } else {
+                None
+            };
             let mut row = base(item, turn, 0, Role::Failure, address)?;
             text(
                 &mut row,
                 SourceField::FailureMessage,
-                diagnostic.clone().into(),
+                recovery.unwrap_or_else(|| diagnostic.clone()).into(),
             );
             result.push(row);
         }

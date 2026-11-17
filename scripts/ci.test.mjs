@@ -154,6 +154,7 @@ test('helper process changes reach integration consumers outside the Cargo depen
     ['maka-cli', 'products/maka/cli'],
     ['maka-agent-native', 'plugins/agent/native'],
     ['maka-computer-native', 'plugins/computer/native'],
+    ['maka-eval', 'products/eval'],
   ].map(([name, path]) => ({
     name,
     id: name,

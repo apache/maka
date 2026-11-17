@@ -56,6 +56,12 @@ impl Kind {
                 .filter(ReadRequest::is_continuation),
             _ => None,
         };
+        if matches!(self, Self::CreateSession)
+            && input.get("forkFrom").is_some_and(Value::is_object)
+        {
+            let title = target.as_str()?;
+            return Self::ForkSession.render_target(title, false);
+        }
         let target = continuation
             .as_ref()
             .map_or_else(|| target.as_str(), |read| Some(read.path()))?;
@@ -72,7 +78,10 @@ impl Kind {
     }
 
     pub(crate) fn render_target(self, target: &str, continuation: bool) -> Option<Text> {
+        let is_session_uri = matches!(self, Self::Read)
+            && (target.starts_with("maka://session/") || target.starts_with("session:"));
         let (en, zh, tw) = match self {
+            Self::Read if is_session_uri => ("Read session", "读取会话", "讀取對話"),
             Self::Read => ("Read file", "读取文件", "讀取檔案"),
             Self::Write => ("Write file", "写入文件", "寫入檔案"),
             Self::Edit => ("Edit file", "编辑文件", "編輯檔案"),

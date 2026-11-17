@@ -190,6 +190,8 @@ impl Owner {
             access.clone(),
         )
         .map_err(RunError::InvalidInput)?;
+        // Keep Goal tool visibility static across turns so starting or completing a Goal
+        // never mutates the tool catalog or exec.description prefix cache.
         if self.settings.goals {
             live.tools = live
                 .tools
@@ -327,6 +329,7 @@ impl Owner {
                         } else { source };
                         let model = driver_model::DriverModel {
                         state: state.clone(),
+                        history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
                         log: Arc::new(lease.store()),
                         source: Arc::new(source),
                         executor: self.credentials.executor.clone(),

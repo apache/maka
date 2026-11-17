@@ -66,11 +66,11 @@ pub(super) fn resolve(
         }
         ProviderKind::OpenaiCompatible { name } => {
             let mut options = compatible::chat_completions(name, thinking_level, parallel);
-            if let crate::facts::adapter::AdapterKind::OpenaiCompatible {
+            if let crate::facts::adapter::RuntimeAdapter::OpenaiCompatible {
                 include_usage,
                 replay_assistant_reasoning_as,
                 ..
-            } = &route.adapter.kind
+            } = route.adapter
             {
                 if let Some(include) = include_usage {
                     options["maka"]["includeUsage"] = json!(include);

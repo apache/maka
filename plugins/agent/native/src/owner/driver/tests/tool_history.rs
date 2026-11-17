@@ -71,6 +71,284 @@ fn timing(page: &Value) -> wire::TurnTiming {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_failure_shows_original_tool_diagnostic() {
+    use maka_plugin_core::operation::{Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef};
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (tool, _) = rig.tool(attempt, "Computer", "click", json!({})).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let owner = driver.state.frontier(run).await?.spec.owner;
+        let digest = format!("sha256-{}", "a".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let reason = BlockerKind::OperationUnknown {
+            tool: tool.clone(),
+            reference: reference.clone(),
+        };
+        let diagnostic = "The app started, but its window never appeared.";
+        let committed = rig
+            .append(
+                vec![
+                    Fact::ToolOriginalBound {
+                        tool: tool.clone(),
+                        reference: reference.clone(),
+                    },
+                    Fact::OperationObserved {
+                        tool,
+                        reply: maka_agent_facts::operation::RecordedOperationReply {
+                            reference,
+                            receipt: Receipt::Recorded {
+                                outcome: OperationOutcome::Unknown {
+                                    diagnostic: diagnostic.into(),
+                                },
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                        },
+                    },
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: reason.clone(),
+                    },
+                    Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        diagnostic: Some(format!("{reason:?}")),
+                    },
+                ],
+                vec![],
+            )
+            .await?;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let failures: Vec<_> = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "failure")
+            .map(|row| row["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(failures, [diagnostic]);
+
+        let history = driver.state.session_history(owner, session);
+        let cut = history.capture().await?;
+        let sequence = history
+            .fact_sequence(&cut, run, committed.facts.last().unwrap().id)
+            .await?
+            .ok_or("missing termination position")?;
+        let snapshot = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut,
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        let termination = snapshot
+            .item(sequence)
+            .await?
+            .ok_or("missing archived termination")?;
+        let archived =
+            maka_agent_state::session_history::source_tree::HistoryDataSource::Snapshot(snapshot);
+        assert_eq!(
+            archived.recovery_failure_at(&termination).await?.as_deref(),
+            Some(diagnostic)
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(()))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() -> TestResult<()> {
+    use maka_agent_engine::ports::Preparation;
+    use maka_agent_facts::operation::inline_reply;
+    use maka_plugin_core::operation::{
+        OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+
+    let mut rig = Rig::new()?;
+    let (request, mut captured) = tokio::sync::mpsc::channel(1);
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let request = request.clone();
+            async move {
+                let _ = request.try_send(serde_json::from_slice::<Value>(&body).expect("model request JSON"));
+                ([( "content-type", "text/event-stream")], concat!(
+                    "data: {\"id\":\"followup\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"The click did not run.\"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"followup\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: [DONE]\n\n",
+                ))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+    let stop = CancellationToken::new();
+    let server_stop = stop.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(server_stop.cancelled_owned())
+            .await
+    });
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+        let (tool, _) = rig.tool(attempt, "computer", "click-1", json!({})).await?;
+        rig.finish_model_request(attempt, None).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let owner = driver.state.frontier(run).await?.spec.owner;
+        let digest = format!("sha256-{}", "a".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace,
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let observed = |outcome| Fact::OperationObserved {
+            tool: tool.clone(),
+            reply: inline_reply(OperationReply {
+                reference: reference.clone(),
+                receipt: Receipt::Recorded {
+                    outcome,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+            }),
+        };
+        rig.append(
+            vec![
+                Fact::ToolOriginalBound {
+                    tool: tool.clone(),
+                    reference: reference.clone(),
+                },
+                observed(OperationOutcome::Unknown {
+                    diagnostic: "Original launch uncertain".into(),
+                }),
+                Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason: BlockerKind::OperationUnknown {
+                        tool: tool.clone(),
+                        reference: reference.clone(),
+                    },
+                },
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    diagnostic: Some("Original launch uncertain".into()),
+                },
+            ],
+            vec![],
+        )
+        .await?;
+        driver
+            .state
+            .observe(
+                run,
+                vec![Change::new(
+                    observed(OperationOutcome::Returned {
+                        result: OperationResult::Failure {
+                            diagnostic: "App identity did not match. Click was not sent.".into(),
+                        },
+                    }),
+                    at(),
+                )],
+                vec![],
+            )
+            .await?;
+
+        let client = rig.client.as_ref().unwrap();
+        let BackendSpec::Model { binding, .. } = driver.state.frontier(run).await?.spec.backend
+        else {
+            return Err("fixture model binding missing".into());
+        };
+        let sent = model_recovery::call(client, "agent", "send", json!({
+            "sessionId":session, "message":"Did the click run?",
+            "backend":{"kind":"model","connectionId":binding.connection_id,"modelId":binding.model},
+            "delivery":"queue",
+        })).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let request = captured
+            .recv()
+            .await
+            .ok_or("follow-up did not reach the model")?;
+        let messages = request["messages"]
+            .as_array()
+            .ok_or("model messages missing")?;
+        let exchange: Vec<_> = messages
+            .iter()
+            .filter_map(|message| {
+                if message["tool_calls"]
+                    .as_array()
+                    .is_some_and(|calls| calls.iter().any(|call| call["id"] == "click-1"))
+                {
+                    Some("call")
+                } else if message["role"] == "tool" && message["tool_call_id"] == "click-1" {
+                    assert!(
+                        message["content"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .contains("App identity did not match. Click was not sent.")
+                    );
+                    Some("failure")
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(exchange, ["call", "failure"]);
+        model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    server.await??;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
     use maka_agent_engine::DriverExit;
 
@@ -1156,6 +1434,7 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
             })?;
         let (knowledge, dependencies) = maka_agent_engine::preparation::project_cell_knowledge(
             maka_agent_engine::preparation::NotificationSource::Live(&driver.state),
+            &history,
             &maka_agent_state::artifacts::ArtifactScope {
                 owner: owner.clone(),
                 session,

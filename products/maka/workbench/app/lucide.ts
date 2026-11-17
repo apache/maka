@@ -271,6 +271,13 @@ export const lucide = {
     { tag: 'path', d: 'M3 16v3a2 2 0 0 0 2 2h3' },
     { tag: 'path', d: 'M16 21h3a2 2 0 0 0 2-2v-3' },
   ],
+  'message-square': [
+    {
+      tag: 'path',
+      d: 'M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z',
+    },
+  ],
+  minus: [{ tag: 'path', d: 'M5 12h14' }],
   'move-right': [
     { tag: 'path', d: 'M18 8L22 12L18 16' },
     { tag: 'path', d: 'M2 12H22' },
@@ -323,7 +330,6 @@ export const lucide = {
       d: 'M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z',
     },
   ],
-  minus: [{ tag: 'path', d: 'M5 12h14' }],
   plus: [
     { tag: 'path', d: 'M5 12h14' },
     { tag: 'path', d: 'M12 5v14' },
@@ -406,6 +412,10 @@ export const lucide = {
   'undo-2': [
     { tag: 'path', d: 'M9 14 4 9l5-5' },
     { tag: 'path', d: 'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11' },
+  ],
+  'user-round': [
+    { tag: 'circle', cx: 12.0, cy: 8.0, r: 5.0 },
+    { tag: 'path', d: 'M20 21a8 8 0 0 0-16 0' },
   ],
   x: [
     { tag: 'path', d: 'M18 6 6 18' },

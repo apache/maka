@@ -19,41 +19,21 @@
 
 //! Bounded directory capture. Caller attestations never become filesystem fencing.
 use super::*;
+pub(crate) use crate::checkpoints::workspace::read_inventory;
+use crate::checkpoints::workspace::{Inventory, relative};
 use crate::checkpoints::{WorkspaceCapture, WorkspaceEntry, WorkspaceSnapshot};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     path::Path,
 };
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Inventory {
-    entries: Vec<WorkspaceEntry>,
-}
-
-fn relative(path: &str) -> Result<(), StoreError> {
-    if path.is_empty()
-        || path.len() > 4096
-        || path.contains('\\')
-        || path.contains(':')
-        || path.chars().any(char::is_control)
-        || path
-            .split('/')
-            .any(|p| p.is_empty() || p == "." || p == ".." || p.ends_with(['.', ' ']))
-    {
-        return Err(invalid("nonportable checkpoint workspace path"));
-    }
-    Ok(())
-}
-
 fn excluded(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | ".DS_Store" | "__pycache__" | ".cache" | ".maka-workspace.json"
+        ".git" | "node_modules" | ".DS_Store" | "__pycache__" | ".cache"
     )
 }
 
@@ -198,7 +178,7 @@ pub(super) fn capture(
     source: &WorkspaceCapture,
     dir: &Dir,
 ) -> Result<WorkspaceSnapshot, StoreError> {
-    if !source.root.is_absolute() || source.identity.is_empty() {
+    if !source.root.is_absolute() {
         return Err(invalid("invalid checkpoint workspace binding"));
     }
     let source_path = std::fs::canonicalize(&source.root)?;
@@ -206,11 +186,15 @@ pub(super) fn capture(
     if source_path.starts_with(root_path) || root_path.starts_with(&source_path) {
         return Err(invalid("checkpoint workspace overlaps state root"));
     }
+    if let Some(objects) = objects.storage().local_directory()
+        && (source_path.starts_with(objects) || objects.starts_with(&source_path))
+    {
+        return Err(invalid("checkpoint workspace overlaps its object store"));
+    }
     validate_alias(dir, &source_path)?;
     let before_root = stamp(&dir.dir_metadata()?)?;
     let before = scan(dir, &source_path)?;
     let mut entries = Vec::new();
-    let mut linked = false;
     for (path, expected) in &before {
         objects.owner.validate_current()?;
         let (parent, name) = parent(dir, path)?;
@@ -275,7 +259,6 @@ pub(super) fn capture(
                 let staging = objects.staging(request, "workspace-file")?;
                 objects.link_staged(&staging, &object)?;
                 std::fs::remove_file(staging)?;
-                linked = true;
             }
             object
         } else {
@@ -313,7 +296,6 @@ pub(super) fn capture(
                 drop(staged);
                 objects.link_staged(&staging, &object)?;
                 std::fs::remove_file(staging)?;
-                linked = true;
             }
             object
         };
@@ -335,16 +317,12 @@ pub(super) fn capture(
     if before != after || before_root != stamp(&dir.dir_metadata()?)? {
         return Err(invalid("checkpoint workspace changed during capture"));
     }
-    if linked {
-        objects.sync_objects()?;
-    }
     let encoded = serde_json::to_vec(&Inventory { entries })?;
     let mut file = objects.create(request, "workspace")?;
     file.write_all(&encoded)?;
     file.sync_all()?;
     drop(file);
     Ok(WorkspaceSnapshot {
-        identity: source.identity.clone(),
         consistency: source.consistency,
         inventory: objects.publish(&objects.staging(request, "workspace")?)?,
     })
@@ -355,39 +333,6 @@ pub(super) fn inventory(
     snapshot: &WorkspaceSnapshot,
 ) -> Result<Vec<WorkspaceEntry>, StoreError> {
     read_inventory(objects.read(&snapshot.inventory)?)
-}
-
-pub(super) fn read_inventory(source: impl Read) -> Result<Vec<WorkspaceEntry>, StoreError> {
-    let inventory: Inventory = serde_json::from_reader(source)?;
-    let mut paths = BTreeSet::new();
-    let mut directories = BTreeSet::new();
-    let mut total = 0u64;
-    for entry in &inventory.entries {
-        let path = match entry {
-            WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path, .. } => path,
-        };
-        relative(path)?;
-        // Reject case aliases even when the publishing filesystem happens to allow them.
-        if !paths.insert(path.to_lowercase()) {
-            return Err(invalid("checkpoint workspace path collision"));
-        }
-        if let Some((parent, _)) = path.rsplit_once('/')
-            && !directories.contains(parent)
-        {
-            return Err(invalid("checkpoint workspace parent missing"));
-        }
-        match entry {
-            WorkspaceEntry::Directory { path } => {
-                directories.insert(path.as_str());
-            }
-            WorkspaceEntry::File { object, .. } => {
-                total = total
-                    .checked_add(object.bytes)
-                    .ok_or_else(|| invalid("checkpoint workspace size overflow"))?;
-            }
-        }
-    }
-    Ok(inventory.entries)
 }
 
 pub(super) fn verify(objects: &Objects, snapshot: &WorkspaceSnapshot) -> Result<(), StoreError> {

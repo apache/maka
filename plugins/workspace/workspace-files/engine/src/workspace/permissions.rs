@@ -57,7 +57,6 @@ pub fn resolve(mode: Mode, cwd: &Path) -> Result<(Sandbox, Sandbox), Error> {
         Rule::subtree(cwd.join(".git"), Access::Read),
         Rule::subtree(cwd.join(".agents"), Access::Read),
         Rule::subtree(cwd.join(".maka"), Access::Read),
-        Rule::exact(cwd.join(super::MARKER_FILE), Access::Read),
     ];
     rules.extend(
         super::git_metadata(cwd)?

@@ -467,6 +467,12 @@ impl Rig {
                 "queue",
                 "openBot",
                 "botOutbox",
+                "sessionList",
+                "sessionRead",
+                "sessionCreate",
+                "sessionSend",
+                "sessionStop",
+                "sessionManage",
             ]
         } else {
             &[
@@ -483,7 +489,14 @@ impl Rig {
                 "stop",
                 "goal",
                 "changeGoal",
+                "sessionList",
+                "sessionRead",
+                "sessionCreate",
+                "sessionSend",
+                "sessionStop",
+                "sessionManage",
                 "metadata",
+                "listFiles",
             ]
         };
         let mut endpoints = BTreeMap::from([(
@@ -770,6 +783,7 @@ impl Rig {
         self.cells = Some(cells.clone());
         let model = DriverModel {
             state: state.clone(),
+            history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
             log: Arc::new(lease.store()),
             source: Arc::new(source),
             executor: owner.credentials.executor.clone(),
@@ -1644,7 +1658,7 @@ mod bounded_risk {
     -> TestResult<()> {
         use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
         use maka_agent_facts::{
-            cells::{CellObservation, CellVmBinding, SessionPublication},
+            cells::{CellObservation, CellReturnedResult, CellVmBinding, SessionPublication},
             tool_output::CellFinalEvidence,
         };
 
@@ -1718,6 +1732,18 @@ mod bounded_risk {
             };
             let late = returned("internal callback copy")?;
             let normal = returned("second result")?;
+            let child = Uuid::new_v4();
+            let child_body = "Oversized original child result. ".repeat(350_000);
+            let child_input = ContentBlob::json(&json!({"query":"fixture"}))?;
+            let child_result = ContentBlob::json(&ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts: vec![],
+                body: CellReturnedResult {
+                    output: ToolOutput::Text(child_body.clone()),
+                    projection: None,
+                    is_error: false,
+                },
+            })?;
             rig.append(
                 vec![
                     Fact::Cell {
@@ -1728,6 +1754,28 @@ mod bounded_risk {
                                 version: 1,
                                 descriptor: completed.reference().clone(),
                             },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ChildPrepared {
+                            cell,
+                            operation: child,
+                            name: "Recall".into(),
+                            semantics: ToolSemantics::Parallel,
+                            input: child_input.reference().clone(),
+                            resources: vec![],
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ChildAdmitted { cell, operation: child },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::LocalChildReturned {
+                            cell,
+                            operation: child,
+                            result: child_result.reference().clone(),
+                            is_error: false,
+                            settlement: ToolSettlement::Returned,
                         },
                     },
                     Fact::Cell {
@@ -1763,7 +1811,7 @@ mod bounded_risk {
                         cell_observation: None,
                     },
                 ],
-                vec![completed, recovered, late, normal],
+                vec![completed, recovered, late, normal, child_input, child_result],
             )
             .await?;
 
@@ -1835,7 +1883,27 @@ mod bounded_risk {
                     ("tool", Some("second-exec"))
                 ]
             );
+            let first_result: Vec<Value> = serde_json::from_str(
+                messages[index + 1]["content"]
+                    .as_str()
+                    .ok_or("missing first tool result text")?,
+            )?;
+            let original = first_result
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .find_map(|text| text.split_once(": SessionRead("))
+                .and_then(|(_, request)| request.strip_suffix(')'))
+                .ok_or("missing original child result position")?;
+            let read_input: Value = serde_json::from_str(original)?;
+            let page = model_recovery::call(
+                rig.client.as_ref().unwrap(), "agent", "sessionRead", read_input,
+            ).await?;
+            assert!(page["transcript"]["items"].as_array().unwrap().iter().any(|row| {
+                row["text"].as_str().is_some_and(|text| text.contains("Oversized original child result."))
+                    && row["totalBytes"].as_u64() == Some(child_body.len() as u64)
+            }));
             let wire = wire.to_string();
+            assert!(!wire.contains("Oversized original child result."));
             assert_eq!(wire.matches("first result").count(), 1);
             assert_eq!(wire.matches("second result").count(), 1);
             assert!(!wire.contains("internal callback copy"));
@@ -3060,6 +3128,7 @@ mod model_recovery {
     mod predictions;
     mod preset_acceptance;
     mod presets;
+    mod work_groups;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
@@ -6360,6 +6429,218 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     let cleanup = rig.finish().await;
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(matches!(served, Ok(Ok(()))), "{served:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_markers() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
+    let mut rig = Rig::new().expect("workspace reclone fixture");
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let run_git = |cwd: &std::path::Path, args: &[&str]| -> Result<(), String> {
+            let output = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .map_err(|e| format!("git {args:?}: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Ok(())
+        };
+
+        let remote_a = rig.directory.path().join("remote-a");
+        std::fs::create_dir_all(&remote_a)?;
+        run_git(&remote_a, &["init"])?;
+        std::fs::write(remote_a.join("before.txt"), "v1\n")?;
+        run_git(&remote_a, &["add", "before.txt"])?;
+        run_git(&remote_a, &["commit", "-m", "initial"])?;
+
+        let root_workspace = rig.directory.path().join("workspace");
+        let repo_a = root_workspace.join("repo-a");
+        let repo_b = root_workspace.join("repo-b");
+        std::fs::create_dir_all(&root_workspace)?;
+        std::fs::create_dir_all(&repo_b)?;
+        run_git(
+            &root_workspace,
+            &[
+                "clone",
+                remote_a.to_str().ok_or("invalid remote_a path")?,
+                "repo-a",
+            ],
+        )?;
+        let baseline_exclude = std::fs::read_to_string(repo_a.join(".git/info/exclude"))?;
+
+        let _initial = rig.start().await?;
+        let client = rig.client.as_ref().ok_or("client missing")?;
+
+        let first = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "First conversation",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_a},
+            }),
+        )
+        .await?;
+        let first_id = first["session"]["id"]
+            .as_str()
+            .ok_or("first session id missing")?
+            .to_owned();
+        let project_id = first["session"]["workspace"]["projectId"]
+            .as_str()
+            .ok_or("projectId missing on cloned git workspace")?
+            .to_owned();
+
+        let other = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "Other workspace conversation",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_b},
+            }),
+        )
+        .await?;
+        let other_id = other["session"]["id"]
+            .as_str()
+            .ok_or("other session id missing")?
+            .to_owned();
+
+        let names = |dir: &std::path::Path| -> std::io::Result<Vec<std::ffi::OsString>> {
+            let mut entries = std::fs::read_dir(dir)?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort();
+            Ok(entries)
+        };
+        assert_eq!(
+            names(&repo_a)?,
+            vec![
+                std::ffi::OsString::from(".git"),
+                std::ffi::OsString::from("before.txt"),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_a.join(".git/info/exclude"))?,
+            baseline_exclude
+        );
+        assert!(names(&repo_b)?.is_empty());
+
+        run_git(&remote_a, &["rm", "before.txt"])?;
+        std::fs::write(remote_a.join("after-reclone.txt"), "v2\n")?;
+        run_git(&remote_a, &["add", "after-reclone.txt"])?;
+        run_git(&remote_a, &["commit", "-m", "advance remote"])?;
+
+        std::fs::remove_dir_all(&repo_a)?;
+        run_git(
+            &root_workspace,
+            &[
+                "clone",
+                remote_a.to_str().ok_or("invalid remote_a path")?,
+                "repo-a",
+            ],
+        )?;
+        let recloned_exclude = std::fs::read_to_string(repo_a.join(".git/info/exclude"))?;
+
+        let files = model_recovery::call(
+            client,
+            "agent",
+            "listFiles",
+            json!({
+                "sessionId": &first_id,
+                "path": null,
+                "after": null,
+            }),
+        )
+        .await?;
+        let page: maka_fs_tools::files::FilePage = serde_json::from_value(files)?;
+        assert_eq!(
+            page.entries,
+            vec![maka_fs_tools::files::FileEntry {
+                path: maka_fs_tools::path::WorkspacePath::from_bytes(b"after-reclone.txt")?,
+                kind: maka_fs_tools::files::FileKind::File,
+            }]
+        );
+
+        let second = model_recovery::call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title": "Second conversation after reclone",
+                "automaticTitle": false,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": &repo_a},
+            }),
+        )
+        .await?;
+        let second_id = second["session"]["id"]
+            .as_str()
+            .ok_or("second session id missing")?
+            .to_owned();
+        assert_eq!(second["session"]["workspace"]["projectId"], project_id);
+
+        for scope in [
+            json!({"kind": "workspace", "sessionId": &first_id}),
+            json!({"kind": "project", "projectId": &project_id}),
+        ] {
+            let scoped = model_recovery::call(
+                client,
+                "agent",
+                "list",
+                json!({
+                    "filter": "all",
+                    "scope": scope,
+                    "position": {"kind": "start"},
+                }),
+            )
+            .await?;
+            let scoped_ids: Vec<_> = scoped["sessions"]
+                .as_array()
+                .ok_or("scoped sessions missing")?
+                .iter()
+                .filter_map(|entry| entry["id"].as_str())
+                .collect();
+            assert!(scoped_ids.contains(&first_id.as_str()), "{scoped_ids:?}");
+            assert!(scoped_ids.contains(&second_id.as_str()), "{scoped_ids:?}");
+            assert!(!scoped_ids.contains(&other_id.as_str()), "{scoped_ids:?}");
+        }
+        assert_eq!(
+            names(&repo_a)?,
+            vec![
+                std::ffi::OsString::from(".git"),
+                std::ffi::OsString::from("after-reclone.txt"),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_a.join(".git/info/exclude"))?,
+            recloned_exclude
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 

@@ -34,7 +34,7 @@ use maka_agent_facts::{
     input::RunInput,
     model::prompt::Message,
 };
-use maka_agent_state::{ContentBlob, Store, fold::RunView};
+use maka_agent_state::{ContentBlob, Store, fold::RunView, session_history::SessionHistory};
 use maka_event_log::SessionStore;
 use maka_model::{ModelExecutor, ModelPreparationResources, ModelRequest, ToolChoiceMode};
 use serde::{Deserialize, Serialize};
@@ -76,6 +76,7 @@ pub(in crate::owner) fn validate_native_compaction_producer(
 
 pub(super) struct DriverModel {
     pub state: Store,
+    pub history: SessionHistory,
     pub log: Arc<SessionStore>,
     pub source: Arc<Source>,
     pub executor: ModelExecutor,
@@ -1093,6 +1094,7 @@ impl DriverModel {
         messages.append(message).await?;
         let (message, extra) = preparation::project_cell_knowledge(
             reader.notification_source(),
+            &self.history,
             &maka_agent_state::artifacts::ArtifactScope {
                 owner: view.spec.owner.clone(),
                 session: view.spec.session_id.clone(),
@@ -1991,6 +1993,7 @@ impl DriverModel {
                 })?;
                 let (message, _) = preparation::project_cell_knowledge(
                     reader.notification_source(),
+                    &self.history,
                     &maka_agent_state::artifacts::ArtifactScope {
                         owner: view.spec.owner.clone(),
                         session: view.spec.session_id.clone(),
@@ -3449,7 +3452,10 @@ fn terminal_outcome(error: &RunError) -> Option<maka_agent_facts::accounting::Ou
         .then_some(maka_agent_facts::accounting::Outcome::Error)
 }
 
-fn merge_input_skills(system: &mut Option<SystemPrompt>, input: &RunInput) -> Result<(), RunError> {
+pub(super) fn merge_input_skills(
+    system: &mut Option<SystemPrompt>,
+    input: &RunInput,
+) -> Result<(), RunError> {
     let RunInput::Message {
         content,
         source_messages,

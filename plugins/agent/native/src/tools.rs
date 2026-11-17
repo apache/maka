@@ -394,9 +394,9 @@ fn catalog_inner(
                 }
             } else if contract == &agent_contract {
                 match selection.method.as_str() {
-                    "create" => Some(title::Kind::CreateSession),
+                    "create" | "sessionCreate" => Some(title::Kind::CreateSession),
                     "fork" => Some(title::Kind::ForkSession),
-                    "send" => Some(title::Kind::SendSession),
+                    "send" | "sessionSend" => Some(title::Kind::SendSession),
                     _ => None,
                 }
             } else {
@@ -540,7 +540,15 @@ fn catalog_inner(
             basis.push(selected);
             let mut description = selection.description.clone();
             if binding.contract() == &file_contract && selection.method == "read" {
-                description.push_str("\n\nReads Session attachment and archived tool-result resources. Pass page.next unchanged to this tool to continue.");
+                description.push_str("\n\nAlso reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.");
+            }
+            if contract == &process_contract {
+                let guidance = match selection.method.as_str() {
+                    "execute" => "\n\nFor slow or long-running commands, set run_in_background: true to start a background process and return a snapshot with ref for ProcessRead, ProcessInput, BackgroundTaskHealth or ProcessStop, or set timeout_ms to enforce a deadline.",
+                    "stop" => "\n\nPass the ref from a background Shell process snapshot (run_in_background: true).",
+                    _ => "",
+                };
+                description.push_str(guidance);
             }
             Ok(ToolRegistration {
                 definition: ToolDefinition {

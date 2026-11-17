@@ -20,6 +20,8 @@ pub enum DecorationKind {
         /// Whether content inserted at the end joins the range.
         inclusive_end: bool,
     },
+    /// Draw one source character as another, or hide a run of text.
+    Replacement(Option<char>),
     /// A widget the view makes for `key` at `from` (`to` equals `from`).
     Widget {
         /// What the view makes the widget from.
@@ -60,6 +62,26 @@ impl Decoration {
                 inclusive_start: false,
                 inclusive_end: false,
             },
+            spec: BTreeMap::new(),
+        }
+    }
+
+    /// Omit inline text over `from..to` while retaining its document positions.
+    pub fn conceal(from: usize, to: usize) -> Self {
+        Self {
+            from,
+            to,
+            kind: DecorationKind::Replacement(None),
+            spec: BTreeMap::new(),
+        }
+    }
+
+    /// Draw the single UTF-16 unit at `from` as `glyph`.
+    pub fn replace_char(from: usize, glyph: char) -> Self {
+        Self {
+            from,
+            to: from + 1,
+            kind: DecorationKind::Replacement(Some(glyph)),
             spec: BTreeMap::new(),
         }
     }
@@ -130,6 +152,16 @@ impl Decoration {
                 (!result.deleted).then(|| Decoration {
                     from: result.pos,
                     to: result.pos,
+                    kind: self.kind.clone(),
+                    spec: self.spec.clone(),
+                })
+            }
+            DecorationKind::Replacement(glyph) => {
+                let from = mapping.map(self.from, 1);
+                let to = mapping.map(self.to, -1);
+                (from < to && (glyph.is_none() || to - from == 1)).then(|| Decoration {
+                    from,
+                    to,
                     kind: self.kind.clone(),
                     spec: self.spec.clone(),
                 })

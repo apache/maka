@@ -24,6 +24,7 @@ import { context } from 'nsh';
 import type { ApplicationHost, CapturedFile, ScopedHost } from 'maka/host';
 import type {
   AgentFileKind,
+  AgentSessionKind,
   ClientDraft,
   ClientDraftEdit,
   ClientOperation,
@@ -253,6 +254,17 @@ export function createHost(application: UiHost) {
 }
 
 export type Host = ReturnType<typeof createHost>;
+export async function searchSessions(host: Host, kind: AgentSessionKind, query: string) {
+  const page = await host.query('agent', 'list', {
+    kind,
+    filter: 'all',
+    scope: { kind: 'all' },
+    position: { kind: 'start' },
+    titleQuery: query,
+  });
+  return page.sessions;
+}
+
 const hostContext = context<Host | null>(null);
 export const HostProvider = hostContext.Provider;
 export function useHost(): Host {

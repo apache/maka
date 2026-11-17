@@ -205,7 +205,15 @@ impl Fixture {
                 .filter(|tool| options.session_tools
                     && matches!(
                         tool["name"].as_str(),
-                        Some("SessionCreate" | "SessionSend" | "SessionRespond" | "SessionWork")
+                        Some(
+                            "SessionList"
+                                | "SessionRead"
+                                | "SessionCreate"
+                                | "SessionSend"
+                                | "SessionRespond"
+                                | "SessionStop"
+                                | "SessionManage"
+                        )
                     ))
                 .collect::<Vec<_>>()
         );

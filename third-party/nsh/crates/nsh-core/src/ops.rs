@@ -1046,7 +1046,12 @@ pub enum EventPayload {
     /// What the user pasted into an input.
     Paste(Box<PasteEvent>),
     /// The lines of a text block.
-    TextLayout(Vec<crate::text::TextLine>),
+    TextLayout {
+        /// UTF-16 ranges and geometry of the final drawn lines.
+        lines: Vec<crate::text::TextLine>,
+        /// The same layout sent to the renderer.
+        layout: crate::text::TextLayout,
+    },
     /// The files the user picked ([`EventKind::Pick`]), with their bytes.
     Picked {
         /// The request ([`Command::PickImages`], [`Command::PickFiles`]).

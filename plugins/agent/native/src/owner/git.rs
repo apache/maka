@@ -34,10 +34,10 @@ impl Owner {
                     .read_git(
                         &input.session_id,
                         &scope,
-                        |workspace, private_root, cancel| {
+                        |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::status(
                                 Path::new(&workspace.path),
-                                &workspace.directory_identity,
+                                observed,
                                 private_root,
                                 workspace.worktree.as_deref(),
                                 cancel,
@@ -65,10 +65,10 @@ impl Owner {
                     .read_git(
                         &input.session_id,
                         &scope,
-                        move |workspace, private_root, cancel| {
+                        move |workspace, observed, private_root, cancel| {
                             maka_fs_tools::git::diff(
                                 Path::new(&workspace.path),
-                                &workspace.directory_identity,
+                                observed,
                                 private_root,
                                 workspace.worktree.as_deref(),
                                 input.area,
@@ -87,12 +87,17 @@ impl Owner {
         &self,
         session_id: &str,
         scope: &Scope,
-        read: impl FnOnce(&Workspace, &Path, Arc<AtomicBool>) -> io::Result<T>
+        read: impl FnOnce(
+            &Workspace,
+            &maka_fs_tools::directory::Observation,
+            &Path,
+            Arc<AtomicBool>,
+        ) -> io::Result<T>
         + std::marker::Send
         + 'static,
     ) -> Result<T, String> {
         let original = self.session(session_id).await?.configuration;
-        workspace::validate(
+        let (_, _, observed) = workspace::open_workspace_observation(
             &self.workspace_roots,
             &original.workspace,
             &self.managed_worktrees,
@@ -115,8 +120,9 @@ impl Owner {
             .to_owned();
         let selected = original.workspace.clone();
         let session = session_id.to_owned();
+        let observed_for_read = observed.clone();
         let result = worktrees::blocking(scope, &self.stop, move |cancel| {
-            read(&selected, &private_root, cancel).map_err(|error| {
+            read(&selected, &observed_for_read, &private_root, cancel).map_err(|error| {
                 let cause = git_failure(&error);
                 if cause != "agent_git_cancelled" {
                     tracing::warn!(stage = "git_read", cause, session_id = %session,
@@ -134,12 +140,15 @@ impl Owner {
         {
             return Err("agent_git_changed".into());
         }
-        workspace::validate(
+        let (_, _, after) = workspace::open_workspace_observation(
             &self.workspace_roots,
             &original.workspace,
             &self.managed_worktrees,
         )
         .await?;
+        if after != observed {
+            return Err("agent_git_changed".into());
+        }
         result
     }
 }

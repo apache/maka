@@ -267,6 +267,44 @@ impl Owner {
         self.prepare_stop_with_goal(session, run, change).await
     }
 
+    pub(super) async fn prepare_session_stop(
+        self: &Arc<Self>,
+        session: &str,
+        run: RunId,
+        operation: &maka_plugin_core::operation::RecoveryRef,
+    ) -> Result<NativeMutation<SessionStopOutput>, String> {
+        let Some(view) = self.session_run(session, run).await? else {
+            return Ok(NativeMutation::Returned(SessionStopOutput {
+                requested: false,
+                run_id: None,
+            }));
+        };
+        if view.stopped {
+            return Ok(NativeMutation::Returned(SessionStopOutput {
+                requested: true,
+                run_id: Some(run),
+            }));
+        }
+        if view.terminal.is_some() {
+            return Ok(NativeMutation::Returned(SessionStopOutput {
+                requested: false,
+                run_id: None,
+            }));
+        }
+        let change = self.control_change(
+            operation,
+            "stop",
+            Fact::StopRequested {
+                diagnostic: "user_requested_stop".into(),
+            },
+        );
+        self.prepare_stop_with_goal_mapped(session, run, change, move |stopped| SessionStopOutput {
+            requested: stopped.requested,
+            run_id: stopped.requested.then_some(run),
+        })
+        .await
+    }
+
     fn control_change(
         &self,
         operation: &maka_plugin_core::operation::RecoveryRef,

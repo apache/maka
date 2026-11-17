@@ -24,7 +24,7 @@ import {
   shouldProjectPendingSend,
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
-import { quietWaits, retrying } from './runWaits';
+import { quietWaits, retrying, waitActivity } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
@@ -94,10 +94,11 @@ import {
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
+  historyChunkKey,
   historyRowKey,
-  readHistoryTail,
   rootEventSequence,
   historyFollowPosition,
+  historyFollowTail,
   compareRows,
   HistoryRows,
   mergeHistoryPage,
@@ -109,6 +110,7 @@ import {
   replaceHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
+import { sessionIdFromLink } from '../../../../products/maka/workbench/app/skillTokenText';
 import {
   TranscriptOverlay,
   type LivePart,
@@ -145,7 +147,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
 import {
-  sameRoute,
+  selectionForChoice,
   sameBackend,
   routeKey,
   backendName,
@@ -190,7 +192,11 @@ import {
   createMessagePrediction,
   predictionTrigger,
 } from '../../../../products/maka/workbench/app/messagePrediction';
-import { TurnPanel, TurnSummary } from '../../../../products/maka/workbench/app/TurnPanel';
+import {
+  groupWork,
+  TurnPanel,
+  TurnSummary,
+} from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
 import type {
   GroupViewState,
@@ -230,6 +236,7 @@ import type {
   AgentMarkReadResult,
   AgentSession,
   AgentRunBackend,
+  Cursor as HistoryCursor,
   HistoryPosition,
   HistoryRowAddress,
   HistoryOrder,
@@ -554,7 +561,10 @@ export function Conversation(props: ConversationProps) {
     !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
-  const workPages = new Map<string, { through: number }>();
+  const workPages = new Map<
+    string,
+    { through: number; after: HistoryCursor | null; task?: Promise<void>; wanted?: number }
+  >();
   const groupStates = new Map<string, GroupViewState>();
   const rowStates = new Map<string, MessageViewState>();
   const turnState = (id: string) => {
@@ -609,8 +619,8 @@ export function Conversation(props: ConversationProps) {
   );
   const activity = computed<LiveActivity>(
     () => {
-      if (run() === 'waiting_for_user' || run() === 'waiting')
-        return { kind: 'waiting', detail: '' };
+      const wait = waitActivity(run(), execution());
+      if (wait) return { kind: wait, detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
         if (part.runId !== runId()) continue;
@@ -857,6 +867,11 @@ export function Conversation(props: ConversationProps) {
   // this pane (the Bot stays pinned in the sidebar to switch back).
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  const openLink: ConversationProps['openLink'] = async (target, restoreFocus) => {
+    const id = sessionIdFromLink(target);
+    if (id !== undefined) openWorker(id);
+    else await props.openLink(target, restoreFocus);
+  };
   const senders = createMessageSenders(
     host,
     senderIds,
@@ -1479,6 +1494,7 @@ export function Conversation(props: ConversationProps) {
   let historyIdentity: object = {};
   let measuredHistory: object | null = null;
   let historyScrolled = false;
+  let deferOlderUntilScroll = false;
   let windowTask: Promise<boolean> | null = null;
   let historyDestination: {
     position: HistoryPosition;
@@ -1560,7 +1576,7 @@ export function Conversation(props: ConversationProps) {
     const current = historyRows();
     const changed = new Map<string, Row>();
     for (const chunk of chunks) {
-      const key = historyRowKey(chunk.position, chunk.field);
+      const key = historyChunkKey(chunk);
       const row = changed.get(key) ?? current.byKey.get(key);
       if (!row) continue;
       const next = replaceHistoryMetadata(row, chunk, through);
@@ -1577,9 +1593,9 @@ export function Conversation(props: ConversationProps) {
       ? 'chat'
       : 'conversation';
   const history = async (
-    through: number,
+    through: number | null,
     position: HistoryPosition,
-    view: HistoryListView | 'turn' = 'conversation',
+    view: HistoryListView | 'turn' | 'steps' = 'conversation',
   ) => {
     const page = await host.query('agent', 'history', {
       sessionId,
@@ -1589,7 +1605,8 @@ export function Conversation(props: ConversationProps) {
       view,
     });
     if (page.kind !== 'ready') throw new Error('Expected conversation history.');
-    if (page.through !== through) throw new UiError('History changed its requested fence.');
+    if (page.through === null || (through !== null && page.through !== through))
+      throw new UiError('History changed its requested fence.');
     return { ...page, through: page.through };
   };
   const ownsWindow = (identity: object) => alive && historyIdentity === identity;
@@ -1597,7 +1614,7 @@ export function Conversation(props: ConversationProps) {
   // Superseded reads can finish, but never publish into its replacement.
   const resetHistory = (
     position: HistoryPosition,
-    through: number,
+    through: number | null,
     verify?: (page: ConversationHistoryPage) => void,
     current: () => boolean = () => true,
     view: HistoryListView = chatHistoryView(),
@@ -1605,6 +1622,7 @@ export function Conversation(props: ConversationProps) {
     if (!current()) return Promise.resolve(false);
     const identity = {};
     const destination = historyDestination;
+    const jumpToTail = position.kind === 'tail' && navigation()?.kind === 'tail';
     const canPublish = () => {
       if (!ownsWindow(identity)) return false;
       // Focus can cancel navigation before the reader has its first page.
@@ -1635,6 +1653,7 @@ export function Conversation(props: ConversationProps) {
         page = await history(through, location, view);
         if (!canPublish()) return false;
         verify?.(page);
+        through = page.through;
         if (page.chunks.length) break;
         const reverse = location.kind === 'tail' || location.kind === 'before';
         const cursor = reverse ? page.before : page.after;
@@ -1642,15 +1661,10 @@ export function Conversation(props: ConversationProps) {
         location = reverse ? { kind: 'before', cursor } : { kind: 'after', cursor };
       }
       if (!canPublish()) return false;
-      if (position.kind === 'tail') {
-        const tail = await readHistoryTail(page, async (cursor) => {
-          const older = await history(through, { kind: 'before', cursor }, view);
-          return canPublish() ? older : null;
-        });
-        if (tail === null || !canPublish()) return false;
-        page = { ...tail, through };
-      }
+      latestKnown = Math.max(latestKnown, page.through);
       batch(() => {
+        deferOlderUntilScroll = jumpToTail;
+        if (jumpToTail) historyScrollInput = 'idle';
         historyRows.set(new HistoryRows());
         workPages.clear();
         historyWindow.set({
@@ -1679,7 +1693,8 @@ export function Conversation(props: ConversationProps) {
         )
           loadTurnWork(key);
       }
-      if (page.after === null && latestKnown > through) void follow().catch(report);
+      if (subscription && page.after === null && latestKnown > page.through)
+        void follow().catch(report);
       return true;
     })()
       .catch((reason) => {
@@ -1697,25 +1712,34 @@ export function Conversation(props: ConversationProps) {
     windowTask = task;
     return task;
   };
-  const loadTurnWork = (key: string) => {
-    const owner = historyWindow();
-    const first = historyRows()
-      .byTurn.get(key)
-      ?.find((row) => row.foldedWork && row.position);
-    if (!owner || !first?.position || workPages.has(key)) return;
-    const state = { through: first.metadataThrough ?? owner.through };
+  const loadPages = (
+    key: string,
+    through: number,
+    start: HistoryPosition,
+    view: 'turn' | 'steps',
+  ): void => {
+    const previous = workPages.get(key);
+    if (previous?.task) {
+      previous.wanted = Math.max(previous.wanted ?? 0, through);
+      return;
+    }
+    if (previous && previous.through >= through) return;
+    const state: NonNullable<typeof previous> = { through, after: previous?.after ?? null };
     workPages.set(key, state);
-    // Folded groups need every step to name what they did, so the whole turn
-    // arrives before it is shown, not page by page.
-    const load = async () => {
-      let cursor: HistoryPosition = { kind: 'row', position: first.position!, field: 'body' };
+    state.task = (async () => {
+      let cursor: HistoryPosition = state.after ? { kind: 'after', cursor: state.after } : start;
       const chunks: AgentHistoryChunk[] = [];
-      let through = state.through;
       for (;;) {
-        const page = await history(state.through, cursor, 'turn');
+        const page = await history(through, cursor, view);
         if (!alive || workPages.get(key) !== state) return;
         chunks.push(...page.chunks);
-        through = page.through;
+        const last = page.chunks.at(-1);
+        if (last)
+          state.after = last.work?.end ?? {
+            position: last.position,
+            field: last.field,
+            offset: last.offset,
+          };
         if (page.after === null) break;
         cursor = { kind: 'after', cursor: page.after };
       }
@@ -1725,12 +1749,46 @@ export function Conversation(props: ConversationProps) {
         current.put(changed);
         historyRows.set(current);
       }
-    };
-    load().catch((reason) => {
-      if (workPages.get(key) !== state) return;
-      workPages.delete(key);
-      report(reason);
-    });
+    })()
+      .catch((reason) => {
+        if (workPages.get(key) !== state) return;
+        workPages.delete(key);
+        report(reason);
+      })
+      .finally(() => {
+        state.task = undefined;
+        if (state.wanted !== undefined && workPages.get(key) === state)
+          loadPages(key, state.wanted, start, view);
+      });
+  };
+  const loadTurnWork = (key: string) => {
+    const owner = historyWindow();
+    const first = historyRows()
+      .byTurn.get(key)
+      ?.find((row) => row.foldedWork && row.position);
+    if (!owner || !first?.position) return;
+    loadPages(
+      key,
+      first.metadataThrough ?? owner.through,
+      { kind: 'row', position: first.position, field: 'body' },
+      'turn',
+    );
+  };
+  const loadGroupSteps = (rowId: string) => {
+    const owner = historyWindow();
+    const row = historyRows().byId.get(rowId);
+    if (!owner || !row?.work || !row.position) return;
+    const existing = workPages.get(rowId);
+    const through =
+      !existing || existing.task
+        ? Math.max(row.metadataThrough ?? 0, owner.through)
+        : (row.metadataThrough ?? owner.through);
+    loadPages(
+      rowId,
+      through,
+      { kind: 'row', position: row.position, field: row.field as 'body' | 'thinking' },
+      'steps',
+    );
   };
   const hydrateAttachmentMetadata = () => {
     for (const rowKey of historyRows().missingAttachments) {
@@ -1878,7 +1936,7 @@ export function Conversation(props: ConversationProps) {
         refreshFrom = null;
         const currentWindow = historyWindow();
         if (currentWindow?.after === null) {
-          const tail = rows().at(-1);
+          const tail = historyFollowTail(rows(), owner.view);
           const changedRows = [...executorTextChanges].flatMap((id) => {
             const row = historyRows().byMessage.get(id);
             return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
@@ -1910,7 +1968,7 @@ export function Conversation(props: ConversationProps) {
           let position = initial;
           const chunks: AgentHistoryChunk[] = [];
           for (;;) {
-            const page = await history(fence, position);
+            const page = await history(fence, position, owner.view);
             if (!ownsWindow(owner.identity)) return;
             chunks.push(...page.chunks);
             if (page.after === null) break;
@@ -1929,7 +1987,7 @@ export function Conversation(props: ConversationProps) {
           };
           try {
             for (;;) {
-              const page = await history(fence, cursor);
+              const page = await history(fence, cursor, owner.view);
               if (!ownsWindow(owner.identity)) return;
               publishMetadata(page.chunks, page.through);
               // Metadata beyond the loaded viewport grants no reason to fetch
@@ -2081,7 +2139,13 @@ export function Conversation(props: ConversationProps) {
       requestMetadata(
         rows().find((row) => row.position?.kind === 'live' && row.turnId === previousTurn),
       );
-    const observed = await observe();
+    const opening =
+      !ready() && !historyDestination.explicit && windowTask === null
+        ? resetHistory(historyDestination.position, null).then((opened) => {
+            if (opened && !navigation()) list?.scrollToEnd({ animated: false });
+          })
+        : undefined;
+    const [observed] = await Promise.all([observe(), opening]);
     if (!alive) return;
     const tailThrough = atHistoryTail() ? historyWindow()?.through : undefined;
     const after = replayStartCursor(
@@ -2101,8 +2165,9 @@ export function Conversation(props: ConversationProps) {
       // Recall may have opened its exact window before initial history arrived.
       while (windowTask !== null) await windowTask;
       if (!alive) return;
-      if (ready()) await follow();
-      else if (
+      if (ready()) {
+        if (latestKnown > (historyWindow()?.through ?? -1) || refreshFrom !== null) await follow();
+      } else if (
         !historyDestination.explicit &&
         (await resetHistory(historyDestination.position, observed.through))
       ) {
@@ -2112,8 +2177,7 @@ export function Conversation(props: ConversationProps) {
       immediateTranscriptRetry = true;
       if (!historyDestination.failed) error.set('');
       transcriptStatus.set('live');
-      // Subscribe before reading history so facts cannot fall between fences.
-      // The snapshot is sufficient for readiness; no new event is required.
+      // Replay from the older of the observed fence and the first visible page.
       for (;;) {
         const page = await stream.next();
         if (!alive) return;
@@ -2232,7 +2296,7 @@ export function Conversation(props: ConversationProps) {
   const loadNewer = () => extendHistory('after');
   const pagingOwner = (edge: 'before' | 'after') => {
     const owner = historyWindow();
-    return (edge === 'before' || historyScrolled) &&
+    return (edge === 'before' ? !deferOlderUntilScroll : historyScrolled) &&
       owner?.[edge] &&
       ownsWindow(owner.identity) &&
       props.visible() &&
@@ -2282,16 +2346,7 @@ export function Conversation(props: ConversationProps) {
     };
     navigation.set(target);
     try {
-      const observed = await observe();
-      if (!alive || navigation() !== target) return;
-      if (
-        !(await resetHistory(
-          { kind: 'start' },
-          observed.through,
-          undefined,
-          () => navigation() === target,
-        ))
-      )
+      if (!(await resetHistory({ kind: 'start' }, null, undefined, () => navigation() === target)))
         return;
       if (navigation() === target)
         list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
@@ -2361,12 +2416,9 @@ export function Conversation(props: ConversationProps) {
     historyDestination = destination;
     navigation.set(target);
     try {
-      const observed = await observe();
-      if (!alive || navigation() !== target || !current())
-        throw new UiError('History navigation was cancelled.');
       const opened = await resetHistory(
         { kind: 'row', position: anchor.position, field: 'body' },
-        observed.through,
+        null,
         (page) => {
           if (
             !page.chunks.some(
@@ -2588,7 +2640,7 @@ export function Conversation(props: ConversationProps) {
         modelProjection.set({
           route,
           details:
-            result.kind === 'ready' && sameRoute(captured, result.choice.selection)
+            result.kind === 'ready' && selectionForChoice(captured, result.choice)
               ? { kind: 'ready', choice: result.choice }
               : {
                   kind: 'unavailable',
@@ -3584,12 +3636,10 @@ export function Conversation(props: ConversationProps) {
       props.focusComposer();
       void (async () => {
         try {
-          const observed = await observe();
-          if (!alive || navigation() !== target) return;
           if (
             !(await resetHistory(
               { kind: 'tail' },
-              observed.through,
+              null,
               undefined,
               () => navigation() === target,
             )) ||
@@ -3963,10 +4013,24 @@ export function Conversation(props: ConversationProps) {
             const first = projectedTurn(initial.turnKey);
             if (!first) return <View />;
             const turn = () => projectedTurn(initial.turnKey) ?? first;
+            const groups = computed(() =>
+              (projectedSection(initial.turnKey)?.entries ?? []).filter(
+                (item): item is ProcessGroup =>
+                  item.kind === 'process' && item.turnKey === initial.turnKey,
+              ),
+            );
+            const work = computed(() =>
+              groups().flatMap((group) => {
+                const work = groupWork(group, currentRow);
+                return work ? [work] : [];
+              }),
+            );
             const images = computed(() => {
-              const folded = turn().foldedWork;
-              return folded
-                ? folded.images.map(({ position, image }) => ({
+              const recorded =
+                turn().foldedWork?.images ??
+                (work().length ? work().flatMap((work) => work.images) : undefined);
+              return recorded
+                ? recorded.slice(-4).map(({ position, image }) => ({
                     key: `${historyRowKey(position)}/${image ?? 'content'}`,
                     position,
                     image: image ?? undefined,
@@ -3976,12 +4040,6 @@ export function Conversation(props: ConversationProps) {
                     initial.turnKey,
                   );
             });
-            const groups = computed(() =>
-              (projectedSection(initial.turnKey)?.entries ?? []).filter(
-                (item): item is ProcessGroup =>
-                  item.kind === 'process' && item.turnKey === initial.turnKey,
-              ),
-            );
             return (
               <TurnSummary
                 turn={turn}
@@ -3994,7 +4052,11 @@ export function Conversation(props: ConversationProps) {
                   sessionId,
                   through: () => latestKnown,
                   refs: images,
-                  total: () => turn().foldedWork?.imageCount,
+                  total: () =>
+                    turn().foldedWork?.imageCount ??
+                    (work().length
+                      ? work().reduce((total, work) => total + work.imageCount, 0)
+                      : undefined),
                   preview: props.previewImage,
                 }}
                 toggle={(open) => {
@@ -4026,6 +4088,10 @@ export function Conversation(props: ConversationProps) {
                 runId(),
                 group().turnKey === runTurn() ? runTurn() : null,
               );
+            effect(() => {
+              const id = group().workRowId;
+              if (id && groupState(initial.group.key).open() && currentRow(id)) loadGroupSteps(id);
+            });
             const liveTools = computed(() =>
               toolActivity().filter((item) =>
                 group().members.some(
@@ -4051,7 +4117,7 @@ export function Conversation(props: ConversationProps) {
                 through={() => latestKnown}
                 previewImage={props.previewImage}
                 previewTerminal={props.previewTerminal}
-                openLink={props.openLink}
+                openLink={openLink}
                 senders={senders}
                 userScroll={() => cancelNavigation()}
                 reveal={reveal}
@@ -4123,7 +4189,7 @@ export function Conversation(props: ConversationProps) {
                 }
                 messages={() => bot.forTurn(initial.turnId)}
                 sessionId={sessionId}
-                openLink={props.openLink}
+                openLink={openLink}
                 userScroll={() => cancelNavigation()}
               />
             );
@@ -4148,7 +4214,8 @@ export function Conversation(props: ConversationProps) {
               through={() => latestKnown}
               previewImage={props.previewImage}
               previewTerminal={props.previewTerminal}
-              openLink={props.openLink}
+              openLink={openLink}
+              openSession={canOpenWorker() ? openWorker : undefined}
               senders={senders}
               userScroll={() => cancelNavigation()}
               onExpand={reveal}
@@ -4467,6 +4534,7 @@ export function Conversation(props: ConversationProps) {
                   if (event.intent === 'scroll') {
                     if (historyScrollInput !== 'dragging') historyScrollInput = 'pending';
                     historyScrolled = true;
+                    if (event.delta === undefined || event.delta < 0) deferOlderUntilScroll = false;
                     if (nearHistoryStart()) prefetchOlder();
                     if (nearHistoryEnd()) prefetchNewer();
                     // At the edge, further downward input may leave the offset unchanged.
@@ -4526,9 +4594,10 @@ export function Conversation(props: ConversationProps) {
                 historyOffset = offset;
                 historyMaxOffset = end;
                 if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
-                if (scrolled && movement < 0 && distance > historyEndTolerance)
-                  historyFollowPaused.set(true);
-                else if (scrolled && movement > 0) resumeHistoryAtEnd(offset);
+                if (scrolled && movement < 0) {
+                  deferOlderUntilScroll = false;
+                  if (distance > historyEndTolerance) historyFollowPaused.set(true);
+                } else if (scrolled && movement > 0) resumeHistoryAtEnd(offset);
                 const owner = pagingOwner('before');
                 if (owner !== null) {
                   // An underfilled initial viewport needs history before the first gesture.
@@ -4644,7 +4713,7 @@ export function Conversation(props: ConversationProps) {
                   through={() => latestKnown}
                   previewImage={props.previewImage}
                   previewTerminal={props.previewTerminal}
-                  openLink={props.openLink}
+                  openLink={openLink}
                   toolProgress={toolProgress}
                   maxHeight={() => Math.max(32, readingSize().height - 80)}
                   close={closeTrajectoryInspector}

@@ -24,7 +24,8 @@ mod selections;
 mod sources;
 pub use references::{
     CaptureTime, DirectoryReference, InlineReference, InlineReferenceKind, QuoteRef,
-    SessionQuoteSource,
+    SessionQuoteSource, SessionReference, SessionReferenceKind, extract_session_references,
+    render_directory_references, render_quotes, render_session_references,
 };
 pub use selections::{Selections, validate_selections};
 pub use sources::{

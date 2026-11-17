@@ -46,6 +46,7 @@ pub(crate) struct Ambient {
     /// The insets of the screens or modals components are on, by host.
     insets: FxHashMap<NodeId, Signal<EdgeInsets>>,
     measure: Option<MeasureFn>,
+    text_layout_queries: Option<Rc<dyn crate::text::TextLayoutQueries>>,
     /// The app's key-value storage (`nsh/storage`).
     storage: Option<crate::storage::Store>,
     /// The app's own data directory ([`data_dir`]).
@@ -158,6 +159,11 @@ impl super::Runtime {
     pub(crate) fn set_measure(&self, measure: MeasureFn) {
         let _entered = self.enter();
         with_data(|d| d.ambient.measure = Some(measure));
+    }
+
+    pub(crate) fn set_text_layout_queries(&self, queries: Rc<dyn crate::text::TextLayoutQueries>) {
+        let _entered = self.enter();
+        with_data(|d| d.ambient.text_layout_queries = Some(queries));
     }
 
     /// The environment now: what read a part that changed runs again.
@@ -500,6 +506,11 @@ pub fn text_measurer() -> impl Fn(&str, &str) -> Points + Clone {
         let font = CanvasFont::parse(font).unwrap_or_default();
         measure(&font, text).width
     }
+}
+
+/// Captures the surface's geometry queries for a final text layout on the engine thread.
+pub fn text_layout_queries() -> Rc<dyn crate::text::TextLayoutQueries> {
+    with_data(|d| d.ambient.text_layout_queries.clone()).expect("the core sets the text engine")
 }
 
 /// How `text` sits on one line in `font` (the CSS `font` shorthand; an

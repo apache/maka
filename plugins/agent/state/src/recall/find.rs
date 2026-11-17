@@ -18,7 +18,9 @@
  */
 use super::*;
 use regex::{Regex, RegexBuilder};
-use rusqlite::params;
+use rusqlite::{ToSql, params, params_from_iter};
+
+const FIND_BATCH: u32 = 64;
 /// Request-local verification work, shared across historical tree sections.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct FindWork {
@@ -29,7 +31,7 @@ pub(crate) struct FindWork {
 impl FindWork {
     pub(crate) fn admit(&mut self, bytes: u64) -> bool {
         // One oversized first document still makes forward progress, as before.
-        if self.documents == 64
+        if self.documents == FIND_BATCH
             || (self.documents > 0 && self.bytes.saturating_add(bytes) > 16 * 1024 * 1024)
         {
             self.stopped = true;
@@ -117,6 +119,32 @@ pub(crate) fn find_index(
             ));
         }
     }
+    // Wide global postings cost more than walking a session's ordered rows.
+    let candidate_ids = if input.after.is_none()
+        && let Some(expression) = terms::find_expression(&input.query, input.case_sensitive)
+    {
+        let mut statement = c.prepare_cached(
+            "SELECT rowid FROM agent_recall_terms WHERE agent_recall_terms MATCH ? LIMIT ?",
+        )?;
+        let ids = statement
+            .query_map(params![expression, FIND_BATCH + 1], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if ids.is_empty() {
+            check(stop)?;
+            return Ok((
+                FindPage {
+                    matches: Vec::new(),
+                    next_after: None,
+                },
+                None,
+            ));
+        }
+        (ids.len() <= FIND_BATCH as usize).then_some(ids)
+    } else {
+        None
+    };
     let after = input.after.unwrap_or(RowPosition {
         source_sequence: 0,
         item_index: 0,
@@ -128,15 +156,54 @@ pub(crate) fn find_index(
     } else {
         " AND d.internal=0"
     };
-    let headers:Vec<(i64,i64,i64)>=c.prepare_cached(&format!("SELECT d.sequence,d.ordinal,length(CAST(d.body AS BLOB)) FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence<=? AND (d.sequence,d.ordinal)>(?,?) AND h.admission_sequence>?{visible} AND d.role<>'\"compaction\"' ORDER BY d.sequence,d.ordinal LIMIT 65"))?.query_map(params![owner_key,cut.session,number(cut.through_sequence)?,number(after.source_sequence)?,number(after.item_index)?,number(min_admission)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<_,_>>()?;
+    let source = if candidate_ids.is_some() {
+        "json_each(?8) candidate CROSS JOIN agent_recall_messages d ON d.id=candidate.value"
+    } else {
+        "agent_recall_messages d"
+    };
+    let mut statement = c.prepare_cached(&format!(
+        "SELECT d.sequence,d.ordinal,octet_length(d.body) FROM {source}
+         CROSS JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
+         WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND (d.sequence,d.ordinal)>(?4,?5)
+           AND h.admission_sequence>?6{visible} AND d.role<>'\"compaction\"'
+         ORDER BY d.sequence,d.ordinal LIMIT ?7"
+    ))?;
+    let encoded = candidate_ids
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let bounds = params![
+        owner_key,
+        cut.session,
+        number(cut.through_sequence)?,
+        number(after.source_sequence)?,
+        number(after.item_index)?,
+        number(min_admission)?,
+        FIND_BATCH + 1
+    ];
+    let headers = statement
+        .query_map(
+            params_from_iter(
+                bounds
+                    .iter()
+                    .copied()
+                    .chain(encoded.as_ref().map(|ids| ids as &dyn ToSql)),
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
     let mut matches = vec![];
     let mut next_after = None;
     let mut position = input.after;
-    let sql = format!(
-        "SELECT {} FROM agent_recall_messages d WHERE d.owner=? AND d.session=? AND d.sequence=? AND d.ordinal=?",
-        query::COLUMNS
-    );
-    let mut statement = c.prepare_cached(&sql)?;
+    let mut statement = c.prepare_cached(
+        "SELECT body,fields_json FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?",
+    )?;
     for (sequence, ordinal, size) in headers {
         check(stop)?;
         let size = unsigned(size)?;
@@ -149,13 +216,15 @@ pub(crate) fn find_index(
             item_index: unsigned(ordinal)?,
         };
         let mut rows = statement.query(params![owner_key, cut.session, sequence, ordinal])?;
-        let message = query::read_message(rows.next()?.ok_or(StoreError::EventConflict)?)?;
+        let row = rows.next()?.ok_or(StoreError::EventConflict)?;
+        let body: String = row.get(0)?;
+        let fields: Vec<FieldSpan> = serde_json::from_str(&row.get::<_, String>(1)?)?;
         position = Some(locator);
-        for span in message.fields {
+        for span in fields {
             if span.internal && !input.include_internal {
                 continue;
             }
-            let text = message.body.get(span.start..span.end).ok_or_else(|| {
+            let text = body.get(span.start..span.end).ok_or_else(|| {
                 invalid("Recall source field span corrupt; explicit rebuild required")
             })?;
             if let Some(preview) = preview(text, &matcher) {
@@ -237,7 +306,34 @@ pub(crate) fn landmarks_selected_index(
     if !(1..=64).contains(&limit) {
         return Err(invalid("landmark limit must be 1..=64"));
     }
-    let sql = "WITH grouped AS(SELECT turn,MIN(CASE WHEN d.role='\"user\"' AND d.origin_json IS NULL THEN sequence END) AS first,MAX(sequence) AS last FROM agent_recall_messages d WHERE owner=?1 AND session=?2 AND sequence<=?3 AND d.internal=0 AND EXISTS(SELECT 1 FROM agent_session_history h WHERE h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence AND h.admission_sequence>?5) GROUP BY turn HAVING first IS NOT NULL), ranked AS(SELECT *,row_number() OVER(ORDER BY first,turn)-1 AS ordinal,count(*) OVER() AS total FROM grouped),sampled AS(SELECT * FROM ranked WHERE (?6 IS NULL AND (total<=?4 OR ordinal=0 OR ordinal=total-1 OR (ordinal*(?4-1)/(total-1))<>((ordinal-1)*(?4-1)/(total-1)))) OR ordinal IN(SELECT value FROM json_each(?6)) ORDER BY first,turn LIMIT ?4) SELECT turn,first,last FROM sampled";
+    let sql = "WITH prompts AS (
+        SELECT d.turn, MIN(d.sequence) AS first
+        FROM agent_recall_messages d
+        WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND d.internal=0
+          AND d.role='\"user\"' AND d.origin_json IS NULL
+          AND EXISTS(SELECT 1 FROM agent_session_history h
+                     WHERE h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
+                       AND h.admission_sequence>?5)
+        GROUP BY d.turn
+    ), ranked AS (
+        SELECT *, row_number() OVER(ORDER BY first,turn)-1 AS ordinal, count(*) OVER() AS total
+        FROM prompts
+    ), sampled AS (
+        SELECT * FROM ranked
+        WHERE (?6 IS NULL AND (total<=?4 OR ordinal=0 OR ordinal=total-1
+               OR (ordinal*(?4-1)/(total-1))<>((ordinal-1)*(?4-1)/(total-1))))
+           OR ordinal IN(SELECT value FROM json_each(?6))
+        ORDER BY first,turn LIMIT ?4
+    )
+    SELECT s.turn, s.first, (
+        SELECT d.sequence FROM agent_recall_messages d INDEXED BY agent_recall_turn
+        WHERE d.owner=?1 AND d.session=?2 AND d.turn=s.turn AND d.sequence<=?3 AND d.internal=0
+          AND EXISTS(SELECT 1 FROM agent_session_history h
+                     WHERE h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
+                       AND h.admission_sequence>?5)
+        ORDER BY d.sequence DESC LIMIT 1
+    )
+    FROM sampled s ORDER BY s.first,s.turn";
     let mut statement = c.prepare_cached(sql)?;
     let mut rows = statement.query(params![
         owner_key,

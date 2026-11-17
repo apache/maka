@@ -23,37 +23,61 @@ use serde_json::Value;
 /// A reading aid generated from the authoritative schema, not a validator.
 /// Bounds apply to traversal as well as output: recursive refs and wide DAGs
 /// cannot turn a small catalog into an unbounded prompt.
-pub(super) fn render<'a>(definitions: impl IntoIterator<Item = &'a ToolDefinition>) -> String {
-    let mut output = String::from("declare const tools: {\n");
-    for tool in definitions {
-        for line in tool.description.lines() {
-            output.push_str("// ");
-            output.push_str(line);
-            output.push('\n');
-        }
-        let name = maka_js_runtime::tool_identifier(&tool.name);
-        let mut renderer = Renderer {
-            root: &tool.input_schema,
-            remaining: 32_000,
-            nodes: 512,
-        };
-        let input = renderer.schema(&tool.input_schema, 0);
-        let result = tool
+const READ_RETURN_TS: &str = r#"({ "kind": "completed"; "value": { "content": string; "offset": number; "returnedLines": number; "totalLines": number; "next": { "path": string } | null } | { "type": "image"; [k: string]: unknown } }) | ({ "kind": "failed"; "message": string })"#;
+const SHELL_RETURN_TS: &str = r#"({ "kind": "completed"; "value": { "kind": string; "status": string; "exitCode"?: number | null; "ref"?: string; "output"?: { "stdout": string; "stderr": string; "stdoutTruncated": boolean; "stderrTruncated": boolean } } }) | ({ "kind": "failed"; "message": string })"#;
+
+fn render_js_member(
+    tool: &ToolDefinition,
+    output_max_depth: usize,
+    output_remaining: usize,
+    output_nodes: usize,
+) -> String {
+    let mut output = String::new();
+    for line in tool.description.lines() {
+        output.push_str("// ");
+        output.push_str(line);
+        output.push('\n');
+    }
+    let name = maka_js_runtime::tool_identifier(&tool.name);
+    let mut renderer = Renderer {
+        root: &tool.input_schema,
+        max_depth: 12,
+        remaining: 32_000,
+        nodes: 512,
+    };
+    let input = renderer.schema(&tool.input_schema, 0);
+    let result = match tool.name.as_str() {
+        "Read" if tool.output_schema.is_none() => READ_RETURN_TS.into(),
+        "Shell" => SHELL_RETURN_TS.into(),
+        _ => tool
             .output_schema
             .as_ref()
             .map(|schema| {
                 Renderer {
                     root: schema,
-                    remaining: 32_000,
-                    nodes: 512,
+                    max_depth: output_max_depth,
+                    remaining: output_remaining,
+                    nodes: output_nodes,
                 }
                 .schema(schema, 0)
             })
-            .unwrap_or_else(|| "unknown".into());
-        output.push_str(&format!("{name}(input: {input}): Promise<{result}>;\n"));
+            .unwrap_or_else(|| "unknown".into()),
+    };
+    output.push_str(&format!("{name}(input: {input}): Promise<{result}>;\n"));
+    output
+}
+
+pub(super) fn render<'a>(definitions: impl IntoIterator<Item = &'a ToolDefinition>) -> String {
+    let mut output = String::from("declare const tools: {\n");
+    for tool in definitions {
+        output.push_str(&render_js_member(tool, 12, 32_000, 512));
     }
     output.push_str("};\n");
     output
+}
+
+pub(super) fn render_entry(tool: &ToolDefinition) -> String {
+    render_js_member(tool, 4, 1_800, 56)
 }
 
 /// Python callers consume the same authoritative JSON schemas, including
@@ -61,32 +85,39 @@ pub(super) fn render<'a>(definitions: impl IntoIterator<Item = &'a ToolDefinitio
 pub(super) fn python<'a>(definitions: impl IntoIterator<Item = &'a ToolDefinition>) -> String {
     let mut output = String::new();
     for tool in definitions {
-        for line in tool.description.lines() {
-            output.push_str("# ");
-            output.push_str(line);
-            output.push('\n');
-        }
-        output.push_str(&format!(
-            "# await tools.{}(input)\n# Input JSON Schema: {}\n",
-            maka_python_runtime::tool_identifier(&tool.name),
-            tool.input_schema
-        ));
-        if let Some(schema) = &tool.output_schema {
-            output.push_str(&format!("# Output JSON Schema: {schema}\n"));
-        }
+        output.push_str(&python_entry(tool, false));
+    }
+    output
+}
+
+pub(super) fn python_entry(tool: &ToolDefinition, compact_output: bool) -> String {
+    let mut output = String::new();
+    for line in tool.description.lines() {
+        output.push_str("# ");
+        output.push_str(line);
+        output.push('\n');
+    }
+    output.push_str(&format!(
+        "# await tools.{}(input)\n# Input JSON Schema: {}\n",
+        maka_python_runtime::tool_identifier(&tool.name),
+        tool.input_schema
+    ));
+    if !compact_output && let Some(schema) = &tool.output_schema {
+        output.push_str(&format!("# Output JSON Schema: {schema}\n"));
     }
     output
 }
 
 struct Renderer<'a> {
     root: &'a Value,
+    max_depth: usize,
     remaining: usize,
     nodes: usize,
 }
 
 impl Renderer<'_> {
     fn schema(&mut self, value: &Value, depth: usize) -> String {
-        if depth > 12 || self.nodes == 0 || self.remaining == 0 {
+        if depth > self.max_depth || self.nodes == 0 || self.remaining == 0 {
             return "unknown".into();
         }
         self.nodes -= 1;
@@ -104,10 +135,22 @@ impl Renderer<'_> {
         {
             constraints.push(self.schema(target, depth + 1));
         }
+        let mut has_literal_or_enum = false;
         if let Some(literal) = value.get("const") {
+            has_literal_or_enum = true;
             constraints.push(self.literal(literal));
         } else if let Some(values) = value.get("enum").and_then(Value::as_array) {
-            let types: Vec<_> = values.iter().map(|v| self.literal(v)).collect();
+            has_literal_or_enum = true;
+            let enum_has_null = values.iter().any(Value::is_null);
+            let mut types: Vec<_> = values.iter().map(|v| self.literal(v)).collect();
+            if !enum_has_null
+                && value
+                    .get("type")
+                    .and_then(Value::as_array)
+                    .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some("null")))
+            {
+                types.push("null".into());
+            }
             constraints.push(if types.is_empty() {
                 "never".into()
             } else {
@@ -125,22 +168,24 @@ impl Renderer<'_> {
                 }
             }
         }
-        match value.get("type") {
-            Some(Value::String(kind)) => constraints.push(self.kind(value, kind, depth)),
-            Some(Value::Array(kinds)) => constraints.push(
-                kinds
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(|kind| self.kind(value, kind, depth))
-                    .collect::<Vec<_>>()
-                    .join(" | "),
-            ),
-            _ if value.get("properties").is_some()
-                || value.get("additionalProperties").is_some() =>
-            {
-                constraints.push(self.kind(value, "object", depth))
+        if !has_literal_or_enum {
+            match value.get("type") {
+                Some(Value::String(kind)) => constraints.push(self.kind(value, kind, depth)),
+                Some(Value::Array(kinds)) => constraints.push(
+                    kinds
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|kind| self.kind(value, kind, depth))
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                ),
+                _ if value.get("properties").is_some()
+                    || value.get("additionalProperties").is_some() =>
+                {
+                    constraints.push(self.kind(value, "object", depth))
+                }
+                _ => {}
             }
-            _ => {}
         }
         let result = if value == &Value::Bool(false) {
             "never".into()
@@ -229,5 +274,66 @@ impl Renderer<'_> {
             }
             _ => "unknown".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn literal_and_enum_do_not_emit_redundant_string_intersections_and_entries_omit_wrapper() {
+        let tool = ToolDefinition {
+            provider: None,
+            freeform: None,
+            name: "SessionManage".into(),
+            description: "Manage a Session.".into(),
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["archive", "restore", "remove"]
+                    },
+                    "tag": {
+                        "type": "string",
+                        "const": "exact"
+                    }
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind"],
+                "properties": {
+                    "kind": { "const": "completed", "type": "string" }
+                }
+            })),
+        };
+        let entry = render_entry(&tool);
+        assert!(!entry.contains("declare const tools"), "{entry}");
+        assert!(!entry.contains("& (string)"), "{entry}");
+        assert!(
+            entry.contains(r#""archive" | "restore" | "remove""#),
+            "{entry}"
+        );
+        assert!(entry.contains(r#""kind": "completed""#), "{entry}");
+
+        let read_tool = ToolDefinition {
+            provider: None,
+            freeform: None,
+            name: "Read".into(),
+            description: "Read files and Maka resources.".into(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            output_schema: None,
+        };
+        let read_entry = render_entry(&read_tool);
+        assert!(
+            read_entry.contains(r#""returnedLines": number"#),
+            "{read_entry}"
+        );
     }
 }

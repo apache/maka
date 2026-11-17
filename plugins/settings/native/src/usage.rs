@@ -70,7 +70,7 @@ pub struct Read {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<UsageActivityCursor>")]
     pub cursor: Option<UsageActivityCursor>,
 }
-#[derive(Serialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsUsagePage")]
 pub struct Page {
@@ -90,7 +90,7 @@ pub struct SummaryRead {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<UsageGroupCursor>")]
     pub cursor: Option<UsageGroupCursor>,
 }
-#[derive(Serialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsUsageTotals")]
 pub struct Totals {
@@ -104,7 +104,7 @@ pub struct Totals {
     #[schemars(length(max = 32))]
     pub by_tool: Vec<ToolSummary>,
 }
-#[derive(Serialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsUsageSummary")]
 pub struct Report {

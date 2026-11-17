@@ -42,9 +42,10 @@ import type {
   AgentCreated,
   AgentSessionChanged,
   HistoryPosition,
+  SettingsAssistantPreferences,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { createBrowsing } from './browsing';
-import { HostProvider, type Host, type Output } from './host';
+import { HostProvider, searchSessions, type Host, type Output } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -66,19 +67,57 @@ import { WorkspacePicker } from './WorkspacePicker';
 import { ModalDialog, DialogHeader, DialogFooter } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
 import { MarkdownBody } from './MarkdownBody';
+import { sessionIdFromLink } from './skillTokenText';
 import { HistoryAttachments } from './Attachments';
 import { ImageViewer } from './ImageViewer';
 import type { ImagePreview } from './ImageThumbnail';
 import { RoomComposer, type RoomComposerHandle } from './RoomComposer';
 import { roomAuthorSession, roomResult } from './roomMessage';
 import { currentLocale } from './locale';
+import { ProfileAvatar } from './ProfileAvatar';
 
 const reasonText = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
+
+export function createRoomPeople(host: Host) {
+  const known = signal(new Map<string, AgentSession>());
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  const remember = (sessions: AgentSession[]) => {
+    if (alive)
+      known.set(
+        new Map([...known(), ...sessions.map((session) => [session.id, session] as const)]),
+      );
+  };
+  return {
+    known,
+    remember,
+    name: (id: string) => known().get(id)?.title ?? id,
+    async resolveNames(ids: string[]) {
+      const missing = [...new Set(ids)].filter((id) => !known().has(id));
+      if (missing.length === 0) return;
+      remember(
+        await Promise.all(
+          missing.map(
+            async (sessionId) => (await host.query('agent', 'observe', { sessionId })).session,
+          ),
+        ),
+      );
+    },
+    async searchSessions(query: string) {
+      const sessions = await searchSessions(host, 'agent', query);
+      remember(sessions);
+      return sessions;
+    },
+  };
+}
 
 export function createRoomWorkspace(options: {
   host: Host;
   initial: string | null;
   agentSession(): string | null;
+  active(): boolean;
   visible(): boolean;
   browser(): BrowserHeader;
   closeNavigation(): void;
@@ -89,7 +128,7 @@ export function createRoomWorkspace(options: {
   const host = options.host;
   const browser = createBrowsing(host, 'room');
   const selected = signal(options.initial);
-  const known = signal(new Map<string, AgentSession>());
+  const { known, remember, name, resolveNames, searchSessions } = createRoomPeople(host);
   const error = signal('');
   const creating = signal(false);
   const createTitle = signal('');
@@ -101,8 +140,6 @@ export function createRoomWorkspace(options: {
   let composer: RoomComposerHandle | null = null;
   let alive = true;
   let navigation = 0;
-  const remember = (sessions: AgentSession[]) =>
-    known.set(new Map([...known(), ...sessions.map((session) => [session.id, session] as const)]));
   effect(() => {
     const sessions = browser.sessions();
     untracked(() => remember(sessions));
@@ -111,17 +148,7 @@ export function createRoomWorkspace(options: {
     alive = false;
     navigation++;
   });
-  const name = (id: string) => known().get(id)?.title ?? id;
   const title = () => (selected() ? known().get(selected()!)?.title : undefined) ?? tr('Rooms');
-  const resolveNames = async (ids: string[]) => {
-    const missing = [...new Set(ids)].filter((id) => !known().has(id));
-    const sessions = await Promise.all(
-      missing.map(
-        async (sessionId) => (await host.query('agent', 'observe', { sessionId })).session,
-      ),
-    );
-    if (alive && sessions.length) remember(sessions);
-  };
   const open = async (id: string | null) => {
     const generation = ++navigation;
     try {
@@ -249,17 +276,6 @@ export function createRoomWorkspace(options: {
       />
     </>
   );
-  const searchSessions = async (query: string) => {
-    const page = await host.query('agent', 'list', {
-      kind: 'agent',
-      filter: 'all',
-      scope: { kind: 'all' },
-      position: { kind: 'start' },
-      titleQuery: query,
-    });
-    if (alive) remember(page.sessions);
-    return page.sessions;
-  };
   const navigationView = (modeSwitch: JSX.Element) => (
     <HostProvider value={host}>
       <View
@@ -426,7 +442,7 @@ export function createRoomWorkspace(options: {
             </Button>
           </View>
         </If>
-        <Each of={selected() ? [selected()!] : []} key={(id) => id}>
+        <Each of={options.active() && selected() ? [selected()!] : []} key={(id) => id}>
           {(id) => (
             <RoomTimeline
               sessionId={id()}
@@ -600,7 +616,7 @@ export function createRoomWorkspace(options: {
   };
 }
 
-function RoomTimeline(props: {
+export function RoomTimeline(props: {
   sessionId: string;
   host: Host;
   visible(): boolean;
@@ -611,6 +627,11 @@ function RoomTimeline(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   attach(handle: RoomComposerHandle | null): void;
 }) {
+  const openLink: typeof props.openLink = async (target, restoreFocus) => {
+    const id = sessionIdFromLink(target);
+    if (id !== undefined) props.openAgent(id);
+    else await props.openLink(target, restoreFocus);
+  };
   const messages = signal<AgentRoomMessage[]>([]);
   const before = signal<string | null>(null);
   const after = signal<string | null>(null);
@@ -619,6 +640,8 @@ function RoomTimeline(props: {
   const loadingEarlier = signal(false);
   const atEnd = signal(true);
   const viewer = signal<ImagePreview | null>(null);
+  const profile = signal<Pick<SettingsAssistantPreferences, 'displayName' | 'avatar'> | null>(null);
+  const displayName = () => profile()?.displayName.trim() ?? '';
   const rise = createAnimatedValue(reduceMotion() ? 0 : 8);
   if (!reduceMotion()) void rise.spring(0, { stiffness: 320, damping: 30 });
   let through = 0;
@@ -755,6 +778,21 @@ function RoomTimeline(props: {
       void current.close().catch((reason) => console.warn('Room observer cleanup failed:', reason));
   });
   effect(() => {
+    if (!props.visible()) return;
+    let current = true;
+    void props.host.query('settings', 'assistantPreferences', {}).then(
+      (settings) => {
+        if (alive && current) profile.set(settings);
+      },
+      (reason) => {
+        if (alive && current) console.warn('Could not read Room profile:', reason);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  });
+  effect(() => {
     const tail = messages().at(-1)?.id;
     if (!props.visible() || !atEnd() || after() !== null || !tail || lastMarked === tail) return;
     lastMarked = tail;
@@ -768,10 +806,6 @@ function RoomTimeline(props: {
         }
       });
   });
-  const author = (message: AgentRoomMessage) => {
-    const id = roomAuthorSession(message);
-    return id ? props.name(id) : tr('You');
-  };
   const time = (at: number) =>
     new Date(at).toLocaleTimeString(currentLocale(), { hour: '2-digit', minute: '2-digit' });
   return (
@@ -827,40 +861,50 @@ function RoomTimeline(props: {
                 popupStyle={floatingStyle()}
                 trigger={
                   <View selectable class="group" style={{ flexDirection: 'row', gap: 12 }}>
-                    <View
-                      style={{
-                        width: 30,
-                        height: 30,
-                        borderRadius: 10,
-                        backgroundColor: C.surface,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
+                    <If
+                      when={message().author.kind === 'human'}
+                      else={
+                        <View
+                          accessibilityElementsHidden
+                          style={{
+                            width: 30,
+                            height: 30,
+                            borderRadius: 15,
+                            backgroundColor: C.surface,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Icon name="bot" size={16} color={C.secondary} />
+                        </View>
+                      }
                     >
-                      <If
-                        when={message().author.kind === 'human'}
-                        else={<Icon name="bot" size={16} color={C.secondary} />}
-                      >
-                        <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                          {tr('You').slice(0, 1)}
-                        </Text>
-                      </If>
-                    </View>
+                      <ProfileAvatar name={displayName()} avatar={profile()?.avatar} size={30} />
+                    </If>
                     <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <Button
-                          accessibilityLabel={author(message())}
-                          disabled={message().author.kind === 'human'}
-                          onPress={() => {
-                            const id = roomAuthorSession(message());
-                            if (id) props.openAgent(id);
-                          }}
-                          style={{ paddingVertical: 4 }}
+                        <If
+                          when={message().author.kind === 'human'}
+                          else={
+                            <Button
+                              accessibilityLabel={props.name(roomAuthorSession(message())!)}
+                              onPress={() => props.openAgent(roomAuthorSession(message())!)}
+                              style={{ paddingVertical: 4 }}
+                            >
+                              <Text
+                                style={{ ...captionTextStyle, fontWeight: '600', color: C.text }}
+                              >
+                                {props.name(roomAuthorSession(message())!)}
+                              </Text>
+                            </Button>
+                          }
                         >
-                          <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.text }}>
-                            {author(message())}
-                          </Text>
-                        </Button>
+                          <If when={displayName()}>
+                            <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.text }}>
+                              {displayName()}
+                            </Text>
+                          </If>
+                        </If>
                         <Text style={{ ...captionTextStyle, color: C.muted }}>
                           {time(message().at)}
                         </Text>
@@ -931,11 +975,12 @@ function RoomTimeline(props: {
                             field: 'body',
                             role: message().author.kind === 'human' ? 'user' : 'assistant',
                             text: message().content.text,
+                            prefix: true,
                             closedAt: message().at,
                           })}
                           sourceId={message().id}
                           sessionId={props.sessionId}
-                          openLink={props.openLink}
+                          openLink={openLink}
                           userScroll={() => {}}
                         />
                       </If>

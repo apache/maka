@@ -367,6 +367,8 @@ struct ScrollState {
     /// the offset before the content grows back). With the batch it is in
     /// ([`Core::batches`]).
     content_item: Option<(u64, usize)>,
+    /// Extent and viewport direction before layout corrections in this batch.
+    anchor_geometry: Option<(u64, f32, bool)>,
     behavior: ScrollBehavior,
     /// Minimum milliseconds between `onScroll` events.
     event_throttle_ms: f32,
@@ -413,6 +415,7 @@ impl Default for ScrollState {
             keyboard_dismiss: KeyboardDismissMode::None,
             content: None,
             content_item: None,
+            anchor_geometry: None,
             behavior: ScrollBehavior::default(),
             event_throttle_ms: 0.0,
             zoom: 1.0,
@@ -1196,6 +1199,7 @@ pub struct Core<M: TextEngine> {
     placeholders_resized: bool,
     /// The scroll views such lists asked to scroll in this commit.
     outer_asked: Vec<Key>,
+    retracted_list_scroll: bool,
     /// The views whose lists' sticky cells changed in this commit.
     sticky_views: Vec<Key>,
     /// Views with `position: sticky` ([`Core::update_sticky_views`]).
@@ -1456,6 +1460,9 @@ impl<M: TextEngine + 'static> Core<M> {
         let engine = core.text_engine.clone();
         core.components
             .runtime
+            .set_text_layout_queries(engine.clone());
+        core.components
+            .runtime
             .set_measure(Rc::new(move |font, text| {
                 crate::canvas::line_metrics(&*engine, font, text)
             }));
@@ -1525,6 +1532,7 @@ impl<M: TextEngine> Core<M> {
             asked_rows: Vec::new(),
             placeholders_resized: false,
             outer_asked: Vec::new(),
+            retracted_list_scroll: false,
             sticky_views: Vec::new(),
             sticky_nodes: Vec::new(),
             sticky_scrollers: Vec::new(),
@@ -3016,6 +3024,11 @@ impl<M: TextEngine> Core<M> {
                 }
             }
             self.mount.push(MountItem::TreeOrder(order));
+        }
+        if std::mem::take(&mut self.retracted_list_scroll) {
+            self.mount.retain(|item| {
+                !matches!(item, MountItem::ScrollBy { dx, dy, .. } if dx.0 == 0.0 && dy.0 == 0.0)
+            });
         }
         if self.mount.is_empty() || matches!(self.mount[..], [MountItem::LayoutAnimation(_)]) {
             self.mount.clear();
@@ -9099,7 +9112,11 @@ impl<M: TextEngine> Core<M> {
             let keep_earlier = shrunk
                 && queued.is_some_and(|j| {
                     self.mount[j + 1..].iter().any(|item| match item {
-                        MountItem::ScrollBy { id: scrolled, .. } => *scrolled == id,
+                        MountItem::ScrollBy {
+                            id: scrolled,
+                            dx,
+                            dy,
+                        } => *scrolled == id && (dx.0 != 0.0 || dy.0 != 0.0),
                         MountItem::Command {
                             id: scrolled,
                             command: Command::ScrollTo { .. },
@@ -9141,6 +9158,35 @@ impl<M: TextEngine> Core<M> {
                 }
             }
         }
+    }
+
+    /// Merge relative corrections across list layout rounds. An explicit
+    /// position command starts a new sequence of corrections.
+    fn retract_list_scroll(&mut self, key: Key) -> Option<f32> {
+        let node = &mut self.nodes[key as usize];
+        let id = node.id;
+        node.scroll
+            .as_ref()?
+            .anchor_geometry
+            .filter(|&(batch, _, _)| batch == self.batches)?;
+        let item = self.mount.iter_mut().rev().find(|item| match item {
+            MountItem::ScrollBy { id: target, dx, dy } => {
+                *target == id && (dx.0 != 0.0 || dy.0 != 0.0)
+            }
+            MountItem::Command {
+                id: target,
+                command: Command::ScrollTo { .. },
+            } => *target == id,
+            _ => false,
+        })?;
+        let MountItem::ScrollBy { dx, dy, .. } = item else {
+            return None;
+        };
+        let previous = node.list.as_mut()?.retract_scroll_by()?;
+        *dx = Points::ZERO;
+        *dy = Points::ZERO;
+        self.retracted_list_scroll = true;
+        Some(previous)
     }
 
     /// Measures rendered cells, keeps the visible content anchored, picks
@@ -9362,6 +9408,9 @@ impl<M: TextEngine> Core<M> {
                 .iter()
                 .filter_map(|s| s.ready().map(|i| (i, s.cell))),
         );
+        if outer.is_some() || !scroll.dependents.is_empty() {
+            ready.sort_unstable_by_key(|&(index, _)| index);
+        }
         let extras = list.extras;
         // An inverted list that loads at its start keeps its rows in
         // place when scrolled away from it (`keeps_visible_rows`).
@@ -9370,8 +9419,28 @@ impl<M: TextEngine> Core<M> {
             .as_mut()
             .expect("list")
             .loads_at_start = events.contains(EventKind::LoadMoreAtStart);
-        let mut anchor = 0.0;
         let mut extents_changed = false;
+        let measure_extra = |core: &mut Self, kind: ExtraKind, extents_changed: &mut bool| {
+            let extra = extras[kind as usize];
+            if core.awaiting_renders.binary_search(&extra.cell).is_ok() {
+                return 0.0;
+            }
+            let Some(layout) = core
+                .nodes
+                .get(extra.cell as usize)
+                .and_then(|cell| cell.layout)
+            else {
+                return 0.0;
+            };
+            let size = main_of(core.rounded_layout(layout).size);
+            *extents_changed |= extra.size != size;
+            core.nodes[key as usize]
+                .list
+                .as_mut()
+                .expect("list")
+                .measured_extra(kind, size)
+        };
+        let mut anchor = measure_extra(self, ExtraKind::Header, &mut extents_changed);
         for &(index, cell) in &ready {
             // Waiting for JS's render: it keeps its estimate (or the size
             // measured last) until the holder arrives and lays it out
@@ -9387,20 +9456,8 @@ impl<M: TextEngine> Core<M> {
                 anchor += list.measured(index, size);
             }
         }
-        for (kind, extra) in [ExtraKind::Header, ExtraKind::Footer, ExtraKind::Empty]
-            .into_iter()
-            .zip(extras)
-        {
-            if self.awaiting_renders.binary_search(&extra.cell).is_ok() {
-                continue;
-            }
-            if let Some(cell_layout) = self.nodes.get(extra.cell as usize).and_then(|c| c.layout) {
-                let size = main_of(self.rounded_layout(cell_layout).size);
-                let list = self.nodes[key as usize].list.as_mut().expect("list");
-                extents_changed |= list.extras[kind as usize].size != size;
-                anchor += list.measured_extra(kind, size);
-            }
-        }
+        anchor += measure_extra(self, ExtraKind::Empty, &mut extents_changed);
+        anchor += measure_extra(self, ExtraKind::Footer, &mut extents_changed);
 
         let list = self.nodes[key as usize].list.as_mut().expect("list");
         // Not on the first layout: there is nothing to clamp yet.
@@ -9799,7 +9856,7 @@ impl<M: TextEngine> Core<M> {
             // its end; a scroll to an offset after the anchoring, which
             // it supersedes), and the list takes its new length in layout.
             if anchor != 0.0 {
-                self.ask_outer(o.view, None, anchor);
+                self.forward_outer_anchor(key, *o, anchor);
             }
             if outer_to.is_some() {
                 self.ask_outer(o.view, outer_to, 0.0);
@@ -9814,11 +9871,25 @@ impl<M: TextEngine> Core<M> {
         };
         // Platforms clamp the offset to the content: grow the content
         // before scrolling, scroll before shrinking it.
-        let old_len = self.nodes[key as usize]
+        let mut old_len = self.nodes[key as usize]
             .scroll
             .as_ref()
             .and_then(|s| s.content)
             .map_or(0.0, |c| if horizontal { c.width.0 } else { c.height.0 });
+        let mut grew = grew;
+        if anchor != 0.0 {
+            let previous = self.retract_list_scroll(key);
+            let node = &mut self.nodes[key as usize];
+            let scroll = node.scroll.as_mut().expect("list scroll");
+            if let (Some(previous), Some((_, extent, prior_growth))) =
+                (previous, scroll.anchor_geometry)
+            {
+                anchor += previous;
+                old_len = extent;
+                grew |= prior_growth;
+            }
+            scroll.anchor_geometry = Some((self.batches, old_len, grew));
+        }
         if anchor != 0.0 {
             self.nodes[key as usize]
                 .list
@@ -9851,14 +9922,28 @@ impl<M: TextEngine> Core<M> {
                 self.set_scroll_content(key, content);
             }
             (Some(item), None) if content_len < old_len => {
-                self.mount.push(item);
                 self.set_scroll_content(key, content);
+                if let Some(at) = self.scroll_content_position(key) {
+                    self.mount.insert(at, item);
+                } else {
+                    self.mount.push(item);
+                }
             }
             (item, _) => {
                 self.set_scroll_content(key, content);
                 self.mount.extend(item);
             }
         }
+    }
+
+    fn scroll_content_position(&self, key: Key) -> Option<usize> {
+        let node = &self.nodes[key as usize];
+        let (batch, hint) = node.scroll.as_ref()?.content_item?;
+        (batch == self.batches).then_some(())?;
+        let offset = self.mount.get(hint..)?.iter().position(
+            |item| matches!(item, MountItem::ScrollContent { id, .. } if *id == node.id),
+        )?;
+        Some(hint + offset)
     }
 }
 
@@ -10020,7 +10105,10 @@ fn text_lines<M: TextEngine>(
             line.text = String::from_utf16_lossy(&units[start..end]);
         }
     }
-    EventPayload::TextLayout(lines)
+    EventPayload::TextLayout {
+        lines,
+        layout: layout.clone(),
+    }
 }
 
 /// `text` with its fonts scaled down (to at least `min`) until it fits
@@ -10320,15 +10408,19 @@ fn measure_leaf_size<M: TextEngine>(
                 let max_width = if cx.text.no_wrap {
                     None
                 } else {
-                    known.width.or(match (available.width, field) {
-                        (AvailableSpace::Definite(w), Some(field)) => Some(field.min(w)),
-                        (AvailableSpace::Definite(w), None) => Some(w),
+                    // The available width excludes padding and borders.
+                    match (available.width, field) {
+                        (AvailableSpace::Definite(w), Some(field)) if known.width.is_none() => {
+                            Some(field.min(w))
+                        }
+                        (AvailableSpace::Definite(w), _) => Some(w),
                         (_, Some(field)) => Some(field),
                         (AvailableSpace::MinContent, None) => {
                             Some(min_content_width(engine, cache, cx).0)
                         }
                         (AvailableSpace::MaxContent, None) => None,
-                    })
+                    }
+                    .map(|width| width.max(0.0))
                 };
                 let measured = measure_text(engine, cache, cx, max_width);
                 taffy::Size {

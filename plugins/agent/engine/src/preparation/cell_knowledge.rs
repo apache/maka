@@ -18,29 +18,36 @@
  */
 
 //! Additional Host knowledge from a supplied immutable Cell child graph.
-use super::{MediaSource, NotificationSource};
+use super::{MediaSource, NotificationSource, cell_notification::read_scoped};
 use crate::RunError;
 use maka_agent_facts::{
     artifact::ToolReturn,
-    cells::{CellChild, CellId, StoredCellReturn},
-    durable::{BlockerKind, ContentRef},
+    cells::{CellChild, CellEvent, CellId, StoredCellReturn},
+    durable::{BlockerKind, ContentRef, Fact, RunId},
     language::Language,
-    tool_call::ToolSettlement,
-    tool_output::ToolOutput as ActualToolOutput,
+    tool_call::{ToolSettlement, tool_use_id},
+    tool_output::{DurableToolProjection, ToolOutput as ActualToolOutput},
 };
-use maka_agent_state::artifacts::ArtifactScope;
+use maka_agent_ports::session::history::{HistoryField, Position, Read};
+use maka_agent_state::{
+    artifacts::ArtifactScope,
+    session_history::{
+        SessionHistory,
+        source_tree::{SourceItem, SourceTree},
+    },
+};
 use maka_model::{
     ModelPreparationResources,
     prompt::{ContentPart, Message, ToolOutput},
 };
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
-use serde::de::DeserializeOwned;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io::BufReader,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+// Automatic context has a bounded size. Original evidence remains pageable.
+pub(super) const INLINE_BYTES: usize = 256 * 1024;
 
 #[expect(
     clippy::too_many_arguments,
@@ -48,6 +55,7 @@ use uuid::Uuid;
 )]
 pub async fn project_cell_knowledge(
     source: NotificationSource<'_>,
+    history: &SessionHistory,
     scope: &ArtifactScope,
     cell: CellId,
     children: &BTreeMap<Uuid, CellChild>,
@@ -57,7 +65,13 @@ pub async fn project_cell_knowledge(
     cancellation: &CancellationToken,
 ) -> Result<(Message, Vec<ContentRef>), RunError> {
     check(cancellation)?;
-    let mut remaining = resources.policy().staging_bytes;
+    let mut remaining = INLINE_BYTES;
+    let originals = OriginalChild {
+        history,
+        tree: OnceCell::new(),
+        run: scope.run,
+        cell,
+    };
     use maka_agent_facts::operation::result_reference;
     let mut dependencies = Vec::new();
     let mut seen = BTreeSet::new();
@@ -88,22 +102,28 @@ pub async fn project_cell_knowledge(
     };
     for (operation, child) in children {
         check(cancellation)?;
-        let input: serde_json::Value = read(
-            &source,
-            scope,
-            cell,
-            &child.input,
-            &mut remaining,
-            cancellation,
-        )
-        .await?;
         dependency(&mut dependencies, &mut seen, &child.input);
-        content.push(ContentPart::text(
-            serde_json::to_string(
+        let input = if child.input.bytes <= remaining as u64 {
+            let input: serde_json::Value =
+                read_scoped(&source, scope, &child.input, resources, cancellation).await?;
+            let input = serde_json::to_string(
                 &serde_json::json!({"operation":operation,"name":child.name,"input":input}),
             )
-            .map_err(RunError::Json)?,
-        ));
+            .map_err(RunError::Json)?;
+            inline(&mut remaining, input.len()).then_some(input)
+        } else {
+            None
+        };
+        content.push(ContentPart::text(match input {
+            Some(input) => input,
+            None => format!(
+                "{}\n{}",
+                serde_json::json!({"operation":operation,"name":child.name}),
+                originals
+                    .reference(*operation, &child.input, OriginalField::Arguments)
+                    .await?,
+            ),
+        }));
         if let Some(rejection) = &child.rejected {
             content.push(ContentPart::text(
                 serde_json::to_string(&serde_json::json!({
@@ -120,7 +140,8 @@ pub async fn project_cell_knowledge(
                 .map_err(RunError::Json)?,
             ));
         }
-        if let Some(reference) = child.reply.as_ref().and_then(result_reference) {
+        let receipt = child.reply.as_ref().and_then(result_reference);
+        if let Some(reference) = receipt {
             dependency(&mut dependencies, &mut seen, reference);
         }
         let provider_settled = matches!(
@@ -130,12 +151,18 @@ pub async fn project_cell_knowledge(
                 cleanup: OperationCleanup::Confirmed,
             })
         );
-        for (kind, result, settled) in [
-            ("localResult", child.local_result.as_ref(), true),
+        for (kind, result, settled, field) in [
+            (
+                "localResult",
+                child.local_result.as_ref(),
+                true,
+                OriginalField::LocalResult,
+            ),
             (
                 "providerResult",
                 child.provider_result.as_ref(),
                 provider_settled,
+                OriginalField::ProviderResult,
             ),
         ] {
             let Some(result) = result else { continue };
@@ -143,15 +170,22 @@ pub async fn project_cell_knowledge(
             if !settled || result.settlement == ToolSettlement::Unknown {
                 continue;
             }
-            let returned: ToolReturn<StoredCellReturn> = read(
-                &source,
-                scope,
-                cell,
-                &result.result,
-                &mut remaining,
-                cancellation,
-            )
-            .await?;
+            content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"isError":result.is_error})).map_err(RunError::Json)?));
+            let source_bytes = result.result.bytes.saturating_add(
+                receipt
+                    .filter(|_| matches!(field, OriginalField::ProviderResult))
+                    .map_or(0, |r| r.bytes),
+            );
+            if source_bytes > remaining as u64 {
+                content.push(ContentPart::text(
+                    originals
+                        .reference(*operation, &result.result, field)
+                        .await?,
+                ));
+                continue;
+            }
+            let returned: ToolReturn<StoredCellReturn> =
+                read_scoped(&source, scope, &result.result, resources, cancellation).await?;
             returned.validate().map_err(|reason| {
                 RunError::InvalidInput(format!("invalid Cell child return: {reason}"))
             })?;
@@ -160,7 +194,6 @@ pub async fn project_cell_knowledge(
                     "Cell child result error flag differs from its original body".into(),
                 ));
             }
-            use maka_agent_facts::tool_output::DurableToolProjection;
             enum ChildOutput {
                 Projection(DurableToolProjection),
                 Lossless(ActualToolOutput),
@@ -188,19 +221,9 @@ pub async fn project_cell_knowledge(
                                             .into(),
                                     ));
                                 }
-                                let bytes = usize::try_from(reference.bytes).map_err(|_| {
-                                    RunError::InvalidInput("Cell receipt size overflows".into())
-                                })?;
-                                charge(&mut remaining, bytes)?;
                                 Some(
-                                    super::cell_notification::read_scoped(
-                                        &source,
-                                        scope,
-                                        cell,
-                                        reference,
-                                        cancellation,
-                                    )
-                                    .await?,
+                                    read_scoped(&source, scope, reference, resources, cancellation)
+                                        .await?,
                                 )
                             } else {
                                 None
@@ -216,9 +239,16 @@ pub async fn project_cell_knowledge(
                     }
                 }
             };
-            content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"isError":result.is_error})).map_err(RunError::Json)?));
             let output = match returned {
                 ChildOutput::Projection(projection) => {
+                    if !media_fits(&media, &projection, vision, remaining).await? {
+                        content.push(ContentPart::text(
+                            originals
+                                .reference(*operation, &result.result, field)
+                                .await?,
+                        ));
+                        continue;
+                    }
                     super::project_durable_projection(
                         media.clone(),
                         &projection,
@@ -232,8 +262,15 @@ pub async fn project_cell_knowledge(
                 }
                 ChildOutput::Lossless(output) => lossless_output(output, result.is_error)?,
             };
-            charge(&mut remaining, super::encoded_len(&output)?)?;
-            append_output(&mut content, output)?;
+            if inline(&mut remaining, super::encoded_len(&output)?) {
+                append_output(&mut content, output)?;
+            } else {
+                content.push(ContentPart::text(
+                    originals
+                        .reference(*operation, &result.result, field)
+                        .await?,
+                ));
+            }
         }
     }
     check(cancellation)?;
@@ -244,6 +281,146 @@ pub async fn project_cell_knowledge(
         },
         dependencies,
     ))
+}
+
+async fn media_fits(
+    media: &MediaSource<'_>,
+    projection: &DurableToolProjection,
+    vision: bool,
+    mut remaining: usize,
+) -> Result<bool, RunError> {
+    let DurableToolProjection::Content { parts } = projection else {
+        return Ok(true);
+    };
+    use maka_agent_facts::{attachment::StorageRef, tool_output::ProjectionPart};
+    for part in parts {
+        if !vision && matches!(part, ProjectionPart::Artifact { .. }) {
+            continue;
+        }
+        let Some((reference, _)) = part.media() else {
+            continue;
+        };
+        let StorageRef::SessionFile {
+            session_id,
+            relative_path,
+        } = reference
+        else {
+            return Err(RunError::InvalidInput(
+                "tool media lacks immutable Session source".into(),
+            ));
+        };
+        if session_id != media.session() {
+            return Err(RunError::InvalidInput(
+                "tool media belongs to another Session".into(),
+            ));
+        }
+        let record = media.get(relative_path.clone()).await?.ok_or_else(|| {
+            RunError::InvalidInput("tool media unavailable at original cut".into())
+        })?;
+        let encoded = record.payload.bytes.div_ceil(3).saturating_mul(4);
+        if encoded > remaining as u64 {
+            return Ok(false);
+        }
+        remaining -= encoded as usize;
+    }
+    Ok(true)
+}
+
+#[derive(Clone, Copy)]
+enum OriginalField {
+    Arguments,
+    LocalResult,
+    ProviderResult,
+}
+
+struct OriginalChild<'a> {
+    history: &'a SessionHistory,
+    tree: OnceCell<(String, SourceTree)>,
+    run: RunId,
+    cell: CellId,
+}
+
+impl OriginalChild<'_> {
+    async fn reference(
+        &self,
+        operation: Uuid,
+        reference: &ContentRef,
+        field: OriginalField,
+    ) -> Result<String, RunError> {
+        let (session, tree) = self
+            .tree
+            .get_or_try_init(|| async {
+                let cut = self.history.capture().await?;
+                let tree = SourceTree::live(self.history, &cut).await?;
+                Ok::<_, maka_event_log::StoreError>((cut.session, tree))
+            })
+            .await?;
+        let id = tool_use_id(self.run, &format!("cell:{}:{operation}", self.cell));
+        let mut after = None;
+        loop {
+            let rows = tree.tool_positions(&id, after, 16).await?;
+            for row in &rows {
+                let SourceItem::Canonical(item) = tree.item(&row.address).await? else {
+                    continue;
+                };
+                let source = match (field, item.recorded.fact) {
+                    (
+                        OriginalField::Arguments,
+                        Fact::Cell {
+                            event: CellEvent::ChildPrepared { input, .. },
+                        },
+                    ) => input,
+                    (
+                        OriginalField::LocalResult,
+                        Fact::Cell {
+                            event: CellEvent::LocalChildReturned { result, .. },
+                        },
+                    )
+                    | (
+                        OriginalField::ProviderResult,
+                        Fact::Cell {
+                            event: CellEvent::ChildResultRecorded { result, .. },
+                        },
+                    ) => result,
+                    _ => continue,
+                };
+                if &source == reference {
+                    let request = Read {
+                        session_id: session.clone(),
+                        // The root coordinate is the live row or the snapshot's mount.
+                        through: row.order.path.first().copied(),
+                        position: Position::Row {
+                            position: row.address.clone(),
+                            field: HistoryField::Body,
+                        },
+                        include_thinking: false,
+                    };
+                    request
+                        .validate()
+                        .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+                    let pointer = serde_json::json!({
+                        "sessionId": session,
+                        "row": {
+                            "through": request.through,
+                            "position": row.address,
+                            "field": "body",
+                        }
+                    });
+                    return Ok(format!(
+                        "Original ({} bytes): SessionRead({})",
+                        reference.bytes,
+                        serde_json::to_string(&pointer).map_err(RunError::Json)?
+                    ));
+                }
+            }
+            let Some(last) = rows.last() else {
+                return Err(RunError::InvalidInput(
+                    "original Cell child history row is unavailable".into(),
+                ));
+            };
+            after = Some(last.address.clone());
+        }
+    }
 }
 
 fn lossless_output(output: ActualToolOutput, is_error: bool) -> Result<ToolOutput, RunError> {
@@ -303,47 +480,13 @@ fn dependency(
         dependencies.push(reference.clone());
     }
 }
-async fn read<T: DeserializeOwned + Send + 'static>(
-    source: &NotificationSource<'_>,
-    scope: &ArtifactScope,
-    cell: CellId,
-    reference: &ContentRef,
-    remaining: &mut usize,
-    cancellation: &CancellationToken,
-) -> Result<T, RunError> {
-    check(cancellation)?;
-    let bytes = usize::try_from(reference.bytes)
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(3))
-        .ok_or_else(|| RunError::InvalidInput("Cell child observation size overflows".into()))?;
-    charge(remaining, bytes)?;
-    let token = cancellation.clone();
-    let decode = move |reader: &mut dyn std::io::Read| -> Result<T, RunError> {
-        check(&token)?;
-        serde_json::from_reader(BufReader::new(reader)).map_err(RunError::Json)
-    };
-    let decoded = match source {
-        NotificationSource::Live(store) => {
-            let bytes = store
-                .cells()
-                .content(&scope.session, cell, reference.clone())
-                .await?;
-            decode(&mut std::io::Cursor::new(bytes))
-        }
-        NotificationSource::Snapshot(snapshot) => {
-            snapshot
-                .with_content(scope.run, reference, move |reader| Ok(decode(reader)))
-                .await?
-        }
-    }?;
-    check(cancellation)?;
-    Ok(decoded)
-}
-fn charge(remaining: &mut usize, bytes: usize) -> Result<(), RunError> {
-    *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
-        RunError::InvalidInput("Cell child observation exceeds preparation staging limit".into())
-    })?;
-    Ok(())
+fn inline(remaining: &mut usize, bytes: usize) -> bool {
+    if let Some(rest) = remaining.checked_sub(bytes) {
+        *remaining = rest;
+        true
+    } else {
+        false
+    }
 }
 fn check(cancellation: &CancellationToken) -> Result<(), RunError> {
     if cancellation.is_cancelled() {

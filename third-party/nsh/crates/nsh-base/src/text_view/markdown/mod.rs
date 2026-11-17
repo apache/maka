@@ -147,6 +147,10 @@ struct Tree {
     root: Node,
 }
 
+pub(super) fn syntax(parser: &Parser, source: &str) -> Node {
+    tree(parser, Source::original(source), true).root
+}
+
 fn parse_trees(parser: &Parser, source: &Source, segments: &[Segment], out: &mut Vec<Tree>) {
     for segment in segments {
         match segment {

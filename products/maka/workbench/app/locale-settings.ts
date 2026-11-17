@@ -571,6 +571,12 @@ export const settingsMessages = {
     '捨棄變更並重新載入',
   ],
   'Display name': tui_model_profile_name,
+  'Change avatar': ['Change avatar', '更换头像', '更換頭像'],
+  'Default avatar': ['Default', '默认', '預設'],
+  'Blue avatar': ['Blue', '蓝色', '藍色'],
+  'Green avatar': ['Green', '绿色', '綠色'],
+  'Rose avatar': ['Rose', '玫瑰色', '玫瑰色'],
+  'Amber avatar': ['Amber', '琥珀色', '琥珀色'],
   'Earlier settings actions must be resolved before another change.': [
     'Earlier settings actions must be resolved before another change.',
     '必须先解决先前的设置操作，才能进行其他更改。',

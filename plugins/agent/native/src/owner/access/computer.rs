@@ -316,7 +316,16 @@ impl NativeCallAccess for BoundCall {
             if self.access.target_for_context(&self.call).await? != self.target {
                 return Err(ToolError::Failed("Native source changed".into()));
             }
-            self.access.live_configuration().await
+            let current = self.access.live_configuration().await?;
+            let owner = self.access.owner().map_err(ToolError::Failed)?;
+            crate::workspace::validate(
+                &owner.workspace_roots,
+                &current.workspace,
+                &owner.managed_worktrees,
+            )
+            .await
+            .map_err(ToolError::Failed)?;
+            Ok(current)
         })
     }
     fn bind_original<'a>(
@@ -392,6 +401,38 @@ impl NativeCallAccess for BoundCall {
                 ));
             }
             Ok(reference)
+        })
+    }
+    fn authorize_session_read<'a>(
+        &'a self,
+        session_id: &'a str,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<(), ToolError>> {
+        Box::pin(async move {
+            self.current().await?;
+            let owner = self.access.owner().map_err(ToolError::Failed)?;
+            owner
+                .scoped_session(context.scope(), session_id)
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    ToolError::Failed(crate::owner::session_tools::humanize_agent_error(e))
+                })
+        })
+    }
+    fn render_session_resource<'a>(
+        &'a self,
+        session_id: &'a str,
+        through: Option<u64>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<(String, Option<u64>), ToolError>> {
+        Box::pin(async move {
+            self.current().await?;
+            let owner = self.access.owner().map_err(ToolError::Failed)?;
+            owner
+                .render_session_markdown(session_id, through, context.scope())
+                .await
+                .map_err(ToolError::Failed)
         })
     }
 }
@@ -779,7 +820,6 @@ impl ComputerAccess for BoundCall {
                     },
                     cwd: current.workspace.path,
                 },
-                workspace_identity: current.workspace.identity,
             })
         })
     }

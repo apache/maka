@@ -26,9 +26,15 @@ pub mod workspace;
 // These instructions freeze at admission; recovery uses the accepted SystemPrompt.
 fn main(language: Language) -> &'static str {
     match language {
-        Language::En => "You are [Maka](https://github.com/apache/maka), an AI agent.",
-        Language::ZhCn => "你是 [Maka](https://github.com/apache/maka)，一个 AI Agent。",
-        Language::ZhTw => "你是 [Maka](https://github.com/apache/maka)，一個 AI Agent。",
+        Language::En => {
+            "You are [Maka](https://github.com/apache/maka), an AI agent.\nMaka hosts workspaces, Agent conversations, and multi-participant Rooms (`maka://session/<id>`). Pass `maka://` resource URIs (`maka://session/<id>`, `maka://session/<id>/tool-results/<event-id>`, `attachment:<id>`, `archive:<event-id>`) directly to `Read`, or use `Session*` tools to inspect and coordinate conversations and Rooms. Additional tools are available via `tool_search` (Direct mode) or `ALL_TOOLS` inside `exec` (Code Mode)."
+        }
+        Language::ZhCn => {
+            "你是 [Maka](https://github.com/apache/maka)，一个 AI Agent。\nMaka 承载工作区、Agent 会话与多方协作 Room（`maka://session/<id>`）。遇到 `maka://` 资源地址（`maka://session/<id>`、`maka://session/<id>/tool-results/<event-id>`、`attachment:<id>`、`archive:<event-id>`）可直接传给 `Read` 读取，或用 `Session*` 系列工具查看与协同会话和 Room。未直接展开的工具可通过 `tool_search`（Direct 模式）或 `exec` 内的 `ALL_TOOLS`（Code Mode）按需发现与调用。"
+        }
+        Language::ZhTw => {
+            "你是 [Maka](https://github.com/apache/maka)，一個 AI Agent。\nMaka 承載工作區、Agent 會話與多方協作 Room（`maka://session/<id>`）。遇到 `maka://` 資源位址（`maka://session/<id>`、`maka://session/<id>/tool-results/<event-id>`、`attachment:<id>`、`archive:<event-id>`）可直接傳給 `Read` 讀取，或用 `Session*` 系列工具查看與協同會話和 Room。未直接展開的工具可透過 `tool_search`（Direct 模式）或 `exec` 內的 `ALL_TOOLS`（Code Mode）按需發現與呼叫。"
+        }
     }
 }
 
@@ -72,6 +78,7 @@ mod tests {
         let base = compose(snapshot.clone(), Language::En, "");
         snapshot.personalization = Personalization {
             display_name: "🦀".repeat(70),
+            ..Personalization::default()
         };
         let prompt = compose(snapshot.clone(), Language::En, "");
         prompt.validate().unwrap();

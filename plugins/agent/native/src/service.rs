@@ -105,6 +105,10 @@ impl Handler for Agent {
                 | "changeGoal"
                 | "schedule"
                 | "project"
+                | "sessionCreate"
+                | "sessionSend"
+                | "sessionStop"
+                | "sessionManage"
         ) {
             return Box::pin(async move {
                 let result: Result<HandlerValue, String> = async {
@@ -197,6 +201,22 @@ impl Handler for Agent {
                             .edit_queue(decode(input)?, operation, context.scope())
                             .await?
                             .complete(&context),
+                        "sessionCreate" => owner
+                            .session_create_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionSend" => owner
+                            .session_send_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionStop" => owner
+                            .session_stop_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionManage" => owner
+                            .session_manage_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
                         "stop" => {
                             let input: Stop = decode(input)?;
                             if !owner
@@ -238,6 +258,16 @@ impl Handler for Agent {
                 "preset" => encode(owner.preset(decode(input)?).await?),
                 "work" => encode(owner.work(decode(input)?).await?),
                 "workReadiness" => encode(owner.work_readiness(decode(input)?).await?),
+                "sessionList" => encode(
+                    owner
+                        .session_list_tool(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "sessionRead" => encode(
+                    owner
+                        .session_read_tool(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "list" => encode(catalog_page(&owner, &decode(input)?).await?),
                 "catalog" => {
                     let mut input: List = decode(input)?;
@@ -627,6 +657,43 @@ impl Handler for Agent {
                         executors: owner.executors.names(),
                     })
                 }
+                "watchModels" => {
+                    let input: maka_agent_api::contract::ModelsWatch = decode(input)?;
+                    let mut changes = owner.executors.external_catalog_changes();
+                    let root = owner
+                        .store
+                        .owned_root()
+                        .map_err(|error| error.to_string())?;
+                    let mut configuration = root.capability_changes();
+                    loop {
+                        configuration.borrow_and_update();
+                        if let Some(changes) = changes.as_mut() {
+                            changes.borrow_and_update();
+                        }
+                        context
+                            .emit(encode(
+                                owner
+                                    .models(
+                                        maka_agent_api::contract::ModelsRead::Start {
+                                            query: input.query.clone(),
+                                        },
+                                        &context.scope().cancellation,
+                                    )
+                                    .await?,
+                            )?)
+                            .await?;
+                        tokio::select! { biased;
+                            () = context.scope().cancellation.cancelled() => return Err("agent_model_observation_cancelled".into()),
+                            result = configuration.changed() => result.map_err(|_| "agent_model_observation_closed")?,
+                            result = async {
+                                match changes.as_mut() {
+                                    Some(changes) => changes.changed().await.map_err(|_| "agent_model_observation_closed"),
+                                    None => std::future::pending().await,
+                                }
+                            } => result?,
+                        }
+                    }
+                }
                 "models" => encode(
                     owner
                         .models(decode(input)?, &context.scope().cancellation)
@@ -705,8 +772,7 @@ fn handler_error(diagnostic: String) -> HandlerError {
         | "agent_worktree_initialization_unknown"
         | "agent_project_commit_unknown"
         | "agent_project_registration_unknown"
-        | "agent_project_selection_unknown"
-        | "agent_workspace_initialization_failed" => HandlerError::Unknown { diagnostic },
+        | "agent_project_selection_unknown" => HandlerError::Unknown { diagnostic },
         _ => HandlerError::Returned { diagnostic },
     }
 }
@@ -735,4 +801,25 @@ impl maka_host_runtime::application::NativeOwner for Agent {
     fn close(&self) -> BoxFuture<'static, Result<(), String>> {
         self.0.close()
     }
+}
+
+pub(crate) async fn catalog_page_for_tool(
+    owner: &Owner,
+    input: &List,
+) -> Result<SessionPage, String> {
+    catalog_page(owner, input).await
+}
+pub(crate) async fn history_observation_for_tool(
+    owner: &Owner,
+    scope: &maka_capabilities::call::Scope,
+    input: SessionRead,
+) -> Result<Observation, String> {
+    history::observation(owner, scope, input).await
+}
+pub(crate) async fn history_read_for_tool(
+    owner: &Owner,
+    scope: &maka_capabilities::call::Scope,
+    input: History,
+) -> Result<HistoryPage, String> {
+    history::read(owner, scope, input).await
 }

@@ -141,6 +141,7 @@ impl StoreError {
 
 pub struct EventLog {
     expected_session: Option<Arc<str>>,
+    checkpoint: Option<root_store::checkpoints::authority::Authority>,
     // The independent owner drains SQLite work and closes the connection before releasing its lease.
     connection: OwnedConnection,
     root_owner: Option<Arc<root::RootOwner>>,
@@ -169,6 +170,7 @@ impl EventLog {
         Self {
             connection: self.connection.scoped(custody.clone()),
             expected_session: self.expected_session.clone(),
+            checkpoint: self.checkpoint.clone(),
             root_owner: self.root_owner.clone(),
             operation_live: self.operation_live.clone(),
             commits: self.commits.clone(),
@@ -317,6 +319,7 @@ impl EventLog {
         );
         Ok(Self {
             expected_session: None,
+            checkpoint: None,
             connection,
             root_owner,
             operation_live,

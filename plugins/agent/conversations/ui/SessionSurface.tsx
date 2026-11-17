@@ -88,7 +88,7 @@ import {
   tr,
   type MessageKey,
 } from '../../../../products/maka/workbench/app/locale';
-import { loadDraft, type Host } from '../../../../products/maka/workbench/app/host';
+import { loadDraft, searchSessions, type Host } from '../../../../products/maka/workbench/app/host';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   bodyTextStyle,
@@ -2164,6 +2164,8 @@ export function createConversationUi(
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
     async kind(sessionId) {
+      const listed = browsing.sessions().find((session) => session.id === sessionId);
+      if (listed) return listed.kind;
       return (await host.query('agent', 'observe', { sessionId })).session.kind;
     },
     async openBot() {
@@ -2244,6 +2246,7 @@ export function createConversationUi(
     focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
     command: invokeOwn,
     browsing,
+    sessionHandle,
     navigation(input: ConversationNavigationInput<JSX.Element>) {
       bind(input.shell);
       return <WorkspaceBrowser {...browserProps} navigationMore={input.navigationMore} />;
@@ -3050,6 +3053,13 @@ function projectComposerCompletion(
               query,
               ...(directory ? { directory } : {}),
             }),
+    async sessions(query) {
+      const [rooms, conversations] = await Promise.all([
+        searchSessions(host, 'room', query),
+        searchSessions(host, 'agent', query),
+      ]);
+      return [...rooms, ...conversations];
+    },
     skills: ({ query, backend }) =>
       host.query('agent', 'skillCandidates', { target, backend, query }),
     pathLabel: host.pathLabel,

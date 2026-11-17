@@ -40,6 +40,7 @@ type Props = {
   onSelectionChange?(event: Selection): void;
   onCaretMove?(event: CaretEvent): void;
   onSubmit?(event: { text: string }): void;
+  onOpenSessionReference?(event: { sessionId: string }): void;
   onPaste?(event: { text: string; uris: string[]; files: unknown[] }): void;
   onFocus?(): void;
   onBlur?(): void;
@@ -50,7 +51,7 @@ type Props = {
 };
 type Binding = { key: string; action: () => void; options?: EditorKeyOptions };
 
-/** Product-owned plain-text composer; skills are inline atoms in the existing rich editor. */
+/** A source-preserving Markdown composer with native reference tokens. */
 export function SkillInput(props: Props) {
   const native = signal<ComposerInputRef | null>(null);
   const status = signal<ComposerInputState | null>(null);
@@ -186,6 +187,8 @@ export function SkillInput(props: Props) {
         sourceOffset={props.sourceOffset ?? 0}
         valueCount={valueCount()}
         readOnly={props.readonly}
+        openSessionReferences={props.onOpenSessionReference !== undefined}
+        onOpenSessionReference={props.onOpenSessionReference}
         placeholder={props.placeholder}
         tokenColor={C.accent}
         tokenBackgroundColor={`${C.accent}20`}
@@ -196,7 +199,11 @@ export function SkillInput(props: Props) {
           content: { padding: 0 },
           caret: { backgroundColor: C.text },
           placeholder: { color: C.muted },
-          nodes: { paragraph: bodyTextStyle, skill: { verticalAlign: 'text-bottom' } },
+          nodes: {
+            paragraph: bodyTextStyle,
+            skill: { verticalAlign: 'text-bottom' },
+            session: { verticalAlign: 'text-bottom' },
+          },
         }}
         style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
         onChange={(event) => {

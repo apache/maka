@@ -64,6 +64,132 @@ async fn reply_at(desktop: &Desktop, position: nsh_terminal::Point<nsh_terminal:
     desktop.press_at(menu.center());
 }
 
+pub(super) async fn desktop_composer_references_a_room_without_posting() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |config, root| {
+            config["agent"]["toolDiscovery"] = json!(false);
+            std::fs::write(root.join("workspace/Windows-CI.md"), "Runner checklist").unwrap();
+        },
+    )
+    .await;
+    let client = fixture.client().await;
+    let workspace = json!({"kind":"session","sessionId":fixture.session});
+    let room = mutate(
+        &client,
+        "create",
+        json!({"kind":"room","title":"环境信息共享群","labels":[],"workspace":workspace}),
+    )
+    .await;
+    let room = room["session"]["id"].as_str().unwrap();
+    let context = "Windows CI uses a dedicated VM.";
+    let post = mutate(&client, "send", json!({"sessionId":room,"message":context})).await;
+    assert_eq!(post["kind"], "posted", "{post}");
+    let backend = json!({
+        "kind":"model",
+        "connectionId":fixture.selection["connectionId"],
+        "modelId":fixture.selection["modelId"]
+    });
+    let conversation = mutate(
+        &client,
+        "create",
+        json!({"title":"review json-render","labels":[],"workspace":workspace,"backend":backend}),
+    )
+    .await;
+    let conversation = conversation["session"]["id"].as_str().unwrap();
+    let other = mutate(
+        &client,
+        "create",
+        json!({"title":"Windows CI 验证","labels":[],"workspace":workspace,"backend":backend}),
+    )
+    .await;
+    assert_eq!(other["kind"], "created", "{other}");
+    client.close().await.unwrap();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let before = room_messages(&desktop, room, 1).await;
+    assert_eq!(before.len(), 1);
+    desktop.press("Open conversation review json-render").await;
+    desktop.press("Focus message composer").await;
+    desktop.paste("Read context from @").await;
+    let file_row = desktop.control("Windows-CI.md").await;
+    let room_row = desktop.control("环境信息共享群").await;
+    let agent_row = desktop.control("Windows CI 验证").await;
+    assert!(room_row.top() < agent_row.top() && agent_row.top() < file_row.top());
+    desktop.artifact("room-reference-picker");
+    desktop.press("环境信息共享群").await;
+    let reference = format!("Read context from [#环境信息共享群](maka://session/{room}) ");
+    desktop.expect_text(&reference).await;
+    desktop.key("right", false);
+    desktop.paste("and @Windows-CI").await;
+    desktop.press("Windows-CI.md").await;
+    let body = format!("{reference}and @Windows-CI.md");
+    desktop.expect_text(&format!("{body} ")).await;
+    desktop.key("right", false);
+    desktop.artifact("room-reference-draft");
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    desktop.press("Send message").await;
+    let request = desktop.request(&mut fixture).await;
+    let message = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(message["role"], "user");
+    let user_content = message["content"].as_str().unwrap();
+    assert!(user_content.starts_with(&body), "{user_content}");
+    assert!(
+        user_content.contains("<session_references>"),
+        "{user_content}"
+    );
+    let history_tool = request.body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["function"]["name"] == "SessionRead")
+        .expect("the agent can use SessionRead for this reference");
+    assert!(
+        history_tool["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("[#Room](maka://session/<id>)")
+    );
+    request
+        .tool_call("SessionRead", json!({"sessionId":room,"position":"tail"}))
+        .await;
+    let mut request = desktop.request(&mut fixture).await;
+    let result = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(result["role"], "tool");
+    let result: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    assert_eq!(result["transcript"]["kind"], "room", "{result}");
+    assert_eq!(result["transcript"]["items"][0]["id"], before[0]["id"]);
+    assert_eq!(result["transcript"]["items"][0]["text"], context);
+    request.delta(context).await;
+    desktop
+        .wait("the reply did not finish", request.finish())
+        .await;
+    desktop
+        .wait(
+            "the conversation did not settle",
+            fixture.idle(&desktop.client, conversation),
+        )
+        .await;
+    assert_eq!(room_messages(&desktop, room, 1).await, before);
+    desktop.press("#环境信息共享群").await;
+    desktop.control("Close side pane").await;
+    desktop.control("Mention a session").await;
+    desktop.artifact("room-reference-context-beside");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     let mut fixture = Fixture::open_with_configuration(
         Options {
@@ -131,6 +257,24 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     let first = room_messages(&desktop, room, 1).await.remove(0);
     assert_eq!(first["content"]["text"], "The patch is ready.");
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    desktop.artifact("room-default-profile");
+    desktop.press("Settings").await;
+    desktop.press("Settings section General").await;
+    desktop.press("Edit personalization").await;
+    desktop.type_text("Ada").await;
+    desktop.press("Change avatar").await;
+    desktop.press("Green").await;
+    desktop.artifact("room-avatar-choice");
+    desktop.press("Save this preference").await;
+    desktop.control("Edit personalization").await;
+    let preferences = desktop
+        .client
+        .query("settings", "assistantPreferences", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(preferences["displayName"], "Ada");
+    assert_eq!(preferences["avatar"], "green");
+    desktop.press("Close settings").await;
 
     let reply = desktop.control("Reply to message").await;
     reply_at(
@@ -178,16 +322,41 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
         !input.contains("PRIVATE_AGENT_DRAFT"),
         "unsubmitted draft leaked: {input}"
     );
+    let read = json!({"sessionId":room,"messageId":posts[1]["id"],"anchor":"before"});
+    let message = request.body["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(
+        message.contains("The user mentioned you in a Room."),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("SessionRead({read})")),
+        "{message}"
+    );
+    request.tool_call("SessionRead", read).await;
+    let request = desktop.request(&mut fixture).await;
+    let result = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(result["role"], "tool");
+    let result: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    assert_eq!(result["transcript"]["kind"], "room", "{result}");
+    assert_eq!(
+        result["transcript"]["items"][0]["id"], first["id"],
+        "{result}"
+    );
+    let room_reply = format!(
+        "[@Reviewer](maka://session/{}) reviewed in the room.",
+        fixture.session
+    );
     request
         .tool_call(
             "SessionSend",
             json!({
-                "sessionId":room,"replyTo":posts[1]["id"],"message":"Reviewed in the room."
+                "sessionId":room,"replyTo":posts[1]["id"],"message":room_reply
             }),
         )
         .await;
-    desktop.request(&mut fixture).await.finish().await;
-    fixture.idle(&desktop.client, &fixture.session).await;
+    let final_reply = desktop.request(&mut fixture).await;
     let posts = room_messages(&desktop, room, 3).await;
     assert_eq!(posts.len(), 3);
     assert_eq!(
@@ -211,11 +380,42 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
             desktop.platform.take_clipboard_write()
         })
         .await;
-    assert_eq!(copied, "Reviewed in the room.");
-    desktop.press("Conversations").await;
-    desktop.press("Open conversation Room reviewer").await;
+    assert_eq!(copied, room_reply);
+    let quote = *desktop.controls("View replied message").last().unwrap();
+    desktop.press_at(point(quote.left() + px(20.), quote.bottom() + px(15.)));
+    desktop.press("Focus message composer").await;
+    let summary = "From Release review · Please review";
+    desktop.open_group(summary).await;
+    desktop.press_until(summary, "From Release review").await;
+    desktop
+        .press("Open source conversation beside this one")
+        .await;
+    let split = desktop.control("Close side pane").await;
+    let mention = desktop.control("Mention a session").await;
+    assert!(mention.center().x > px(560.) && mention.right() < split.right());
+    desktop
+        .until("Room history did not appear in the right pane", || {
+            let replies = desktop.controls("Reply to message");
+            (replies.len() == 3 && replies.iter().all(|reply| reply.center().x > px(560.)))
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("room-source-split");
+    desktop.press("Close side pane").await;
+    final_reply.finish().await;
+    fixture.idle(&desktop.client, &fixture.session).await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("PRIVATE_AGENT_DRAFT").await;
+    desktop
+        .right_click("Open conversation NSH real Agent")
+        .await;
+    desktop.press("Open to the side").await;
+    desktop
+        .until("agent split did not show the conversation composer", || {
+            (desktop.controls("Focus message composer").len() == 2).then_some(())
+        })
+        .await;
+    desktop.press("Close side pane").await;
     desktop.close().await;
     fixture.finish().await;
 }

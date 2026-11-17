@@ -58,6 +58,8 @@ const icons = {
   lock: { lucide: 'lock', glyph: '▣' },
   activity: { lucide: 'clock', glyph: '◌' },
   bot: { lucide: 'bot', glyph: '◌' },
+  conversation: { lucide: 'message-square', glyph: '▱' },
+  user: { lucide: 'user-round', glyph: '●' },
   inbox: { lucide: 'inbox', glyph: '?' },
   thinking: { lucide: 'brain', glyph: '◌' },
   statusRecorded: { lucide: 'circle-dot', glyph: '●' },

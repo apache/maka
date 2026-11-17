@@ -407,6 +407,84 @@ impl RunView {
         self.recovery_failures().next()
     }
 
+    /// Describe the failed recovery using the original operation evidence.
+    pub fn recovery_failure_diagnostic(&self) -> Option<String> {
+        use maka_agent_facts::external_publication::ExternalPublicationBlocker;
+        Some(match self.recovery_failure()? {
+            BlockerKind::OperationUnknown { tool, reference } => {
+                match self
+                    .tools
+                    .get(&tool_key(tool))
+                    .and_then(|tool| tool.receipt.as_ref())
+                {
+                    Some(
+                        Receipt::Recorded {
+                            outcome: OperationOutcome::Unknown { diagnostic },
+                            ..
+                        }
+                        | Receipt::Unavailable { diagnostic },
+                    ) => diagnostic.clone(),
+                    _ => format!(
+                        "Could not determine the outcome of {}.{}.",
+                        reference.export, reference.method
+                    ),
+                }
+            }
+            BlockerKind::ExternalPublicationUnavailable { diagnostic, .. }
+            | BlockerKind::CurrentAuthorityUnavailable { diagnostic, .. }
+            | BlockerKind::ToolCleanupUnconfirmed { diagnostic, .. }
+            | BlockerKind::ModelCleanupUnconfirmed { diagnostic, .. } => diagnostic.clone(),
+            BlockerKind::ExternalPublicationItem { reason, .. } => match reason {
+                ExternalPublicationBlocker::Unknown => {
+                    "Could not determine whether the workspace change was applied."
+                }
+                ExternalPublicationBlocker::Conflict => {
+                    "The workspace changed before the agent's change could be applied."
+                }
+                ExternalPublicationBlocker::Unsupported => {
+                    "The agent's workspace change is unsupported."
+                }
+                ExternalPublicationBlocker::Failed => {
+                    "The agent's workspace change could not be applied."
+                }
+                ExternalPublicationBlocker::NotAttempted => {
+                    "The agent's workspace change was not applied."
+                }
+                ExternalPublicationBlocker::CleanupUnconfirmed => {
+                    "Could not confirm cleanup after applying the agent's workspace change."
+                }
+            }
+            .into(),
+            BlockerKind::ExternalEffectUnknown { .. } => {
+                "Could not determine the outcome of an external agent operation.".into()
+            }
+            BlockerKind::ProviderEffectUnknown { .. } => {
+                "Could not determine the outcome of a tool run by the model provider.".into()
+            }
+            BlockerKind::OriginalAdmissionUnknown { .. } => {
+                "Could not determine whether the original tool call started.".into()
+            }
+            BlockerKind::CodeCellRecoveryUnavailable { .. } => {
+                "Could not recover the result of the original code execution.".into()
+            }
+            BlockerKind::UnsupportedProtocol { protocol, version } => {
+                format!("Recovery is unavailable for {protocol} (version {version}).")
+            }
+            BlockerKind::CleanupUnconfirmed { reference } => {
+                format!(
+                    "Could not confirm cleanup for {}.{}.",
+                    reference.export, reference.method
+                )
+            }
+            BlockerKind::ResourcesUnavailable { .. } => {
+                "The original tool call's resources are unavailable.".into()
+            }
+            BlockerKind::ExternalTaskUnobservable { .. } => {
+                "Could not read the state of the external agent task.".into()
+            }
+        })
+    }
+
     pub fn blocks_followup(&self) -> bool {
         (self.terminal == Some(Terminal::Failed) || self.cancelled_by_risk)
             && self.has_unsettled_recovery()

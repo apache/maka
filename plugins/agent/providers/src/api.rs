@@ -40,7 +40,6 @@ mod effects;
 mod inventory;
 mod options;
 mod output;
-mod preferred;
 mod route;
 mod usage;
 

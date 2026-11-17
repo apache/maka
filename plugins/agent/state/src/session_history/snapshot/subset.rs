@@ -569,8 +569,16 @@ struct MarkerCut(HistoryNamespace, RunId);
 impl Query for MarkerCut {
     type Output = HistoryCut;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let through = c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? ORDER BY sequence DESC LIMIT 1",
-            params![serde_json::to_string(&self.0.owner)?,self.0.session,self.1.to_string()],|row|read_u64(row,0))?;
+        let through = c.query_row(
+            "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
+             WHERE owner=? AND session=? AND run=? ORDER BY sequence DESC LIMIT 1",
+            params![
+                serde_json::to_string(&self.0.owner)?,
+                self.0.session,
+                self.1.to_string()
+            ],
+            |row| read_u64(row, 0),
+        )?;
         let cut = super::super::sql::capture_at(c, &self.0.owner, &self.0.session, Some(through))?;
         fork::validate_baseline(c, &self.0, &cut, self.1)?;
         Ok(cut)

@@ -365,6 +365,15 @@ impl Snapshot {
     pub async fn view_at(&self, run: RunId) -> Result<crate::fold::RunView, StoreError> {
         self.data.query(read::View(self.clone(), run)).await
     }
+    pub(super) async fn recovery_failure_at(
+        &self,
+        run: RunId,
+        sequence: u64,
+    ) -> Result<Option<String>, StoreError> {
+        self.data
+            .query(read::RecoveryFailureAt(self.clone(), run, sequence))
+            .await
+    }
     pub(super) async fn executor_view(
         &self,
         run: RunId,

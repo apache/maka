@@ -89,20 +89,30 @@ pub(in crate::session_history) fn ranges(
     let mut statement = c.prepare_cached(
         "SELECT run FROM agent_session_history WHERE owner=? AND session=? AND kind='run_admitted' ORDER BY sequence",
     )?;
-    let mut rows = statement.query(params![
-        serde_json::to_string(&history.owner)?,
-        history.session
-    ])?;
+    let owner = serde_json::to_string(&history.owner)?;
+    let mut rows = statement.query(params![owner, history.session])?;
+    let mut last = c.prepare_cached(
+        "SELECT max(sequence) FROM agent_session_history INDEXED BY agent_session_history_run
+         WHERE owner=? AND session=? AND run=? AND kind<>?",
+    )?;
     let mut ranges = vec![];
     while let Some(row) = rows.next()? {
         let run = sql::identity(row.get(0)?)?;
         let source = sql::run_source(c, history, run)?;
-        let last=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? AND kind<>? ORDER BY sequence DESC LIMIT 1",params![serde_json::to_string(&history.owner)?,history.session,run.to_string(),TITLE_DIAGNOSTIC_KIND],|row|sql::read_u64(row,0))?;
+        let end = last.query_row(
+            params![
+                owner,
+                history.session,
+                run.to_string(),
+                TITLE_DIAGNOSTIC_KIND
+            ],
+            |row| sql::read_u64(row, 0),
+        )?;
         ranges.push(Range {
             run,
             turn: source.spec.turn_id,
             first: source.admission_sequence,
-            last,
+            last: end,
         });
     }
     Ok(ranges)

@@ -89,12 +89,10 @@ fn clipboard(surface: &TerminalSurface, expected: &str) {
 
 pub(super) fn scrolling_dismisses_hover_tooltip() {
     let source = r#"
-import { Clipboard, Scroll, Text, View, keymap, mount } from "nsh";
+import { Clipboard, Scroll, Text, View, mount } from "nsh";
 import { Button, Tooltip } from "nsh/base";
 function App() {
-  let scroll;
-  keymap.bind("f7", () => scroll.scrollTo({y: 16, animated: false}), {when: "always"});
-  return <Scroll ref={ref => scroll = ref} style={{height: 180}}>
+  return <Scroll style={{height: 180}}>
     <View style={{height: 40, flexShrink: 0}} />
     <Button accessibilityLabel="Tool row" style={{height: 100, flexShrink: 0}} tooltip={
       <Tooltip delay={300} onOpen={() => Clipboard.writeText("tip shown")}
@@ -125,11 +123,17 @@ mount(App);
         .unwrap();
     clipboard(&surface, "tip shown");
 
-    key(&surface, "f7");
+    let mut wheel = nsh_terminal::ScrollWheelEvent::default();
+    wheel.position = row.center();
+    wheel.delta = nsh_terminal::ScrollDelta::Lines(nsh_terminal::point(0.0, -2.0));
+    surface
+        .dispatch_input(PlatformInput::ScrollWheel(wheel))
+        .unwrap();
     pump_until(&surface, || {
         surface.pressable_bounds("Tool row")[0].top() < row.top()
     });
     let moved = surface.pressable_bounds("Tool row")[0];
+    assert_eq!(moved.top(), row.top() - nsh_terminal::px(20.0));
     assert!(moved.bottom() > row.center().y);
     clipboard(&surface, "tip dismissed");
     clipboard(&surface, "tip shown");

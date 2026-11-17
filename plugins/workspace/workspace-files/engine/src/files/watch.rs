@@ -57,7 +57,6 @@ impl Filter {
             part.as_os_str()
                 .as_encoded_bytes()
                 .eq_ignore_ascii_case(b".git")
-                || part.as_os_str() == std::ffi::OsStr::new(crate::workspace::MARKER_FILE)
         }) {
             return false;
         }

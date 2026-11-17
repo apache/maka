@@ -363,7 +363,22 @@ pub(super) fn request_preparation(
 ) -> Result<(RequestSpec, UnixMillis), StoreError> {
     let owner = check_cut(c, history, cut)?;
     spec(c, history, run)?;
-    let sequence:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? AND step=? AND kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.session,run.to_string(),step.to_string(),bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
+    let sequence = c
+        .query_row(
+            "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
+             WHERE owner=? AND session=? AND run=? AND step=?
+               AND kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=?
+             ORDER BY sequence LIMIT 1",
+            params![
+                owner,
+                history.session,
+                run.to_string(),
+                step.to_string(),
+                bind_u64(cut.through_sequence)?
+            ],
+            |row| read_u64(row, 0),
+        )
+        .optional()?;
     let sequence =
         sequence.ok_or_else(|| invalid("request Step is outside captured source cut"))?;
     let original = item(c, history, cut, sequence)?
@@ -1323,16 +1338,58 @@ pub(super) fn view_at(
     history: &HistoryNamespace,
     cut: &HistoryCut,
     run: RunId,
-    mut observe: impl FnMut(u64, &RecordedFact),
+    observe: impl FnMut(u64, &RecordedFact),
 ) -> Result<crate::fold::RunView, StoreError> {
     check_cut(c, history, cut)?;
+    view_through(c, history, run, cut.through_sequence, observe)
+}
+
+pub(super) fn recovery_failure_at(
+    c: &Connection,
+    history: &HistoryNamespace,
+    cut: &HistoryCut,
+    run: RunId,
+    revision: u64,
+    sequence: u64,
+) -> Result<Option<String>, StoreError> {
+    let owner = check_cut(c, history, cut)?;
+    let head: Option<u64> = c
+        .query_row(
+            "SELECT revision FROM agent_runs WHERE run=? AND owner=? AND session=?
+         AND EXISTS (SELECT 1 FROM agent_blockers WHERE run=agent_runs.run)",
+            params![run.to_string(), owner, history.session],
+            |row| read_u64(row, 0),
+        )
+        .optional()?;
+    let Some(head) = head else { return Ok(None) };
+    let view = if head == revision {
+        crate::sql::load(c, run, &[], false)?
+    } else {
+        view_through(
+            c,
+            history,
+            run,
+            sequence.min(cut.through_sequence),
+            |_, _| {},
+        )?
+    };
+    Ok(view.recovery_failure_diagnostic())
+}
+
+fn view_through(
+    c: &Connection,
+    history: &HistoryNamespace,
+    run: RunId,
+    through_sequence: u64,
+    mut observe: impl FnMut(u64, &RecordedFact),
+) -> Result<crate::fold::RunView, StoreError> {
     let source = run_source(c, history, run)?;
-    if source.admission_sequence > cut.through_sequence {
+    if source.admission_sequence > through_sequence {
         return Err(invalid("Run was not admitted within the captured cut"));
     }
     let mut view = crate::fold::RunView::admitted(run, source.spec)?;
     let mut statement=c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.sequence FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
-    let mut rows = statement.query(params![run.to_string(), bind_u64(cut.through_sequence)?])?;
+    let mut rows = statement.query(params![run.to_string(), bind_u64(through_sequence)?])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(1)?;
         let digest: String = row.get(2)?;
@@ -1635,6 +1692,50 @@ fn result_source(fact: &Fact) -> bool {
             }
     )
 }
+
+pub(super) fn tool_result_metadata(
+    c: &Connection,
+    history: &HistoryNamespace,
+    cut: &HistoryCut,
+    sequence: u64,
+) -> Result<Option<ToolResultMetadata>, StoreError> {
+    let owner = check_cut(c, history, cut)?;
+    let row = c
+        .prepare_cached(
+            "SELECT m.is_error,m.image,m.images,m.external_settlement
+         FROM agent_session_history h JOIN agent_history_tool_metadata m ON m.sequence=h.sequence
+         WHERE h.owner=? AND h.session=? AND h.sequence=? AND h.sequence<=?",
+        )?
+        .query_row(
+            params![
+                owner,
+                history.session,
+                bind_u64(sequence)?,
+                bind_u64(cut.through_sequence)?
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|(is_error, image, images, external_settlement)| {
+        Ok(ToolResultMetadata {
+            is_error,
+            image,
+            images,
+            external_settlement: external_settlement
+                .map(|settlement| serde_json::from_value(serde_json::Value::String(settlement)))
+                .transpose()?,
+        })
+    })
+    .transpose()
+}
+
 pub(super) fn resolve_tool_result(
     c: &Connection,
     scope: &SessionHistory,

@@ -877,6 +877,7 @@ export type AgentModelsPage =
       kind: 'ready';
       revision: string;
       choices: AgentModelChoice[];
+      refreshing: boolean;
       complete: boolean;
       next?: AgentModelsCursor | null;
     }
@@ -1594,6 +1595,7 @@ export type PricingMutation =
       modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+export type ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
  */
@@ -1658,6 +1660,7 @@ export type SettingsPreferencesMutation =
   | {
       kind: 'personalization';
       displayName: string;
+      avatar?: ProfileAvatar | null;
     }
   | {
       kind: 'workspace_instructions';
@@ -4375,7 +4378,7 @@ export type HistoryField = 'thinking' | 'body';
  * Tool output is available through source reads in both views. Conversation
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
-export type HistoryView = ('text' | 'conversation') | 'chat' | 'turn';
+export type HistoryView = ('text' | 'conversation') | 'chat' | 'turn' | 'steps';
 /**
  * Trusted producer attribution, preserved independently of editable content.
  */
@@ -4554,20 +4557,17 @@ export type HistoryModel =
     };
 export type AttachmentKind = 'image' | 'pdf' | 'doc' | 'code' | 'other';
 export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
-/**
- * Canonical message author/kind; the field identifies body versus thinking.
- * Tool body JSON contributes string values, never its keys.
- */
-export type Role =
-  | 'system'
-  | 'context'
-  | 'tool'
-  | 'compaction'
-  | 'failure'
-  | 'user'
-  | 'assistant'
-  | 'tool_call'
-  | 'tool_result';
+export type HistoryWorkKind =
+  | {
+      kind: 'tool';
+      presentation: string | null;
+    }
+  | {
+      kind: 'thought';
+    }
+  | {
+      kind: 'message';
+    };
 /**
  * Who made a call: a model step, a script the model wrote, a tool's own work
  * through the Host SDK, or a foreign record.
@@ -4587,6 +4587,20 @@ export type ExternalToolTarget =
       kind: 'search';
       query: string;
     };
+/**
+ * Canonical message author/kind; the field identifies body versus thinking.
+ * Tool body JSON contributes string values, never its keys.
+ */
+export type Role =
+  | 'system'
+  | 'context'
+  | 'tool'
+  | 'compaction'
+  | 'failure'
+  | 'user'
+  | 'assistant'
+  | 'tool_call'
+  | 'tool_result';
 export type AgentHistoryPage =
   | {
       kind: 'room';
@@ -5941,6 +5955,10 @@ export interface AgentModelsCursor {
 }
 export interface AgentModelChoice {
   selection: AgentBackendPreference;
+  /**
+   * Previously published selections, including their implied thinking level.
+   */
+  aliases?: AgentBackendPreference[];
   sourceName: string;
   label: string;
   thinkingLevels: string[];
@@ -6556,6 +6574,7 @@ export interface SettingsAssistantPreferences {
   defaultCompactionPrompt: string;
   revision: number;
   displayName: string;
+  avatar?: ProfileAvatar | null;
   workspaceInstructions: boolean;
   defaultSandboxMode: Mode;
   shell: ShellPolicy;
@@ -6994,8 +7013,6 @@ export interface AgentWorkspace {
    */
   projectId?: string | null;
   path: string;
-  directoryIdentity: string;
-  identity: string;
 }
 /**
  * Immutable allocation intent, not the current child branch or HEAD.
@@ -7004,7 +7021,6 @@ export interface Binding {
   id: string;
   common_dir: string;
   source: string;
-  source_identity: string;
   base_commit: string;
   directory: string;
 }
@@ -8378,6 +8394,7 @@ export interface AgentHistoryChunk {
   attachments?: AgentHistoryAttachment[];
   timing?: HistoryTurnTiming | null;
   foldedWork?: HistoryFoldedWork | null;
+  work?: HistoryWorkGroup | null;
   field: HistoryField;
   messageId?: string | null;
   turnId?: string | null;
@@ -8445,15 +8462,23 @@ export interface HistoryWorkImage {
   position: HistoryRowAddress;
   image?: number | null;
 }
-/**
- * Canonical references at the requested fence, never execution authority.
- * Both references are present only for a unique same-Turn call/result pair
- * with matching origin and parentage. An unpaired row retains its own reference.
- */
-export interface HistoryTool {
-  toolUseId: string;
-  call: HistoryToolCall | null;
-  result: HistoryToolResult | null;
+export interface HistoryWorkGroup {
+  end: Cursor;
+  /**
+   * In order of first appearance.
+   */
+  kinds: HistoryWorkKind[];
+  last: HistoryWorkKind;
+  lastCall?: HistoryToolCall | null;
+  /**
+   * The first step's tool, when it is one.
+   */
+  firstToolUseId?: string | null;
+  thoughts: number;
+  tools: number;
+  messages: number;
+  imageCount: number;
+  images: HistoryWorkImage[];
 }
 export interface HistoryToolCall {
   /**
@@ -8477,6 +8502,16 @@ export interface HistoryToolCall {
    */
   dispatched: boolean;
   externalTarget?: ExternalToolTarget | null;
+}
+/**
+ * Canonical references at the requested fence, never execution authority.
+ * Both references are present only for a unique same-Turn call/result pair
+ * with matching origin and parentage. An unpaired row retains its own reference.
+ */
+export interface HistoryTool {
+  toolUseId: string;
+  call: HistoryToolCall | null;
+  result: HistoryToolResult | null;
 }
 export interface HistoryToolResult {
   settlement: ToolSettlement | null;
