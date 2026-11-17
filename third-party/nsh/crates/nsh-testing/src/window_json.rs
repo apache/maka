@@ -82,7 +82,10 @@ mod tests {
         state.focused = true;
         state.display = Some(DisplayId(0xab));
         state.scale_factor = 2.0;
+        let native = serde_json::json!({"x": -12.5, "y": 2.25, "width": 220.5, "height": 140.25});
+        state.native_content_bounds = Some(serde_json::from_value(native.clone()).unwrap());
         let json = to_json(&state);
+        assert_eq!(json["nativeContentBounds"], native);
         assert_eq!(json["mode"], "maximized");
         assert_eq!(json["contentBounds"]["size"]["width"], 220.0);
         assert_eq!(json["display"], "00000000000000ab");

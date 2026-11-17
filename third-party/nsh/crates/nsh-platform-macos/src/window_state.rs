@@ -301,10 +301,10 @@ pub(crate) fn read_window(watch: &Watch, window: &NSWindow) -> WindowState {
     state.focused = crate::window::is_key(window);
     state.content_bounds = to_bounds(window.contentRectForFrameRect(frame), primary);
     let mut native = NativeDesktopBounds::default();
-    native.x = state.content_bounds.origin.x.0 as f64;
-    native.y = state.content_bounds.origin.y.0 as f64;
-    native.width = state.content_bounds.size.width.0 as f64;
-    native.height = state.content_bounds.size.height.0 as f64;
+    native.x = state.content_bounds.origin.x;
+    native.y = state.content_bounds.origin.y;
+    native.width = state.content_bounds.size.width;
+    native.height = state.content_bounds.size.height;
     state.native_content_bounds = Some(native);
     state.display = window
         .screen()

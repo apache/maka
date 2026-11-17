@@ -173,10 +173,10 @@ pub(crate) fn state(hwnd: HWND) -> Option<WindowState> {
         if let Some(content) = native_content_bounds(hwnd) {
             state.content_bounds = screen.bounds(content);
             let mut native = nsh_core::desktop::NativeDesktopBounds::default();
-            native.x = content.left as f64;
-            native.y = content.top as f64;
-            native.width = (content.right - content.left) as f64;
-            native.height = (content.bottom - content.top) as f64;
+            native.x = nsh_core::geometry::ScaledPixels(content.left as f32);
+            native.y = nsh_core::geometry::ScaledPixels(content.top as f32);
+            native.width = nsh_core::geometry::ScaledPixels((content.right - content.left) as f32);
+            native.height = nsh_core::geometry::ScaledPixels((content.bottom - content.top) as f32);
             state.native_content_bounds = Some(native);
         }
         state.display = Some(screen.display.id);

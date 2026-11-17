@@ -201,6 +201,13 @@ fn grabbable(bounds: Bounds<Points>, area: Bounds<Points>) -> bool {
         && on.size.height >= GRAB.height.min(strip.size.height)
 }
 
+/// The OS desktop coordinate unit on this platform.
+#[cfg(target_os = "macos")]
+pub type NativeDesktopUnit = crate::geometry::Points;
+/// The OS desktop coordinate unit on this platform.
+#[cfg(not(target_os = "macos"))]
+pub type NativeDesktopUnit = crate::geometry::ScaledPixels;
+
 /// An OS desktop rectangle: macOS points, Windows/X11 native pixels.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, JsObject,
@@ -208,13 +215,13 @@ fn grabbable(bounds: Bounds<Points>, area: Bounds<Points>) -> bool {
 #[non_exhaustive]
 pub struct NativeDesktopBounds {
     /// The left edge in native desktop units.
-    pub x: f64,
+    pub x: NativeDesktopUnit,
     /// The top edge in native desktop units.
-    pub y: f64,
+    pub y: NativeDesktopUnit,
     /// The width in native desktop units.
-    pub width: f64,
+    pub width: NativeDesktopUnit,
     /// The height in native desktop units.
-    pub height: f64,
+    pub height: NativeDesktopUnit,
 }
 
 /// A window as the platform reports it (TS `WindowRef.state()` and

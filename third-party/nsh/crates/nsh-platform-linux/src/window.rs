@@ -1331,10 +1331,14 @@ fn native_content_bounds(
         let local = content.compute_bounds(window)?;
         let scale = surface.scale() as f64;
         let mut native = nsh_core::desktop::NativeDesktopBounds::default();
-        native.x = origin.dst_x as f64 + local.x() as f64 * scale;
-        native.y = origin.dst_y as f64 + local.y() as f64 * scale;
-        native.width = local.width() as f64 * scale;
-        native.height = local.height() as f64 * scale;
+        native.x = nsh_core::geometry::ScaledPixels(
+            (origin.dst_x as f64 + local.x() as f64 * scale) as f32,
+        );
+        native.y = nsh_core::geometry::ScaledPixels(
+            (origin.dst_y as f64 + local.y() as f64 * scale) as f32,
+        );
+        native.width = nsh_core::geometry::ScaledPixels((local.width() as f64 * scale) as f32);
+        native.height = nsh_core::geometry::ScaledPixels((local.height() as f64 * scale) as f32);
         Some(native)
     })
 }
