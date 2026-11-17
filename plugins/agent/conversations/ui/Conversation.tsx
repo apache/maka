@@ -898,7 +898,7 @@ export function Conversation(props: ConversationProps) {
         position,
         after,
       }),
-    failed: (reason) => report(reason),
+    failed: (reason) => readFailed(reason),
   });
   const trajectory = computed(() =>
     reading() === 'trajectory' ? projectTrajectory(projection(), trajectoryRequests()) : [],
@@ -1537,6 +1537,11 @@ export function Conversation(props: ConversationProps) {
   ) => {
     if (alive) error.set(errorText(reason, fallback));
   };
+  // Background reads retry on the next update, scroll or reconnect. A failure
+  // carries Host detail the reader cannot act on, so it shows no notice.
+  const readFailed = (reason: unknown) => {
+    if (alive) console.warn('Conversation read failed:', reason);
+  };
   const publishHistory = (
     chunks: AgentHistoryChunk[],
     through: number,
@@ -1694,7 +1699,7 @@ export function Conversation(props: ConversationProps) {
           loadTurnWork(key);
       }
       if (subscription && page.after === null && latestKnown > page.through)
-        void follow().catch(report);
+        void follow().catch(readFailed);
       return true;
     })()
       .catch((reason) => {
@@ -1753,7 +1758,7 @@ export function Conversation(props: ConversationProps) {
       .catch((reason) => {
         if (workPages.get(key) !== state) return;
         workPages.delete(key);
-        report(reason);
+        readFailed(reason);
       })
       .finally(() => {
         state.task = undefined;
@@ -1858,7 +1863,7 @@ export function Conversation(props: ConversationProps) {
       .catch((reason) => {
         if (!alive || through < landmarks().through) return;
         if (landmarksReadingThrough === through) landmarksReadingThrough = -1;
-        report(reason);
+        readFailed(reason);
       });
   };
   const acceptReadState = (session: AgentSession, through = readState().through) => {
@@ -2025,7 +2030,7 @@ export function Conversation(props: ConversationProps) {
       .finally(() => {
         if (followTask !== task) return;
         followTask = null;
-        if (alive && followAgain) void follow().catch(report);
+        if (alive && followAgain) void follow().catch(readFailed);
       });
     followTask = task;
     return task;
@@ -2070,7 +2075,7 @@ export function Conversation(props: ConversationProps) {
             requestMetadata(
               rows().find((row) => row.position?.kind === 'live' && row.turnId === event.turnId),
             );
-            void observe().catch(report);
+            void observe().catch(readFailed);
             runThrough = event.sequence;
           }
           changed = true;
@@ -2081,7 +2086,7 @@ export function Conversation(props: ConversationProps) {
           changed = true;
           break;
         case 'step_ended':
-          void observe().catch(report);
+          void observe().catch(readFailed);
           changed = true;
           break;
         case 'ended':
@@ -2098,7 +2103,7 @@ export function Conversation(props: ConversationProps) {
             compacting.set(null);
             runTurn.set(null);
             stoppingRun.set(null);
-            void observe().catch(report);
+            void observe().catch(readFailed);
             runThrough = event.sequence;
           }
           changed = true;
@@ -2119,14 +2124,14 @@ export function Conversation(props: ConversationProps) {
           break;
         }
         case 'transcript_changed':
-          void observe().catch(report);
+          void observe().catch(readFailed);
           changed = true;
           break;
       }
     }
     publishOverlay();
     watchLast = Math.max(watchLast, page.nextAfter);
-    if (changed) void follow().catch(report);
+    if (changed) void follow().catch(readFailed);
   };
 
   const openTranscript = async () => {
@@ -2274,14 +2279,14 @@ export function Conversation(props: ConversationProps) {
             publishHistory(page.chunks, page.through, direction === 'before');
           });
           if (historyWindow()?.after === null && latestKnown > page.through)
-            void follow().catch(report);
+            void follow().catch(readFailed);
           return true;
         }
         position = { kind: direction, cursor: page[direction]! };
       }
     })()
       .catch((reason) => {
-        if (ownsWindow(owner.identity)) report(reason);
+        if (ownsWindow(owner.identity)) readFailed(reason);
         return false;
       })
       .finally(() => {
@@ -2311,7 +2316,7 @@ export function Conversation(props: ConversationProps) {
     nearEdge: nearHistoryStart,
     loadPage: loadOlder,
   });
-  const prefetchOlder = () => void olderHistory().catch(report);
+  const prefetchOlder = () => void olderHistory().catch(readFailed);
   const nearHistoryEnd = () =>
     historyMaxOffset - historyOffset <= readingSize().height * HISTORY_LOOKAHEAD_VIEWPORTS;
   const newerHistory = createHistoryPrefetch({
@@ -2319,7 +2324,7 @@ export function Conversation(props: ConversationProps) {
     nearEdge: nearHistoryEnd,
     loadPage: loadNewer,
   });
-  const prefetchNewer = () => void newerHistory().catch(report);
+  const prefetchNewer = () => void newerHistory().catch(readFailed);
   const cancelNavigation = (turnId = navigatingTurn()) => {
     if (!alive || turnId !== navigatingTurn()) return;
     navigation.set(null);
@@ -2743,7 +2748,7 @@ export function Conversation(props: ConversationProps) {
           batch(() => acceptExecution(result.execution));
         })
         .catch((reason) => {
-          if (alive && current) report(reason);
+          if (alive && current) readFailed(reason);
         });
     });
     return () => {
