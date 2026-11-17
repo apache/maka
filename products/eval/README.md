@@ -25,7 +25,7 @@
 
 ## Subcommands
 
-- **`maka-eval run`** ([`src/harbor.rs`](src/harbor.rs)) — Writes the embedded [`MakaHostAgent`](harbor/maka_host_agent.py) adapter and Harbor job config into `--out`, bind-mounts a Linux binary bundle (`maka`, `maka-python-worker`, `maka-eval`) read-only at `/opt/maka-agent`, invokes `harbor run`, emits `run-summary.json` (indexing `guest-result.json`, `transcript.json`, and Harbor's `result.json`), and validates trial evidence completeness.
+- **`maka-eval run`** ([`src/harbor.rs`](src/harbor.rs)) — Writes the embedded [`MakaHostAgent`](harbor/maka_host_agent.py) adapter and Harbor job config into `--out`, bind-mounts a Linux binary bundle (`maka`, `maka-python-worker`, `maka-eval`) read-only at `/opt/maka-agent`, invokes `harbor run`, settles whole-root Host usage and per-request `Quote` pricing into `run-summary.json` (`metering`: `complete` or `lower_bound`, `costUsd` / `meteringError`, plus paths to `guest-result.json`, `transcript.json`, and Harbor's `result.json`), and validates trial evidence completeness.
 - **`maka-eval guest-run`** ([`src/guest.rs`](src/guest.rs)) — Executed inside the trial container. Initializes a fresh State Root (`maka host init --settings-stdin`), starts `maka host serve --root`, drives the task directly over `HostClient` / `maka-app-client`, waits for terminal `agent.execution` state, reconciles token usage across the root session and any spawned subagents into `guest-result.json`, and exports the full transcript to `transcript.json`.
 
 ## Trial settlement

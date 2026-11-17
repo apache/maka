@@ -25,7 +25,7 @@
 
 ## 子命令
 
-- **`maka-eval run`**（[`src/harbor.rs`](src/harbor.rs)）— 将内嵌的 [`MakaHostAgent`](harbor/maka_host_agent.py) 适配器与任务配置写入 `--out`，把 Linux 原生二进制包（`maka`、`maka-python-worker`、`maka-eval`）只读挂载到容器 `/opt/maka-agent` 后拉起 `harbor run`，汇总生成 `run-summary.json`（索引 `guest-result.json`、`transcript.json` 与 Harbor `result.json`）并校验评测证据完整性。
+- **`maka-eval run`**（[`src/harbor.rs`](src/harbor.rs)）— 将内嵌的 [`MakaHostAgent`](harbor/maka_host_agent.py) 适配器与任务配置写入 `--out`，把 Linux 原生二进制包（`maka`、`maka-python-worker`、`maka-eval`）只读挂载到容器 `/opt/maka-agent` 后拉起 `harbor run`，结算整根 Host 用量与逐请求 `Quote` 计价写入 `run-summary.json`（含 `metering` 完整度 `complete` / `lower_bound`、`costUsd` 或 `meteringError`，以及 `guest-result.json`、`transcript.json` 与 Harbor `result.json` 路径索引），并校验评测证据完整性。
 - **`maka-eval guest-run`**（[`src/guest.rs`](src/guest.rs)）— 在评测容器内部执行：通过 `maka host init --settings-stdin` 初始化独立 State Root，拉起 `maka host serve --root`，直接经由 `HostClient` / `maka-app-client` 驱动会话跑完任务，在同一 `through` 水位线下汇总主会话及全部子会话的 Token 用量写入 `guest-result.json`，并导出完整对话记录到 `transcript.json`。
 
 ## 结果分类与生命周期

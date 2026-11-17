@@ -250,21 +250,25 @@ impl IsolatedEnv {
 impl Drop for IsolatedEnv {
     fn drop(&mut self) {
         let run_dirs = self.host_run_dirs();
-        if !run_dirs.is_empty()
-            && let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-        {
-            for run_dir in run_dirs {
-                if let Ok(disc) = discovery::read(&run_dir.join("root")) {
-                    let _ = rt.block_on(HostClient::retire_with_options(
-                        &disc.endpoint,
-                        disc.host_epoch,
-                        true,
-                        true,
-                    ));
+        if !run_dirs.is_empty() {
+            let _ = std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    for run_dir in run_dirs {
+                        if let Ok(disc) = discovery::read(&run_dir.join("root")) {
+                            let _ = rt.block_on(HostClient::retire_with_options(
+                                &disc.endpoint,
+                                disc.host_epoch,
+                                true,
+                                true,
+                            ));
+                        }
+                    }
                 }
-            }
+            })
+            .join();
         }
     }
 }
@@ -331,6 +335,7 @@ fn worktree_common_target_dir() -> Option<PathBuf> {
 enum MockMode {
     Retry429AndDelegateSubagent { workspace_path: String },
     MaxStepsSlowSecondTurn,
+    SingleTurnClean { cached_tokens: Option<u64> },
 }
 
 async fn start_mock_provider(mode: MockMode) -> String {
@@ -456,7 +461,7 @@ async fn handle_http(
                       workspace: {{ kind: "directory", path: {} }}
                     }});
                     const cid = created.session.id;
-                    await tools.SessionSend({{ sessionId: cid, message: "DELEGATED_CHILD_PROMPT" }});
+                    await tools.SessionSend({{ sessionId: cid, message: "DELEGATED_CHILD_PROMPT", onComplete: "none" }});
                     for (let i = 0; i < 100; i++) {{
                       const h = await tools.SessionRead({{ sessionId: cid, position: "start" }});
                       if (JSON.stringify(h).includes("CHILD_DONE_TOKEN")) break;
@@ -473,14 +478,15 @@ async fn handle_http(
                     &json!({ "code": code }),
                     100,
                     20,
+                    Some(20),
                 )
                 .await?;
             } else if msgs.contains("DELEGATED_CHILD_PROMPT")
                 && !msgs.contains("DELEGATION_COMPLETE:")
             {
-                write_sse_text(&mut stream, "CHILD_DONE_TOKEN", 500, 100).await?;
+                write_sse_text(&mut stream, "CHILD_DONE_TOKEN", 500, 100, Some(20)).await?;
             } else {
-                write_sse_text(&mut stream, "Parent task completed.", 150, 30).await?;
+                write_sse_text(&mut stream, "Parent task completed.", 150, 30, Some(20)).await?;
             }
         }
         MockMode::MaxStepsSlowSecondTurn => {
@@ -492,6 +498,7 @@ async fn handle_http(
                     &json!({ "code": "text('step-1-ok');" }),
                     80,
                     20,
+                    Some(20),
                 )
                 .await?;
             } else {
@@ -511,6 +518,9 @@ async fn handle_http(
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
+        MockMode::SingleTurnClean { cached_tokens } => {
+            write_sse_text(&mut stream, "Clean completion.", 100, 20, *cached_tokens).await?;
+        }
     }
     Ok(())
 }
@@ -522,6 +532,7 @@ async fn write_sse_tool_call(
     args: &Value,
     prompt_tokens: u64,
     completion_tokens: u64,
+    cached_tokens: Option<u64>,
 ) -> std::io::Result<()> {
     let delta = json!({
         "id": "c_tool",
@@ -547,6 +558,7 @@ async fn write_sse_tool_call(
         "tool_calls",
         prompt_tokens,
         completion_tokens,
+        cached_tokens,
     )
     .await
 }
@@ -556,6 +568,7 @@ async fn write_sse_text(
     content: &str,
     prompt_tokens: u64,
     completion_tokens: u64,
+    cached_tokens: Option<u64>,
 ) -> std::io::Result<()> {
     let delta = json!({
         "id": "c_txt",
@@ -573,6 +586,7 @@ async fn write_sse_text(
         "stop",
         prompt_tokens,
         completion_tokens,
+        cached_tokens,
     )
     .await
 }
@@ -584,16 +598,21 @@ async fn write_sse_final(
     finish_reason: &str,
     prompt_tokens: u64,
     completion_tokens: u64,
+    cached_tokens: Option<u64>,
 ) -> std::io::Result<()> {
+    let mut usage = json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    });
+    if let Some(cached) = cached_tokens {
+        usage["prompt_tokens_details"] = json!({ "cached_tokens": cached });
+    }
     let fin = json!({
         "id": id,
         "object": "chat.completion.chunk",
         "choices": [{ "index": 0, "delta": {}, "finish_reason": finish_reason }],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        }
+        "usage": usage,
     });
     stream
         .write_all(format!("data: {delta}\n\ndata: {fin}\n\ndata: [DONE]\n\n").as_bytes())
@@ -740,6 +759,74 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     assert_eq!(summary["reward"], 0.0);
     assert_eq!(summary["guest"]["status"], "completed");
     assert_eq!(summary["guest"]["usage"]["models"]["input"]["known"], 750);
+    assert!(
+        (summary["guest"]["usage"]["models"]["cost"]["knownUsd"]
+            .as_f64()
+            .unwrap()
+            - 0.0003555)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(summary["guest"]["metering"], "lower_bound");
+    assert_eq!(summary["guest"]["costUsd"], Value::Null);
+    assert!(summary["guest"].get("meteringError").is_none());
+
+    let clean_url = start_mock_provider(MockMode::SingleTurnClean {
+        cached_tokens: Some(20),
+    })
+    .await;
+    let (_, clean_res_path, clean_transcript_path) = env.run_guest_live(&clean_url, 2).await;
+    assert_eq!(env.retire_live_hosts().await, 1);
+
+    let (clean_out, clean_summary_path) = env.run_harbor(
+        Some(&clean_res_path),
+        Some(&clean_transcript_path),
+        &json!({ "verifier_result": { "rewards": { "reward": 1.0 } }, "exception_info": Value::Null }),
+        0,
+    );
+    assert!(
+        clean_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clean_out.stderr)
+    );
+    let clean_summary: Value =
+        serde_json::from_str(&std::fs::read_to_string(&clean_summary_path).unwrap()).unwrap();
+    assert_eq!(clean_summary["reward"], 1.0);
+    assert_eq!(clean_summary["guest"]["metering"], "complete");
+    assert!((clean_summary["guest"]["costUsd"].as_f64().unwrap() - 0.000045).abs() < 1e-12);
+
+    let no_cache_url = start_mock_provider(MockMode::SingleTurnClean {
+        cached_tokens: None,
+    })
+    .await;
+    let (_, no_cache_res_path, no_cache_transcript_path) =
+        env.run_guest_live(&no_cache_url, 2).await;
+    assert_eq!(env.retire_live_hosts().await, 1);
+
+    let (no_cache_out, no_cache_summary_path) = env.run_harbor(
+        Some(&no_cache_res_path),
+        Some(&no_cache_transcript_path),
+        &json!({ "verifier_result": { "rewards": { "reward": 1.0 } }, "exception_info": Value::Null }),
+        0,
+    );
+    assert!(
+        no_cache_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&no_cache_out.stderr)
+    );
+    let no_cache_summary: Value =
+        serde_json::from_str(&std::fs::read_to_string(&no_cache_summary_path).unwrap()).unwrap();
+    assert_eq!(no_cache_summary["reward"], 1.0);
+    assert_eq!(
+        no_cache_summary["guest"]["usage"]["models"]["cacheRead"]["missing"],
+        1
+    );
+    assert_eq!(
+        no_cache_summary["guest"]["usage"]["models"]["cost"]["unvalued"],
+        1
+    );
+    assert_eq!(no_cache_summary["guest"]["metering"], "lower_bound");
+    assert_eq!(no_cache_summary["guest"]["costUsd"], Value::Null);
 }
 
 #[tokio::test]
@@ -763,7 +850,7 @@ async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_vali
     assert!(env.host_run_dirs().is_empty());
     assert_eq!(env.retire_live_hosts().await, 0);
 
-    let (run_out, _) = env.run_harbor(
+    let (run_out, stopped_summary_path) = env.run_harbor(
         Some(&res_path),
         Some(&transcript_path),
         &json!({ "verifier_result": { "rewards": { "reward": 0.0 } }, "exception_info": Value::Null }),
@@ -774,6 +861,13 @@ async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_vali
         "{}",
         String::from_utf8_lossy(&run_out.stderr)
     );
+    let stopped_summary: Value =
+        serde_json::from_str(&std::fs::read_to_string(&stopped_summary_path).unwrap()).unwrap();
+    assert_eq!(stopped_summary["reward"], 0.0);
+    assert_eq!(stopped_summary["guest"]["status"], "subjectStopped");
+    assert_eq!(stopped_summary["guest"]["metering"], "lower_bound");
+    assert_eq!(stopped_summary["guest"]["costUsd"], Value::Null);
+    assert!(stopped_summary["guest"].get("meteringError").is_none());
 
     let mut missing_usage = guest_json;
     missing_usage["evidence"]["hostUsageAttempts"]["attempts"][0]["attempt"]["usage"]["output_tokens"] =
@@ -796,6 +890,18 @@ async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_vali
             .contains("incomplete token usage on successful model call(s)")
     );
     assert!(partial_summary.is_file());
+    let partial_summary_json: Value =
+        serde_json::from_str(&std::fs::read_to_string(&partial_summary).unwrap()).unwrap();
+    assert_eq!(partial_summary_json["reward"], 1.0);
+    assert_eq!(partial_summary_json["guest"]["status"], "subjectStopped");
+    assert!(partial_summary_json["guest"].get("metering").is_none());
+    assert!(partial_summary_json["guest"].get("costUsd").is_none());
+    assert!(
+        partial_summary_json["guest"]["meteringError"]
+            .as_str()
+            .unwrap()
+            .contains("incomplete token usage on successful model call(s)")
+    );
 }
 
 #[test]
@@ -829,6 +935,9 @@ fn run_command_persists_summary_and_surfaces_root_cause_on_infra_failure() {
     let summary: Value =
         serde_json::from_str(&std::fs::read_to_string(&summary_path).unwrap()).unwrap();
     assert_eq!(summary["guest"]["status"], "infraFailed");
+    assert!(summary["guest"].get("usage").is_none());
+    assert!(summary["guest"].get("metering").is_none());
+    assert!(summary["guest"].get("meteringError").is_none());
     assert_eq!(
         summary["exceptionInfo"]["exception_type"],
         json!("RuntimeError")
