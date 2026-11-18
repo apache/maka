@@ -2261,6 +2261,7 @@ pub fn contract() -> Contract {
                     "watchFiles".into(),
                     method::<FileWatch, FileChange>(MethodMode::Subscription),
                 ),
+                ("saveFile".into(), method::<SaveFile, SaveFileResult>(MethodMode::Mutation)),
                 (
                     "readFile".into(),
                     method::<FileRead, Option<FileReadPart>>(MethodMode::Subscription),

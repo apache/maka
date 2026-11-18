@@ -37225,6 +37225,74 @@ export const contracts: {
           },
           resources: {},
         },
+        saveFile: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFile',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              expectedVersion: {
+                type: 'string',
+              },
+              text: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'expectedVersion', 'text'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFileResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  version: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'version'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {},
+        },
         saveGitHubToken: {
           mode: 'mutation',
           input: {

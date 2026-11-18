@@ -3818,6 +3818,23 @@ export interface ServiceMethods {
         path: string;
       };
     };
+    saveFile: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        path: Runtime.WorkspacePath;
+        expectedVersion: string;
+        text: string;
+      };
+      output:
+        | {
+            kind: 'saved';
+            version: string;
+          }
+        | {
+            kind: 'conflict';
+          };
+    };
     saveGitHubToken: {
       mode: 'mutation';
       input: {

@@ -112,6 +112,7 @@ export function createResources(
   const fullscreen = signal(false);
   const openSections = signal<StageSectionTab[]>([]);
   const tabs = signal<ResourceTab[]>([]);
+  const parked = new Map<string, ResourceTab[]>();
   const active = signal<number | ResourceSection>('launchpad');
   const focusRequest = signal(false);
   const instance = signal(0);
@@ -176,8 +177,18 @@ export function createResources(
       imageViewer.set(null);
       fullscreen.set(false);
       openSections.set([]);
-      tabs().forEach(dispose);
-      tabs.set([]);
+      const drafts = tabs().filter(
+        (tab) => tab.kind === 'file' && (tab.model.dirty() || tab.model.saving()),
+      );
+      for (const tab of tabs()) {
+        if (tab.kind === 'file' && drafts.includes(tab)) {
+          tab.model.suspend();
+          tab.model.confirmClose(null);
+        } else dispose(tab);
+      }
+      if (session() && drafts.length) parked.set(session()!, drafts);
+      tabs.set(selected ? (parked.get(selected) ?? []) : []);
+      if (selected) parked.delete(selected);
       resetHistory();
       shown.set(false);
       active.set('launchpad');
@@ -195,6 +206,11 @@ export function createResources(
       if (pendingPreview && !sessions.includes(pendingPreview.sessionId)) pendingPreview = null;
       for (const id of headers.keys()) if (!sessions.includes(id)) headers.delete(id);
       for (const id of lastTerminal.keys()) if (!sessions.includes(id)) lastTerminal.delete(id);
+      for (const [id, drafts] of parked)
+        if (!sessions.includes(id)) {
+          drafts.forEach(dispose);
+          parked.delete(id);
+        }
       reviewStore.pruneSessions(sessions);
     });
   });
@@ -479,6 +495,11 @@ export function createResources(
     if (!admits(target.sessionId)) return;
     const tab = tabs().find((tab) => tab.instance === target.instance);
     if (!tab) return;
+    if (tab.kind === 'file' && (tab.model.dirty() || tab.model.saving())) {
+      active.set(tab.instance);
+      tab.model.confirmClose(() => closeTab(target));
+      return;
+    }
     if (imageViewer()?.tab === tab) imageViewer.set(null);
     dispose(tab);
     tabs.set(tabs().filter((candidate) => candidate !== tab));
@@ -949,6 +970,7 @@ export function createResources(
     alive = false;
     imageViewer.set(null);
     tabs().forEach(dispose);
+    for (const drafts of parked.values()) drafts.forEach(dispose);
   });
   return {
     shown,

@@ -52,6 +52,7 @@ use uuid::Uuid;
 pub type Result<T> = std::result::Result<T, String>;
 
 const CONTROL_METHODS: &[&str] = &[
+    "saveFile",
     "create",
     "predictNextMessage",
     "trustProjectMcp",

@@ -137,7 +137,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const tabDisplayTitle = (tab: ReturnType<typeof nonTerminalTabs>[number]): string => {
     if (tab.kind === 'pr' || tab.kind === 'image') return tab.title;
     if (tab.kind === 'diff') return basenameLabel(tab.model.target.title);
-    return basenameLabel(tab.title);
+    return basenameLabel(tab.title) + (tab.kind === 'file' && tab.model.dirty() ? ' •' : '');
   };
 
   const tabIcon = (

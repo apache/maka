@@ -48,10 +48,14 @@ import {
   type EditorSelection,
   Input,
   MenuItem,
+  Popover,
   TextView,
 } from 'nsh/base';
+import { MarkdownFileEditor } from 'maka/host';
+import { settingsValue } from './settingsOperations';
 import type { AgentFileChange } from '../../../../packages/plugin-sdk/src/index.js';
-import type { FileView, Host } from './host';
+import type { FileView, Host, Output } from './host';
+import { MermaidView } from './MermaidView';
 import { Icon } from './Icon';
 import { ImageViewerButton, type OpenImageViewer } from './ImageViewer';
 import { tr } from './locale';
@@ -66,6 +70,7 @@ import {
   createText,
   errorText,
   isObservationCancelled,
+  message,
   renderText,
   UiError,
   type UiText,
@@ -92,6 +97,8 @@ import type { WorkspaceFileAnchor, WorkspaceFileTarget } from './workspaceFileSt
 
 const MAX_EDITOR_TEXT_BYTES = 2 * 1024 * 1024;
 
+type TextFile = Extract<FileView, { kind: 'text' }>;
+type FileBuffer = { view: TextFile; version: string; original: string; text: string };
 type FileState =
   | FileView
   | { kind: 'idle' }
@@ -103,6 +110,16 @@ export type CurrentFileModel = {
   anchor(): WorkspaceFileAnchor | undefined;
   setAnchor(anchor?: WorkspaceFileAnchor): void;
   state(): FileState;
+  buffer(): FileBuffer | null;
+  dirty(): boolean;
+  saving(): boolean;
+  saveError(): string;
+  revision(): number;
+  edit(text: string): void;
+  save(): Promise<void>;
+  discard(): void;
+  closing(): boolean;
+  confirmClose(close: (() => void) | null): void;
   position: { x: number; y: number };
   stale(): boolean;
   activate(): void;
@@ -151,6 +168,15 @@ const close = async (resource: { stream: { close(): Promise<void> } | null } | n
 
 export function createCurrentFile(host: Host, target: WorkspaceFileTarget): CurrentFileModel {
   const state = signal<FileState>({ kind: 'idle' });
+  const buffer = signal<FileBuffer | null>(null);
+  const saving = signal(false);
+  const revision = signal(0);
+  const saveError = createText();
+  const closeRequest = signal<(() => void) | null>(null);
+  const dirty = () => {
+    const b = buffer();
+    return b !== null && b.original !== b.text;
+  };
   const stale = signal(false);
   const anchor = signal<WorkspaceFileAnchor | undefined>(target.anchor);
   let alive = true;
@@ -211,6 +237,19 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
           previous.version !== result.version
         )
           model.position = { x: 0, y: 0 };
+        const b = buffer();
+        if (!dirty() && !saving()) {
+          if (
+            result.kind !== 'text' ||
+            (b
+              ? result.version !== b.version
+              : previous?.kind !== 'text' || previous.version !== result.version)
+          )
+            revision.set(revision() + 1);
+          buffer.set(null);
+        } else if (b && !saving() && (result.kind !== 'text' || result.version !== b.version)) {
+          saveError.set(message('File changed on disk.'));
+        }
         stale.set(watch.changes !== changes || result.kind === 'changed');
         state.set(result);
       } finally {
@@ -297,6 +336,59 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
       anchor.set(next);
     },
     state,
+    buffer,
+    dirty,
+    saving,
+    saveError,
+    revision,
+    closing: () => closeRequest() !== null,
+    confirmClose: (close) => closeRequest.set(close),
+    edit(text) {
+      let b = buffer();
+      if (!b) {
+        const view = captured(state());
+        if (view?.kind !== 'text') return;
+        const original = view.rows.originalText();
+        if (text === original) return;
+        b = { view, version: view.version, original, text: original };
+      }
+      buffer.set({ ...b, text });
+    },
+    async save() {
+      const b = buffer();
+      if (!b || !dirty() || saving()) return;
+      saving.set(true);
+      saveError.set('');
+      try {
+        const { reply } = await host.control('saveFile', {
+          sessionId: target.sessionId,
+          path: target.path,
+          expectedVersion: b.version,
+          text: b.text,
+        });
+        const result = settingsValue(reply) as Output<'agent', 'saveFile'>;
+        if (result.kind === 'conflict') {
+          saveError.set(message('File changed on disk.'));
+          return;
+        }
+        buffer.set({ ...b, version: result.version, original: b.text, text: buffer()!.text });
+        saving.set(false);
+        if (!dirty() && closeRequest()) closeRequest()!();
+        else model.refresh();
+      } catch (reason) {
+        saveError.set(errorText(reason, 'Could not save the file.'));
+      } finally {
+        saving.set(false);
+      }
+    },
+    discard() {
+      if (saving()) return;
+      buffer.set(null);
+      saveError.set('');
+      revision.set(revision() + 1);
+      if (closeRequest()) closeRequest()!();
+      else model.refresh();
+    },
     stale,
     position: { x: 0, y: 0 },
     activate() {
@@ -324,7 +416,7 @@ export function CurrentFile(props: {
   navigation?: FileCodeNavigation;
 }) {
   const model = props.model;
-  const view = () => captured(model.state());
+  const view = () => model.buffer()?.view ?? captured(model.state());
   const textCapture = computed(
     () => {
       const value = view();
@@ -352,7 +444,7 @@ export function CurrentFile(props: {
       copying.set(true);
       copyReceipt.set(null);
       try {
-        await Clipboard.writeText(original.rows.originalText());
+        await Clipboard.writeText(model.buffer()?.text ?? original.rows.originalText());
         if (owns())
           copyReceipt.set({
             version: original.version,
@@ -386,7 +478,7 @@ export function CurrentFile(props: {
   };
   const readable = () => {
     const value = view();
-    return value?.kind === 'image' || (value?.kind === 'text' && value.bytes > 0);
+    return value?.kind === 'image' || value?.kind === 'text';
   };
   const emptyHeight = signal(0);
   const error = () => {
@@ -397,8 +489,6 @@ export function CurrentFile(props: {
   const notice = () => {
     const value = view();
     switch (value?.kind) {
-      case 'text':
-        return value.bytes === 0 ? tr('Empty file.') : '';
       case 'absent':
         return tr('This file no longer exists.');
       case 'changed':
@@ -425,41 +515,12 @@ export function CurrentFile(props: {
   const emptyMessage = () => {
     if (failed()) return error();
     if (model.state().kind === 'loading') return tr('Reading current file…');
-    if (model.state().kind === 'idle') return tr('File preview is inactive.');
     return notice();
   };
 
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 6 }}>
       <If when={!readable()}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Icon name="file" size={14} color={C.muted} />
-          <Text
-            style={[
-              { ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' },
-              { numberOfLines: 1 },
-            ]}
-          >
-            {model.target.title}
-          </Text>
-          <Button
-            disabled={model.state().kind === 'loading'}
-            accessibilityLabel={tr('Refresh current file')}
-            onPress={inputAction(model.refresh, null)}
-            style={{
-              ...controlStyle,
-              width: 28,
-              minHeight: 28,
-              paddingHorizontal: 6,
-              alignItems: 'center',
-            }}
-            hoverStyle={quietHoverStyle()}
-            focusStyle={quietFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Icon name="refresh" size={14} color={C.secondary} />
-          </Button>
-        </View>
         <Scroll
           accessibilityLabel={tr('File preview status')}
           onLayout={({ bounds: frame }) => emptyHeight.set(frame.size.height)}
@@ -503,13 +564,6 @@ export function CurrentFile(props: {
             >
               {emptyMessage()}
             </Text>
-            <If when={model.stale()}>
-              <Text
-                style={{ ...bodyTextStyle, width: '100%', color: C.warning, textAlign: 'center' }}
-              >
-                {tr('The workspace may have changed. Refresh for current contents.')}
-              </Text>
-            </If>
             <If when={(failed() || view()?.kind === 'changed') && model.state().kind !== 'loading'}>
               <RetryCurrentFile model={model} />
             </If>
@@ -532,7 +586,6 @@ export function CurrentFile(props: {
                   view={() => value() as Extract<FileView, { kind: 'text' }>}
                   copyAction={copyAction}
                   copied={copied}
-                  copying={copying}
                   navigation={props.navigation}
                 />
               );
@@ -572,15 +625,77 @@ type FileDraftNote = {
   initialComment?: string;
 };
 
+// NSH's code editor returns LF. Keep the separators of existing lines, including mixed-EOL files.
+function sourceLineEndings(previous: string, edited: string): string {
+  if (!previous.includes('\r')) return edited;
+  const endings = previous.match(/\r\n|[\r\n]/g)!;
+  const before = previous.split(/\r\n|[\r\n]/);
+  const after = edited.split('\n');
+  let tail = 0;
+  while (
+    tail < Math.min(before.length, after.length) &&
+    before[before.length - 1 - tail] === after[after.length - 1 - tail]
+  )
+    tail++;
+  const delta = after.length - before.length;
+  const changedEnd = after.length - tail;
+  return after
+    .map((line, i) => {
+      if (i === after.length - 1) return line;
+      const old = i >= changedEnd - 1 ? i - delta : i;
+      return line + (endings[old] ?? endings[Math.max(0, changedEnd - delta - 1)] ?? endings[0]);
+    })
+    .join('');
+}
+
+function FileAction(props: {
+  label: string;
+  icon?: Parameters<typeof Icon>[0]['name'];
+  iconInMenu?: Parameters<typeof Icon>[0]['name'];
+  disabled?: boolean;
+  onPress(): void;
+}) {
+  return (
+    <Button
+      accessibilityLabel={props.label}
+      tooltip={props.icon ? textTooltip(() => props.label) : undefined}
+      onPress={props.onPress}
+      disabled={props.disabled}
+      style={
+        props.iconInMenu
+          ? { ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }
+          : {
+              ...controlStyle,
+              minHeight: 28,
+              paddingHorizontal: 7,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }
+      }
+      hoverStyle={controlHoverStyle()}
+      focusStyle={controlFocusStyle()}
+    >
+      <If when={props.icon || props.iconInMenu}>
+        <Icon name={(props.icon ?? props.iconInMenu)!} size={14} color={C.secondary} />
+      </If>
+      <If when={!props.icon}>
+        <Text style={{ ...captionTextStyle, color: C.text }}>{props.label}</Text>
+      </If>
+    </Button>
+  );
+}
+
 function SourceEditorView(props: {
   model: CurrentFileModel;
   view: () => Extract<FileView, { kind: 'text' }>;
   copyAction: () => (() => void) | undefined;
   copied: () => { failed: boolean; message: UiText } | null;
-  copying: () => boolean;
   navigation?: FileCodeNavigation;
 }) {
   const model = props.model;
+  const fileMenu = signal(false);
+  const markdown = /\.(?:md|markdown|mdown|mkd)$/i.test(model.target.title);
+  const formatted = signal(markdown && !model.anchor());
   const softWrap = signal(false);
   const finding = signal(false);
   const findQuery = signal('');
@@ -608,7 +723,8 @@ function SourceEditorView(props: {
     clearTimeout(hoverTimer);
   });
 
-  const fullText = computed(() => props.view().rows.originalText());
+  const originalText = computed(() => props.view().rows.originalText());
+  const fullText = () => model.buffer()?.text ?? originalText();
 
   const primaryPosition = (): EditorPosition => {
     const primary = selections().at(-1);
@@ -678,6 +794,7 @@ function SourceEditorView(props: {
     const _ver = props.view().version;
     void _ver;
     if (currentAnchor) {
+      formatted.set(false);
       setTimeout(() => applyAnchor(currentAnchor), 0);
     }
   });
@@ -693,6 +810,7 @@ function SourceEditorView(props: {
   };
 
   const openFind = async () => {
+    formatted.set(false);
     const raw = editorRef ? await editorRef.selectedText() : '';
     const selected = raw.trim();
     if (selected && !selected.includes('\n')) findQuery.set(selected);
@@ -718,7 +836,8 @@ function SourceEditorView(props: {
     unbindKeys = [];
     if (!node) return;
     unbindKeys.push(
-      keymap.bind('mod+f', () => void openFind(), { within: node }),
+      keymap.bind('mod+s', () => void model.save(), { within: node, when: 'always' }),
+      keymap.bind('mod+f', () => void openFind(), { within: node, when: 'always' }),
       keymap.bind(
         'shift+f12',
         () => {
@@ -747,196 +866,98 @@ function SourceEditorView(props: {
   return (
     <View ref={bindShortcuts} style={{ flex: 1, minHeight: 0, gap: 6 }}>
       <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 6,
-          flexWrap: 'wrap',
-          flexShrink: 0,
-        }}
+        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 2 }}
       >
-        <Icon name="file" size={14} color={C.muted} />
-        <Text
-          tooltip={textTooltip(() => model.target.title)}
-          style={[
-            { ...captionTextStyle, flex: 1, minWidth: 80, color: C.text, fontWeight: '500' },
-            { numberOfLines: 1 },
-          ]}
-        >
-          {model.target.title}
-        </Text>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {primaryPosition().line + 1}:{primaryPosition().column + 1}
-        </Text>
-      </View>
-
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 4,
-          flexWrap: 'wrap',
-          flexShrink: 0,
-        }}
-      >
-        <If when={props.navigation !== undefined}>
-          <Button
-            accessibilityLabel={tr('Go to definition')}
-            tooltip={textTooltip(() => `${tr('Go to definition')} · F12`)}
-            onPress={() => void props.navigation!.goToDefinition(primaryPosition())}
-            style={{
-              ...controlStyle,
-              minHeight: 28,
-              height: 28,
-              paddingHorizontal: 8,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              backgroundColor: C.card,
-            }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Icon name="arrow" size={13} color={C.accent} />
-            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Definition')}</Text>
-          </Button>
-          <Button
-            accessibilityLabel={tr('Find references')}
-            tooltip={textTooltip(() => `${tr('Find references')} · Shift+F12`)}
-            onPress={() => void props.navigation!.findReferences(primaryPosition())}
-            style={{
-              ...controlStyle,
-              minHeight: 28,
-              height: 28,
-              paddingHorizontal: 8,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              backgroundColor: C.card,
-            }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Icon name="symbol" size={13} color={C.secondary} />
-            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('References')}</Text>
-          </Button>
-          <Button
-            accessibilityLabel={tr('Add review note')}
-            tooltip={textTooltip(() => tr('Add review note'))}
-            onPress={() => startCommentSelection()}
-            style={{
-              ...controlStyle,
-              minHeight: 28,
-              height: 28,
-              paddingHorizontal: 8,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              backgroundColor: C.card,
-            }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Icon name="plus" size={13} color={C.accent} />
-            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Comment')}</Text>
-          </Button>
+        <If when={model.dirty() || model.saving()}>
+          <FileAction
+            label={tr('Save')}
+            disabled={model.saving()}
+            onPress={() => void model.save()}
+          />
         </If>
-
-        <View style={{ flex: 1 }} />
-
-        <Button
-          accessibilityLabel={tr('Find in file')}
-          tooltip={textTooltip(() => tr('Find in file'))}
-          selected={finding()}
+        <If when={markdown}>
+          <FileAction
+            icon={formatted() ? 'code' : 'markdown'}
+            label={formatted() ? tr('Show Markdown source') : tr('Show formatted Markdown')}
+            onPress={() => formatted.set(!formatted())}
+          />
+        </If>
+        <FileAction
+          icon="search"
+          label={tr('Find in file')}
           onPress={() => (finding() ? closeFind() : void openFind())}
-          style={{
-            ...controlStyle,
-            width: 28,
-            minHeight: 28,
-            paddingHorizontal: 6,
-            alignItems: 'center',
-            backgroundColor: finding() ? C.cardRaised : 'transparent',
-          }}
-          hoverStyle={quietHoverStyle()}
-          focusStyle={quietFocusStyle()}
+        />
+        <Popover
+          placement="bottom"
+          align="end"
+          offset={4}
+          margin={8}
+          open={fileMenu()}
+          onOpenChange={({ open }) => fileMenu.set(open)}
+          popupStyle={{ ...floatingStyle(), minWidth: 166 }}
+          trigger={
+            <Button
+              accessibilityLabel={tr('File actions')}
+              tooltip={textTooltip(() => tr('File actions'))}
+              style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center' }}
+              hoverStyle={quietHoverStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Icon name="more" size={15} color={C.secondary} />
+            </Button>
+          }
         >
-          <Icon name="search" size={14} color={finding() ? C.text : C.secondary} />
-        </Button>
-
-        <Button
-          accessibilityLabel={tr('Wrap lines')}
-          tooltip={textTooltip(() => tr('Wrap lines'))}
-          selected={softWrap()}
-          onPress={() => softWrap.set(!softWrap())}
-          style={{
-            ...controlStyle,
-            width: 28,
-            minHeight: 28,
-            paddingHorizontal: 6,
-            alignItems: 'center',
-            backgroundColor: softWrap() ? C.cardRaised : 'transparent',
-          }}
-          hoverStyle={quietHoverStyle()}
-          focusStyle={quietFocusStyle()}
-        >
-          <Icon
-            name={softWrap() ? 'wrap' : 'nowrap'}
-            size={14}
-            color={softWrap() ? C.text : C.secondary}
-          />
-        </Button>
-
-        <Button
-          accessibilityLabel={tr('Copy captured file')}
-          onPress={props.copyAction()}
-          tooltip={textTooltip(() =>
-            props.copying()
-              ? tr('Copying captured file…')
-              : props.copied()
-                ? props.copied()!.failed
-                  ? renderText(props.copied()!.message)
-                  : tr('File copied')
-                : tr('Copy captured file'),
-          )}
-          style={{
-            ...controlStyle,
-            width: 28,
-            minHeight: 28,
-            paddingHorizontal: 6,
-            alignItems: 'center',
-          }}
-          hoverStyle={quietHoverStyle()}
-          focusStyle={quietFocusStyle()}
-        >
-          <Icon
-            name={props.copied() && !props.copied()!.failed ? 'check' : 'copy'}
-            size={14}
-            color={props.copied()?.failed ? C.danger : C.secondary}
-          />
-        </Button>
-
-        <Button
-          disabled={model.state().kind === 'loading'}
-          accessibilityLabel={tr('Refresh current file')}
-          onPress={inputAction(model.refresh, null)}
-          tooltip={textTooltip(() =>
-            model.state().kind === 'error' ? tr('Retry current file') : tr('Refresh current file'),
-          )}
-          style={{
-            ...controlStyle,
-            width: 28,
-            minHeight: 28,
-            paddingHorizontal: 6,
-            alignItems: 'center',
-          }}
-          hoverStyle={quietHoverStyle()}
-          focusStyle={quietFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Icon name="refresh" size={14} color={C.secondary} />
-        </Button>
+          <View style={{ gap: 2 }}>
+            <If when={!formatted()}>
+              <FileAction
+                iconInMenu={softWrap() ? 'check' : 'wrap'}
+                label={tr('Wrap lines')}
+                onPress={() => {
+                  fileMenu.set(false);
+                  softWrap.set(!softWrap());
+                }}
+              />
+            </If>
+            <FileAction
+              iconInMenu="copy"
+              label={tr('Copy file contents')}
+              onPress={() => {
+                fileMenu.set(false);
+                props.copyAction()?.();
+              }}
+            />
+            <FileAction
+              iconInMenu="refresh"
+              label={tr('Refresh current file')}
+              onPress={() => {
+                fileMenu.set(false);
+                model.refresh();
+              }}
+            />
+          </View>
+        </Popover>
       </View>
 
+      <If when={props.copied()?.failed}>
+        <Text style={{ ...captionTextStyle, color: C.warning }}>
+          {renderText(props.copied()!.message)}
+        </Text>
+      </If>
+      <If when={!!model.saveError() || model.closing()}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Text style={{ ...captionTextStyle, color: C.warning }}>
+            {model.saveError() || tr('Save changes before closing?')}
+          </Text>
+          <FileAction
+            label={tr('Discard edits')}
+            disabled={model.saving()}
+            onPress={model.discard}
+          />
+          <If when={model.closing()}>
+            <FileAction label={tr('Keep editing')} onPress={() => model.confirmClose(null)} />
+          </If>
+        </View>
+      </If>
       <If when={statusNotice().length > 0}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>{statusNotice()}</Text>
       </If>
@@ -1062,7 +1083,9 @@ function SourceEditorView(props: {
         </View>
       </If>
 
-      <CapturedFileStatus model={model} />
+      <If when={model.state().kind === 'error'}>
+        <CapturedFileStatus model={model} />
+      </If>
 
       <If when={draftNote() !== null && props.navigation !== undefined}>
         <InlineReviewComposer
@@ -1125,145 +1148,168 @@ function SourceEditorView(props: {
         </Scroll>
       </If>
 
-      <ContextMenu
-        offset={4}
-        margin={8}
-        style={{ flex: 1, minHeight: 0 }}
-        popupStyle={{ ...floatingStyle(), minWidth: 188 }}
-        trigger={
-          <View
-            style={{
-              flex: 1,
-              minHeight: 0,
-              borderRadius: 8,
-              overflow: 'hidden',
-              backgroundColor: C.card,
+      <Each of={formatted() ? [model.revision()] : []} key={(revision) => revision}>
+        {() => (
+          <MarkdownFileEditor
+            renderDiagram={(source) => <MermaidView editable source={() => source} />}
+            initialValue={fullText()}
+            linkColor={C.accent}
+            accessibilityLabel={tr('Markdown document')}
+            styles={{
+              root: { ...bodyTextStyle, color: C.text },
+              content: { padding: 12 },
+              caret: { backgroundColor: C.text },
+              nodes: { paragraph: bodyTextStyle },
             }}
-          >
-            <Editor
-              ref={(node) => {
-                editorRef = node;
-                if (node && model.anchor()) applyAnchor(model.anchor());
+            style={{ flex: 1, minHeight: 0 }}
+            onChange={({ value }) => model.edit(value)}
+            onSave={() => void model.save()}
+            onFind={() => void openFind()}
+          />
+        )}
+      </Each>
+      <If when={!formatted()}>
+        <ContextMenu
+          offset={4}
+          margin={8}
+          style={{ flex: 1, minHeight: 0 }}
+          popupStyle={{ ...floatingStyle(), minWidth: 188 }}
+          trigger={
+            <View
+              style={{
+                flex: 1,
+                minHeight: 0,
+                borderRadius: 8,
+                overflow: 'hidden',
+                backgroundColor: C.card,
               }}
-              value={fullText()}
-              readOnly
-              language={model.target.title}
-              lineNumbers
-              folding
-              softWrap={softWrap()}
-              scrollBeyondLastLine={false}
-              fontSize={codeTextStyle.fontSize}
-              lineHeight={codeTextStyle.lineHeight}
-              decorations={decorations()}
-              search={{
-                query: finding() ? findQuery() : '',
-                caseSensitive: caseSensitive(),
-                wholeWord: wholeWord(),
-              }}
-              accessibilityLabel={tr('Captured file text')}
-              onSelectionChange={({ selections: next }) => selections.set(next)}
-              onSearchChange={({ result }) => searchResult.set(result)}
-              onFindWithSelection={({ query }) => {
-                findQuery.set(query);
-                finding.set(true);
-              }}
-              onLineNumberPress={({ line }) => {
-                if (props.navigation) startCommentSelection({ startLine: line, endLine: line });
-              }}
-              onDefinitionRequest={async (event) => {
-                if (!props.navigation) return;
-                if (event.trigger === 'hover') {
-                  const res = await props.navigation.checkDefinition(event.position);
-                  if (res && res.locations.length > 0) {
-                    editorRef?.presentDefinitionLink(event.id, res.originRange ?? event.range);
+            >
+              <Editor
+                ref={(node) => {
+                  editorRef = node;
+                  if (node && model.anchor()) applyAnchor(model.anchor());
+                }}
+                value={fullText().replace(/\r\n?/g, '\n')}
+                onChange={({ value }) => model.edit(sourceLineEndings(fullText(), value))}
+                language={model.target.title}
+                lineNumbers
+                folding
+                softWrap={softWrap()}
+                scrollBeyondLastLine={false}
+                fontSize={codeTextStyle.fontSize}
+                lineHeight={codeTextStyle.lineHeight}
+                decorations={decorations()}
+                search={{
+                  query: finding() ? findQuery() : '',
+                  caseSensitive: caseSensitive(),
+                  wholeWord: wholeWord(),
+                }}
+                accessibilityLabel={tr('Captured file text')}
+                onSelectionChange={({ selections: next }) => selections.set(next)}
+                onSearchChange={({ result }) => searchResult.set(result)}
+                onFindWithSelection={({ query }) => {
+                  findQuery.set(query);
+                  finding.set(true);
+                }}
+                onLineNumberPress={({ line }) => {
+                  if (props.navigation && !model.dirty())
+                    startCommentSelection({ startLine: line, endLine: line });
+                }}
+                onDefinitionRequest={async (event) => {
+                  if (!props.navigation || model.dirty()) return;
+                  if (event.trigger === 'hover') {
+                    const res = await props.navigation.checkDefinition(event.position);
+                    if (res && res.locations.length > 0) {
+                      editorRef?.presentDefinitionLink(event.id, res.originRange ?? event.range);
+                    }
+                  } else {
+                    hoverCard.set(null);
+                    await props.navigation.goToDefinition(event.position);
                   }
-                } else {
-                  hoverCard.set(null);
-                  await props.navigation.goToDefinition(event.position);
-                }
-              }}
-              onHover={async (event) => {
-                if (!props.navigation || platform.idiom === 'terminal') return;
-                clearTimeout(hoverTimer);
-                const seq = ++hoverSeq;
-                const info = await props.navigation.hover(event.position);
-                if (seq !== hoverSeq) return;
-                if (!info) {
-                  hoverCard.set(null);
-                  return;
-                }
-                hoverCard.set({
-                  anchor: event.pageBounds,
-                  position: event.position,
-                  symbol: info.symbol,
-                  backendLabel:
-                    info.backend.kind === 'lsp' ? info.backend.server : tr('Indexed fallback'),
-                  markdown: info.markdown,
-                });
-              }}
-              onHoverEnd={() => {
-                hoverSeq += 1;
-                scheduleCloseHover();
-              }}
-              style={{ flex: 1, minHeight: 0 }}
-            />
-          </View>
-        }
-      >
-        <If when={props.navigation !== undefined}>
-          <MenuItem
-            onSelect={() => void props.navigation!.goToDefinition(primaryPosition())}
-            style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={menuRowHoverStyle()}
-            focusStyle={menuRowHoverStyle()}
-          >
-            <Icon name="arrow" size={14} color={C.accent} />
-            <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
-              {tr('Go to definition')}
-            </Text>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>F12</Text>
-          </MenuItem>
-          <MenuItem
-            onSelect={() => void props.navigation!.findReferences(primaryPosition())}
-            style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={menuRowHoverStyle()}
-            focusStyle={menuRowHoverStyle()}
-          >
-            <Icon name="symbol" size={14} color={C.secondary} />
-            <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
-              {tr('Find references')}
-            </Text>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>⇧F12</Text>
-          </MenuItem>
-          <MenuItem
-            onSelect={() => startCommentSelection()}
-            style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={menuRowHoverStyle()}
-            focusStyle={menuRowHoverStyle()}
-          >
-            <Icon name="plus" size={14} color={C.accent} />
-            <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
-              {tr('Add review note')}
-            </Text>
-          </MenuItem>
-        </If>
-        <MenuItem
-          onSelect={() => {
-            void (async () => {
-              const selected = editorRef ? await editorRef.selectedText() : '';
-              await Clipboard.writeText(selected || fullText());
-            })();
-          }}
-          style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          hoverStyle={menuRowHoverStyle()}
-          focusStyle={menuRowHoverStyle()}
+                }}
+                onHover={async (event) => {
+                  if (!props.navigation || platform.idiom === 'terminal') return;
+                  clearTimeout(hoverTimer);
+                  const seq = ++hoverSeq;
+                  const info = await props.navigation.hover(event.position);
+                  if (seq !== hoverSeq) return;
+                  if (!info) {
+                    hoverCard.set(null);
+                    return;
+                  }
+                  hoverCard.set({
+                    anchor: event.pageBounds,
+                    position: event.position,
+                    symbol: info.symbol,
+                    backendLabel:
+                      info.backend.kind === 'lsp' ? info.backend.server : tr('Indexed fallback'),
+                    markdown: info.markdown,
+                  });
+                }}
+                onHoverEnd={() => {
+                  hoverSeq += 1;
+                  scheduleCloseHover();
+                }}
+                style={{ flex: 1, minHeight: 0 }}
+              />
+            </View>
+          }
         >
-          <Icon name="copy" size={14} color={C.secondary} />
-          <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
-            {tr('Copy captured file')}
-          </Text>
-        </MenuItem>
-      </ContextMenu>
+          <If when={props.navigation !== undefined && !model.dirty()}>
+            <MenuItem
+              onSelect={() => void props.navigation!.goToDefinition(primaryPosition())}
+              style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
+              hoverStyle={menuRowHoverStyle()}
+              focusStyle={menuRowHoverStyle()}
+            >
+              <Icon name="arrow" size={14} color={C.accent} />
+              <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
+                {tr('Go to definition')}
+              </Text>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>F12</Text>
+            </MenuItem>
+            <MenuItem
+              onSelect={() => void props.navigation!.findReferences(primaryPosition())}
+              style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
+              hoverStyle={menuRowHoverStyle()}
+              focusStyle={menuRowHoverStyle()}
+            >
+              <Icon name="symbol" size={14} color={C.secondary} />
+              <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
+                {tr('Find references')}
+              </Text>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>⇧F12</Text>
+            </MenuItem>
+            <MenuItem
+              onSelect={() => startCommentSelection()}
+              style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
+              hoverStyle={menuRowHoverStyle()}
+              focusStyle={menuRowHoverStyle()}
+            >
+              <Icon name="plus" size={14} color={C.accent} />
+              <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
+                {tr('Add review note')}
+              </Text>
+            </MenuItem>
+          </If>
+          <MenuItem
+            onSelect={() => {
+              void (async () => {
+                const selected = editorRef ? await editorRef.selectedText() : '';
+                await Clipboard.writeText(selected || fullText());
+              })();
+            }}
+            style={{ ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            hoverStyle={menuRowHoverStyle()}
+            focusStyle={menuRowHoverStyle()}
+          >
+            <Icon name="copy" size={14} color={C.secondary} />
+            <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
+              {tr('Copy captured file')}
+            </Text>
+          </MenuItem>
+        </ContextMenu>
+      </If>
 
       <If when={hoverCard() !== null && props.navigation !== undefined}>
         <Overlay
@@ -1379,7 +1425,7 @@ function CapturedFileStatus(props: { model: CurrentFileModel; selectable?: boole
   return (
     <If when={model.stale() || model.state().kind === 'loading' || model.state().kind === 'error'}>
       <View style={{ padding: 6, gap: 6, alignItems: 'flex-start' }}>
-        <If when={model.stale()}>
+        <If when={model.stale() && model.state().kind !== 'error'}>
           <Text style={[{ ...captionTextStyle, color: C.warning }, { userSelect: 'none' }]}>
             {tr('The workspace may have changed. Refresh for current contents.')}
           </Text>

@@ -114,3 +114,21 @@ pub enum FileReadPart {
         file_kind: FileKind,
     },
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSaveFile")]
+pub struct SaveFile {
+    pub session_id: String,
+    pub path: WorkspacePath,
+    pub expected_version: String,
+    pub text: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentSaveFileResult")]
+pub enum SaveFileResult {
+    Saved { version: String },
+    Conflict,
+}
