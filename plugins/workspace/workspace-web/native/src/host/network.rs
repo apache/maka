@@ -44,6 +44,15 @@ impl Failure {
                 .get_or_insert_with(|| error.clone());
         }
     }
+    /// Every request this plugin sends (fetch, search, probe, key check) is a
+    /// query that changes nothing remote. Losing its response (an error page
+    /// closed unread, a timeout, a dropped connection) leaves no effect to
+    /// reconcile, so the call fails like any other Web error.
+    fn observe_http(&self, error: &ToolError) {
+        if !matches!(error, ToolError::OutcomeUnknown(_)) {
+            self.observe(error);
+        }
+    }
     pub(super) fn is_uncertain(&self) -> bool {
         self.0.lock().expect("Web call failure").is_some()
     }
@@ -345,7 +354,7 @@ impl Authority for Access {
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
             let result = effect.await;
             if let Err(error) = &result {
-                owner.failure.observe(error);
+                owner.failure.observe_http(error);
             }
             if matches!(
                 result,
@@ -468,7 +477,7 @@ impl Authority for CredentialCheck {
             // The shared worker owns socket settlement, even after observer loss.
             let result = effect.await;
             if let Err(error) = &result {
-                authority.failure.observe(error);
+                authority.failure.observe_http(error);
             }
             result
         })
