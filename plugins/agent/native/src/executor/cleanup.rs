@@ -342,7 +342,7 @@ impl ExternalCleanupSource for NativeSource {
                                         "A bound native task contradicts never-launched evidence",
                                     ));
                                 }
-                                CleanupEvidence::GroupClosed { receipt, .. } => {
+                                CleanupEvidence::TaskClosed { receipt, .. } => {
                                     if matches!(
                                         receipt,
                                         isolated::TaskReceipt::Task {

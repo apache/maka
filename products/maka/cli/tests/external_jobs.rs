@@ -273,6 +273,20 @@ struct Transcript {
     input: Vec<Value>,
     output: Vec<Value>,
 }
+impl Transcript {
+    fn task_prompt_id(&self) -> &Value {
+        &self
+            .input
+            .iter()
+            .find(|frame| {
+                frame["method"] == "session/prompt"
+                    && frame["params"]["prompt"][0]["text"]
+                        .as_str()
+                        .is_some_and(|t| t.contains("MAKA_EXTERNAL_CASE "))
+            })
+            .expect("original task prompt")["id"]
+    }
+}
 async fn sealed(descriptor: Descriptor) -> Result<Transcript> {
     let mut watch = EvidenceWatch::open(&descriptor, EvidenceInterest::Cleanup)
         .await
@@ -523,8 +537,40 @@ impl Rig {
         }
         Ok(committed)
     }
+    fn resource(&self, pid: u64) -> Result<Descriptor> {
+        let events = self.controller.events();
+        if !events
+            .iter()
+            .any(|e| e["kind"] == "hello" && e["pid"] == pid && e["acp"] == true)
+        {
+            return self.controller.resource(pid);
+        }
+        let ready = events
+            .iter()
+            .find(|e| e["kind"] == "ready" && e["pid"] == pid)
+            .ok_or("missing ACP worker ready")?;
+        let db = rusqlite::Connection::open_with_flags(
+            self.sandbox.root.join("runtime-rust.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| e.to_string())?;
+        let label = format!("\"label\":\"{}\"", ready["job"].as_str().unwrap());
+        let path: String = db.query_row(
+            "SELECT json_extract(CAST(c.payload AS TEXT), '$.payload.privateResource.resourceRef')
+               FROM agent_runs r JOIN contents c
+                 ON c.content_sha256 = json_extract(r.external, '$.binding.digest')
+              WHERE json_extract(CAST(c.payload AS TEXT), '$.payload.recovery.binding.task.session') = ?1
+                AND instr(json_extract(CAST(c.payload AS TEXT), '$.payload.request.content.text'), ?2) > 0
+              ORDER BY r.rowid DESC LIMIT 1",
+            rusqlite::params![ready["thread"].as_str(), label],
+            |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        Ok(Descriptor {
+            resource_ref: path.into(),
+        })
+    }
     async fn transcript(&mut self, pid: u64) -> Result<Transcript> {
-        let descriptor = self.controller.resource(pid)?;
+        let descriptor = self.resource(pid)?;
         self.evidence.push(tokio::spawn(sealed(descriptor)));
         let result = self.evidence.last_mut().unwrap().await;
         self.evidence.pop();
@@ -1207,6 +1253,93 @@ async fn exact_stop_isolates_parallel_original_external_jobs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_keeps_the_peer_alive_while_a_worker_fails_to_close() {
+    let mut rig = Rig::new().await.expect("isolated ACP Host");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = rig.start().await?;
+        rig.configure(&mut anchor, &bootstrap, "antigravity")
+            .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let (a, run_a) = phase(
+            "launch A",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-stuck-close",
+                "A",
+                true,
+                "antigravity",
+            ),
+        )
+        .await?;
+        let (b, run_b) = phase(
+            "launch B",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-peer",
+                "B",
+                true,
+                "antigravity",
+            ),
+        )
+        .await?;
+        let first = phase(
+            "A is live",
+            rig.controller.event("ACP-stuck-close", "ready"),
+        )
+        .await?;
+        let peer = phase("B is live", rig.controller.event("ACP-peer", "ready")).await?;
+        assert_eq!(first["front"], peer["front"]);
+        assert_ne!(first["pid"], peer["pid"]);
+
+        let stop = mutate(&sdk, "agent", "stop", json!({"sessionId":a,"runId":run_a}));
+        let check = async {
+            phase(
+                "A's close is outstanding",
+                rig.controller.event("ACP-stuck-close", "close_pending"),
+            )
+            .await?;
+            let original = rig.resource(first["pid"].as_u64().unwrap())?;
+            assert!(
+                isolated::cleanup_evidence(&original)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .is_none()
+            );
+            rig.controller.send(
+                peer["pid"].as_u64().unwrap(),
+                json!({"action":"complete","promptId":peer["promptId"]}),
+            )?;
+            phase("B completes", terminal_state(&sdk, &b, &run_b, "completed")).await?;
+            phase("A has original closure evidence", sealed(original)).await?;
+            Ok::<_, String>(())
+        };
+        let (stopped, ()) = tokio::try_join!(stop, check)?;
+        assert_eq!(stopped["requested"], true);
+        phase(
+            "A is cancelled",
+            terminal_state(&sdk, &a, &run_a, "cancelled"),
+        )
+        .await?;
+        sdk.close().await?;
+        rig.clients.pop();
+        rig.hosts[0].quit(&mut anchor).await?;
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sigkill_reopens_original_external_transcript_without_resubmission() {
     run_case(true).await;
 }
@@ -1230,15 +1363,14 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         let original = phase("first ACP prompt delivered", rig.controller.event("ACP-original", "ready")).await?;
         let before = phase("first ACP output saved", checkpoint(&sdk, &session, &run, &original["checkpoint"])).await?;
         let pid = original["pid"].as_u64().unwrap();
-        assert!(isolated::closed_evidence(&rig.controller.resource(pid)?).await.map_err(|e| e.to_string())?.is_none());
+        assert!(isolated::closed_evidence(&rig.resource(pid)?).await.map_err(|e| e.to_string())?.is_none());
         sdk.close().await?;
         rig.clients.pop();
         phase("kill and reap original Host", rig.hosts[0].sigkill()).await?;
         let (mut reopened, recovery) = phase("reopen the same Root", rig.start()).await?;
         assert_ne!(reopened.epoch(), anchor.epoch());
-        rig.controller.send(pid, json!({"action":"root_reaped","pid":rig.root_pid.unwrap()}))?;
         let transcript = phase("original ACP process exited and all streams drained", rig.transcript(pid)).await?;
-        assert!(!transcript.output.iter().any(|row| row["id"] == original["promptId"] && row.get("method").is_none()));
+        assert!(!transcript.output.iter().any(|row| &row["id"] == transcript.task_prompt_id() && row.get("method").is_none()));
         phase("interrupted Run", terminal_state(&recovery, &session, &run, "cancelled")).await?;
         let after = phase("original partial answer remains", checkpoint(&recovery, &session, &run, &original["checkpoint"])).await?;
         assert_eq!(after["prefix"], before["prefix"]);
@@ -1495,16 +1627,12 @@ async fn antigravity_executor_change_releases_only_undelivered_steering() {
 
         let (mut reopened, recovery) = phase("start upgraded Host", rig.start()).await?;
         let pid = original["pid"].as_u64().unwrap();
-        rig.controller.send(
-            pid,
-            json!({"action":"root_reaped","pid":rig.root_pid.unwrap()}),
-        )?;
         let transcript = phase("old ACP process exited", rig.transcript(pid)).await?;
         assert!(
             !transcript
                 .output
                 .iter()
-                .any(|row| row["id"] == original["promptId"] && row.get("method").is_none())
+                .any(|row| &row["id"] == transcript.task_prompt_id() && row.get("method").is_none())
         );
         phase(
             "retire old execution",
@@ -1667,7 +1795,9 @@ async fn antigravity_resumes_from_a_room_mention_and_replies_in_the_room() {
             let prompt = transcript
                 .input
                 .iter()
-                .find(|row| row["method"] == "session/prompt" && row["id"] == resumed["promptId"])
+                .find(|row| {
+                    row["method"] == "session/prompt" && &row["id"] == transcript.task_prompt_id()
+                })
                 .and_then(|row| row["params"]["prompt"][0]["text"].as_str())
                 .ok_or("ACP mention prompt missing")?;
             let read = json!({"sessionId":room,"messageId":mention["messageId"],"anchor":"before"});
@@ -1803,7 +1933,7 @@ async fn antigravity_automation_wakes_the_original_conversation_after_the_turn()
             transcript
                 .output
                 .iter()
-                .any(|row| row["id"] == wake["promptId"]
+                .any(|row| &row["id"] == transcript.task_prompt_id()
                     && row["result"]["stopReason"] == "end_turn")
         );
         assert_eq!(

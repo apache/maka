@@ -34,7 +34,11 @@ pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
 #[cfg(unix)]
 pub(crate) use helper::ExternalOwner;
+#[cfg(unix)]
+mod session;
 mod snapshot;
+#[cfg(unix)]
+pub use session::SessionSpool;
 
 use crate::Command;
 pub use helper::run_helper;
@@ -288,6 +292,10 @@ enum Closure {
         resource: PathBuf,
         snapshot: FileIdentity,
     },
+    SessionClosed {
+        resource: PathBuf,
+        snapshot: FileIdentity,
+    },
     GroupClosed {
         resource: PathBuf,
         snapshot: FileIdentity,
@@ -300,7 +308,7 @@ enum Closure {
 impl Closure {
     fn is_closed(&self) -> bool {
         match self {
-            Self::NeverLaunched { .. } => true,
+            Self::NeverLaunched { .. } | Self::SessionClosed { .. } => true,
             Self::GroupClosed {
                 original_group_closed,
                 streams_drained,
@@ -355,6 +363,29 @@ impl NoLaunchSeal {
 }
 
 impl TaskOwner {
+    pub fn helper_executable(&self) -> &Path {
+        &self.helper_executable
+    }
+
+    /// Record the executable before passing the original Run to a shared protocol owner.
+    #[cfg(unix)]
+    pub async fn prepare_session(&self, executable: PathBuf) -> Result<Descriptor, Error> {
+        if self.live_workspace.is_none() || self.cancellation.is_cancelled() {
+            return Err(Error::IsolationUnavailable(
+                "shared session requires an admitted live workspace".into(),
+            ));
+        }
+        write_json_new(
+            &self.resource.join("owner/task.json"),
+            &TaskReceipt::Task {
+                executable,
+                terminal_size: None,
+            },
+        )
+        .await?;
+        Ok(self.descriptor())
+    }
+
     pub fn into_no_launch_seal(self) -> NoLaunchSeal {
         NoLaunchSeal {
             owner: self,
