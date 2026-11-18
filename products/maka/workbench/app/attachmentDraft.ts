@@ -328,7 +328,7 @@ export function createAttachmentDraft(options: {
     clearNotice() {
       if (alive) notice.set('');
     },
-    observeIntake(intake: UploadIntake, onText: (text: string) => void) {
+    observeIntake(intake: UploadIntake, onText?: (text: string) => void) {
       if (!alive) {
         intake.close();
         return;
@@ -349,7 +349,7 @@ export function createAttachmentDraft(options: {
               'text' in value &&
               typeof value.text === 'string'
             )
-              onText(value.text);
+              onText?.(value.text);
             else if (
               value &&
               typeof value === 'object' &&

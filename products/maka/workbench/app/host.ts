@@ -33,6 +33,7 @@ import type {
   SystemPermissionGrant,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
+import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/composer-view.js';
 
 // Native JSON results have Rust-owned shapes. Project the shared API while
 // retaining the admitted native Host object and its original request custody.
@@ -204,11 +205,9 @@ export function createHost(application: UiHost) {
       nativeHost.systemPermissionActions(sessionId, requestId),
     systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
       nativeHost.systemPermissionAction(sessionId, requestId, action),
-    stageFiles: (files: string[]) => nativeHost.stageFiles(files),
-    stageDroppedFiles: (files: string[]) => nativeHost.stageDroppedFiles(files),
+    stageIntake: (input: ComposerIntake) => nativeHost.stageIntake(input),
     recentWorkspaces: () => nativeHost.recentWorkspaces(),
     setRecentWorkspace: (path: string) => nativeHost.setRecentWorkspace(path),
-    stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),
     subscribe,

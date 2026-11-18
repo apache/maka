@@ -54,7 +54,7 @@ import {
   menuSeparatorStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
-import { createComposerPaste } from './composerPaste';
+import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import {
   inputEditor,
   type ComposerEditor,
@@ -230,6 +230,7 @@ export function createComposerCompletion(options: Options) {
     composing,
     dismiss: close,
   });
+  paste.bindClipboard();
   const row = <T extends Omit<Row, 'action'>>(read: Read, value: T): Row =>
     Object.assign(value, {
       action: { read: read.serial, id: value.id },
