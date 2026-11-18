@@ -24,6 +24,7 @@ import type {
   AgentScheduledTarget,
   AgentSchedules,
   AgentScheduledSummary,
+  DiscoveryToolGroup,
   IntervalCadence,
   ModelSelection,
   Schedule,
@@ -46,14 +47,17 @@ export function selectedDiscoveryTools(
   preview: DiscoveryToolPreview,
   requested?: DiscoveryToolSelection | null,
   approvedNames?: string[] | null,
+  draftGroups?: ReadonlyMap<DiscoveryToolGroup, ReadonlySet<string>>,
 ): DiscoveryToolSelection {
   const approved = approvedNames ? new Set(approvedNames) : null;
   return Object.fromEntries(
-    Object.entries(preview.groups).filter(
-      ([name, group]) =>
-        (!requested || (Object.hasOwn(requested, name) && requested[name] === group)) &&
-        (!approved || approved.has(name)),
-    ),
+    Object.entries(preview.groups).filter(([name, group]) => {
+      if (approved && !approved.has(name)) return false;
+      const explicitNames = group && draftGroups?.get(group);
+      return explicitNames
+        ? explicitNames.has(name)
+        : !requested || (Object.hasOwn(requested, name) && requested[name] === group);
+    }),
   );
 }
 

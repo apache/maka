@@ -68,6 +68,11 @@ test('editing a grant keeps exact names and categories as the catalog changes', 
     Read: 'read_files',
   });
   assert.deepEqual(approvedDiscoveryNames(preview, {}), ['DiscoveryComplete']);
+  const draftGroups = new Map([['read_files', new Set(['Read'])]]);
+  assert.deepEqual(selectedDiscoveryTools(preview, { Note: 'commands' }, undefined, draftGroups), {
+    Note: 'commands',
+    Read: 'read_files',
+  });
 });
 
 test('discovery listing carries catalogue revision through all pages and rejects a raced snapshot', async () => {

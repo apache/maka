@@ -21,6 +21,7 @@ import { Button } from 'nsh/base';
 import type {
   AgentScheduledDetail,
   AgentScheduledSummary,
+  DiscoveryToolGroup,
   IntervalCadence,
   ModelSelection,
   ThinkingLevel,
@@ -112,6 +113,9 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   const workerTools = signal<DiscoveryWorkerTools>('read_only');
   const toolPreview = signal<DiscoveryToolPreview | null>(null);
   const selectedTools = signal<DiscoveryToolSelection>({});
+  let initialToolSelection: DiscoveryToolSelection | undefined;
+  // Keep explicit choices even while their group is absent from the active preset.
+  const draftGroups = new Map<DiscoveryToolGroup, ReadonlySet<string>>();
   const reapproving = signal(false);
   const deleting = signal(false);
   const needsRenewedApproval = (plan = detail()) =>
@@ -200,8 +204,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     captured: DiscoveryApproval,
     profile: DiscoveryWorkerTools,
     ticket: number,
-    requested?: DiscoveryToolSelection | null,
-    restoreGrant = false,
+    mode: 'open' | 'preset' | 'refresh',
   ) => {
     toolPreview.set(null);
     try {
@@ -212,16 +215,28 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       });
       if (!alive || ticket !== formGeneration) return;
       if (result.kind !== 'discovery_tools') throw new UiError('Discovery plan changed');
-      const priorNames = restoreGrant ? result.approvedNames : undefined;
-      // A renewal can outlive its old grant. Unknown choices require an explicit selection.
-      const choices =
-        requested ?? (wasApproved(editingPlan()) && priorNames == null ? {} : undefined);
-      selectedTools.set(selectedDiscoveryTools(result, choices, priorNames));
+      if (mode === 'open' && result.approvedNames != null) {
+        initialToolSelection = selectedDiscoveryTools(
+          result,
+          planSelection(editingPlan()),
+          result.approvedNames,
+        );
+      }
+      selectedTools.set(
+        mode === 'refresh'
+          ? selectedDiscoveryTools(result, selectedTools())
+          : selectedDiscoveryTools(result, initialToolSelection, undefined, draftGroups),
+      );
       toolPreview.set(result);
     } catch (reason) {
       if (alive && ticket === formGeneration)
         error.set(errorText(reason, 'Could not load the discovery plan.'));
     }
+  };
+  const changeToolGroup = (group: DiscoveryToolGroup, selection: DiscoveryToolSelection) => {
+    const names = Object.keys(selection).filter((name) => selection[name] === group);
+    draftGroups.set(group, new Set(names));
+    selectedTools.set(selection);
   };
   const changeWorkerTools = (value: string) => {
     const profile = value === 'session' ? 'session' : 'read_only';
@@ -230,25 +245,25 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     const captured = basis();
     if (captured) {
       error.set('');
-      const plan = editingPlan();
-      const choices =
-        wasApproved(plan) || planSelection(plan) != null ? selectedTools() : undefined;
-      void previewTools(captured, profile, ++formGeneration, choices);
+      void previewTools(captured, profile, ++formGeneration, 'preset');
     }
   };
   const edit = async (fresh: boolean, approve = false) => {
     const plan = fresh ? null : detail();
     if (busy() || (!fresh && !plan)) return;
     const ticket = ++formGeneration;
+    draftGroups.clear();
     editingPlan.set(plan);
     reapproving.set(approve);
     deleting.set(false);
     const effect = plan?.task.effect;
-    const profile = wasApproved(plan) ? discoveryWorkerTools(effect) : 'read_only';
-    const requested = planSelection(plan);
+    const renewing = wasApproved(plan);
+    const profile = renewing ? discoveryWorkerTools(effect) : 'read_only';
+    // Only a first approval starts from preset defaults. A lost grant starts with no optional tools.
+    initialToolSelection = planSelection(plan) ?? (renewing ? {} : undefined);
     workerTools.set(profile);
     toolPreview.set(null);
-    selectedTools.set(requested ?? {});
+    selectedTools.set(initialToolSelection ?? {});
     intent.set(plan?.task.intent.body ?? '');
     const schedule = plan?.task.schedule;
     minutes.set(schedule?.kind === 'interval' ? String(schedule.everySeconds / 60) : '30');
@@ -260,7 +275,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       const captured = await capture();
       if (alive && ticket === formGeneration) {
         basis.set(captured);
-        await previewTools(captured, profile, ticket, requested, true);
+        await previewTools(captured, profile, ticket, 'open');
       }
     } catch (reason) {
       if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
@@ -425,7 +440,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (!alive) return;
       if (!sameValue(latest, captured)) {
         basis.set(latest);
-        await previewTools(latest, workerTools(), ++formGeneration, selectedTools());
+        await previewTools(latest, workerTools(), ++formGeneration, 'refresh');
         throw new UiError('Discovery settings changed');
       }
       const result = await props.control(
@@ -442,7 +457,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (result.kind === 'conflict') throw new UiError('Discovery plan changed');
       if (result.kind === 'rejected') {
         if (result.reason === 'scheduler_discovery_tools_changed') {
-          await previewTools(latest, workerTools(), ++formGeneration, selectedTools());
+          await previewTools(latest, workerTools(), ++formGeneration, 'refresh');
           throw new UiError('Discovery settings changed');
         }
         throw new Error(result.reason);
@@ -693,7 +708,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             <DiscoveryToolPicker
               preview={toolPreview()!}
               selection={selectedTools()}
-              change={selectedTools.set}
+              change={changeToolGroup}
               disabled={busy()}
             />
           </If>

@@ -71,7 +71,7 @@ export function discoverySelectionLabel(
 export function DiscoveryToolPicker(props: {
   preview: DiscoveryToolPreview;
   selection: DiscoveryToolSelection;
-  change(selection: DiscoveryToolSelection): void;
+  change(group: Group, selection: DiscoveryToolSelection): void;
   disabled: boolean;
 }) {
   const expanded = signal(false);
@@ -83,7 +83,7 @@ export function DiscoveryToolPicker(props: {
     const next = Object.entries(props.preview.groups).filter(([name, category]) =>
       category === group ? turnOn : checked(name),
     );
-    props.change(Object.fromEntries(next));
+    props.change(group, Object.fromEntries(next));
   };
   return (
     <View style={{ gap: 4 }}>

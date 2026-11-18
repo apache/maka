@@ -170,6 +170,12 @@ mod tests {
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Read-only tools]").unwrap();
+        app.wait_for("text:/^File reading$/").unwrap();
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("text:File reading · File editing · Web tools")
+            .unwrap();
         app.press("role:button[Fixed interval]").unwrap();
         app.wait_for("role:button[Approve and save]").unwrap();
         app.press("role:button[Approve and save]").unwrap();
@@ -207,6 +213,43 @@ mod tests {
         app.wait_for("text:Delete this plan?").unwrap();
         app.press("role:button[Delete] >> nth=1").unwrap();
         app.wait_for("role:button[Approve and enable]").unwrap();
+    }
+
+    #[test]
+    fn discovery_draft_preserves_group_choices_when_switching_tool_presets() {
+        let mut app = headless_fixture(
+            "tests/fixtures/discovery.tsx",
+            Size::new(px(1100.0), px(900.0)),
+            false,
+        );
+        app.wait_for("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.press("label:Conversations and memory: On").unwrap();
+        app.press("role:button[Hide tool groups]").unwrap();
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.wait_for("label:Terminal tools: On").unwrap();
+        app.press("label:File reading: On").unwrap();
+        app.press("role:button[Hide tool groups]").unwrap();
+        app.press("role:button[Read-only tools]").unwrap();
+        app.wait_for("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+
+        app.wait_for("role:button[Edit plan]").unwrap();
+        app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Show selected tools]").unwrap();
+        app.wait_for("text:/^DiscoveryComplete$/").unwrap();
+
+        app.press("role:button[Cancel]").unwrap();
+        app.wait_for("role:button[New plan]").unwrap();
+        app.press("role:button[New plan]").unwrap();
+        app.wait_for("text:File reading · Conversations and memory")
+            .unwrap();
     }
 
     #[test]
