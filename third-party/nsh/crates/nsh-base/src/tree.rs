@@ -88,6 +88,9 @@ pub struct TreeItem {
     /// expands and collapses.
     #[prop(default)]
     pub children: Vec<TreeItem>,
+    /// An empty folder, including one whose children load on expansion.
+    #[prop(default)]
+    pub expandable: bool,
     /// It cannot be selected, expanded or collapsed by the user: the keys
     /// pass over it, presses do nothing, `disabled:` styles apply and
     /// screen readers say it is dimmed. Its children stay as `expanded`
@@ -115,6 +118,12 @@ impl TreeItem {
     /// Adds `children` under it.
     pub fn children(mut self, children: impl IntoIterator<Item = TreeItem>) -> Self {
         self.children.extend(children);
+        self
+    }
+
+    /// Marks a folder whose children may be loaded later.
+    pub fn expandable(mut self, expandable: bool) -> Self {
+        self.expandable = expandable;
         self
     }
 
@@ -157,15 +166,10 @@ struct Node {
     /// The index past its subtree: its next sibling's, or its parent's
     /// next sibling's.
     end: u32,
+    folder: bool,
     disabled: bool,
     /// Its row key, hashed.
     key: u64,
-}
-
-impl Node {
-    fn folder(&self, at: usize) -> bool {
-        self.end as usize > at + 1
-    }
 }
 
 /// The items, depth first, made once per change of them.
@@ -208,6 +212,7 @@ impl Flat {
                 parent,
                 depth,
                 end: at + 1,
+                folder: item.expandable || !item.children.is_empty(),
                 disabled: item.disabled,
                 key: hash(&item.id),
             });
@@ -228,7 +233,7 @@ impl Flat {
     }
 
     fn folder(&self, node: usize) -> bool {
-        self.nodes.get(node).is_some_and(|n| n.folder(node))
+        self.nodes.get(node).is_some_and(|n| n.folder)
     }
 
     fn enabled(&self, node: usize) -> bool {
@@ -272,7 +277,7 @@ impl Flat {
             id: n.id.clone(),
             label: n.label.clone(),
             depth: n.depth,
-            folder: n.folder(node),
+            folder: n.folder,
             disabled: n.disabled,
         })
     }
@@ -458,6 +463,9 @@ pub struct TreeProps {
     /// leave at once. Off by default, and with reduced motion.
     #[prop(default)]
     pub reveal: Prop<bool>,
+    /// Activate leaves with one click or tap. Arrow keys still only select.
+    #[prop(default)]
+    pub single_click_action: Prop<bool>,
     /// What screen readers call the tree.
     pub accessibility_label: Prop<Option<SharedString>>,
     /// The classes of the list, the scroll view of the rows inside the
@@ -964,8 +972,9 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
         if desktop && !focused.get_untracked() {
             root.focus();
         }
-        // The second press of a double press (a triple one acts once).
-        if clicks == 2 {
+        let single =
+            props.single_click_action.get_untracked() && !flat.with_untracked(|f| f.0.folder(node));
+        if (single && clicks <= 1) || (!single && clicks == 2) {
             act(node);
         }
     });

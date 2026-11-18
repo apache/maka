@@ -495,3 +495,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Pierre Trees file icons and filename rules (@pierre/trees, Apache-2.0).
+The icon artwork from @pierre/vscode-icons is used under the MIT License.
+See scripts/rust/licenses/pierre-vscode-icons.txt.

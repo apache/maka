@@ -129,6 +129,10 @@ maka-ui-build.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+crossterm.workspace = true
+nsh-engine.workspace = true
+nsh-platform-tui.workspace = true
+ratatui.workspace = true
 tokio-tungstenite.workspace = true
 nsh-core.workspace = true
 maka-capabilities.workspace = true
