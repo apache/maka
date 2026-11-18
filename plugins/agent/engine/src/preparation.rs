@@ -556,10 +556,12 @@ pub async fn project_durable_projection(
             for part in parts {
                 match part {
                     ProjectionPart::Text { text } => content.push(ContentPart::text(text.clone())),
-                    ProjectionPart::Artifact { .. } if !vision => {
-                        content.push(ContentPart::text(history::images::no_vision(language)))
-                    }
                     ProjectionPart::Artifact { image } => {
+                        content.push(image_reference(&image.reference)?);
+                        if !vision {
+                            content.push(ContentPart::text(history::images::no_vision(language)));
+                            continue;
+                        }
                         let data = projection_media_from(
                             &media,
                             &image.reference,
@@ -607,6 +609,17 @@ pub async fn project_durable_projection(
     } else {
         output
     })
+}
+
+fn image_reference(
+    reference: &maka_agent_facts::attachment::StorageRef,
+) -> Result<maka_model::prompt::ContentPart, RunError> {
+    let uri = reference
+        .resource_ref()
+        .ok_or_else(|| RunError::InvalidInput("tool image lacks a Session reference".into()))?;
+    Ok(maka_model::prompt::ContentPart::text(format!(
+        "To show this image in your reply, use ![description]({uri}). Use the same URL for a link to the original."
+    )))
 }
 
 async fn projection_media_from(

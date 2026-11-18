@@ -57,6 +57,59 @@ impl Fixture {
         )
     }
 }
+#[test]
+fn markdown_paths_refer_to_the_bound_workspace_and_follow_its_read_policy() {
+    use crate::path::FileReadPath;
+    use maka_sandbox::filesystem::{Access, Policy, Rule};
+    let f = Fixture::new();
+    let dir = f.open(None).unwrap();
+    let file = f.root.join("screen shot.png");
+    let path = WorkspacePath::from_bytes(b"screen shot.png").unwrap();
+    for spelling in [
+        b"./nested/../screen shot.png".as_slice(),
+        file.as_os_str().as_encoded_bytes(),
+    ] {
+        assert_eq!(
+            dir.resolve_link(spelling.to_vec(), None).unwrap(),
+            FileReadPath::Workspace(path.clone())
+        );
+    }
+    let external = f.temp.path().canonicalize().unwrap().join("outside.png");
+    let denied = Policy {
+        default: Access::Deny,
+        rules: vec![Rule::subtree(&f.root, Access::Read)],
+        deny_globs: vec![],
+    }
+    .compile()
+    .unwrap();
+    assert!(
+        dir.resolve_link(
+            external.as_os_str().as_encoded_bytes().into(),
+            Some(&denied)
+        )
+        .is_err()
+    );
+    assert!(
+        dir.read_external_image(&external, Some(&denied), None, &AtomicBool::new(false))
+            .is_err()
+    );
+    assert!(matches!(
+        dir.resolve_link(external.as_os_str().as_encoded_bytes().into(), None),
+        Ok(FileReadPath::External { .. })
+    ));
+    assert!(
+        dir.resolve_link(
+            f.private
+                .join("state")
+                .as_os_str()
+                .as_encoded_bytes()
+                .into(),
+            None
+        )
+        .is_err()
+    );
+}
+
 fn names(page: &FilePage) -> Vec<Vec<u8>> {
     page.entries
         .iter()

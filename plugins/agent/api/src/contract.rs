@@ -1959,6 +1959,10 @@ pub struct AttachmentImageRead {
 )]
 #[schemars(rename = "AgentAttachmentImageSource")]
 pub enum AttachmentImageSource {
+    Artifact {
+        #[schemars(length(min = 1))]
+        id: String,
+    },
     Room {
         #[schemars(length(min = 1))]
         message_id: String,
@@ -2277,6 +2281,10 @@ pub fn contract() -> Contract {
                         )]),
                         ..method::<SaveFile, SaveFileResult>(MethodMode::Mutation)
                     },
+                ),
+                (
+                    "resolveFileLink".into(),
+                    method::<FileLinkRead, FileReadPath>(MethodMode::Query),
                 ),
                 (
                     "readFile".into(),

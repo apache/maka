@@ -18,6 +18,7 @@
  */
 
 import { UiError } from './text';
+import { immutableAsset } from './immutableAsset';
 import { tr } from './locale';
 import { host as nativeHost } from 'maka/host';
 import { context } from 'nsh';
@@ -165,27 +166,55 @@ export function createHost(application: UiHost) {
     };
   }
 
+  async function markdownSource(sessionId: string, target: string) {
+    const link = nativeHost.markdownLink(target);
+    if (link.kind === 'attachment') {
+      const read = { sessionId, source: { kind: 'artifact' as const, id: link.id }, offset: 0 };
+      return {
+        kind: 'image' as const,
+        uri: nativeHost.assetUri(immutableAsset('attachment-image', read)),
+      };
+    }
+    if (link.kind === 'remote') return link;
+    const path = await query('agent', 'resolveFileLink', { sessionId, pathBytes: link.pathBytes });
+    return {
+      kind: 'disk' as const,
+      path,
+      line: link.line,
+      endLine: link.endLine,
+      column: link.column,
+    };
+  }
+
   // Local journal methods serialize these actual Rust DTOs. Their receipt business
   // values remain unknown and continue through the application's existing guards.
   return {
     assetUri: (uri: string) => nativeHost.assetUri(uri),
-    markdownImageSource(target: string) {
-      const source = nativeHost.markdownImageSource(target);
-      return source.kind === 'workspace'
-        ? { kind: 'workspace' as const, path: { bytesBase64: source.path } }
-        : source;
-    },
-    async openLink(target: string) {
-      const link = await nativeHost.openLink(target);
-      return link === null
-        ? null
-        : {
-            path: { bytesBase64: link.path },
-            parent: link.parent == null ? null : { bytesBase64: link.parent },
-            ...(typeof link.line === 'number' ? { line: link.line } : {}),
-            ...(typeof link.endLine === 'number' ? { endLine: link.endLine } : {}),
-            ...(typeof link.column === 'number' ? { column: link.column } : {}),
-          };
+    markdownSource,
+    openBrowser: (target: string) => nativeHost.openBrowser(target),
+    async openLink(target: string, sessionId: string) {
+      const source = await markdownSource(sessionId, target);
+      if (source.kind === 'remote') {
+        await nativeHost.openBrowser(source.uri);
+        return null;
+      }
+      if (source.kind === 'image') return source;
+      if ('absolute' in source.path) {
+        const stream = await readFile({ sessionId, path: source.path });
+        try {
+          const file = await stream.readFile();
+          if (file.kind !== 'image') throw new UiError('This file is not a supported image.');
+          return { kind: 'image' as const, uri: file.uri };
+        } finally {
+          await stream.close();
+        }
+      }
+      return {
+        path: source.path,
+        line: source.line ?? undefined,
+        endLine: source.endLine ?? undefined,
+        column: source.column ?? undefined,
+      };
     },
     query,
     get systemPermissionWindow() {

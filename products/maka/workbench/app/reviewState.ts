@@ -835,51 +835,6 @@ export function extractLineIdentifiers(text: string, limit = 8): string[] {
   return out;
 }
 
-/** Converts a `file://` link inside the session workspace into a workspace-relative target. */
-export function relativizeWorkspaceFileUrl(target: string, workspaceDir?: string): string {
-  if (!workspaceDir || !target.startsWith('file://')) return target;
-  let rest = target.slice('file://'.length);
-  if (rest.startsWith('localhost/')) rest = rest.slice('localhost'.length);
-  const hashIdx = rest.indexOf('#');
-  const queryIdx = rest.indexOf('?');
-  const cut =
-    hashIdx >= 0 && queryIdx >= 0 ? Math.min(hashIdx, queryIdx) : hashIdx >= 0 ? hashIdx : queryIdx;
-  const rawPath = cut >= 0 ? rest.slice(0, cut) : rest;
-  const suffix = cut >= 0 ? rest.slice(cut) : '';
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(rawPath);
-  } catch {
-    return target;
-  }
-  let normDir = workspaceDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  let normPath = decoded.replace(/\\/g, '/');
-  if (/^\/[A-Za-z]:\//.test(normPath)) normPath = normPath.slice(1);
-  if (/^\/[A-Za-z]:\//.test(normDir)) normDir = normDir.slice(1);
-  if (/^[A-Za-z]:\//.test(normPath) && /^[A-Za-z]:\//.test(normDir)) {
-    normPath = normPath[0]!.toLowerCase() + normPath.slice(1);
-    normDir = normDir[0]!.toLowerCase() + normDir.slice(1);
-  }
-  const candidates = [normDir];
-  if (normDir.startsWith('/private/')) candidates.push(normDir.slice('/private'.length));
-  else if (normDir.startsWith('/tmp/') || normDir.startsWith('/var/'))
-    candidates.push('/private' + normDir);
-
-  for (const root of candidates) {
-    if (normPath.startsWith(root + '/')) {
-      const rel = normPath.slice(root.length + 1);
-      if (rel.length > 0 && !rel.startsWith('/')) {
-        const encodedRel = rel
-          .split('/')
-          .map((seg) => encodeURIComponent(seg))
-          .join('/');
-        return encodedRel + suffix;
-      }
-    }
-  }
-  return target;
-}
-
 export function parentPathOf(path: WorkspacePath): WorkspacePath | null {
   try {
     const raw = Buffer.from(path.bytesBase64, 'base64');

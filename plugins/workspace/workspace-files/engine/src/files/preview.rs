@@ -67,6 +67,23 @@ impl Directory {
         expose(self.capture_file(path, expected_version, cancel))
     }
 
+    pub fn read_permitted_file(
+        &self,
+        path: &WorkspacePath,
+        version: Option<&str>,
+        policy: Option<&maka_sandbox::filesystem::Compiled>,
+        cancel: &AtomicBool,
+    ) -> io::Result<FileCapture> {
+        if let Some(policy) = policy {
+            let relative =
+                gix::path::from_bstring(path.bytes()?).map_err(|_| error("files_invalid_path"))?;
+            if !policy.access(&self.root_path().join(relative)).can_read() {
+                return Err(error("files_private"));
+            }
+        }
+        self.read_file(path, version, cancel)
+    }
+
     fn capture_file(
         &self,
         path: &WorkspacePath,

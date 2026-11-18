@@ -49,7 +49,6 @@ import {
   formatPrKey,
   type GitHubReplyCommentResult,
   parentPathOf,
-  relativizeWorkspaceFileUrl,
   type ReviewNote,
 } from '../../../../products/maka/workbench/app/reviewState';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
@@ -78,7 +77,7 @@ export type ResourceTab = {
 } & (
   | { kind: 'file'; model: CurrentFileModel }
   | { kind: 'diff'; model: CurrentDiffModel }
-  | { kind: 'image'; image: ImagePreview }
+  | { kind: 'image'; image: Pick<ImagePreview, 'uri'> }
   | { kind: 'terminal'; model: TerminalModel }
   | {
       kind: 'pr';
@@ -363,32 +362,34 @@ export function createResources(
     };
   };
 
-  const openImage = (image: ImagePreview) => {
-    const { sessionId } = image.source.read;
-    const identity = image.uri;
+  const showImage = (sessionId: string, uri: string, restoreFocus?: () => boolean) => {
     if (!admits(sessionId)) return;
-    open(sessionId, identity, (instance) => ({
+    open(sessionId, uri, (instance) => ({
       kind: 'image',
       instance,
-      identity,
+      identity: uri,
       sessionId,
       get title() {
         return tr('Original image');
       },
-      image,
+      image: { uri },
     }));
     const fallback = headerOpener(sessionId);
-    opener = () => image.restoreFocus?.() || fallback();
+    opener = () => restoreFocus?.() || fallback();
   };
-
+  const openImage = (image: ImagePreview) =>
+    showImage(image.source.read.sessionId, image.uri, image.restoreFocus);
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!admits(sessionId)) return;
     const request = { sessionId };
     pendingPreview = request;
     try {
-      const normalized = relativizeWorkspaceFileUrl(target, options.directory(sessionId));
-      const link = await host.openLink(normalized);
+      const link = await host.openLink(target, sessionId);
       if (link && pendingPreview === request && admits(sessionId)) {
+        if ('uri' in link) {
+          showImage(sessionId, link.uri, restoreFocus);
+          return;
+        }
         const anchor: WorkspaceFileAnchor | undefined =
           typeof link.line === 'number'
             ? {
@@ -401,7 +402,7 @@ export function createResources(
           {
             sessionId,
             path: link.path,
-            parent: link.parent,
+            parent: parentPathOf(link.path),
             title: host.pathLabel(link.path),
             ...(anchor ? { anchor } : {}),
           },

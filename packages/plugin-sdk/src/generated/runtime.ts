@@ -4899,6 +4899,10 @@ export type AgentToolImagePage = {
 };
 export type AgentAttachmentImageSource =
   | {
+      kind: 'artifact';
+      id: string;
+    }
+  | {
       kind: 'room';
       messageId: string;
       attachmentIndex: number;

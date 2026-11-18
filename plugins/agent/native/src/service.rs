@@ -654,6 +654,11 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "watchFiles" => owner.watch_files(decode(input)?, context).await,
+                "resolveFileLink" => encode(
+                    owner
+                        .resolve_file_link(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "readFile" => owner.read_file(decode(input)?, context).await,
                 "gitDiff" => encode(owner.git_diff(decode(input)?, context.scope()).await?),
                 "gitWorkspaceDiff" => encode(
