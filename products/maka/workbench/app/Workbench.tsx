@@ -74,8 +74,7 @@ export function Workbench(props: {
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(platform.idiom === 'terminal' ? 48 * CELL : 62 * CELL);
   const preview = () => props.previewShown() && canDockPreview();
-  const fullscreen = () =>
-    platform.idiom !== 'terminal' && preview() && (props.previewFullscreen?.() ?? false);
+  const fullscreen = () => props.previewFullscreen?.() ?? false;
   const browser = () => props.expanded() && canDockBrowser(props.previewShown() && !fullscreen());
   const room = () => (fullscreen() ? 0 : sidePaneRoom(browser(), preview()));
   let unbindFullscreen: (() => void) | undefined;

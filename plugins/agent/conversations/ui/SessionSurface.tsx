@@ -2276,13 +2276,14 @@ export function createConversationUi(
   });
   const computerVisible = computed(() => {
     const state = Window.get('main')?.state();
+    const surface = shell();
     return (
       platform.desktop &&
       platform.idiom !== 'terminal' &&
       state?.visible === true &&
       !state.minimized &&
       !reloading() &&
-      (shell()?.visible() ?? false)
+      (surface?.paneVisible?.() ?? surface?.visible() ?? false)
     );
   });
   const computer = createComputerStage({
