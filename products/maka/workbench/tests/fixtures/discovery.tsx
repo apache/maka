@@ -182,7 +182,12 @@ mount(() => {
         };
         detail.approved = true;
         detail.approvedTools = input.input.approvedTools;
-        calls.set('approved ' + detail.task.effect.model.connectionId);
+        calls.set(
+          'approved ' +
+            detail.task.effect.model.connectionId +
+            ' ' +
+            detail.approvedTools.join(' · '),
+        );
       }
       if (input.kind === 'update') {
         detail.approvedTools = input.input.approvedTools;

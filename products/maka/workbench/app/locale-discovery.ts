@@ -63,6 +63,16 @@ export const discoveryMessages = {
   'Hide discovery tool groups': ['Hide tool groups', '收起工具组', '收合工具群組'],
   'Show approved tool names': ['Show selected tools', '查看已选工具名', '檢視已選工具名稱'],
   'Hide approved tool names': ['Hide tool names', '收起工具名', '收合工具名稱'],
+  'Discovery partially enabled': [
+    'Partially enabled ({selected}/{total})',
+    '部分开启（{selected}/{total}）',
+    '部分開啟（{selected}/{total}）',
+  ],
+  'Discovery Read scope': [
+    'Read and its aliases can also open existing references to read the contents of conversations this investigation can access.',
+    'Read 及其别名也可通过已有会话引用读取本次调查有权访问的会话正文。',
+    'Read 及其別名也可透過已有對話參照讀取本次調查有權存取的對話內容。',
+  ],
   'Discovery file reading tools': ['File reading', '读取文件', '讀取檔案'],
   'Discovery file editing tools': ['File editing', '编辑文件', '編輯檔案'],
   'Discovery history tools': ['Conversations and memory', '会话与记忆', '對話與記憶'],

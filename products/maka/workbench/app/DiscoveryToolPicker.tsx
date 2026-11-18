@@ -17,7 +17,7 @@
  * under the License.
  */
 import { signal, Text, View } from 'nsh';
-import { SettingsButton, SettingsSwitch } from './SettingsPage';
+import { SettingsButton, SettingsRow, SettingsSwitch } from './SettingsPage';
 import { tr, type MessageKey } from './locale';
 import { C, captionTextStyle } from './ui';
 import {
@@ -37,14 +37,33 @@ const labels = {
   other: 'Discovery extension tools',
 } as const satisfies Record<NonNullable<DiscoveryToolSelection[string]>, MessageKey>;
 
-const categories = Object.keys(labels) as (keyof typeof labels)[];
+type Group = keyof typeof labels;
+const categories = Object.keys(labels) as Group[];
 
-export function discoverySelectionLabel(selection: DiscoveryToolSelection) {
+function namesIn(preview: DiscoveryToolPreview, group: Group) {
+  return preview.names.filter((name) => preview.groups[name] === group);
+}
+
+function partialStatus(names: string[], selection: DiscoveryToolSelection) {
+  const selected = names.filter((name) => Object.hasOwn(selection, name)).length;
+  return selected > 0 && selected < names.length
+    ? tr('Discovery partially enabled', { selected, total: names.length })
+    : undefined;
+}
+
+export function discoverySelectionLabel(
+  selection: DiscoveryToolSelection,
+  preview?: DiscoveryToolPreview,
+) {
   const enabled = new Set(Object.values(selection));
   return (
     categories
       .filter((group) => enabled.has(group))
-      .map((group) => tr(labels[group]))
+      .map((group) => {
+        const label = tr(labels[group]);
+        const status = preview && partialStatus(namesIn(preview, group), selection);
+        return status ? tr('{label}: {state}', { label, state: status }) : label;
+      })
       .join(' · ') || tr('Only investigation completion')
   );
 }
@@ -57,11 +76,9 @@ export function DiscoveryToolPicker(props: {
 }) {
   const expanded = signal(false);
   const details = signal(false);
-  const namesIn = (group: keyof typeof labels) =>
-    props.preview.names.filter((name) => props.preview.groups[name] === group);
   const checked = (name: string) => Object.hasOwn(props.selection, name);
-  const toggle = (group: keyof typeof labels) => {
-    const names = namesIn(group);
+  const toggle = (group: Group) => {
+    const names = namesIn(props.preview, group);
     const turnOn = !names.every(checked);
     const next = Object.entries(props.preview.groups).filter(([name, category]) =>
       category === group ? turnOn : checked(name),
@@ -71,7 +88,7 @@ export function DiscoveryToolPicker(props: {
   return (
     <View style={{ gap: 4 }}>
       <Text style={{ ...captionTextStyle, color: C.secondary }}>
-        {discoverySelectionLabel(props.selection)}
+        {discoverySelectionLabel(props.selection, props.preview)}
       </Text>
       <SettingsButton
         label={tr(expanded() ? 'Hide discovery tool groups' : 'Choose discovery tool groups')}
@@ -80,22 +97,32 @@ export function DiscoveryToolPicker(props: {
         onPress={() => expanded.set(!expanded())}
       />
       <If when={expanded()}>
-        <Each of={categories.filter((group) => namesIn(group).length > 0)}>
+        <Each of={categories.filter((group) => namesIn(props.preview, group).length > 0)}>
           {(group) => {
-            const names = () => namesIn(group());
-            const count = () => names().filter(checked).length;
+            const names = () => namesIn(props.preview, group());
+            const label = () => tr(labels[group()]);
             return (
-              <SettingsSwitch
-                label={tr(labels[group()])}
-                checked={count() === names().length}
-                status={
-                  count() > 0 && count() < names().length
-                    ? `${count()} / ${names().length}`
-                    : undefined
+              <If
+                when={partialStatus(names(), props.selection)}
+                else={
+                  <SettingsSwitch
+                    label={label()}
+                    checked={names().every(checked)}
+                    disabled={props.disabled}
+                    onPress={() => toggle(group())}
+                  />
                 }
-                disabled={props.disabled}
-                onPress={() => toggle(group())}
-              />
+              >
+                {(status) => (
+                  <SettingsRow
+                    label={label()}
+                    status={status()}
+                    accessibilityLabel={tr('{label}: {state}', { label: label(), state: status() })}
+                    disabled={props.disabled}
+                    onPress={() => toggle(group())}
+                  />
+                )}
+              </If>
             );
           }}
         </Each>

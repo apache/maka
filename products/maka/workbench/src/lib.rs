@@ -136,8 +136,21 @@ mod tests {
         app.wait_for("role:button[Choose tool groups]").unwrap();
         app.press("role:button[Choose tool groups]").unwrap();
         app.press("label:Terminal tools: On").unwrap();
+        app.press("label:Conversations and memory: On").unwrap();
+        app.press("role:button[Hide tool groups]").unwrap();
+        app.wait_for("text:/Read and its aliases can also open existing references/")
+            .unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.press("label:File reading: On").unwrap();
+        app.wait_for("label:File reading: Off").unwrap();
+        assert!(
+            !app.screen()
+                .matches("text:/Read and its aliases can also open existing references/")
+                .unwrap()
+        );
+        app.press("label:File reading: Off").unwrap();
         app.press("role:button[Show selected tools]").unwrap();
-        app.wait_for("text:DiscoveryComplete · DiscoveryMemory · Read · WebFetch · Write")
+        app.wait_for("text:DiscoveryComplete · Read · WebFetch · Write")
             .unwrap();
         app.press("role:button[Approve and enable]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
@@ -243,10 +256,36 @@ mod tests {
         app.wait_for("role:button[Resume]").unwrap();
         app.press("role:button[Resume]").unwrap();
         app.wait_for("role:button[Approve and resume]").unwrap();
+        app.wait_for("text:/File reading: Partially enabled/")
+            .unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.wait_for("label:File reading: Partially enabled (1/2)")
+            .unwrap();
         app.press("role:button[Approve and resume]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.press("role:button[Close]").unwrap();
-        app.wait_for("text:Action approved replacement").unwrap();
+        app.wait_for("text:Action approved replacement DiscoveryComplete · DiscoveryMemory · Read")
+            .unwrap();
+
+        // A previously revoked preset can lack both an active grant and a saved selection.
+        app.press_key("mod+shift+b").unwrap();
+        app.press_key("mod+shift+r").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[View background follow-ups]")
+            .unwrap();
+        app.wait_for("role:button[Review permissions]").unwrap();
+        app.press("role:button[Review permissions]").unwrap();
+        app.wait_for("text:Submit investigation results only")
+            .unwrap();
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.wait_for("label:File reading: Off").unwrap();
+        app.press("label:File reading: Off").unwrap();
+        app.press("role:button[Approve and resume]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.wait_for("text:Action approved replacement DiscoveryComplete · NewReader · Read")
+            .unwrap();
     }
 
     #[test]

@@ -116,12 +116,14 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   const deleting = signal(false);
   const needsRenewedApproval = (plan = detail()) =>
     !!plan && !plan.approved && plan.task.lastError === 'scheduler_authorization_changed';
+  const wasApproved = (plan: AgentScheduledDetail | null) =>
+    !!plan?.approved || needsRenewedApproval(plan);
   const resolvedWorkerTools = () =>
     editing() ? workerTools() : discoveryWorkerTools(detail()?.task.effect);
   const error = createText();
   const watchError = createText();
-  const planSelection = () => {
-    const effect = detail()?.task.effect;
+  const planSelection = (plan = detail()) => {
+    const effect = plan?.task.effect;
     return effect?.kind === 'discovery' ? effect.selectedTools : undefined;
   };
   const unavailableEditTarget = () => {
@@ -210,9 +212,11 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       });
       if (!alive || ticket !== formGeneration) return;
       if (result.kind !== 'discovery_tools') throw new UiError('Discovery plan changed');
-      selectedTools.set(
-        selectedDiscoveryTools(result, requested, restoreGrant ? result.approvedNames : undefined),
-      );
+      const priorNames = restoreGrant ? result.approvedNames : undefined;
+      // A renewal can outlive its old grant. Unknown choices require an explicit selection.
+      const choices =
+        requested ?? (wasApproved(editingPlan()) && priorNames == null ? {} : undefined);
+      selectedTools.set(selectedDiscoveryTools(result, choices, priorNames));
       toolPreview.set(result);
     } catch (reason) {
       if (alive && ticket === formGeneration)
@@ -226,7 +230,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     const captured = basis();
     if (captured) {
       error.set('');
-      void previewTools(captured, profile, ++formGeneration);
+      const plan = editingPlan();
+      const choices =
+        wasApproved(plan) || planSelection(plan) != null ? selectedTools() : undefined;
+      void previewTools(captured, profile, ++formGeneration, choices);
     }
   };
   const edit = async (fresh: boolean, approve = false) => {
@@ -236,12 +243,12 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     editingPlan.set(plan);
     reapproving.set(approve);
     deleting.set(false);
-    const profile =
-      plan?.approved || needsRenewedApproval(plan)
-        ? discoveryWorkerTools(plan?.task.effect)
-        : 'read_only';
+    const effect = plan?.task.effect;
+    const profile = wasApproved(plan) ? discoveryWorkerTools(effect) : 'read_only';
+    const requested = planSelection(plan);
     workerTools.set(profile);
     toolPreview.set(null);
+    selectedTools.set(requested ?? {});
     intent.set(plan?.task.intent.body ?? '');
     const schedule = plan?.task.schedule;
     minutes.set(schedule?.kind === 'interval' ? String(schedule.everySeconds / 60) : '30');
@@ -253,11 +260,6 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       const captured = await capture();
       if (alive && ticket === formGeneration) {
         basis.set(captured);
-        const effect = plan?.task.effect;
-        const requested =
-          effect?.kind === 'discovery' && effect.workerTools === profile
-            ? effect.selectedTools
-            : undefined;
         await previewTools(captured, profile, ticket, requested, true);
       }
     } catch (reason) {
@@ -709,6 +711,9 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                 ? 'Discovery permission notice'
                 : 'Discovery read-only notice',
             )}
+            {editing() && toolPreview() && Object.values(selectedTools()).includes('read_files')
+              ? ' ' + tr('Discovery Read scope')
+              : ''}
           </Text>
         </If>
       </Scroll>

@@ -274,6 +274,14 @@ impl Scheduler {
     }
 }
 impl Owner {
+    fn discovery_tool_groups(&self, names: &[String]) -> DiscoveryToolSelection {
+        names
+            .iter()
+            .filter(|name| name.as_str() != super::discovery::COMPLETE)
+            .map(|name| (name.clone(), self.discovery_tool_group(name)))
+            .collect()
+    }
+
     pub fn schedule_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.scheduler.changed.subscribe()
     }
@@ -318,12 +326,7 @@ impl Owner {
             let tools = self
                 .discovery_tool_grant(&basis, &target, worker_tools, None)
                 .await?;
-            let groups = tools
-                .names
-                .iter()
-                .filter(|name| name.as_str() != super::discovery::COMPLETE)
-                .map(|name| (name.clone(), self.discovery_tool_group(name)))
-                .collect();
+            let groups = self.discovery_tool_groups(&tools.names);
             let approved_names = saved.and_then(|saved| match saved.plan.authorization {
                 Some(Approval::Discovery {
                     approval, tools, ..

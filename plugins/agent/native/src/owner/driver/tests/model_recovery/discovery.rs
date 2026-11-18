@@ -907,13 +907,22 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     let original = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let updated = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&original).await;
+    f.change_source(|config| config.tools = Some(vec!["Read".into()]))
+        .await;
     let stale = f.create("Approved before the endpoint changed").await;
+    f.change_source(|config| config.tools = None).await;
     f.change_model_endpoint(&updated).await;
     f.change(&stale, "trigger_now").await;
 
     let blocked = f.settled(&stale, 1).await;
     assert_requires_reapproval(&blocked, "background_model_route_changed");
     assert!(blocked["task"]["runs"][0]["runId"].is_null(), "{blocked}");
+    assert_eq!(
+        blocked["task"]["effect"]["selectedTools"],
+        json!({"Read":"read_files"})
+    );
+    let available = f.preview(&f.effect("session").await, Some(&stale)).await;
+    assert!(available.as_array().unwrap().contains(&json!("Write")));
 
     let reporting = f.create("Route changes while investigating").await;
     f.change(&reporting, "trigger_now").await;
