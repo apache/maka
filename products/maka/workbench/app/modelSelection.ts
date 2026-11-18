@@ -47,12 +47,20 @@ export const routeKey = (backend: ModelBackend): string =>
 export const sameRoute = (left: BackendIdentity, right: BackendIdentity): boolean =>
   left === null || right === null ? left === right : routeKey(left) === routeKey(right);
 
+export const availableSpeeds = (choice: ModelChoice | null) =>
+  choice?.serviceTiers?.filter((tier) => tier.id !== 'default') ?? [];
+
 export function selectionForChoice(
   backend: BackendIdentity,
   choice: ModelChoice,
 ): ModelBackend | null {
   if (!backend) return null;
-  if (backend.kind === 'model' && sameRoute(backend, choice.selection)) return backend;
+  if (backend.kind === 'model' && sameRoute(backend, choice.selection)) {
+    return backend.serviceTier &&
+      !availableSpeeds(choice).some((tier) => tier.id === backend.serviceTier)
+      ? { ...backend, serviceTier: null }
+      : backend;
+  }
   const matched = [choice.selection, ...(choice.aliases ?? [])].find((selection) =>
     sameRoute(backend, selection),
   );
@@ -77,12 +85,8 @@ export const serviceTier = (backend: BackendIdentity): string | null =>
 
 export function speedCaption(backend: BackendIdentity, details: ModelDetails): string {
   const tier = serviceTier(backend);
-  if (!tier) return '';
-  if (details.kind !== 'ready' || !sameRoute(backend, details.choice.selection)) return tier;
-  return (
-    details.choice.serviceTiers?.find((item) => item.id === tier)?.name ??
-    tr('{level} · Unavailable', { level: tier })
-  );
+  if (!tier || details.kind !== 'ready' || !sameRoute(backend, details.choice.selection)) return '';
+  return availableSpeeds(details.choice).find((item) => item.id === tier)?.name ?? '';
 }
 
 export const sameBackend = (left: BackendIdentity, right: BackendIdentity): boolean =>

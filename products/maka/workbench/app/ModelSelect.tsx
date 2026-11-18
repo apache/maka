@@ -41,6 +41,7 @@ import { useHost } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
+  availableSpeeds,
   effectiveThinkingLevel,
   effortCaption,
   modelCaption,
@@ -286,6 +287,7 @@ function ModelMenu(props: {
       ? details.choice
       : null;
   };
+  const speeds = computed(() => availableSpeeds(readyChoice()));
   const hasEffortControls = () => {
     const choice = readyChoice();
     return (
@@ -755,18 +757,13 @@ function ModelMenu(props: {
           </Each>
         </Scroll>
       </Popover>
-      <If
-        when={
-          readyChoice() &&
-          ((readyChoice()?.serviceTiers?.length ?? 0) > 0 || serviceTier(owner.backend()) !== null)
-        }
-      >
+      <If when={speeds().length > 0}>
         <SettingsSegmented
           label={tr('Speed')}
           value={serviceTier(owner.backend()) ?? ''}
           choices={[
             { value: '', title: tr('Default') },
-            ...(readyChoice()?.serviceTiers ?? []).map((tier) => ({
+            ...speeds().map((tier) => ({
               value: tier.id,
               title: tier.name,
             })),
