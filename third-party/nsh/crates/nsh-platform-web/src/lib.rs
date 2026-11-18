@@ -1085,8 +1085,9 @@ fn flush() {
         for uri in app.inline_images.prune() {
             ffi::release_image(&uri);
         }
-        // Bound properties follow the styles just applied.
-        app.animation.outputs(&mut out);
+        // Bound properties follow the styles just applied: all of them, so
+        // what the batch inserted gets its values.
+        app.animation.outputs(&mut out, true);
         if !out.is_empty() {
             ffi::submit(&out.finish());
         }
@@ -1162,7 +1163,7 @@ pub extern "C" fn nsh_frame(now: f64) -> f64 {
             // The animation graph's clock is in seconds.
             app.animation.tick(now / 1000.0);
             let mut out = Out::new();
-            app.animation.outputs(&mut out);
+            app.animation.outputs(&mut out, false);
             if !out.is_empty() {
                 ffi::submit(&out.finish());
             }
@@ -1710,7 +1711,7 @@ pub extern "C" fn nsh_scroll(id: u32, x: f32, y: f32, applied: u32) -> f64 {
     send(|app| {
         if app.animation.scrolled(id, x, y) {
             let mut out = Out::new();
-            app.animation.outputs(&mut out);
+            app.animation.outputs(&mut out, false);
             if !out.is_empty() {
                 ffi::submit(&out.finish());
             }
@@ -1766,7 +1767,7 @@ pub extern "C" fn nsh_pull(id: u32, distance: f32) -> f64 {
     send(|app| {
         if app.animation.pulled(id, distance) {
             let mut out = Out::new();
-            app.animation.outputs(&mut out);
+            app.animation.outputs(&mut out, false);
             if !out.is_empty() {
                 ffi::submit(&out.finish());
             }
@@ -1799,7 +1800,7 @@ pub extern "C" fn nsh_pan(id: u32, phase: u32, tx: f32, ty: f32, vx: f32, vy: f3
             _ => app.animation.pan_moved(id, tx, ty),
         }
         let mut out = Out::new();
-        app.animation.outputs(&mut out);
+        app.animation.outputs(&mut out, false);
         if !out.is_empty() {
             ffi::submit(&out.finish());
         }
@@ -1841,7 +1842,7 @@ pub extern "C" fn nsh_transform_gesture(id: u32, rotation: u32, phase: u32, amou
             _ => app.animation.transform_moved(id, rotation, amount),
         }
         let mut out = Out::new();
-        app.animation.outputs(&mut out);
+        app.animation.outputs(&mut out, false);
         if !out.is_empty() {
             ffi::submit(&out.finish());
         }

@@ -4370,7 +4370,7 @@ https://crates.io/api/v1/crates/zeroize/1.9.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zeroize_derive/1.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-core/0.5.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-jpeg/0.5.15/download :: LICENSE-APACHE
-https://github.com/longbridge/nsh#7ef007f1d99ab27ecb8a8707cddb0361203c47e4 (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
+https://github.com/longbridge/nsh#6da2ea4c209851bd46e42435ee47c92edf9c7727 (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
 https://raw.githubusercontent.com/dudykr/ddbase/19f6487518dbebbc198346bfb979313ef457199e/LICENSE
 https://raw.githubusercontent.com/dudykr/ddbase/d46ef439d30d2b64eb87d4e197929548b51b21be/LICENSE
 https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE
@@ -29242,7 +29242,7 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 nsh-base@0.6.0 (Apache-2.0)
 
-https://github.com/longbridge/nsh#7ef007f1d99ab27ecb8a8707cddb0361203c47e4 (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
+https://github.com/longbridge/nsh#6da2ea4c209851bd46e42435ee47c92edf9c7727 (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
 
 The KaTeX fonts in katex.pack.zst (KaTeX_*.ttf of https://github.com/KaTeX/KaTeX,
 unmodified, packed in one zstd-compressed file):
@@ -29344,7 +29344,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 nsh-base@0.6.0 (Apache-2.0)
 
-https://github.com/longbridge/nsh#7ef007f1d99ab27ecb8a8707cddb0361203c47e4 (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
+https://github.com/longbridge/nsh#6da2ea4c209851bd46e42435ee47c92edf9c7727 (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
 
 emoji.tsv is generated from emojibase-data (https://github.com/milesj/emojibase),
 whose names and keywords come from the Unicode Common Locale Data Repository.
@@ -29432,7 +29432,7 @@ nsh-platform-tui@0.6.0 (Apache-2.0)
 nsh-platform-windows@0.6.0 (Apache-2.0)
 nsh-updater@0.6.0 (Apache-2.0)
 
-https://raw.githubusercontent.com/longbridge/nsh/7ef007f1d99ab27ecb8a8707cddb0361203c47e4/LICENSE-APACHE
+https://raw.githubusercontent.com/longbridge/nsh/6da2ea4c209851bd46e42435ee47c92edf9c7727/LICENSE-APACHE
 
 Copyright 2026 Longbridge <https://longbridge.com>
 
