@@ -228,12 +228,16 @@ async fn restore_send_merges_verified_attachments_and_consumes_pending_send_once
         mime_type: "text/plain".into(),
         bytes: 11,
     };
+    let quote = |text: &str| {
+        serde_json::from_value::<maka_agent_facts::input::QuoteRef>(json!({"text":text})).unwrap()
+    };
     let initial = journal
         .save_draft(
             &key,
             None,
             DraftEdit {
                 text: "review this".into(),
+                quotes: Some(vec![quote("original"), quote("shared")]),
                 attachments: vec![attachment.clone()],
                 settled_uploads: vec![upload_op_id],
                 ..DraftEdit::default()
@@ -293,7 +297,15 @@ async fn restore_send_merges_verified_attachments_and_consumes_pending_send_once
         .await
         .unwrap();
     let typed = journal
-        .save_draft(&key, Some(initial.revision), "next draft".into())
+        .save_draft(
+            &key,
+            Some(initial.revision),
+            DraftEdit {
+                text: "next draft".into(),
+                quotes: Some(vec![quote("new"), quote("shared")]),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
 
@@ -304,6 +316,14 @@ async fn restore_send_merges_verified_attachments_and_consumes_pending_send_once
         .unwrap();
     assert_eq!(restored.text, "next draft\n\nreview this");
     assert_eq!(restored.attachments, vec![attachment.clone()]);
+    assert_eq!(
+        restored.quotes,
+        vec![quote("new"), quote("shared"), quote("original")]
+    );
+    assert_eq!(
+        journal.load_draft(&key).await.unwrap().unwrap().quotes,
+        restored.quotes
+    );
     assert!(journal.pending(&host, &key).await.unwrap().is_empty());
 
     // 5. Subsequent edits keeping the restored attachment remain valid, and repeat restore is rejected.

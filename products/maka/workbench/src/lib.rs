@@ -189,6 +189,57 @@ mod tests {
         app.wait_for("role:button[Approve and enable]").unwrap();
     }
 
+    #[test]
+    fn discovery_panel_keeps_lone_background_followups_manageable_and_offers_a_replacement_model() {
+        let mut app = headless_fixture(
+            "tests/fixtures/discovery.tsx",
+            Size::new(px(1100.0), px(900.0)),
+            false,
+        );
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("role:button[Approve and enable]").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press_key("mod+shift+b").unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("role:button[View background follow-ups]")
+            .unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:button[Approve and enable]")
+                .unwrap()
+        );
+        app.press("role:button[View background follow-ups]")
+            .unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press("role:button[Hide background follow-ups]")
+            .unwrap();
+        app.wait_for("role:button[View background follow-ups]")
+            .unwrap();
+        app.press("role:button[View background follow-ups]")
+            .unwrap();
+        app.press("role:button[Pause]").unwrap();
+        app.wait_for("role:button[Resume]").unwrap();
+        app.press_key("mod+shift+m").unwrap();
+        app.press("role:button[Resume]").unwrap();
+        app.wait_for("role:button[Change model]").unwrap();
+        app.press("role:button[Change model]").unwrap();
+        app.wait_for("text:Opened models").unwrap();
+    }
+
+    #[test]
+    fn fullscreen_composer_removes_and_sends_quotes_without_typed_text() {
+        let mut app = fixture("stage-quotes.tsx");
+        app.wait_for("text:First selected passage").unwrap();
+        app.press("role:button[Remove quote] >> nth=0").unwrap();
+        assert!(!app.screen().matches("text:First selected passage").unwrap());
+        app.wait_for("text:Second selected passage").unwrap();
+        app.press("role:button[Send message]").unwrap();
+        app.wait_for("text:Sent Second selected passage").unwrap();
+        assert!(!app.screen().matches("role:button[Remove quote]").unwrap());
+    }
+
     fn headless_fixture(
         entry: &str,
         viewport: Size<Points>,

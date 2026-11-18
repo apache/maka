@@ -60,7 +60,11 @@ export function StageFloatingComposer(props: {
   const canSend = () => {
     const session = props.session();
     if (!session || !session.editable()) return false;
-    return hasComposerContent(session.draft().trim(), session.attachments.files(), session.quotes());
+    return hasComposerContent(
+      session.draft().trim(),
+      session.attachments.files(),
+      session.quotes(),
+    );
   };
 
   const send = () => {
