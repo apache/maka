@@ -142,25 +142,29 @@ test('accepted queued sends already visible in transcript or followups hide tran
 test('typing while restoreSend is in flight merges the restored message once onto the latest local edit', () => {
   const fileA = { id: 'att-1', name: 'sample.txt', mimeType: 'text/plain', bytes: 11 };
   const fileB = { id: 'att-2', name: 'new.txt', mimeType: 'text/plain', bytes: 5 };
+  const fresh = { text: 'same passage', sourceMessageId: 'new' };
+  const old = { text: 'same passage', sourceMessageId: 'original' };
   assert.deepEqual(
     mergeRestoredIntoHeldDraft(
-      { text: 'next draft!', attachments: [fileB], settledUploads: ['upload-2'] },
-      { text: 'review this', attachments: [fileA, fileB] },
+      { text: 'next draft!', attachments: [fileB], settledUploads: ['upload-2'], quotes: [fresh] },
+      { text: 'review this', attachments: [fileA, fileB], quotes: [{ ...fresh }, old] },
     ),
     {
       text: 'next draft!\n\nreview this',
       attachments: [fileB, fileA],
+      quotes: [fresh, old],
       settledUploads: ['upload-2'],
     },
   );
   assert.deepEqual(
     mergeRestoredIntoHeldDraft(
-      { text: '   ', attachments: [], settledUploads: [] },
+      { text: '   ', attachments: [], settledUploads: [], quotes: [] },
       { text: 'review this', attachments: [fileA] },
     ),
     {
       text: 'review this',
       attachments: [fileA],
+      quotes: [],
       settledUploads: [],
     },
   );

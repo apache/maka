@@ -526,11 +526,12 @@ export function Conversation(props: ConversationProps) {
   const draftReady = signal(false);
   const savingFailed = signal(false);
   const unresolved = signal<SendOperation[]>([]);
+  type ComposerDraftEdit = AttachmentEdit & { text: string; quotes: QuoteRef[] };
   type FrozenSend = {
     id: string;
     text: string;
     files: DraftAttachment[];
-    edit: AttachmentEdit & { text: string; quotes: QuoteRef[] };
+    edit: ComposerDraftEdit;
     selection: ReturnType<typeof sendSelection>;
     revision?: number;
   };
@@ -1545,12 +1546,12 @@ export function Conversation(props: ConversationProps) {
   } | null = null;
   let landmarksReadingThrough = -1;
   let draftRevision = 0;
-  let pendingDraft: (AttachmentEdit & { text: string; quotes: QuoteRef[] }) | null = null;
+  let pendingDraft: ComposerDraftEdit | null = null;
   let saveTask: Promise<void> | null = null;
   // From Enter until the send is reserved, the saved draft must stay the
   // revision being sent. Edits made meanwhile show at once and are saved after.
   let holding = false;
-  let heldDraft: (AttachmentEdit & { text: string; quotes: QuoteRef[] }) | null = null;
+  let heldDraft: ComposerDraftEdit | null = null;
   const autoSend = signal<{ text: string; first?: boolean } | null>(null);
   const attachments = createAttachmentDraft({
     sessionId,
@@ -2588,7 +2589,7 @@ export function Conversation(props: ConversationProps) {
       await saveTask;
     }
   };
-  const queueDraft = (edit: AttachmentEdit & { text: string; quotes: QuoteRef[] }) => {
+  const queueDraft = (edit: ComposerDraftEdit) => {
     if (holding) {
       heldDraft = edit;
       return;
@@ -3294,7 +3295,7 @@ export function Conversation(props: ConversationProps) {
       return;
     const applyAtomicRestore = async (
       targetId: string,
-      sourceDraft: { text: string; attachments: DraftAttachment[] },
+      sourceDraft: { text: string; attachments: DraftAttachment[]; quotes?: QuoteRef[] },
     ) => {
       if (savingFailed()) {
         sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
@@ -3313,10 +3314,12 @@ export function Conversation(props: ConversationProps) {
         draftRevision = restored.revision;
         if (heldDraft === null) {
           attachments.restore(restored.attachments);
+          quotes.set(restored.quotes ?? []);
           draft.set(restored.text);
         } else {
           const merged = mergeRestoredIntoHeldDraft(heldDraft, sourceDraft);
           attachments.restore(merged.attachments);
+          quotes.set(merged.quotes);
           draft.set(merged.text);
           heldDraft = merged;
         }
@@ -3359,30 +3362,25 @@ export function Conversation(props: ConversationProps) {
           }
           savingFailed.set(false);
         }
-        const existingText = draft();
-        const nextText =
-          frozen.text === ''
-            ? existingText
-            : existingText.trim() === '' || existingText === frozen.text
-              ? frozen.text
-              : `${existingText}\n\n${frozen.text}`;
-        const seen = new Set(attachments.files().map((file) => file.id));
-        const mergedFiles = [
-          ...attachments.files(),
-          ...frozen.files.filter((file) => !seen.has(file.id)),
-        ];
-        const mergedSettled = [
-          ...new Set([...frozen.edit.settledUploads, ...attachments.snapshot().settledUploads]),
-        ];
+        const current = attachments.snapshot();
+        const merged = mergeRestoredIntoHeldDraft(
+          {
+            text: draft(),
+            quotes: quotes(),
+            attachments: current.attachments,
+            settledUploads: [
+              ...new Set([...frozen.edit.settledUploads, ...current.settledUploads]),
+            ],
+          },
+          frozen.edit,
+        );
+        if (merged.quotes.length > 16) throw new UiError('Too many quotes');
         holding = false;
         heldDraft = null;
-        attachments.restore(mergedFiles);
-        draft.set(nextText);
-        pendingDraft = {
-          text: nextText,
-          attachments: mergedFiles,
-          settledUploads: mergedSettled,
-        };
+        attachments.restore(merged.attachments);
+        quotes.set(merged.quotes);
+        draft.set(merged.text);
+        pendingDraft = merged;
         startSave();
         await flushDraft();
         if (!alive || savingFailed()) return;
@@ -3653,12 +3651,14 @@ export function Conversation(props: ConversationProps) {
       report(reason, 'Could not send the message.');
       return false;
     }
-    const savedComposerEdit: AttachmentEdit & { text: string } = {
+    const savedComposerEdit: ComposerDraftEdit = {
       text: draft(),
+      quotes: quotes(),
       ...attachments.snapshot(),
     };
-    const externalEdit: AttachmentEdit & { text: string } = {
+    const externalEdit: ComposerDraftEdit = {
       text,
+      quotes: [],
       attachments: [],
       settledUploads: [],
     };

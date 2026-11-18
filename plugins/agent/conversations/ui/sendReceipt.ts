@@ -19,8 +19,10 @@
 
 import type {
   AgentSendResult,
+  QuoteRef,
   Receipt,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
+import { sameValue } from '../../../shared/value.ts';
 import { message, type UiText } from '../../../../products/maka/workbench/app/text-value.ts';
 
 export function sendReceiptFailure(
@@ -102,14 +104,18 @@ export function shouldHideAcceptedQueuedStatus(options: {
  * already folded into `restoreSend`'s persisted return value.
  */
 export function mergeRestoredIntoHeldDraft<File extends { id: string }>(
-  typed: { text: string; attachments: File[]; settledUploads: string[] },
-  restoredSource: { text: string; attachments: File[] },
-): { text: string; attachments: File[]; settledUploads: string[] } {
+  typed: { text: string; attachments: File[]; settledUploads: string[]; quotes: QuoteRef[] },
+  restoredSource: { text: string; attachments: File[]; quotes?: QuoteRef[] },
+) {
   const seen = new Set(typed.attachments.map((file) => file.id));
   const attachments = [
     ...typed.attachments,
     ...restoredSource.attachments.filter((file) => !seen.has(file.id)),
   ];
+  const quotes = [...typed.quotes];
+  for (const quote of restoredSource.quotes ?? []) {
+    if (!quotes.some((current) => sameValue(current, quote))) quotes.push(quote);
+  }
   const text =
     restoredSource.text === ''
       ? typed.text
@@ -120,5 +126,6 @@ export function mergeRestoredIntoHeldDraft<File extends { id: string }>(
     text,
     attachments,
     settledUploads: typed.settledUploads,
+    quotes,
   };
 }

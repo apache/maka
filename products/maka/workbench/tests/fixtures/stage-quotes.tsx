@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { mount, signal, Text, View } from 'nsh';
+import { mount, signal, Text, View, type JSX } from 'nsh';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../app/StageFloatingComposer';
 
@@ -46,7 +46,7 @@ mount(() => {
     <View>
       <StageFloatingComposer
         title={() => 'Investigation'}
-        session={() => session as unknown as ComposerSession}
+        session={() => session as unknown as ComposerSession<JSX.Element>}
         stop={() => {}}
         exitFullscreen={() => {}}
         transcript={() => null}
