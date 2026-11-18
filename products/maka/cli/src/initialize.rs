@@ -519,6 +519,7 @@ impl Settings {
                 connection
                     .definition
                     .prepare(provider::Resolve {
+                        service_tier: None,
                         connection: provider::Connection {
                             id: connection.draft.slug.clone(),
                             revision: 0,

@@ -192,6 +192,7 @@ impl Owner {
             BackendPreference::Model {
                 connection_id,
                 model_id,
+                service_tier,
                 thinking_level,
             } => {
                 let source = crate::model::Source::select(
@@ -201,6 +202,7 @@ impl Owner {
                     ModelSelection {
                         connection_id,
                         model_id,
+                        service_tier,
                     },
                     thinking_level,
                     id.to_owned(),

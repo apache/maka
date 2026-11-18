@@ -26,6 +26,7 @@ import type {
   AgentSession,
   Schedule,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
+import { nativeModelSelection } from './modelSelection';
 import { useHost } from './host';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { SettingsButton, SettingsSelect } from './SettingsPage';
@@ -196,14 +197,14 @@ function AutomationEditor(props: {
           ? {
               kind: 'agent_run',
               target,
-              model: { connectionId: backend.connectionId, modelId: backend.modelId },
+              model: nativeModelSelection(backend),
               thinkingLevel: backend.thinkingLevel,
             }
           : {
               kind: 'session',
               delivery: mode,
               target,
-              model: { connectionId: backend.connectionId, modelId: backend.modelId },
+              model: nativeModelSelection(backend),
               thinkingLevel: backend.thinkingLevel,
             };
     const input = {

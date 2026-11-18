@@ -26,6 +26,7 @@ pub fn model_request(
     overrides: Option<ModelOverride>,
 ) -> maka_agent_ports::provider::Resolve {
     maka_agent_ports::provider::Resolve {
+        service_tier: None,
         connection: maka_agent_ports::provider::Connection {
             id: row.connection_id.clone(),
             revision: row.revision,

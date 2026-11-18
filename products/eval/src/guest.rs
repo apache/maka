@@ -669,6 +669,7 @@ async fn resolve_backend(
         ));
     }
     Ok(BackendPreference::Model {
+        service_tier: None,
         connection_id: choice.selection.connection_id,
         model_id: choice.selection.model_id,
         thinking_level: None,

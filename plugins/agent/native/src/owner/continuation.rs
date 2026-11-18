@@ -197,11 +197,7 @@ impl Owner {
             turn_id: format!("t_{}", self.operation_id(operation)),
             run_id: RunId::new(),
         };
-        let preference = BackendPreference::Model {
-            connection_id: model.connection_id,
-            model_id: model.model_id,
-            thinking_level: thinking,
-        };
+        let preference = BackendPreference::model(model, thinking);
         let basis = self
             .capture_current_run(
                 &session_id,

@@ -710,6 +710,7 @@ impl Rig {
             owner.catalog.clone(),
             owner.credentials.clone(),
             ModelSelection {
+                service_tier: None,
                 connection_id: connection.connection_id,
                 model_id: "llama3.2".into(),
             },

@@ -140,6 +140,7 @@ impl Owner {
             BackendPreference::Model {
                 connection_id,
                 model_id,
+                service_tier,
                 thinking_level,
             } => {
                 match crate::model::candidate_editing_tools(
@@ -148,6 +149,7 @@ impl Owner {
                     maka_agent_facts::configuration::ModelSelection {
                         connection_id,
                         model_id,
+                        service_tier,
                     },
                     thinking_level,
                 )

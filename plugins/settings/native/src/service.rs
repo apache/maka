@@ -97,6 +97,7 @@ fn model_choice_from_metadata(
             apply_patch: overrides.and_then(|value| value.apply_patch),
         }),
         selection: ModelSelection {
+            service_tier: None,
             connection_id: row.connection_id.clone(),
             model_id: model.into(),
         },

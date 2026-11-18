@@ -935,11 +935,10 @@ impl Owner {
                     &StoredSessionConfiguration {
                         incognito: source.configuration.incognito,
                         parent_session_id: Some(job.bot.clone()),
-                        backend: Some(BackendPreference::Model {
-                            connection_id: job.approval.model.connection_id.clone(),
-                            model_id: job.approval.model.model_id.clone(),
-                            thinking_level: job.approval.thinking_level,
-                        }),
+                        backend: Some(BackendPreference::model(
+                            job.approval.model.clone(),
+                            job.approval.thinking_level,
+                        )),
                         compaction_prompt: None,
                         applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
@@ -975,11 +974,10 @@ impl Owner {
         let captured = self
             .capture_current_run(
                 &job.worker,
-                Some(BackendPreference::Model {
-                    connection_id: job.approval.model.connection_id.clone(),
-                    model_id: job.approval.model.model_id.clone(),
-                    thinking_level: job.approval.thinking_level,
-                }),
+                Some(BackendPreference::model(
+                    job.approval.model.clone(),
+                    job.approval.thinking_level,
+                )),
                 job.request.clone(),
                 native.scope(),
             )

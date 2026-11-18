@@ -77,6 +77,7 @@ impl ApiProviders {
         let provider = Self::provider(id, snapshot)?;
         let mut metadata = provider.model_metadata(model.clone(), overrides.as_ref());
         let mut request = Resolve {
+            service_tier: None,
             connection,
             model,
             overrides,
@@ -209,6 +210,11 @@ impl ApiProvider {
     }
 
     fn prepare(&self, request: Resolve) -> Result<Model, Error> {
+        if request.service_tier.is_some() {
+            return Err(Error::Invalid(
+                "provider does not advertise service tiers".into(),
+            ));
+        }
         let configuration = Configuration::read(&request.connection.configuration)?;
         let ModelMetadata {
             mut info,
@@ -355,6 +361,7 @@ mod tests {
         };
         let model = provider
             .prepare(Resolve {
+                service_tier: None,
                 connection: Connection {
                     id: "copilot".into(),
                     revision: 1,

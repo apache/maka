@@ -473,6 +473,7 @@ async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         let binding = ApiProviders::definition("ollama-cloud", Arc::new(Snapshot::bundled().unwrap())).unwrap();
         let model = binding.prepare(Resolve {
+            service_tier: None,
             connection: Connection { id: "cloud".into(), revision: 1, configuration: binding.configure(json!({"baseUrl":url})).unwrap() },
             model: ModelInfo::new("deepseek-v4-flash"),
             overrides: None,

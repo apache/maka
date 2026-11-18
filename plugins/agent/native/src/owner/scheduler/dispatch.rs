@@ -223,11 +223,7 @@ impl Owner {
     ) -> Result<CapturedRun, String> {
         self.capture_background_backend(
             target,
-            BackendPreference::Model {
-                connection_id: model.connection_id,
-                model_id: model.model_id,
-                thinking_level: thinking,
-            },
+            BackendPreference::model(model, thinking),
             kind,
             sandbox_ceiling,
         )

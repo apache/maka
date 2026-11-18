@@ -95,6 +95,10 @@ impl Provider for DiscoveryProvider {
                 .map(|(id, hash)| {
                     let mut model = ModelInfo::new(id);
                     model.codex_compaction_hash = Some(hash.to_owned());
+                    model.service_tiers.push(ModelServiceTier {
+                        id: "priority".into(),
+                        name: "Fast".into(),
+                    });
                     model.context_window = Some(200_000);
                     model.max_output_tokens = Some(128_000);
                     model
@@ -355,6 +359,7 @@ async fn source_fixture(f: &Fixture) -> super::super::Source {
         session: "session".into(),
         revision: revision(),
         accepted: AcceptedModel {
+            service_tier: None,
             binding: f.binding.clone(),
             thinking_level: None,
             tool_mode: ToolMode::default(),
@@ -579,6 +584,7 @@ async fn select_admits_persisted_model_without_waiting_on_inventory_or_oauth_ref
             catalog.clone(),
             f.credentials.clone(),
             ModelSelection {
+                service_tier: None,
                 connection_id: f.binding.connection_id.clone(),
                 model_id: "model-a".into(),
             },
@@ -603,6 +609,7 @@ async fn select_admits_persisted_model_without_waiting_on_inventory_or_oauth_ref
                 catalog,
                 credentials,
                 ModelSelection {
+                    service_tier: None,
                     connection_id,
                     model_id: "model-b".into(),
                 },
@@ -619,6 +626,47 @@ async fn select_admits_persisted_model_without_waiting_on_inventory_or_oauth_ref
     let uncached = uncached.await.unwrap().unwrap();
     assert_eq!(uncached.accepted.binding.model, "model-b");
     assert_eq!(f.provider.refreshes.load(Ordering::SeqCst), 1);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn restored_run_uses_its_selected_subscription_speed() {
+    use super::super::Source;
+    use maka_agent_engine::ModelSource;
+
+    let f = Fixture::new().await;
+    f.provider.release.add_permits(1);
+    f.refresh().await;
+    let catalog = Arc::new(maka_providers::catalog::Catalog::new(
+        maka_providers::catalog::Snapshot::bundled().unwrap(),
+    ));
+    let source = Source::select(
+        f.store.clone(),
+        catalog,
+        f.credentials.clone(),
+        ModelSelection {
+            connection_id: f.binding.connection_id.clone(),
+            model_id: "model-a".into(),
+            service_tier: Some("priority".into()),
+        },
+        None,
+        "session".into(),
+        revision(),
+    )
+    .await
+    .unwrap();
+    let descriptor = serde_json::to_vec(&source.accepted).unwrap();
+    let restored = Source::restore(
+        f.store.clone(),
+        f.credentials.clone(),
+        serde_json::from_slice(&descriptor).unwrap(),
+        "session".into(),
+        revision(),
+    )
+    .unwrap();
+    let prepared = restored.capture().await.unwrap();
+    assert_eq!(prepared.provider.model, "model-a");
+    assert_eq!(prepared.options["openai"]["serviceTier"], "priority");
     f.close().await;
 }
 

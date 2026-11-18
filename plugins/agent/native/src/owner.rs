@@ -927,11 +927,7 @@ impl Owner {
         let backend = if is_room {
             None
         } else if let Some(p) = &applied_preset {
-            Some(BackendPreference::Model {
-                connection_id: p.model.connection_id.clone(),
-                model_id: p.model.model_id.clone(),
-                thinking_level: p.thinking_level,
-            })
+            Some(BackendPreference::model(p.model.clone(), p.thinking_level))
         } else {
             self.use_bot_model(scope, input.backend).await?
         };

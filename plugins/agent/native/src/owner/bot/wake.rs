@@ -178,21 +178,13 @@ impl Owner {
         let NotificationBackend::Model { model, .. } = route.backend else {
             return Ok(backend.or_else(|| Some(route.backend.preference())));
         };
-        let thinking_level = match &backend {
-            Some(crate::contract::BackendPreference::Model {
-                connection_id,
-                model_id,
-                thinking_level,
-            }) if *connection_id == model.connection_id && *model_id == model.model_id => {
-                *thinking_level
-            }
-            _ => None,
-        };
-        Ok(Some(crate::contract::BackendPreference::Model {
-            connection_id: model.connection_id,
-            model_id: model.model_id,
-            thinking_level,
-        }))
+        if matches!(&backend, Some(crate::contract::BackendPreference::Model {
+            connection_id, model_id, ..
+        }) if *connection_id == model.connection_id && *model_id == model.model_id)
+        {
+            return Ok(backend);
+        }
+        Ok(Some(crate::contract::BackendPreference::model(model, None)))
     }
 
     pub(in crate::owner) fn start_bot_wake(self: &Arc<Self>) {

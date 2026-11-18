@@ -52,6 +52,17 @@ const CHOICES: ModelChoice[] = [
     defaultThinkingLevel: null,
   },
   {
+    label: 'Sol',
+    sourceName: 'ChatGPT',
+    selection: { kind: 'model', connectionId: 'sub', modelId: 'sol' },
+    thinkingLevels: ['high'],
+    defaultThinkingLevel: null,
+    serviceTiers: [
+      { id: 'priority', name: 'Fast' },
+      { id: 'ultrafast', name: 'Ultrafast' },
+    ],
+  },
+  {
     label: 'Claude Sonnet',
     sourceName: 'Claude Code',
     selection: {

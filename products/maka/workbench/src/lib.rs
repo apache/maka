@@ -600,6 +600,22 @@ mod tests {
         );
         assert_eq!(bounds_of(&app, "label:Manage models"), manage_before);
 
+        assert!(!app.screen().matches("label:Ultrafast").unwrap());
+        app.press("label:Use Sol · ChatGPT").unwrap();
+        app.wait_for("label:Ultrafast").unwrap();
+        app.press("label:Ultrafast").unwrap();
+        app.wait_for("text: · Ultrafast").unwrap();
+        app.press("label:Choose reasoning effort").unwrap();
+        app.press("label:Use effort high").unwrap();
+        app.wait_for("text: · high · Ultrafast").unwrap();
+        app.press("label:Fast").unwrap();
+        app.wait_for("text: · high · Fast").unwrap();
+        app.press("label:Default").unwrap();
+        app.wait_for("text: · high").unwrap();
+        app.press("label:Use Plain model · DeepSeek").unwrap();
+        app.wait_for("text:Unsupported").unwrap();
+        assert!(!app.screen().matches("label:Ultrafast").unwrap());
+
         app.press("label:Manage models").unwrap();
         app.wait_for("text:Managed:1").unwrap();
         assert!(

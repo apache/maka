@@ -161,11 +161,27 @@ pub enum BackendPreference {
         connection_id: String,
         #[schemars(length(min = 1))]
         model_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
         thinking_level: Option<crate::execution::ThinkingLevel>,
     },
     Executor {
         selection: crate::executor::Selection,
     },
+}
+
+impl BackendPreference {
+    pub fn model(
+        model: crate::configuration::ModelSelection,
+        thinking_level: Option<crate::execution::ThinkingLevel>,
+    ) -> Self {
+        Self::Model {
+            connection_id: model.connection_id,
+            model_id: model.model_id,
+            service_tier: model.service_tier,
+            thinking_level,
+        }
+    }
 }
 
 pub const NATIVE_TASK_PROTOCOL: &str = "maka.native-executor-task";

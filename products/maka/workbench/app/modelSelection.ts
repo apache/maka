@@ -22,6 +22,7 @@ import type { UiText } from './text';
 import type {
   AgentBackendPreference,
   AgentModelChoice,
+  ModelSelection,
   ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 
@@ -51,6 +52,7 @@ export function selectionForChoice(
   choice: ModelChoice,
 ): ModelBackend | null {
   if (!backend) return null;
+  if (backend.kind === 'model' && sameRoute(backend, choice.selection)) return backend;
   const matched = [choice.selection, ...(choice.aliases ?? [])].find((selection) =>
     sameRoute(backend, selection),
   );
@@ -63,8 +65,30 @@ export const thinkingLevel = (backend: BackendIdentity): string | null =>
   (backend?.kind === 'model' ? backend.thinkingLevel : backend?.selection.settings.thinkingLevel) ??
   null;
 
+export function nativeModelSelection(
+  backend: Extract<ModelBackend, { kind: 'model' }>,
+): ModelSelection {
+  const { connectionId, modelId, serviceTier } = backend;
+  return serviceTier ? { connectionId, modelId, serviceTier } : { connectionId, modelId };
+}
+
+export const serviceTier = (backend: BackendIdentity): string | null =>
+  backend?.kind === 'model' ? (backend.serviceTier ?? null) : null;
+
+export function speedCaption(backend: BackendIdentity, details: ModelDetails): string {
+  const tier = serviceTier(backend);
+  if (!tier) return '';
+  if (details.kind !== 'ready' || !sameRoute(backend, details.choice.selection)) return tier;
+  return (
+    details.choice.serviceTiers?.find((item) => item.id === tier)?.name ??
+    tr('{level} · Unavailable', { level: tier })
+  );
+}
+
 export const sameBackend = (left: BackendIdentity, right: BackendIdentity): boolean =>
-  sameRoute(left, right) && thinkingLevel(left) === thinkingLevel(right);
+  sameRoute(left, right) &&
+  thinkingLevel(left) === thinkingLevel(right) &&
+  serviceTier(left) === serviceTier(right);
 
 export const backendName = (backend: ModelBackend): string =>
   backend.kind === 'model'
