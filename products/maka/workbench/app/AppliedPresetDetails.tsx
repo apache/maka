@@ -17,11 +17,13 @@
  * under the License.
  */
 
-import { Text, View } from 'nsh';
+import { Scroll, Text, View } from 'nsh';
 import type {
   AppliedPreset,
   AgentBackendPreference,
 } from '../../../../packages/plugin-sdk/src/index.js';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
 import { tr } from './locale';
 import { C, captionTextStyle } from './ui';
 
@@ -47,12 +49,25 @@ export function AppliedPresetDetails(props: {
   );
 }
 
-function currentPresetModel(
-  backend:
-    | import('../../../../packages/plugin-sdk/src/index.js').AgentBackendPreference
-    | null
-    | undefined,
-): string {
+export function AppliedPresetDialog(props: {
+  preset: AppliedPreset;
+  backend?: AgentBackendPreference | null;
+  close(): void;
+}) {
+  return (
+    <ModalDialog size="form" onCancel={props.close}>
+      <DialogHeader title={tr('Applied subagent')} />
+      <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
+        <AppliedPresetDetails preset={props.preset} backend={props.backend} />
+      </Scroll>
+      <DialogFooter>
+        <SettingsButton label={tr('Close')} autoFocus onPress={props.close} />
+      </DialogFooter>
+    </ModalDialog>
+  );
+}
+
+function currentPresetModel(backend: AgentBackendPreference | null | undefined): string {
   if (!backend) return tr('Default');
   return backend.kind === 'model'
     ? `${backend.connectionId} / ${backend.modelId} · ${backend.thinkingLevel ?? tr('Default')}`

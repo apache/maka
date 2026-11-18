@@ -341,6 +341,10 @@ type ConversationProps = {
     first?: boolean;
   } | null;
   commands(): void;
+  openPreset?(
+    preset: NonNullable<AgentSession['appliedPreset']>,
+    backend: AgentSession['backend'] | null | undefined,
+  ): void;
   connectionLost(): boolean;
   visible(): boolean;
   foreground(): boolean;
@@ -3252,6 +3256,66 @@ export function Conversation(props: ConversationProps) {
       sendError(id, reason);
     }
   };
+  const editOriginal = async (id: string) => {
+    if (!alive || !draftReady() || activeSends().has(id) || checkingSends().has(id)) return;
+    const freezing = freezeState();
+    const wasFreezing = freezing.kind !== 'idle' && freezing.frozen.id === id;
+    let restoredText = '';
+    let restoredFiles: DraftAttachment[] = [];
+    if (wasFreezing) {
+      if (freezing.kind === 'reserving') return;
+      restoredText = freezing.frozen.text;
+      restoredFiles = freezing.frozen.files;
+    } else {
+      const original = unresolved().find((item) => item.id === id);
+      if (!original) return;
+      const receiptFailure = sendReceiptFailure(original.receipt);
+      const cancelled = sendDeliveries().get(original.id) === 'cancelled';
+      if (!cancelled && !original.abandoned && receiptFailure === null) return;
+      restoredText = original.correlation.draft.text;
+      restoredFiles = original.correlation.draft.attachments;
+    }
+    const existingText = draft();
+    const nextText =
+      restoredText === ''
+        ? existingText
+        : existingText.trim() === '' || existingText === restoredText
+          ? restoredText
+          : `${existingText}\n\n${restoredText}`;
+    if (restoredFiles.length > 0) {
+      const seen = new Set(attachments.files().map((file) => file.id));
+      const merged = [
+        ...attachments.files(),
+        ...restoredFiles.filter((file) => !seen.has(file.id)),
+      ];
+      attachments.restore(merged);
+    }
+    try {
+      if (savingFailed()) {
+        const stored = await loadDraft(client);
+        if (!alive) return;
+        draftRevision = stored.revision;
+        savingFailed.set(false);
+      }
+      if (wasFreezing) {
+        holding = false;
+        heldDraft = null;
+        freezeState.set({ kind: 'idle' });
+      }
+      draft.set(nextText);
+      queueDraft({ text: nextText, ...attachments.snapshot() });
+      await flushDraft();
+      if (!alive || savingFailed()) return;
+      if (!wasFreezing) {
+        await dismissSend(client, id);
+        if (alive) await refreshSends();
+      }
+    } catch (reason) {
+      sendError(id, reason);
+      return;
+    }
+    if (alive) props.focusComposer();
+  };
   const dismissOriginal = async (id: string) => {
     if (!alive || activeSends().has(id) || checkingSends().has(id)) return;
     const freezing = freezeState();
@@ -3650,9 +3714,13 @@ export function Conversation(props: ConversationProps) {
       toolActivity().length === 0,
     connected,
     error: () => (connected() ? error() : ''),
+    dismissError: () => {
+      if (alive) error.set('');
+    },
     notice: () => (connected() ? notice() : ''),
     sends: sendStatuses,
     retrySend: retryOriginal,
+    editSend: editOriginal,
     checkSend,
     dismissSend: dismissOriginal,
     recovering: () => !receiptsKnown() || sending() || autoSending(),
@@ -4511,6 +4579,18 @@ export function Conversation(props: ConversationProps) {
         commands={props.commands}
         browser={props.browser()}
         files={props.files}
+        preset={
+          permissions.snapshot()?.appliedPreset && props.openPreset
+            ? {
+                name: permissions.snapshot()!.appliedPreset!.name,
+                open: () =>
+                  props.openPreset!(
+                    permissions.snapshot()!.appliedPreset!,
+                    permissions.snapshot()?.backend,
+                  ),
+              }
+            : undefined
+        }
         filesOpener={props.filesOpener}
         inspector={
           platform.idiom === 'terminal' || ownHandle.empty()

@@ -491,6 +491,7 @@ export function Header(props: {
   files?(): void;
   filesOpener?(node: ViewRef): void;
   changes?(): void;
+  preset?: { name: string; open(): void };
   /** Toggles the right-hand session context inspector card (left of Chat / Trajectory). */
   inspector?: { open: boolean; toggle(): void };
   /** Proactively opens or closes the right-hand workspace stage pane. */
@@ -599,6 +600,41 @@ export function Header(props: {
             ]}
           >
             {workspaceName()}
+          </Text>
+        </Button>
+      </If>
+      <If when={props.preset}>
+        <Button
+          accessibilityLabel={tr('Applied subagent')}
+          tooltip={textTooltip(() => `${tr('Applied subagent')}: ${props.preset!.name}`)}
+          onPress={() => props.preset?.open()}
+          style={{
+            ...toolbarControlStyle,
+            ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: desktop ? 4 : 6,
+            maxWidth: 200,
+            minWidth: 0,
+            flexShrink: 2,
+          }}
+          hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
+          activeStyle={desktop ? quietActiveStyle() : undefined}
+          focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
+        >
+          <Icon name="bot" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
+          <Text
+            style={[
+              {
+                ...captionTextStyle,
+                color: desktop ? C.muted : C.secondary,
+                minWidth: 0,
+                flexShrink: 1,
+              },
+              { numberOfLines: 1 },
+            ]}
+          >
+            {props.preset!.name}
           </Text>
         </Button>
       </If>

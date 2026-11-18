@@ -96,9 +96,35 @@ const native = {
       effect(() => out.set(fn()));
       return () => out();
     };
-    export const cleanup = fn => globalThis.checklistScope.push(fn);`,
+    export const cleanup = fn => globalThis.checklistScope.push(fn);
+    export const Storage = {
+      async getItem(key) {
+        return globalThis.checklistStorage?.get(key) ?? null;
+      },
+      async setItem(key, value) {
+        globalThis.checklistStorage?.set(key, String(value));
+      },
+    };`,
   locale: `export const tr = key => key;`,
 };
+globalThis.checklistStorage = new Map([
+  [
+    'maka.checklist.dismissed',
+    JSON.stringify({
+      'restarted-session': createHash('sha256')
+        .update(Buffer.from([4, 0, 0, 0, 0, 0, 0, 0]))
+        .update(Buffer.from([14, 0, 0, 0, 0, 0, 0, 0]))
+        .update(Buffer.from('Read the notes', 'utf8'))
+        .update(Buffer.from([20, 0, 0, 0, 0, 0, 0, 0]))
+        .update(Buffer.from('Update the changelog', 'utf8'))
+        .update(Buffer.from([5, 0, 0, 0, 0, 0, 0, 0]))
+        .update(Buffer.from('Build', 'utf8'))
+        .update(Buffer.from([3, 0, 0, 0, 0, 0, 0, 0]))
+        .update(Buffer.from('Tag', 'utf8'))
+        .digest('hex'),
+    }),
+  ],
+]);
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     const key =
@@ -426,4 +452,35 @@ test('reveal does not read when the item is loaded, the list is done, or it is c
   assert.equal(await settled(failed), -1);
   assert.ok(state.error(), 'the failed read left no error');
   assert.equal(watched.reads.length, 1);
+});
+
+test('dismissed checklists survive restart hydration without flashing and reconnect after a watch error is dismissed', async (t) => {
+  setup(t);
+  const watched = source();
+  const restarted = createChecklistState(watched, 'restarted-session');
+  const shownStates = [];
+  effect(() => shownStates.push(restarted.shown()));
+
+  watched.push(slicePage(1, release(['completed', 'completed', 'completed', 'completed'])));
+  await flush();
+  assert.equal(shownStates.includes(true), false, 'hydrated dismissed checklist flashed visible');
+  assert.equal(restarted.shown(), false);
+
+  // Dismissing an initial watch error clears it and reconnects the watch stream.
+  const broken = source();
+  const recovered = createChecklistState(broken, 'watch-recover-session');
+  await flush();
+  broken.push(null);
+  await flush();
+  assert.equal(recovered.shown(), true);
+  assert.ok(recovered.error());
+
+  recovered.hide();
+  assert.equal(recovered.error(), '');
+  assert.equal(recovered.shown(), false);
+  await flush();
+  broken.push(slicePage(1, [item('Fresh step', 'in_progress')]));
+  await flush();
+  assert.equal(recovered.shown(), true);
+  assert.equal(recovered.items()[0]?.content, 'Fresh step');
 });

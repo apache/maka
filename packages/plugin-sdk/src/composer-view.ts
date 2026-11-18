@@ -247,9 +247,11 @@ export interface ComposerSession<Element = unknown> {
   workspace(): string;
   empty(): boolean;
   error(): string;
+  dismissError(): void;
   notice(): string;
   sends(): ComposerSendStatus[];
   retrySend(id: string): Promise<void>;
+  editSend(id: string): Promise<void>;
   checkSend(id: string): Promise<void>;
   dismissSend(id: string): Promise<void>;
   recovering(): boolean;

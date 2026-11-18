@@ -75,7 +75,10 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
     check,
     trust,
     dismiss() {
-      if (!pending()) proposal.set(null);
+      if (!pending()) {
+        proposal.set(null);
+        error.set('');
+      }
     },
   };
 }

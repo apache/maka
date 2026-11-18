@@ -2424,7 +2424,8 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.expect_text("Keep the sidebar compact.").await;
     drop(original);
 
-    desktop.type_text("Summarize the changes afterwards.").await;
+    let queued_followup = "Summarize the changes afterwards for [@REA review](maka://session/ma_8b708bb06d73d5d83a9265c0464928803a7478a2a9083b6c3647cfc8c7c0f102_8fface6128fd12c727e1b3ab8e96acf2) across every remaining edge case in detail.";
+    desktop.type_text(queued_followup).await;
     desktop.right_click("Send message").await;
     desktop.control("Add to queue").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-queue-menu"));
@@ -2458,8 +2459,9 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
                     .await
                     .unwrap();
                 if queue["entries"].as_array().unwrap().iter().any(|row| {
-                    row["preview"] == "Summarize the changes afterwards."
-                        && row["kind"] == "followup"
+                    row["preview"].as_str().is_some_and(|preview| {
+                        preview.starts_with("Summarize the changes afterwards")
+                    }) && row["kind"] == "followup"
                 }) {
                     return;
                 }
@@ -2578,11 +2580,33 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         desktop.controls("Retry message").is_empty(),
         "a failed message does not force the details panel open"
     );
+    desktop.control("Dismiss messages").await;
     desktop.press("Messages").await;
-    desktop.control("Retry message").await;
+    let messages_strip = desktop.control("Messages").await;
+    let retry = desktop.control("Retry message").await;
+    let edit_in_composer = desktop.control("Edit message in composer").await;
+    let dismiss_status = desktop.control("Dismiss message status").await;
+    assert!(
+        retry.bottom() <= messages_strip.top()
+            && edit_in_composer.bottom() <= messages_strip.top()
+            && dismiss_status.bottom() <= messages_strip.top(),
+        "wrapped stopped message clipped its actions: strip={messages_strip:?}, retry={retry:?}, edit={edit_in_composer:?}, dismiss={dismiss_status:?}"
+    );
     desktop.press("Focus message composer").await;
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-stopped"));
+    desktop.press("Edit message in composer").await;
+    desktop
+        .until(
+            "restoring stopped message to composer did not clear Messages",
+            || desktop.controls("Messages").is_empty().then_some(()),
+        )
+        .await;
+    desktop
+        .expect_text(&format!(
+            "Preserve this draft after stopping.\n\n{queued_followup}"
+        ))
+        .await;
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
     desktop.close().await;
     fixture.finish().await;
@@ -3579,6 +3603,10 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.submit().await;
     let next = desktop.request(&mut fixture).await;
     assert!(next.body.to_string().contains("Finish the follow-up"));
+    assert!(
+        desktop.controls("Dismiss Goal").is_empty(),
+        "an active Goal must not offer strip dismissal"
+    );
     desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.press(active_goal).await;
@@ -3618,10 +3646,18 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.control("Start Goal").await;
     desktop.key("escape", false);
     desktop
-        .until("the Goal dialog did not close", || {
+        .until("the Goal dialog did not cancel editing", || {
             desktop.controls("Start Goal").is_empty().then_some(())
         })
         .await;
+    desktop.press("Close Goal").await;
+    desktop.press("Dismiss Goal").await;
+    desktop
+        .until("dismissed Goal remained on the composer strip", || {
+            desktop.controls(finished_goal).is_empty().then_some(())
+        })
+        .await;
+    assert!(desktop.controls("Dismiss Goal").is_empty());
     drop(first);
     desktop.close().await;
     fixture.finish().await;

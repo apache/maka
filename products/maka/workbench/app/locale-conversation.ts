@@ -256,9 +256,13 @@ export const conversationMessages = {
     '{count} · {problems} 則待處理',
   ],
   'Retry message': ['Retry message', '重试消息', '重試訊息'],
+  'Edit in composer': ['Edit in composer', '放回输入框编辑', '放回輸入框編輯'],
+  'Edit message in composer': ['Edit message in composer', '放回输入框编辑', '放回輸入框編輯'],
   'Check message status': ['Check message status', '检查消息状态', '檢查訊息狀態'],
   'Check status': ['Check status', '检查状态', '檢查狀態'],
   'Dismiss message status': ['Dismiss message status', '关闭消息状态', '關閉訊息狀態'],
+  'Dismiss messages': ['Dismiss messages', '关闭待处理消息', '關閉待處理訊息'],
+  'Dismiss error': ['Dismiss error', '关闭错误提示', '關閉錯誤提示'],
   'Sending…': ['Sending…', '正在发送…', '正在傳送…'],
   'Saving message…': ['Saving message…', '正在保存消息…', '正在儲存訊息…'],
   'Saving message… New typing is kept.': [
