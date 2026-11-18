@@ -42,5 +42,3 @@ sha2.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true
-
-maka-process.workspace = true

@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
 [package]
 build = "build/main.rs"
 name = "maka-cli"
@@ -89,8 +88,6 @@ maka-product-native.workspace = true
 maka-providers.workspace = true
 maka-settings-native.workspace = true
 maka-schema.workspace = true
-maka-skills-api.workspace = true
-maka-workspace-api.workspace = true
 maka-agent-api.workspace = true
 maka-agent-native.workspace = true
 maka-host-js.workspace = true
@@ -133,18 +130,11 @@ sha2.workspace = true
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
-nsh-bundler.workspace = true
 nsh-core.workspace = true
-nsh-base.workspace = true
 maka-capabilities.workspace = true
-crossterm.workspace = true
 maka-app-client.workspace = true
 maka-workbench.workspace = true
-nsh-engine.workspace = true
-nsh-platform-tui.workspace = true
-ratatui.workspace = true
 log = "0.4.34"
-agent-client-protocol.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 hyper = { version = "1.12.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }

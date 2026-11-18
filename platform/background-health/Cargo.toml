@@ -26,13 +26,8 @@ publish.workspace = true
 maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 maka-plugin-core.workspace = true
-futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 schemars.workspace = true
 url = "2.5.8"
-
-[dev-dependencies]
-uuid.workspace = true
