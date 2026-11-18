@@ -231,7 +231,9 @@ pub(super) struct Writer<'a> {
     out: Source,
 }
 impl Writer<'_> {
-    pub(super) fn len(&self) -> usize { self.out.len() }
+    pub(super) fn len(&self) -> usize {
+        self.out.len()
+    }
 
     /// A borrowed lexical slice of the input; never a substring lookup.
     pub(super) fn copy(&mut self, slice: &str) {

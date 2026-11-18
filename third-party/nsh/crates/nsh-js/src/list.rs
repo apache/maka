@@ -66,6 +66,7 @@ const FORWARDED: &[&str] = &[
     "bounces",
     "scrollsToTop",
     "contentInset",
+    "scrollbarInset",
     "contentOffset",
     "keyboardShouldPersistTaps",
     "scrollEventThrottle",

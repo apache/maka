@@ -6,11 +6,15 @@
   lines moves nothing on screen, through a window's drag and when text that waited catches up (`docs/dev/text.md`).
   Lists keep their rows themselves.
 - **Scrolling**: `pagingEnabled`, `snapToInterval` / `snapToOffsets` / `snapToAlignment`, `disableIntervalMomentum`,
-  `decelerationRate`, `scrollable`, `bounces`, `contentInset`, `contentOffset`, `keyboardShouldPersistTaps`
+  `decelerationRate`, `scrollable`, `bounces`, `contentInset`, `scrollbarInset`, `contentOffset`, `keyboardShouldPersistTaps`
   (`never` / `handled` / `always`), `onScroll` (+ `scrollEventThrottle`; at most once per engine turn), `onScrollDragStart` /
   `EndDrag`, `onMomentumStart` / `End` (a glide caught by a new drag ends with `onMomentumEnd`). `scrollsToTop`
   (default true) is UIKit's: a tap at the top of the window scrolls the scroll view under it to its top; `false` turns
-  that off for it (a chat thread that keeps the reader's place). iOS and Mac Catalyst only. Snapping is decided
+  that off for it (a chat thread that keeps the reader's place). iOS and Mac Catalyst only. `scrollbarInset` keeps
+  the indicator clear of bars floating over the view (`ScrollBehavior::scrollbar_inset`): iOS sets its indicator
+  insets, the other platforms and the built-in bars keep their track within it, and the keyboard's room is added at
+  the bottom where the platform avoids the keyboard. On Android an all-zero inset keeps the earlier track (within
+  `contentInset`), since the bridge cannot tell it from an unset one. Snapping is decided
   by `ScrollBehavior::snap_target` (core) on iOS and its Java port on Android, from the release offset, the projected glide and
   the velocity. Lists scrolled past their start keep the visible rows in place when items are inserted above them
   (`splice`), as a browser's scroll anchoring does; at their start the rows that arrive show, unless the list loads

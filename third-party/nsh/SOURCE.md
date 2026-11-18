@@ -20,7 +20,7 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `71e6c842b0fe62c32de48129d8cc9d2dad7deff2`
+synchronized through revision `7ef007f1d99ab27ecb8a8707cddb0361203c47e4`
 (version 0.6.0). The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
@@ -71,7 +71,8 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   terminal inspection are required by Maka's shells and plugin composition.
 - **Source-aware reading:** TextView preserves canonical source identity,
   byte offsets and reading anchors through Markdown rendering and repair.
-  Markdown without source mapping or plugins uses the upstream incremental parser.
+  Markdown without source mapping uses the upstream incremental parser,
+  including chunked reads for long documents with eligible plugins.
   RichEditor exposes leased geometry for the composer and terminal surfaces.
 - **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
   key bindings and focus-event fences preserve editor actions, IME, paste and

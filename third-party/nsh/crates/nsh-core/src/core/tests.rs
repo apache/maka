@@ -2787,6 +2787,70 @@ fn scrolls_to_top_reaches_the_scroll_behavior() {
     assert_eq!(behavior(&batch).map(|b| b.scrolls_to_top), Some(true));
 }
 
+/// `scrollbarInset` reaches the scroll view's mounted behavior (the platforms
+/// keep their indicators within it), negative edges as none, and leaves the
+/// content inset alone.
+#[test]
+fn scrollbar_inset_reaches_the_scroll_behavior() {
+    fn behavior(batch: &MountBatch) -> Option<ScrollBehavior> {
+        batch.items.iter().rev().find_map(|i| match i {
+            MountItem::ScrollBehavior { id: 2, behavior } => Some((**behavior).clone()),
+            _ => None,
+        })
+    }
+    assert_eq!(
+        ScrollBehavior::default().scrollbar_inset,
+        EdgeInsets::default()
+    );
+    let mut c = core();
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::Scroll,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Scroll(ScrollProp::ScrollbarInset(EdgeInsets {
+                    top: px(8.0),
+                    bottom: px(72.0),
+                    left: px(-4.0),
+                    ..EdgeInsets::default()
+                })),
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    let sent = behavior(&batch).expect("the behavior is mounted");
+    assert_eq!(
+        sent.scrollbar_inset,
+        EdgeInsets {
+            top: px(8.0),
+            bottom: px(72.0),
+            ..EdgeInsets::default()
+        }
+    );
+    assert_eq!(sent.content_inset, EdgeInsets::default());
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 2,
+            prop: Prop::Scroll(ScrollProp::ScrollbarInset(EdgeInsets::default())),
+        }],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(
+        behavior(&batch).map(|b| b.scrollbar_inset),
+        Some(EdgeInsets::default())
+    );
+}
+
 /// `overflow: "hidden"` clips in layout as well as in paint: what a box
 /// clips away must not grow an ancestor scroll view's content size. A
 /// preview laid out at its design width and scaled down by a transform
@@ -23934,6 +23998,57 @@ mod views {
         assert_eq!(dark.background_color, Some(crate::Color(0x000000ff)));
     }
 
+    /// A screen whose header hairline follows `SHADOW`.
+    #[derive(Default)]
+    struct ShadowPage;
+
+    #[derive(Clone, PartialEq, Props)]
+    struct ShadowPageProps {}
+
+    thread_local! {
+        static SHADOW: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
+    }
+
+    impl Component for ShadowPage {
+        type Props = ShadowPageProps;
+        type Event = NoEvent;
+
+        // The core's own stack and screen: `nsh_base`'s wrap them.
+        #[allow(deprecated)]
+        fn view(_: ShadowPageProps, _: Scope<NoEvent>) -> impl IntoElement {
+            let shadow = signal(true);
+            SHADOW.with(|s| s.set(Some(shadow)));
+            stack().flex_1().child(
+                screen()
+                    .title("Page")
+                    .header_shadow_visible(move || shadow.get())
+                    .child(view().flex_1()),
+            )
+        }
+    }
+
+    /// The header hairline is on by default and follows its signal.
+    #[test]
+    fn the_header_shadow_reaches_the_screens_config() {
+        assert!(crate::ScreenConfig::default().header_shadow_visible);
+        let mut c = core();
+        c.mount_root(&Root::new::<ShadowPage>(|| ShadowPageProps {}));
+        let config = |batch: &MountBatch| {
+            batch.items.iter().find_map(|i| match i {
+                MountItem::ScreenConfig { config, .. } => Some((**config).clone()),
+                _ => None,
+            })
+        };
+        let first = config(&c.commit().unwrap()).expect("a screen");
+        assert!(first.header_shadow_visible);
+        {
+            let _entered = c.components.runtime.enter();
+            SHADOW.with(Cell::get).expect("mounted").set(false);
+        }
+        let hidden = config(&c.commit().unwrap()).expect("updated");
+        assert!(!hidden.header_shadow_visible);
+    }
+
     /// A screen whose trailing header button is UIKit's own.
     #[derive(Default)]
     struct SystemItemPage;
@@ -38333,6 +38448,43 @@ mod built_in_scrollbars {
             _ => None,
         });
         assert_eq!(content, Some(size_pt(300.0, 1000.0)));
+    }
+
+    #[test]
+    fn a_built_in_bar_keeps_within_the_scrollbar_inset() {
+        let (mut c, batch) = scroll_view(true, None);
+        let [bar] = bars_in(&batch)[..] else {
+            panic!("one bar: {:?}", batch.items)
+        };
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 2,
+                prop: Prop::Scroll(ScrollProp::ScrollbarInset(EdgeInsets {
+                    top: px(10.0),
+                    right: px(6.0),
+                    bottom: px(60.0),
+                    left: px(0.0),
+                })),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            frame_of(&batch, bar),
+            Some(rect(0.0, 10.0, 294.0, 130.0)),
+            "{:?}",
+            batch.items
+        );
+        // Back to the whole viewport.
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 2,
+                prop: Prop::Scroll(ScrollProp::ScrollbarInset(EdgeInsets::default())),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        assert_eq!(frame_of(&batch, bar), Some(rect(0.0, 0.0, 300.0, 200.0)));
     }
 
     #[test]

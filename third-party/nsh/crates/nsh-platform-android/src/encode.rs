@@ -424,6 +424,11 @@ pub(crate) fn encode(batch: MountBatch, web_generation: u64) -> Encoded {
                 e.bool(b.center_content);
                 e.bool(b.refresh_indicator.is_some());
                 e.float(b.refresh_indicator.map_or(0.0, |h| h.0));
+                let i = b.scrollbar_inset;
+                e.float(i.top.0);
+                e.float(i.right.0);
+                e.float(i.bottom.0);
+                e.float(i.left.0);
             }
             MountItem::ScrollBy { id, dx, dy } => {
                 e.int(SCROLL_BY);

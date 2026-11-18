@@ -464,12 +464,15 @@ fn set_pan(view: &UIView, shift: CGFloat, motion: KeyboardMotion, mtm: MainThrea
     });
 }
 
-/// Sets the bottom inset of `scroll` and scrolls `reveal` (a rectangle in
-/// its content) into view in one animation along `motion`, the keyboard's,
-/// so that the content moves with the keyboard.
+/// Sets the bottom inset of `scroll`'s content to `bottom` and of its
+/// vertical indicator to `indicator` (the app's own insets plus the room
+/// kept for the keyboard), and scrolls `reveal` (a rectangle in its
+/// content) into view in one animation along `motion`, the keyboard's, so
+/// that the content moves with the keyboard.
 fn set_bottom_inset(
     scroll: &UIScrollView,
     bottom: CGFloat,
+    indicator: CGFloat,
     reveal: Option<CGRect>,
     motion: KeyboardMotion,
     mtm: MainThreadMarker,
@@ -481,7 +484,7 @@ fn set_bottom_inset(
         inset.bottom = bottom;
         scroll.setContentInset(inset);
         let mut indicators = scroll.verticalScrollIndicatorInsets();
-        indicators.bottom = bottom;
+        indicators.bottom = indicator;
         scroll.setVerticalScrollIndicatorInsets(indicators);
         if let Some(rect) = reveal {
             let insets = scroll.adjustedContentInset();
@@ -1631,6 +1634,28 @@ impl Mounter {
                     inset.bottom += new.bottom - old.bottom;
                     inset.right += new.right - old.right;
                     scroll.setContentInset(inset);
+                    // The indicators' insets by the same change, keeping the
+                    // keyboard's room (`set_bottom_inset`) in the bottom one.
+                    let old = ui_insets(
+                        s.behavior
+                            .as_ref()
+                            .map(|b| b.scrollbar_inset)
+                            .unwrap_or_default(),
+                    );
+                    let new = ui_insets(b.scrollbar_inset);
+                    let moved = |mut i: objc2_ui_kit::UIEdgeInsets| {
+                        i.top += new.top - old.top;
+                        i.left += new.left - old.left;
+                        i.bottom += new.bottom - old.bottom;
+                        i.right += new.right - old.right;
+                        i
+                    };
+                    scroll.setVerticalScrollIndicatorInsets(moved(
+                        scroll.verticalScrollIndicatorInsets(),
+                    ));
+                    scroll.setHorizontalScrollIndicatorInsets(moved(
+                        scroll.horizontalScrollIndicatorInsets(),
+                    ));
                     // Zooming (UIKit asks the delegate for the zoom view).
                     scroll.setMinimumZoomScale(b.min_zoom as CGFloat);
                     scroll.setMaximumZoomScale(b.max_zoom.max(b.min_zoom) as CGFloat);
@@ -2512,8 +2537,11 @@ impl Mounter {
                 ..
             }) = self.slot(previous)
         {
-            let base = self.base_inset(previous).bottom;
-            set_bottom_inset(view, base, None, motion, self.mtm);
+            let (base, bar) = (
+                self.base_inset(previous).bottom,
+                self.base_bar_inset(previous).bottom,
+            );
+            set_bottom_inset(view, base, bar, None, motion, self.mtm);
         }
         let Some((scroll_id, scroll)) = scroll else {
             return;
@@ -2532,6 +2560,7 @@ impl Mounter {
         };
         let covered = (frame.origin.y + frame.size.height - keyboard_top).max(0.0);
         let base = self.base_inset(scroll_id).bottom;
+        let bar = self.base_bar_inset(scroll_id).bottom;
         let reveal = match self.focused.and_then(|id| self.slot(id)) {
             Some(Slot {
                 native: Native::Input(input),
@@ -2547,7 +2576,14 @@ impl Mounter {
             }
             _ => None,
         };
-        set_bottom_inset(&scroll, base + covered, reveal, motion, self.mtm);
+        set_bottom_inset(
+            &scroll,
+            base + covered,
+            bar + covered,
+            reveal,
+            motion,
+            self.mtm,
+        );
         self.avoiding = Some(scroll_id);
     }
 
@@ -2558,6 +2594,16 @@ impl Mounter {
             self.slot(id)
                 .and_then(|s| s.behavior.as_ref())
                 .map(|b| b.content_inset)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// The `scrollbarInset` the app set on scroll view `id`.
+    fn base_bar_inset(&self, id: NodeId) -> objc2_ui_kit::UIEdgeInsets {
+        ui_insets(
+            self.slot(id)
+                .and_then(|s| s.behavior.as_ref())
+                .map(|b| b.scrollbar_inset)
                 .unwrap_or_default(),
         )
     }

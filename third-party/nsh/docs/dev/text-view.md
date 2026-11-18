@@ -276,10 +276,14 @@ The whole text is parsed, as before, when a later line can change any block or t
 | When | Until |
 |---|---|
 | A link or footnote definition is in the text (references before it resolve, footnotes are numbered by first reference) | The text is replaced (a definition in the block still being written may yet stop being one: then the boundary moves again) |
-| Plugins (`ParseContext::source`, positions in the whole text), a declared `:::` container, `options.mdx` | They are gone |
+| Plugins that turn a construct on or off (`configure`), a declared `:::` container, `options.mdx` | They are gone |
 | Front matter is open (`---` first with `options.frontmatter`, its closing line not arrived) | It closes: nothing is kept before |
 | The repair holds back a line at the start of the tail (it then repairs the block before the boundary) | That update only |
 | The text does not start with the last one (replaced, edited, shorter), or `options` / `extensions` changed | That update: reading starts over from it |
+
+Plugins read a text as one parse shows it to them: `ParseContext::source` is the whole text and positions are in
+it, also for a node read from a tail. What a plugin made of a block may depend on any of the text, so with plugins no
+block is kept from one text to the next: each text is read from its start, a long one in parts.
 
 A text with definitions is still parsed once per update, never twice. A tree read from the text's start (the
 first set, a replaced text, and every update while nothing is kept) is the whole text's, definitions included: it
@@ -352,10 +356,10 @@ module, which has everything.
   blocks: a pointer copied and compared per block in the document's and the rows' memos, then `Each`'s own pass over
   its rows and the commit (`nsh-core`), about 1.2 µs a block in all (0.8 ms an update at 640 blocks). And the last
   block itself: a reply ending in a 400-row table parses and shows that table again on each update. Replaced text,
-  definitions, plugins, containers and MDX are parsed whole on each change. Baselines: `performance.md` "`TextView`
-  streaming".
-- A long text given at once is read in parts ("Reading only what can change"): 1.9 MB of short sections in about
-  0.3 s instead of 2.1 s. Baselines: `performance.md` "`TextView` long text".
+  definitions, containers and MDX are parsed whole on each change; with plugins each change reads the text from its
+  start, in parts when it is long. Baselines: `performance.md` "`TextView` streaming".
+- A long text given at once is read in parts ("Reading only what can change"), with plugins too: 1.9 MB of short
+  sections in about 0.3 s instead of 2.1 s. Baselines: `performance.md` "`TextView` long text".
 - Rows are made again only when their value changes (`Each` with the position and kind as the key, the row's item as
   the value), and render functions only when their value changes.
 - A disclosure makes its content only while open.

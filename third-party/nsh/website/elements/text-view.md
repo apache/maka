@@ -803,6 +803,10 @@ fn chat() -> impl IntoElement {
 A plugin's `render` comes first, then `renderCustom`, then the node's content. `configure` turns on more of
 markdown-rs's syntax, and `ParseContext` reads a node's children as the parser does.
 
+`ParseContext::source` is the whole Markdown text and node positions are offsets in it, also when a long text is
+read a part at a time. Long documents stay fast with plugins; a plugin whose `configure` turns a construct on or off
+has each text parsed in one go.
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |

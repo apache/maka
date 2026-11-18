@@ -726,6 +726,8 @@ fn chat() -> impl IntoElement {
 
 插件的 `render` 最先生效，然后是 `renderCustom`，最后是节点的内容。`configure` 打开 markdown-rs 的更多语法，`ParseContext` 按解析器的方式读取节点的子节点。
 
+`ParseContext::source` 是整篇 Markdown 文本，节点位置是它里面的偏移；长文本分段读取时也一样。带插件的长文档同样读得快；`configure` 打开或关闭某个语法结构（construct）的插件会让文本每次按整篇一次解析。
+
 <a id="props"></a>
 
 ## 属性

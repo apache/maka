@@ -5066,6 +5066,7 @@ mod download_cleanup_tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let control = EngineControl {
             tx,
+            events_sent: Arc::default(),
             modality: Arc::default(),
             downloads: cleanup.clone(),
         };

@@ -118,7 +118,7 @@ async function fixture() {
     const dom = createDom(invoke, values, api, () => live, () => {});
     const components = createComponents(invoke, values, api, dom);
     const close = () => { if (live) { wasm.nsh_browser_dispose(); live = false; values.dispose(); } };
-    return { api, values, invoke, dom, components, mouseEvents: () => values.result(wasm.nsh_browser_test_mouse_events()), fileDropEvents: () => values.result(wasm.nsh_browser_test_file_drop_events()), videoLoadEvent: () => values.result(wasm.nsh_browser_test_video_load_event()), modules: () => createModules(invoke, values, () => live, () => {}, components.make), close,
+    return { api, values, invoke, dom, components, mouseEvents: () => values.result(wasm.nsh_browser_test_mouse_events()), fileDropEvents: () => values.result(wasm.nsh_browser_test_file_drop_events()), touchEvents: () => values.result(wasm.nsh_browser_test_touch_events()), videoLoadEvent: () => values.result(wasm.nsh_browser_test_video_load_event()), modules: () => createModules(invoke, values, () => live, () => {}, components.make), close,
       restart() { close(); return start(); } };
   };
   return start();
@@ -859,6 +859,35 @@ test("native mouse payloads preserve positions, modifiers and nullable pressed b
   } finally { f.close(); }
 });
 
+
+test("native touch payloads keep each point's pointer type, pressure and tilt", { skip: !path }, async () => {
+  const f = await fixture();
+  try {
+    const pointers = [["mouse", 0.5, 0, 0], ["pen", 0.25, 30, -15], ["touch", 0.5, 0, 0]];
+    assert.deepEqual(f.touchEvents(), pointers.map(([pointerType, pressure, tiltX, tiltY]) => ({
+      phase: "move", timestamp: 10, activated: undefined,
+      points: [{ identifier: 1, target: 2, path: [2, 1], pageX: 30, pageY: 40, locationX: 3, locationY: 4, changed: true, timestamp: 10, pointerType, pressure, tiltX, tiltY }],
+    })));
+  } finally { f.close(); }
+});
+
+test("touch handlers see the pointer fields on the event, touches and changedTouches", { skip: !path }, async () => {
+  const f=await fixture();const gestures=createGestures(f.invoke,f.values,f.api,f.dom,()=>!f.values.closed,()=>{});f.dom.setTouches(gestures);
+  const seen=[];let view,dispose;
+  f.api.root(stop=>{dispose=stop;view=f.dom.rt.element("view");f.dom.rt.prop(view,"onTouchMove",e=>seen.push(e));});
+  const target=f.values.nodeIds.get(view);
+  const at=(pointerType,pressure,tiltX,tiltY)=>({identifier:1,target,path:[target],pageX:5,pageY:6,locationX:5,locationY:6,changed:true,timestamp:10,pointerType,pressure,tiltX,tiltY});
+  for(const p of [at("mouse",0.5,0,0),at("pen",0.25,30,-15),at("touch",0.5,0,0)]){
+    f.dom.event(target,"onTouch",{phase:"start",timestamp:0,points:[p]});
+    f.dom.event(target,"onTouch",{phase:"move",timestamp:10,points:[p]});
+    f.dom.event(target,"onTouch",{phase:"end",timestamp:20,points:[p]});
+  }
+  const fields=e=>[e.pointerType,e.pressure,e.tiltX,e.tiltY];
+  assert.deepEqual(seen.map(fields),[["mouse",0.5,0,0],["pen",0.25,30,-15],["touch",0.5,0,0]]);
+  assert.deepEqual(seen.map(e=>fields(e.touches[0])),seen.map(fields));
+  assert.deepEqual(seen.map(e=>fields(e.changedTouches[0])),seen.map(fields));
+  dispose();f.close();
+});
 
 test("native file drops preserve URIs and optional page position", { skip: !path }, async () => {
   const f = await fixture();

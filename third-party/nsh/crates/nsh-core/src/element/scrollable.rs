@@ -118,6 +118,15 @@ pub trait Scrollable: Element {
         self
     }
 
+    /// How far the scroll indicator keeps from each edge, so that it stays
+    /// clear of bars floating over the view (TS: `scrollbarInset`).
+    fn scrollbar_inset(mut self, insets: impl IntoReactive<EdgeInsets>) -> Self {
+        host::bind_prop(self.node(), insets, |insets| {
+            Prop::Scroll(ScrollProp::ScrollbarInset(insets))
+        });
+        self
+    }
+
     /// Where it starts (set once).
     fn content_offset(self, offset: Point<Points>) -> Self {
         self.set_scroll_prop(Prop::Scroll(ScrollProp::ContentOffset(offset)))

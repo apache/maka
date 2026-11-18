@@ -70,6 +70,34 @@ test('scrollbar={false} hides the bar on either axis', () => {
   }
 });
 
+test('scrollbarInset keeps the bar clear of bars floating over the view', () => {
+  shown.length = 0;
+  const el = scroll();
+  el._behavior = { enabled: true, bar: [20, 10, 60, 0] };
+  // Its track runs between the top and bottom insets.
+  assert.deepEqual(player.barThumb(el).slice(0, 2), [22, 32]);
+  el.scrollTop = 600;
+  const [start, len] = player.barThumb(el);
+  assert.equal(start + len, 200 - 60 - 2);
+  el.scrollTop = 0;
+  // It runs along the right edge moved in by the right inset.
+  assert.equal(player.barEdge(el), 290);
+  player.hoverBar(el, { clientX: 40 + 285, clientY: 30 + 30 });
+  assert.deepEqual(shown, [el]);
+  shown.length = 0;
+  player.hoverBar(el, { clientX: 40 + 295, clientY: 30 + 30 });
+  player.hoverBar(el, { clientX: 40 + 285, clientY: 30 + 10 });
+  assert.equal(shown.length, 0);
+  // No room between the insets: no bar.
+  el._behavior.bar = [100, 0, 95, 0];
+  assert.equal(player.barThumb(el), null);
+  // A horizontal one runs between the left and right insets, up by the bottom one.
+  const h = scroll(true);
+  h._behavior = { enabled: true, bar: [0, 30, 20, 10] };
+  assert.equal(player.barThumb(h)[0], 12);
+  assert.equal(player.barEdge(h), 180);
+});
+
 // Sticky list cells: the few DOM operations their tracks use.
 class Node {
   constructor(props) {

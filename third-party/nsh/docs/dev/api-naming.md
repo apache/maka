@@ -97,7 +97,7 @@ go elsewhere under these rules rather than into them.
   `nsh` with the same fields: `Point { x, y }`, `Size { width, height }`, `Bounds { origin: Point, size: Size }`,
   `Edges { top, right, bottom, left }` (decided by the user, 2026-10-21). A position and an extent together are a
   `Bounds` (`onLayout({ bounds })`), an extent beside other fields is a `size` (`ImageAsset.size`), insets are `Edges`
-  (`safeArea()`, `hitSlop`, `contentInset`; inputs take `Partial<Edges>`); never flat `x` / `y` / `width` / `height`
+  (`safeArea()`, `hitSlop`, `contentInset`, `scrollbarInset`; inputs take `Partial<Edges>`); never flat `x` / `y` / `width` / `height`
   together, `<prefix>Width` / `<prefix>X` fields or another name for one shape (`Insets`).
 - **Points**: a position is a `Point` (`{ x, y }`, GPUI's `Point<Pixels>`, Rust `Point<Points>`), never separate
   `<prefix>X` / `<prefix>Y` fields: `position` in the view, `pagePosition` in the root view (the surface or its dialog),
@@ -297,6 +297,7 @@ them yet (`compatibility.md`). The frozen RN-shaped modules keep their names. A 
 | `scrollEnabled` | `scrollable` (default `true`) | States | The user's scrolling; `scrollTo` still scrolls |
 | `pinchGestureEnabled` | `zoomable` (default `true`) | States | The user's pinch; `zoomTo` still zooms |
 | `showsIndicator` | `scrollbar` (default `true`) | States | The part's name, as `caret` |
+| `scrollIndicatorInsets` | `scrollbarInset` (`Partial<Edges>`) | Geometry | The part's name, as `scrollbar`; `Inset` as `contentInset` |
 | `onScrollBeginDrag`, `onScrollEndDrag` | `onScrollDragStart`, `onScrollDragEnd` | Begin and end | `onDrag*` stays free for drag and drop |
 | `onMomentumScrollBegin`, `onMomentumScrollEnd` | `onMomentumStart`, `onMomentumEnd` | Begin and end | |
 | List `onEndReached`, `onEndReachedThreshold` | `onLoadMore`, `loadMoreThreshold` | Intent over geometry | `ListDelegate::load_more`, `load_more_threshold`; also in `ListItemsProps` |

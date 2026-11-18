@@ -187,7 +187,8 @@ eleven bare specifiers and nothing else: `node:` prefixes and other Node modules
 Opening URLs (`openUrl` of `nsh`, `TextView`'s `links="open"`; `nsh_core::open_url`) is checked in Rust
 twice before anything leaves the app: the URL (`check_url`: absolute, at most 16 KiB, no whitespace or control
 characters, never `javascript:`, `vbscript:`, `data:`, `blob:`, `file:`, `about:` or `asset:`, which run code or
-reach the app's own data rather than another app; a web address needs a host) and the `openUrl` capability
+reach the app's own data rather than another app, and no scheme of one letter, which is a Windows path (`C:/…`)
+that `ShellExecuteW` would run as the program or script it names; a web address needs a host) and the `openUrl` capability
 (`Capabilities::open_url`: `true`, every scheme, or `{ "schemes": [...] }`; `Access::allows_open_url`), in the
 module's call (its promise rejects: a `TypeError` for the URL, `ERR_ACCESS_DENIED` for the capability) and again in
 the core for Rust callers (`false`, logged once). The embedding app's URL

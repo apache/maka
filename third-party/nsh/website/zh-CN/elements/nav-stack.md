@@ -211,6 +211,7 @@ TSX 的子函数接收路由值本身，以及一个表示它在栈中位置的 
 | `title` | `.title(..)` | `string` | 无 | iOS 和 Android：系统标题栏的标题。 |
 | `headerVisible` | `.header_visible(..)` | `boolean` | `true` | iOS 和 Android：显示系统标题栏。 |
 | `headerTransparent` | `.header_transparent(..)` | `boolean` | `false` | iOS 和 Android：内容延伸到透明的系统标题栏之下。 |
+| `headerShadowVisible` | `.header_shadow_visible(..)` | `boolean` | `true` | iOS：系统标题栏下方的细线。设为 `false` 时没有这条线，同 iOS 26 系统自带的标题栏。Android 的标题栏没有这条线。 |
 | `headerLargeTitle` | `.header_large_title(..)` | `boolean` | `false` | iOS：大标题，随内容滚动收进标题栏；内容在标题栏之下滚动。 |
 | `headerBackTitle` | `.header_back_title(..)` | `string` | 无 | iOS 和 Android：返回到这个页面的返回按钮的文字（在 Android 上是它给屏幕阅读器的描述）。 |
 | `headerBackVisible` | `.header_back_visible(..)` | `boolean` | `true` | iOS 和 Android：显示返回按钮。 |

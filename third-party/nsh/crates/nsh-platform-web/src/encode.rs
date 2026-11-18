@@ -944,7 +944,7 @@ fn field_css(c: &InputConfig) -> String {
 fn behavior_json(b: &ScrollBehavior) -> String {
     let offsets: Vec<String> = b.snap_offsets.iter().map(|o| o.0.to_string()).collect();
     format!(
-        "{{\"paging\":{},\"snapInterval\":{},\"snapOffsets\":[{}],\"snapAlignment\":{},\"enabled\":{},\"bounces\":{},\"inset\":[{},{},{},{}],\"minZoom\":{},\"maxZoom\":{},\"bouncesZoom\":{},\"pinch\":{},\"centerContent\":{},\"refreshIndicator\":{}}}",
+        "{{\"paging\":{},\"snapInterval\":{},\"snapOffsets\":[{}],\"snapAlignment\":{},\"enabled\":{},\"bounces\":{},\"inset\":[{},{},{},{}],\"bar\":[{},{},{},{}],\"minZoom\":{},\"maxZoom\":{},\"bouncesZoom\":{},\"pinch\":{},\"centerContent\":{},\"refreshIndicator\":{}}}",
         b.paging,
         b.snap_interval.0,
         offsets.join(","),
@@ -955,6 +955,10 @@ fn behavior_json(b: &ScrollBehavior) -> String {
         b.content_inset.right.0,
         b.content_inset.bottom.0,
         b.content_inset.left.0,
+        b.scrollbar_inset.top.0,
+        b.scrollbar_inset.right.0,
+        b.scrollbar_inset.bottom.0,
+        b.scrollbar_inset.left.0,
         b.min_zoom,
         b.max_zoom,
         b.bounces_zoom,

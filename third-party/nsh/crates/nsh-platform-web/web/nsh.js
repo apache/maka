@@ -142,6 +142,10 @@ const VELOCITY_WINDOW = 100;
  * when no animation frame did (`keepDeadline`, `moveScreens`, ...): more
  * than a frame, so that while the page shows its frames always come first. */
 const LATE_MS = 50;
+/** How long after its time a frame's `requestAnimationFrame` callbacks may
+ * run and still step the native animations at that time (`frameTime`):
+ * later than that, a task held the frame. */
+const FRAME_HELD_MS = 16;
 /** How long a dialog waits for the two frames before it comes in
  * (`present`): far more than two frames, so it only waits that long while
  * frames stop (a hidden tab). */
@@ -239,6 +243,8 @@ const KEYFRAMES = `
    are set, so those are only for browsers without them (Firefox). */
 .nsh-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
 .nsh-scroll::-webkit-scrollbar-track, .nsh-scroll::-webkit-scrollbar-corner { background: transparent; }
+.nsh-scroll::-webkit-scrollbar-track:vertical { margin: var(--nsh-bar-t, 0) 0 var(--nsh-bar-b, 0); }
+.nsh-scroll::-webkit-scrollbar-track:horizontal { margin: 0 var(--nsh-bar-r, 0) 0 var(--nsh-bar-l, 0); }
 .nsh-scroll::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(128,128,128,.45); }
 @supports not selector(::-webkit-scrollbar) {
   .nsh-scroll { scrollbar-width: thin; scrollbar-color: rgba(128,128,128,.45) transparent; }
@@ -1281,6 +1287,7 @@ class Player {
         // (the error handed over with `nsh_storage_reply`).
         storage_load: (pp, pl) => this.storage(() => {
           const prefix = this.str(pp, pl);
+          this.followStorage(prefix);
           const entries = Object.create(null);
           for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
@@ -1629,6 +1636,49 @@ class Player {
     return done;
   }
 
+  /**
+   * Follows what other tabs of the origin change in the app's storage,
+   * kept under `prefix` (`storage_load`): a tab gets a `storage` event for
+   * each `localStorage` change the others make, never for its own.
+   */
+  followStorage(prefix) {
+    (this.storagePrefixes ??= new Set()).add(prefix);
+    if (this.storageListener) return;
+    this.storageListener = (e) => this.storageChanged(e);
+    window.addEventListener("storage", this.storageListener);
+  }
+
+  /**
+   * Hands the engine a change another tab made to the app's storage: the
+   * value this tab reads now rather than the event's `newValue`, which a
+   * write this tab made since the other tab's may have replaced. A `key`
+   * of null is `localStorage.clear()`: the engine reads the entries again.
+   */
+  storageChanged(e) {
+    let area;
+    try {
+      area = localStorage;
+    } catch {
+      return;
+    }
+    if (e.storageArea !== area) return;
+    for (const prefix of this.storagePrefixes) {
+      let kind = 2, key = "", value = "";
+      if (e.key !== null) {
+        if (!e.key.startsWith(prefix)) continue;
+        key = e.key.slice(prefix.length);
+        try {
+          value = area.getItem(e.key);
+        } catch {
+          continue;
+        }
+        kind = value === null ? 0 : 1;
+      }
+      this.call((w) => this.withStrings([prefix, key, value ?? ""], (pp, pl, kp, kl, vp, vl) =>
+        w.nsh_storage_changed(pp, pl, kp, kl, vp, vl, kind)));
+    }
+  }
+
   /** Calls `f(ptr, len, ...)` for each string, freeing them afterwards. */
   withStrings(strings, f) {
     const passed = strings.map((s) => {
@@ -1924,6 +1974,9 @@ class Player {
     clearTimeout(this.keeper?.timer);
     this.keeper = null;
     this.browserHost?.stop();
+    this.storagePrefixes?.clear();
+    if (this.storageListener) window.removeEventListener("storage", this.storageListener);
+    this.storageListener = null;
     this.wasm?.nsh_stop();
     } finally { this.stopping = false; }
   }
@@ -1987,8 +2040,24 @@ class Player {
     this.frame = requestAnimationFrame((now) => {
       this.frame = 0;
       this.frameAt = performance.now();
-      this.call((w) => w.nsh_frame(now));
+      this.call((w) => w.nsh_frame(this.frameTime(now)));
     });
+  }
+
+  /**
+   * The time an animation frame steps the native animations at: the
+   * frame's (when it began, so the steps keep the display's pace), unless a
+   * task held the frame, and then when its callbacks run. A press handled
+   * before them runs the app's code, which may mount a sheet and start its
+   * entrance; stepped at the frame's time, that entrance would start before
+   * it was asked for, and its first drawn step would be as far along as the
+   * press took (a slow one showed the sheet nearly in place). Never earlier
+   * than the frame before.
+   */
+  frameTime(now) {
+    const at = this.frameAt - now > FRAME_HELD_MS ? this.frameAt : now;
+    this.steppedAt = Math.max(at, this.steppedAt ?? at);
+    return this.steppedAt;
   }
 
   /** `keepDeadline` once the call into the engine that asked for a frame
@@ -4519,7 +4588,17 @@ class Player {
     const el = this.view(id);
     if (!el) return;
     const refresh = el._behavior?.refreshIndicator?.height !== behavior.refreshIndicator?.height;
+    const bar = String(this.barInset(el)) !== String(behavior.bar ?? [0, 0, 0, 0]);
     el._behavior = behavior;
+    // The browser's own indicator (phones) keeps its track within the
+    // insets where its scroll bar can be styled (`.nsh-scroll`'s track).
+    if (bar) {
+      const [top, right, bottom, left] = this.barInset(el);
+      el.style.setProperty("--nsh-bar-t", `${top}px`);
+      el.style.setProperty("--nsh-bar-r", `${right}px`);
+      el.style.setProperty("--nsh-bar-b", `${bottom}px`);
+      el.style.setProperty("--nsh-bar-l", `${left}px`);
+    }
     // A refresh in progress keeps the room of the indicator now showing.
     if (refresh && el._refreshing && !el._pulling && el._pull > 0) this.animatePull(el, this.refreshSpace(el));
     if (refresh) this.updateSpinner(el);
@@ -4701,12 +4780,27 @@ class Player {
     const h = !!el._horizontal;
     const view = h ? el.clientWidth : el.clientHeight;
     const total = h ? el.scrollWidth : el.scrollHeight;
-    if (total <= view + 0.5 || view <= 4 * BAR_MARGIN) return null;
-    const track = view - 2 * BAR_MARGIN;
+    // Its track keeps within the view's `scrollbarInset`.
+    const [top, right, bottom, left] = this.barInset(el);
+    const [before, after] = h ? [left, right] : [top, bottom];
+    const room = view - before - after;
+    if (total <= view + 0.5 || room <= 4 * BAR_MARGIN) return null;
+    const track = room - 2 * BAR_MARGIN;
     const len = Math.min(track, Math.max(32, (track * view) / total));
     const max = total - view;
     const t = Math.min(Math.max((h ? el.scrollLeft : el.scrollTop) / max, 0), 1);
-    return [BAR_MARGIN + t * (track - len), len, track - len, max];
+    return [before + BAR_MARGIN + t * (track - len), len, track - len, max];
+  }
+
+  /** `el`'s `scrollbarInset`: `[top, right, bottom, left]`. */
+  barInset(el) {
+    return el._behavior?.bar ?? [0, 0, 0, 0];
+  }
+
+  /** The edge `el`'s bar runs along (its right, or a horizontal view's bottom), moved in by its inset. */
+  barEdge(el) {
+    const [, right, bottom] = this.barInset(el);
+    return el._horizontal ? el.clientHeight - bottom : el.clientWidth - right;
   }
 
   /** Shows `el`'s bar where its content is; it fades after `BAR_HOLD`
@@ -4724,7 +4818,7 @@ class Player {
       el.insertBefore(el._bar, el.firstChild);
     }
     const [start, len] = thumb;
-    const edge = (el._horizontal ? el.clientHeight : el.clientWidth) - BAR_THICK - BAR_MARGIN;
+    const edge = this.barEdge(el) - BAR_THICK - BAR_MARGIN;
     el._bar.firstChild.style.cssText = el._horizontal
       ? `left:${start}px;top:${edge}px;width:${len}px;height:${BAR_THICK}px`
       : `left:${edge}px;top:${start}px;width:${BAR_THICK}px;height:${len}px`;
@@ -4739,7 +4833,8 @@ class Player {
     if (!thumb) return false;
     const r = el.getBoundingClientRect();
     const [x, y] = [e.clientX - r.left, e.clientY - r.top];
-    const [along, across, edge] = el._horizontal ? [x, y, el.clientHeight] : [y, x, el.clientWidth];
+    const [along, across] = el._horizontal ? [x, y] : [y, x];
+    const edge = this.barEdge(el);
     return across >= edge - BAR_GRAB && across <= edge && along >= thumb[0] - 4 && along <= thumb[0] + thumb[1] + 4;
   }
 

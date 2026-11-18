@@ -99,13 +99,7 @@ fn parse_whole(parser: &Parser, source: &str) -> Document {
 
 pub(super) fn project(parser: &Parser, source: &str, mapped: bool) -> Projection {
     let raw_len = source.len() as u64;
-    let mut source = Source::original(source).normalize();
-    if parser.options.streaming {
-        source = streaming::repair_mapped(source);
-    }
-    if parser.options.math {
-        source = latex::rewrite_mapped(source);
-    }
+    let source = prepare(parser, Source::original(source).normalize());
 
     let segments = if parser.extensions.iter().any(|e| e.container.is_some()) {
         container::split(&source, &parser.extensions)
@@ -158,6 +152,19 @@ pub(super) fn project(parser: &Parser, source: &str, mapped: bool) -> Projection
         raw_len,
         rows: rows.into(),
     }
+}
+
+/// Markdown `source` (its line endings `\n`) as it is parsed: the end of a
+/// streamed reply repaired, TeX's delimiters rewritten. Positions in the
+/// syntax tree, and so what plugins read, are offsets in it.
+fn prepare(parser: &Parser, mut source: Source) -> Source {
+    if parser.options.streaming {
+        source = streaming::repair_mapped(source);
+    }
+    if parser.options.math {
+        source = latex::rewrite_mapped(source);
+    }
+    source
 }
 
 /// A Markdown part of the source and its syntax tree, whose positions are
@@ -311,6 +318,26 @@ fn parse_tree(parser: &Parser, text: &str, first: bool) -> Node {
 
 /// `markdown-rs`'s options for `parser`'s.
 fn options(parser: &Parser, frontmatter: bool, mdx: bool) -> ParseOptions {
+    let mut options = own_options(parser, frontmatter, mdx);
+    for plugin in &parser.plugins.0 {
+        plugin.configure(&mut options);
+    }
+    options
+}
+
+/// Whether `parser`'s plugins leave the syntax of a text as its options
+/// make it: they turn no construct on or off (what else they configure,
+/// as `gfm_strikethrough_single_tilde`, is read inside a paragraph).
+fn plugins_keep_constructs(parser: &Parser) -> bool {
+    parser.plugins.is_empty()
+        || [true, false].into_iter().all(|first| {
+            let mdx = parser.options.mdx;
+            options(parser, first, mdx).constructs == own_options(parser, first, mdx).constructs
+        })
+}
+
+/// [`options`] without the plugins'.
+fn own_options(parser: &Parser, frontmatter: bool, mdx: bool) -> ParseOptions {
     let opts = &parser.options;
     let mut options = ParseOptions::gfm();
     let c = &mut options.constructs;
@@ -327,9 +354,6 @@ fn options(parser: &Parser, frontmatter: bool, mdx: bool) -> ParseOptions {
         c.mdx_expression_text = true;
         c.mdx_jsx_flow = true;
         c.mdx_jsx_text = true;
-    }
-    for plugin in &parser.plugins.0 {
-        plugin.configure(&mut options);
     }
     options
 }

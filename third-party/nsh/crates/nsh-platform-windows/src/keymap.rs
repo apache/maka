@@ -166,12 +166,7 @@ mod tests {
 
         for fallback in [false, true] {
             for vk in [0x0D, 0x20] {
-                let event = KeyEvent {
-                    vk,
-                    down: true,
-                    repeat: false,
-                    modifiers: input::Modifiers::default(),
-                };
+                let event = KeyEvent::synthetic(vk, true, false, input::Modifiers::default());
                 for (for_focus, within, window, expected) in [
                     (false, Some(button.id()), Some(ROOT_ID), false),
                     (true, Some(button.id()), Some(ROOT_ID), true),

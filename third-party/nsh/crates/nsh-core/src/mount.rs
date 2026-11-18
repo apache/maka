@@ -207,6 +207,12 @@ pub struct ScrollBehavior {
     pub scrolls_to_top: bool,
     /// Room around the content.
     pub content_inset: EdgeInsets,
+    /// How far the scroll indicator keeps from each edge of the view: its
+    /// track runs between the top and bottom insets (a horizontal view's:
+    /// left and right), and it moves in from the right (bottom) edge by
+    /// the right (bottom) one. Platforms add the room they keep for the
+    /// keyboard to the bottom.
+    pub scrollbar_inset: EdgeInsets,
     /// Whether taps dismiss the keyboard.
     pub keyboard_taps: KeyboardTaps,
     /// A fling moves one snap point at most (`disableIntervalMomentum`).
@@ -247,6 +253,7 @@ impl Default for ScrollBehavior {
             bounces: true,
             scrolls_to_top: true,
             content_inset: EdgeInsets::default(),
+            scrollbar_inset: EdgeInsets::default(),
             keyboard_taps: KeyboardTaps::Never,
             one_step: false,
             min_zoom: 1.0,
@@ -410,6 +417,8 @@ pub struct ScreenConfig {
     pub large_title: bool,
     /// The content extends under the header.
     pub header_transparent: bool,
+    /// The hairline under the header (iOS).
+    pub header_shadow_visible: bool,
     /// The system tab bar leaves while this page is on top.
     pub hides_bottom_bar_when_pushed: bool,
     /// Color of the back button and bar buttons.
@@ -471,6 +480,7 @@ impl Default for ScreenConfig {
             header_visible: true,
             large_title: false,
             header_transparent: false,
+            header_shadow_visible: true,
             hides_bottom_bar_when_pushed: false,
             tint_color: None,
             background_color: None,

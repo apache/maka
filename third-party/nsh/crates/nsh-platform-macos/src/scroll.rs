@@ -50,8 +50,8 @@ use nsh_core::{
     ViewKind,
     geometry::point,
     scroll::{
-        dragged, ease_out, indicator_alpha, indicator_hold_left, indicator_span, projected, rate,
-        reveal_focus_delta, snap_duration, sticky_shift, thumb_scroll,
+        dragged, ease_out, indicator_alpha, indicator_hold_left, indicator_span_within, projected,
+        rate, reveal_focus_delta, snap_duration, sticky_shift, thumb_scroll,
     },
 };
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
@@ -1328,20 +1328,56 @@ fn thumb(s: &ScrollState, w: f32, h: f32) -> Option<(CGRect, f32)> {
         return None;
     }
     let inset = s.behavior.content_inset.map(|v| v.0);
-    let (dim, total, offset) = if s.horizontal {
-        (w, s.content.0 + inset.left + inset.right, s.x)
+    let bar = s.behavior.scrollbar_inset.map(|v| v.0.max(0.0));
+    // Along the axis, from where the offset counts (the right of a mirrored
+    // view).
+    let (dim, total, offset, before, after) = if s.horizontal {
+        let (before, after) = if s.mirrored {
+            (bar.right, bar.left)
+        } else {
+            (bar.left, bar.right)
+        };
+        (
+            w,
+            s.content.0 + inset.left + inset.right,
+            s.x,
+            before,
+            after,
+        )
     } else {
-        (h, s.content.1 + inset.top + inset.bottom, s.y)
+        (
+            h,
+            s.content.1 + inset.top + inset.bottom,
+            s.y,
+            bar.top,
+            bar.bottom,
+        )
     };
-    let (start, len) = indicator_span(Points(dim), Points(total), Points(offset))?;
+    let (start, len) = indicator_span_within(
+        Points(dim),
+        Points(total),
+        Points(offset),
+        Points(before),
+        Points(after),
+    )?;
     let (start, len) = (start.0, len.0);
     let frame = if s.horizontal {
         let x = if s.mirrored { w - start - len } else { start };
-        rect(x, h - INDICATOR_THICK - EDGE, len, INDICATOR_THICK)
+        rect(
+            x,
+            h - bar.bottom - INDICATOR_THICK - EDGE,
+            len,
+            INDICATOR_THICK,
+        )
     } else {
-        rect(w - INDICATOR_THICK - EDGE, start, INDICATOR_THICK, len)
+        rect(
+            w - bar.right - INDICATOR_THICK - EDGE,
+            start,
+            INDICATOR_THICK,
+            len,
+        )
     };
-    Some((frame, dim - 2.0 * INDICATOR_MARGIN - len))
+    Some((frame, dim - before - after - 2.0 * INDICATOR_MARGIN - len))
 }
 
 /// Updates the indicator and the refresh spinner of `view` to its offset.
@@ -2115,10 +2151,24 @@ pub(crate) fn grabs_thumb(view: &NshView, x: f32, y: f32) -> bool {
     let Some((frame, _)) = thumb(s, w, h) else {
         return false;
     };
+    // The edge the indicator runs along, moved in by its inset.
+    let bar = s.behavior.scrollbar_inset.map(|v| v.0.max(0.0));
     let (along, across, start, len, edge) = if s.horizontal {
-        (x, y, frame.origin.x as f32, frame.size.width as f32, h)
+        (
+            x,
+            y,
+            frame.origin.x as f32,
+            frame.size.width as f32,
+            h - bar.bottom,
+        )
     } else {
-        (y, x, frame.origin.y as f32, frame.size.height as f32, w)
+        (
+            y,
+            x,
+            frame.origin.y as f32,
+            frame.size.height as f32,
+            w - bar.right,
+        )
     };
     (edge - THUMB_GRAB..=edge).contains(&across)
         && (start - THUMB_SLOP..=start + len + THUMB_SLOP).contains(&along)

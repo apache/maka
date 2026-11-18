@@ -404,6 +404,7 @@ prop id:first title First title
 prop id:first headerVisible true
 prop id:first headerLargeTitle false
 prop id:first headerTransparent false
+prop id:first headerShadowVisible true
 prop id:first headerBackVisible true
 noprop id:first headerBackTitle
 prop id:first popOnSwipe true
@@ -421,6 +422,7 @@ prop id:second title Second title
 prop id:second headerVisible false
 prop id:second headerLargeTitle true
 prop id:second headerTransparent true
+prop id:second headerShadowVisible false
 prop id:second headerBackTitle Back to second
 prop id:second headerBackVisible false
 prop id:second popOnSwipe false
@@ -471,6 +473,7 @@ covers [props] title
 covers [props] headerVisible
 covers [props] headerLargeTitle
 covers [props] headerTransparent
+covers [props] headerShadowVisible
 covers [props] headerBackTitle
 covers [props] headerBackVisible
 covers [props] popOnSwipe

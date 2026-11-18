@@ -1091,16 +1091,7 @@ mod tests {
     }
 
     fn key(vk: u16) -> KeyEvent {
-        KeyEvent {
-            vk,
-            down: true,
-            repeat: false,
-            modifiers: Modifiers::default(),
-            scan: 0,
-            extended: false,
-            sys: false,
-            translated: false,
-        }
+        KeyEvent::synthetic(vk, true, false, Modifiers::default())
     }
 
     fn stroke(text: &str) -> Keystroke {

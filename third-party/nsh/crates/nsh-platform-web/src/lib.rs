@@ -63,7 +63,7 @@ use crate::{animation::UiAnimation, encode::Out, text::WebTextEngine};
 pub use crate::{
     filesystem::nsh_filesystem_reply,
     net::{nsh_fetch_body_wanted, nsh_fetch_data, nsh_fetch_end, nsh_fetch_failed, nsh_fetch_head},
-    storage::nsh_storage_reply,
+    storage::{nsh_storage_changed, nsh_storage_reply},
     websocket::{nsh_websocket_event, nsh_websocket_reply},
 };
 
@@ -691,7 +691,7 @@ pub unsafe extern "C" fn nsh_data(
 /// Starts `app` in the page's surface.
 fn run(app: App, width: f32, height: f32, environment: Environment, limits: Limits) -> f64 {
     let storage =
-        BASE_URL.with(|b| storage::LocalStorage::new(app.app_id(), b.borrow().as_deref()));
+        BASE_URL.with(|b| storage::LocalStorage::open(app.app_id(), b.borrow().as_deref()));
     let namespace = BASE_URL.with(|b| {
         nsh_engine::local_storage_prefix(app.app_id(), b.borrow().as_deref().unwrap_or(""))
     });
@@ -718,7 +718,7 @@ fn run(app: App, width: f32, height: f32, environment: Environment, limits: Limi
         filesystem: Some(std::sync::Arc::new(filesystem::BrowserFileSystem {
             namespace,
         })),
-        storage: Some(std::sync::Arc::new(storage)),
+        storage: Some(storage),
         clock: Default::default(),
         context: Default::default(),
         pinned: Default::default(),

@@ -2086,7 +2086,11 @@ fn header_appearance(
     mtm: MainThreadMarker,
     c: &ScreenConfig,
 ) -> Option<Retained<UINavigationBarAppearance>> {
-    if c.background_color.is_none() && c.title_color.is_none() && !c.header_transparent {
+    if c.background_color.is_none()
+        && c.title_color.is_none()
+        && !c.header_transparent
+        && c.header_shadow_visible
+    {
         return None;
     }
     let appearance = UINavigationBarAppearance::new(mtm);
@@ -2097,6 +2101,11 @@ fn header_appearance(
         appearance.setBackgroundColor(Some(&ui_color(bg)));
     } else {
         appearance.configureWithDefaultBackground();
+    }
+    if !c.header_shadow_visible {
+        // The configured backgrounds come with UIKit's hairline (the shadow
+        // image is nil after `configureWith…`): no color, no line.
+        appearance.setShadowColor(None);
     }
     if let Some(color) = c.title_color {
         let attributes = objc2_foundation::NSDictionary::from_retained_objects(

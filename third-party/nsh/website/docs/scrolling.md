@@ -103,6 +103,7 @@ Fingers drag scroll views. On the desktop (macOS, Windows, Linux) and in the bro
 | `bounces` | `.bounces(..)` | `boolean` | `true` | Overscroll past the edges. |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Room around the content, scrollable into. |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Keeps the scroll indicator this far from the view's edges. |
 | `contentOffset` | `.content_offset(point(..))` | `{ x?, y? }` | | Where it starts. |
 | `decelerationRate` | `.deceleration(rate)` | `"normal" \| "fast" \| number` | the platform's | How fast a fling slows down: `"normal"`, `"fast"`, or the velocity kept per millisecond (`0.998` is normal, `0.99` fast; `0` is the platform's default). |
 

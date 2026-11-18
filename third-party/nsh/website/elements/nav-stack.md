@@ -224,6 +224,7 @@ the props' snake-case names.
 | `title` | `.title(..)` | `string` | none | iOS and Android: the system header's title. |
 | `headerVisible` | `.header_visible(..)` | `boolean` | `true` | iOS and Android: the system header shows. |
 | `headerTransparent` | `.header_transparent(..)` | `boolean` | `false` | iOS and Android: the content extends under a transparent system header. |
+| `headerShadowVisible` | `.header_shadow_visible(..)` | `boolean` | `true` | iOS: the hairline under the system header. `false` draws a bar without it, as iOS 26's own bars. Android's header has none. |
 | `hidesBottomBarWhenPushed` | `.hides_bottom_bar_when_pushed(..)` | `boolean` | `false` | iOS: the system tab bar leaves while this page is on top, moving in the transition — the same animation as the page, and the bar is never rebuilt; it comes back when the page pops. |
 | `headerLargeTitle` | `.header_large_title(..)` | `boolean` | `false` | iOS: a large title that shrinks into the bar as the content scrolls; the content scrolls under the header. |
 | `headerBackTitle` | `.header_back_title(..)` | `string` | none | iOS and Android: the label of the back button that leads back to this page (on Android, its description for screen readers). |

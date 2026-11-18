@@ -1335,7 +1335,7 @@ button()
 </Button>
 ```
 
-- The URL is absolute (it has a scheme). URLs that would run code or reach the app's own data, `javascript:`, `data:`, `blob:`, `file:`, `about:` and `asset:`, reject the promise with a `TypeError`, as do relative addresses. `openUrl` never throws: every failure rejects.
+- The URL is absolute (it has a scheme). URLs that would run code or reach the app's own data, `javascript:`, `data:`, `blob:`, `file:`, `about:` and `asset:`, reject the promise with a `TypeError`, as do relative addresses and file paths (`C:/…` on Windows). `openUrl` never throws: every failure rejects.
 - An app that declares capabilities needs `openUrl`: `"openUrl": true` for every scheme, or `"openUrl": { "schemes": ["https", "mailto"] }` for those listed; other URLs reject with an `Error` whose `code` is `"ERR_ACCESS_DENIED"`, `permission` `"openUrl"` and `resource` the URL (see [Sandbox and capabilities](../docs/sandbox-and-capabilities.md)). In Rust, `open_url` answers `false` for them and logs why.
 - The embedding app sees the URL first and can route it through its own router instead (Swift `NshAppView.onOpenURL`, Java `NshView.setOpenUrlHandler`, Rust `AppView::host().handle_open_url`; see [iOS](../docs/ios.md#links-the-app-opens) and [Android](../docs/android.md#links-the-app-opens)). `opened` is then `true`.
 - Each platform opens it with its own opener: `UIApplication.open` on iOS (the host app's application when embedded), an `ACTION_VIEW` intent on Android, `NSWorkspace` on macOS, `ShellExecuteW` on Windows, `GtkUriLauncher` on Linux, GPUI's `open_url`, a new tab on the web. `nsh test` records the URLs instead of opening them.
@@ -2869,6 +2869,8 @@ Each app has a storage of its own, up to 5 MB of keys and values. Calls run in t
 
 A `storage.json` that is damaged is kept as `storage.json.corrupt` next to it, and the app starts with an empty storage; one that cannot be read leaves the app's changes in memory, so the file is never replaced.
 
+On the web, the app's other tabs share its storage: what one of them sets, removes or clears, the others read from then on. A value the browser refuses to keep (its own quota, or site data the user blocked) is refused as one past 5 MB is.
+
 The app id is the `id` in `nsh.json`, and it travels with the app: `nsh build` and `nsh package` write it next to the bundle, the dev server sends it, and a signed package carries the one its release key's certificate vouches for. So every app keeps its own data with no setting, wherever it runs; an app without an id keeps it under `default`. An embedding app can choose another place (see [Embedding on iOS](../docs/ios.md) and [Embedding on Android](../docs/android.md)).
 
 ### Storage.getItem
@@ -2893,7 +2895,7 @@ const theme = (await Storage.getItem("theme")) ?? "system";
 setItem(key: string, value: string): Promise<void>;
 ```
 
-Sets `key` to `value`, replacing what it held. Rejects with an `Error` whose `code` is `"ERR_NSH_QUOTA_EXCEEDED"` when the storage would grow past 5 MB; the value is not kept then. Rust: `Storage::set_item(key, value)`, which returns `Err(StorageFull)` then. Values are strings: keep structured data as JSON (`serde_json::to_string` in Rust, `JSON.stringify` in TSX) and read it back (`serde_json::from_str`, `JSON.parse`).
+Sets `key` to `value`, replacing what it held. Rejects with an `Error` whose `code` is `"ERR_NSH_QUOTA_EXCEEDED"` when the storage would grow past 5 MB, or when the browser refuses to keep the value on the web; the value is not kept then. Rust: `Storage::set_item(key, value)`, which returns `Err(StorageFull)` then. Values are strings: keep structured data as JSON (`serde_json::to_string` in Rust, `JSON.stringify` in TSX) and read it back (`serde_json::from_str`, `JSON.parse`).
 
 ```rust tabs
 let draft = serde_json::json!({ "title": title.get(), "body": body.get() });

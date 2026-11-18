@@ -234,7 +234,7 @@ export const nav = createNavStack<Route>([{ name: "home" }]);
 
 页面（Rust 中是 `nav_page()`，TSX 中是 `NavPage`）包裹页面内容并携带它的标题栏。iOS 和 Android 显示系统标题栏，由标题和标题栏选项设置。桌面和 Web 显示页面的标题栏插槽（`.header(..)`，TSX 的 `header`），即应用自己的视图，放在页面顶部：与页面同宽，高度由它自己的布局决定，内容位于它下方。像上面的例子那样两者都给，页面在每个平台上都显得自然。所有选项都是响应式的：改变 signal，标题栏随之更新。
 
-在 Rust 中，下表的每个属性都是 `nav_page()` 上蛇形命名的方法：`.title(..)`、`.header(..)`、`.header_visible(..)`、`.header_transparent(..)`、`.header_style_with(..)`、`.header_style(..)`、`.header_back_visible(..)`、`.header_left(..)`、`.header_right(..)`、`.header_title(..)`、`.header_large_title(..)`、`.header_back_title(..)`、`.header_right_items(..)`、`.animation(ScreenAnimation::Fade)`、`.status_bar(..)`、`.pop_on_swipe(..)`、`.pop_on_back(..)`、`.on_back_press(..)`、`.on_dismiss(..)`；它的子元素就是页面内容。
+在 Rust 中，下表的每个属性都是 `nav_page()` 上蛇形命名的方法：`.title(..)`、`.header(..)`、`.header_visible(..)`、`.header_transparent(..)`、`.header_shadow_visible(..)`、`.header_style_with(..)`、`.header_style(..)`、`.header_back_visible(..)`、`.header_left(..)`、`.header_right(..)`、`.header_title(..)`、`.header_large_title(..)`、`.header_back_title(..)`、`.header_right_items(..)`、`.animation(ScreenAnimation::Fade)`、`.status_bar(..)`、`.pop_on_swipe(..)`、`.pop_on_back(..)`、`.on_back_press(..)`、`.on_dismiss(..)`；它的子元素就是页面内容。
 
 | 属性 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -242,6 +242,7 @@ export const nav = createNavStack<Route>([{ name: "home" }]);
 | `title` | `string` | | iOS 和 Android：系统标题栏的标题。 |
 | `headerVisible` | `boolean` | `true` | iOS 和 Android：显示系统标题栏。 |
 | `headerTransparent` | `boolean` | `false` | iOS 和 Android：内容延伸到标题栏下方。 |
+| `headerShadowVisible` | `boolean` | `true` | iOS：标题栏下方的细线。设为 `false` 时标题栏没有这条线，同 iOS 26 系统自带的标题栏。Android 的标题栏没有这条线。 |
 | `headerStyle` | `{ backgroundColor?, color?, tintColor? }` | | iOS 和 Android：标题栏背景色、标题颜色（`color`）和按钮颜色（`tintColor`）。 |
 | `headerClass` | `string` | | 用类名设置同样的颜色：`bg-*`、标题用 `text-*`、按钮用 `tint-*`；`headerStyle` 优先。 |
 | `headerBackVisible` | `boolean` | `true` | iOS 和 Android：显示返回按钮。 |

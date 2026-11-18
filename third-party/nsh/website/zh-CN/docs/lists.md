@@ -151,7 +151,7 @@ const toggle = (id: number) =>
 
 ## 属性
 
-列表接受滚动视图中对列表有意义的所有滚动属性（`pagingEnabled`、`snapToInterval`、`snapToOffsets`、`snapToAlignment`、`decelerationRate`、`disableIntervalMomentum`、`bounces`、`scrollable`、`contentInset`、`contentOffset`、`keyboardShouldPersistTaps`、`keyboardDismissMode`、`scrollEventThrottle`、`onScroll`、`onScrollDragStart`、`onScrollDragEnd`、`onMomentumStart`、`onMomentumEnd`、`onScrollEnd`、`scrollValue`、`pullValue`；在 Rust 中是与滚动视图相同的方法），说明见[滚动](./scrolling.md)。列表保持 1 倍缩放。它自己的属性：
+列表接受滚动视图中对列表有意义的所有滚动属性（`pagingEnabled`、`snapToInterval`、`snapToOffsets`、`snapToAlignment`、`decelerationRate`、`disableIntervalMomentum`、`bounces`、`scrollable`、`contentInset`、`scrollbarInset`、`contentOffset`、`keyboardShouldPersistTaps`、`keyboardDismissMode`、`scrollEventThrottle`、`onScroll`、`onScrollDragStart`、`onScrollDragEnd`、`onMomentumStart`、`onMomentumEnd`、`onScrollEnd`、`scrollValue`、`pullValue`；在 Rust 中是与滚动视图相同的方法），说明见[滚动](./scrolling.md)。列表保持 1 倍缩放。它自己的属性：
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|

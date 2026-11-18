@@ -210,12 +210,7 @@ impl TerminalSurface {
         let handled = key.is_some_and(|vk| {
             crate::input::key(
                 self.view.surface(),
-                KeyEvent {
-                    vk,
-                    down,
-                    repeat,
-                    modifiers: mods(stroke.modifiers),
-                },
+                KeyEvent::synthetic(vk, down, repeat, mods(stroke.modifiers)),
             )
         });
         if down

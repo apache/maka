@@ -1417,27 +1417,6 @@ impl Cx {
                     let mut child_cx = cx.clone();
                     child_cx.list_depth = std::cell::Cell::new(depth.saturating_add(1));
                     let address = task.then(|| cx.choices.address(&key));
-                    let content = child_cx.blocks(
-                        view()
-                            .flex_col()
-                            .flex_1()
-                            .gap(move || {
-                                px(match block.get() {
-                                    Block::List { loose: true, .. } => BLOCK_GAP,
-                                    _ => ITEM_GAP,
-                                })
-                            })
-                            .when(done, |v| {
-                                v.text_color(move || theme().muted_foreground)
-                                    .line_through()
-                                    .text_decoration_color(move || {
-                                        theme().muted_foreground.opacity(0.6)
-                                    })
-                            }),
-                        children,
-                        key,
-                        last,
-                    );
                     let marker_cx = cx.clone();
                     let marker = dynamic(move || {
                         let (ordered, start, total) = match block.get() {
@@ -1465,6 +1444,28 @@ impl Cx {
                     } else {
                         (None, Some(marker))
                     };
+                    let content = child_cx.blocks(
+                        view()
+                            .flex_col()
+                            .flex_1()
+                            .gap(move || {
+                                px(match block.get() {
+                                    Block::List { loose: true, .. } => BLOCK_GAP,
+                                    _ => ITEM_GAP,
+                                })
+                            })
+                            .when(done, |v| {
+                                v.text_color(move || theme().muted_foreground)
+                                    .line_through()
+                                    .text_decoration_color(move || {
+                                        theme().muted_foreground.opacity(0.6)
+                                    })
+                            })
+                            .child(inside),
+                        children,
+                        key,
+                        last,
+                    );
                     let row = view().flex_row().map(|v| {
                         if terminal {
                             v
@@ -1476,7 +1477,7 @@ impl Cx {
                     });
                     cx.part(row, Part::ListItem)
                         .child(before)
-                        .child(cx.part(content.child(inside), Part::ListItemContent))
+                        .child(cx.part(content, Part::ListItemContent))
                 },
             ))
             .into_element()

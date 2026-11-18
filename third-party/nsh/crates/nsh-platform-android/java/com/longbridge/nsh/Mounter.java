@@ -522,11 +522,13 @@ final class Mounter {
                     boolean bouncesZoom = b.getInt() != 0, pinch = b.getInt() != 0, center = b.getInt() != 0;
                     boolean ownIndicator = b.getInt() != 0;
                     float indicatorHeight = b.getFloat();
+                    float barTop = b.getFloat(), barRight = b.getFloat(), barBottom = b.getFloat(), barLeft = b.getFloat();
                     if (v instanceof ScrollBox) {
                         ((ScrollBox) v).setBehavior(paging, interval, offsets, alignment, deceleration, enabled, bounces,
                                 top, right, bottom, left, taps, oneStep);
                         ((ScrollBox) v).setZoom(zooms, minZoom, maxZoom, bouncesZoom, pinch, center);
                         ((ScrollBox) v).setRefresh(ownIndicator, indicatorHeight);
+                        ((ScrollBox) v).setBarInset(barTop, barRight, barBottom, barLeft);
                     }
                     break;
                 }

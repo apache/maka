@@ -231,3 +231,141 @@ fn a_stored_value_reads_without_subscribing() {
         },
     );
 }
+
+/// A computation reads a memo that is to run again, and the memo's run
+/// lets the owner both are in go (as a list's rows memo lets a cell's
+/// content go), then nodes are made elsewhere and take the freed slots:
+/// the read gives the memo's last value, never a new node's, and neither
+/// run writes its result into a node made in its slot.
+#[test]
+fn a_memo_disposed_while_a_read_brings_it_up_to_date_gives_its_last_value() {
+    let runtime = Runtime::default();
+    let _entered = runtime.enter();
+    let (outer, (a, b)) = create_root(|| (signal(0), signal(0)));
+    let cell: Rc<std::cell::Cell<Option<Owner>>> = Rc::default();
+    let made: Rc<RefCell<Vec<Signal<i32>>>> = Rc::default();
+    let read = Rc::new(RefCell::new(Vec::new()));
+    let (c, m, r) = (cell.clone(), made.clone(), read.clone());
+    let (owner, ()) = create_root(move || {
+        let memo: Rc<std::cell::Cell<Option<Memo<i32>>>> = Rc::default();
+        let slot = memo.clone();
+        // Runs first when `a` and `b` change together, and reads the memo
+        // before it ran.
+        let _reader = computed(move || {
+            a.get();
+            if let Some(memo) = slot.get() {
+                r.borrow_mut().push(memo.get());
+            }
+        });
+        memo.set(Some(computed(move || {
+            let n = b.get();
+            if n == 1 {
+                c.get().expect("the cell").dispose();
+                m.borrow_mut()
+                    .extend(outer.run(|| (0..8).map(|_| signal(-1)).collect::<Vec<_>>()));
+            }
+            n * 10
+        })));
+    });
+    cell.set(Some(owner));
+    batch(|| {
+        a.set(1);
+        b.set(1);
+    });
+    assert_eq!(*read.borrow(), [0]);
+    let values: Vec<i32> = made.borrow().iter().map(|s| s.get()).collect();
+    assert_eq!(values, [-1; 8]);
+    outer.dispose();
+}
+
+/// As above, with computations taking the freed slots: once the read
+/// returns, what the reader reads goes to no one, never to a computation
+/// made in its slot, which would then run again for a source it never
+/// read.
+#[test]
+fn a_reader_let_go_by_the_memo_it_reads_tracks_into_no_new_computation() {
+    let runtime = Runtime::default();
+    let _entered = runtime.enter();
+    let (outer, (a, b, x)) = create_root(|| (signal(0), signal(0), signal(0)));
+    let cell: Rc<std::cell::Cell<Option<Owner>>> = Rc::default();
+    let runs: Rc<RefCell<Vec<u32>>> = Rc::default();
+    let made: Rc<RefCell<Vec<Memo<()>>>> = Rc::default();
+    let (c, r, m) = (cell.clone(), runs.clone(), made.clone());
+    let (owner, ()) = create_root(move || {
+        let memo: Rc<std::cell::Cell<Option<Memo<i32>>>> = Rc::default();
+        let slot = memo.clone();
+        // Runs first when `a` and `b` change together, reads the memo
+        // before it ran, then `x`.
+        let _reader = computed(move || {
+            a.get();
+            if let Some(memo) = slot.get() {
+                memo.get();
+                x.get();
+            }
+        });
+        memo.set(Some(computed(move || {
+            let n = b.get();
+            if n == 1 {
+                c.get().expect("the cell").dispose();
+                let (r, m) = (r.clone(), m.clone());
+                outer.run(move || {
+                    for i in 0..8 {
+                        r.borrow_mut().push(0);
+                        let r = r.clone();
+                        m.borrow_mut()
+                            .push(computed(move || r.borrow_mut()[i] += 1));
+                    }
+                });
+            }
+            n * 10
+        })));
+    });
+    cell.set(Some(owner));
+    batch(|| {
+        a.set(1);
+        b.set(1);
+    });
+    assert_eq!(*runs.borrow(), [1; 8]);
+    x.set(1);
+    for memo in made.borrow().iter() {
+        memo.get();
+    }
+    assert_eq!(*runs.borrow(), [1; 8]);
+    outer.dispose();
+}
+
+/// A computation's cleanup lets the computation go, and nodes made after
+/// take its slot: cleaning it stops there, and runs no cleanup of theirs.
+#[test]
+fn a_computation_let_go_by_its_cleanup_leaves_the_nodes_in_its_slot_alone() {
+    let runtime = Runtime::default();
+    let _entered = runtime.enter();
+    let (outer, a) = create_root(|| signal(0));
+    let cell: Rc<std::cell::Cell<Option<Owner>>> = Rc::default();
+    let cleaned: Rc<RefCell<Vec<u32>>> = Rc::default();
+    let (c, k) = (cell.clone(), cleaned.clone());
+    let (owner, ()) = create_root(move || {
+        let _cleaning = computed(move || {
+            a.get();
+            let (c, k) = (c.clone(), k.clone());
+            cleanup(move || {
+                c.get().expect("the cell").dispose();
+                outer.run(move || {
+                    for i in 0..8 {
+                        k.borrow_mut().push(0);
+                        let k = k.clone();
+                        computed(move || {
+                            let k = k.clone();
+                            cleanup(move || k.borrow_mut()[i] += 1);
+                        });
+                    }
+                });
+            });
+        });
+    });
+    cell.set(Some(owner));
+    a.set(1);
+    assert_eq!(*cleaned.borrow(), [0; 8]);
+    outer.dispose();
+    assert_eq!(*cleaned.borrow(), [1; 8]);
+}

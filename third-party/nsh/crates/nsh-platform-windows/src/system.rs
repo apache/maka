@@ -701,7 +701,8 @@ fn accent(dark: bool) -> Color {
 
 /// Opens `url` with the app registered for its scheme (`ShellExecuteW`'s
 /// `open`): whether one took it. The URL passed `nsh_core::open_url`'s
-/// check, so it names no file or program to run.
+/// check, so it names no file or program to run: `ShellExecuteW` would
+/// run one given its path, which is why the check takes no `C:/…`.
 pub(crate) fn open_url(url: &str) -> bool {
     // SAFETY: plain call with valid NUL-terminated strings.
     let instance = unsafe {

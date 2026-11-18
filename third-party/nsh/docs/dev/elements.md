@@ -375,9 +375,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   listens, with the path of listening nodes (`EventPayload::Touch`, sent to the root; moves are merged per engine turn).
   Each touch carries `pointerType`, `pressure` and `tiltX` / `tiltY` as the DOM's `PointerEvent` (`TouchPoint`): iOS
   reads `UITouch` force and the Pencil's angles, Android `MotionEvent` pressure, tool type and tilt, Windows
-  `GetPointerPenInfo` / `GetPointerTouchInfo`, macOS and GTK a tablet's pen events, the web `PointerEvent`; a device
-  without pressure reports 0.5 while down and 0 once lifted. The
-  negotiation runs as in React Native, natively (`nsh-js` `touch.rs`), asking the app's handlers. A grant returning true
+  `GetPointerPenInfo` / `GetPointerTouchInfo`, macOS and GTK a tablet's pen events, and the web `PointerEvent`. A device
+  without pressure reports 0.5 while down and 0 once lifted. On web, `browser/events.rs` sends these fields in each point
+  from Wasm. `web/browser/gesture.js`, bundled into the realm's `bootstrap.js`, copies them to the event and the points
+  in `touches` and `changedTouches`. The negotiation asks the app's handlers as in React Native (`nsh-js` `touch.rs`
+  on native targets, `gesture.js` on web). A grant returning true
   (PanResponder's default) sends `SetJsResponder`: scroll
   views around stop taking the touches (UIKit: their pan recognizer is disabled; Android: `ScrollBox.jsBlocked`), and the
   presses of the views around it end with no long press or press after them (UIKit: their `PressRecognizer`s are

@@ -103,6 +103,7 @@ scroll().horizontal().scrollbar(false).child(
 | `bounces` | `.bounces(..)` | `boolean` | `true` | 允许越过边缘回弹。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 显示滚动条。 |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 内容四周可以滚动进入的留白。 |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 滚动指示条与视图各边保持的距离。 |
 | `contentOffset` | `.content_offset(point(..))` | `{ x?, y? }` | | 初始位置。 |
 | `decelerationRate` | `.deceleration(rate)` | `"normal" \| "fast" \| number` | 平台默认 | 惯性滑动减速的快慢：`"normal"`、`"fast"`，或每毫秒保留的速度比例（`0.998` 为 normal，`0.99` 为 fast；`0` 表示平台默认）。 |
 

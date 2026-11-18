@@ -252,6 +252,23 @@ pub(crate) struct KeyEvent {
     pub(crate) translated: bool,
 }
 
+#[cfg(any(test, feature = "terminal"))]
+impl KeyEvent {
+    /// A backend-injected key has no Windows message or translated character.
+    pub(crate) fn synthetic(vk: u16, down: bool, repeat: bool, modifiers: Modifiers) -> Self {
+        Self {
+            vk,
+            down,
+            repeat,
+            modifiers,
+            scan: 0,
+            extended: false,
+            sys: false,
+            translated: false,
+        }
+    }
+}
+
 /// The mouse cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Cursor {
@@ -3432,24 +3449,19 @@ mod tests {
             assert!(crate::text_input::focused_view(&surface).is_none());
             assert!(key(
                 &surface,
-                KeyEvent {
-                    vk: 0x41,
-                    down: true,
-                    repeat: false,
-                    modifiers: Modifiers {
+                KeyEvent::synthetic(
+                    0x41,
+                    true,
+                    false,
+                    Modifiers {
                         ctrl: true,
                         ..Default::default()
-                    },
-                }
+                    }
+                )
             ));
             assert!(key(
                 &surface,
-                KeyEvent {
-                    vk: 0x1B,
-                    down: true,
-                    repeat: false,
-                    modifiers: Modifiers::default(),
-                }
+                KeyEvent::synthetic(0x1B, true, false, Modifiers::default())
             ));
 
             // Programmatically refocusing an empty field while output remains
@@ -3490,15 +3502,15 @@ mod tests {
             // Pressing bare Control before C must not clear the output selection.
             let _ = key(
                 &surface,
-                KeyEvent {
-                    vk: 0x11,
-                    down: true,
-                    repeat: false,
-                    modifiers: Modifiers {
+                KeyEvent::synthetic(
+                    0x11,
+                    true,
+                    false,
+                    Modifiers {
                         ctrl: true,
                         ..Default::default()
                     },
-                },
+                ),
             );
             assert!(
                 crate::text::has_selection(&surface)
@@ -3508,29 +3520,29 @@ mod tests {
             let sent_before_copy = surface.events_sent();
             assert!(key(
                 &surface,
-                KeyEvent {
-                    vk: 0x43,
-                    down: true,
-                    repeat: false,
-                    modifiers: Modifiers {
+                KeyEvent::synthetic(
+                    0x43,
+                    true,
+                    false,
+                    Modifiers {
                         ctrl: true,
                         ..Default::default()
-                    },
-                }
+                    }
+                )
             ));
             assert_eq!(surface.events_sent(), sent_before_copy);
 
             assert!(key(
                 &surface,
-                KeyEvent {
-                    vk: 0x41,
-                    down: true,
-                    repeat: false,
-                    modifiers: Modifiers {
+                KeyEvent::synthetic(
+                    0x41,
+                    true,
+                    false,
+                    Modifiers {
                         ctrl: true,
                         ..Default::default()
-                    },
-                }
+                    }
+                )
             ));
             assert!(
                 !crate::text::has_selection(&surface)
@@ -3603,12 +3615,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mut event = KeyEvent {
-            vk: 0x09,
-            down: true,
-            repeat: false,
-            modifiers: Modifiers::default(),
-        };
+        let mut event = KeyEvent::synthetic(0x09, true, false, Modifiers::default());
         assert!(tab(&surface, &event));
         assert_eq!(surface.focus_path(), vec![first.id(), ROOT_ID]);
         assert!(tab(&surface, &event));

@@ -244,12 +244,15 @@ impl StorageBackend for FileStorage {
         }
     }
 
-    fn write(&self, change: StorageChange) {
+    /// Hands `change` to the writer thread: the file is written after this
+    /// returns, so an error writing it is only logged, and the change stays
+    /// in memory, written with the next.
+    fn write(&self, change: StorageChange) -> Result<(), String> {
         if let Some(entries) = &mut *self.entries.lock().unwrap_or_else(|e| e.into_inner()) {
             apply(entries, change.clone());
         }
         if self.in_memory.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
+            return Ok(());
         }
         let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let (changes, _) = writer.get_or_insert_with(|| {
@@ -263,6 +266,7 @@ impl StorageBackend for FileStorage {
         });
         // The writer only stops when this is dropped.
         let _ = changes.send(change);
+        Ok(())
     }
 }
 
@@ -299,12 +303,16 @@ mod tests {
         let dir = scratch("instances");
         let storage = FileStorage::open(&dir);
         assert!(storage.load().unwrap().is_empty());
-        storage.write(StorageChange::Set("a".into(), "1".into()));
-        storage.write(StorageChange::Set("b".into(), "2".into()));
+        storage
+            .write(StorageChange::Set("a".into(), "1".into()))
+            .unwrap();
+        storage
+            .write(StorageChange::Set("b".into(), "2".into()))
+            .unwrap();
         // A reload while the first is open shares its entries, written or not.
         let reloaded = FileStorage::open(&dir);
         assert!(Arc::ptr_eq(&storage, &reloaded));
-        storage.write(StorageChange::Remove("a".into()));
+        storage.write(StorageChange::Remove("a".into())).unwrap();
         assert_eq!(reloaded.load().unwrap().len(), 1);
         drop((storage, reloaded));
         let again = FileStorage::open(&dir);
@@ -312,7 +320,7 @@ mod tests {
             again.load().unwrap(),
             BTreeMap::from([("b".to_owned(), "2".to_owned())])
         );
-        again.write(StorageChange::Clear);
+        again.write(StorageChange::Clear).unwrap();
         drop(again);
         assert!(FileStorage::open(&dir).load().unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -440,7 +448,9 @@ mod tests {
         let aside = dir.join("storage.json.corrupt");
         assert_eq!(std::fs::read(&aside).unwrap(), b"{ not json");
         // The app goes on with new entries, and the old file is still there.
-        storage.write(StorageChange::Set("a".into(), "1".into()));
+        storage
+            .write(StorageChange::Set("a".into(), "1".into()))
+            .unwrap();
         drop(storage);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"a":"1"}"#);
         assert_eq!(std::fs::read(&aside).unwrap(), b"{ not json");
@@ -465,7 +475,9 @@ mod tests {
         }
         let storage = FileStorage::open(&dir);
         assert!(storage.load().is_err());
-        storage.write(StorageChange::Set("a".into(), "1".into()));
+        storage
+            .write(StorageChange::Set("a".into(), "1".into()))
+            .unwrap();
         drop(storage);
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"kept":"yes"}"#);
@@ -479,7 +491,9 @@ mod tests {
         std::fs::write(&blocked, b"").unwrap();
         let storage = FileStorage::open(blocked.join("app"));
         assert!(storage.load().unwrap_err().contains("kept in memory"));
-        storage.write(StorageChange::Set("a".into(), "1".into()));
+        storage
+            .write(StorageChange::Set("a".into(), "1".into()))
+            .unwrap();
         assert_eq!(
             storage.load().unwrap().get("a").map(String::as_str),
             Some("1")

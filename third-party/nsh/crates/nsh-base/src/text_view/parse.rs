@@ -68,6 +68,11 @@ impl Request {
     fn parse(&self) -> Projection {
         let parser = self.parser();
         match &self.input {
+            Input::Markdown(source) if self.source_id.is_none() => Projection {
+                document: parser.markdown(source),
+                raw_len: source.len() as u64,
+                ..Projection::default()
+            },
             Input::Markdown(source) => parser.markdown_projection(source),
             Input::Html(source) => Projection {
                 document: parser.html(source),

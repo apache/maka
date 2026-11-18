@@ -432,28 +432,32 @@ replacement) and every mount item of every step is the same. The first commit ta
 mounting or drawing).
 
 `TextView` long text (`text_view/markdown/incremental.rs`, 2026-11-18, Linux x86_64, Intel Core
-Ultra 7 270K Plus, release, one CPU with `taskset`, least of three runs): one parse of a whole text
-grows faster than the text, so a long text given at once is read in parts the way a streamed one
-is (`text-view.md` "Reading only what can change"). `cargo test --release -p nsh-base --lib
-bench_long_texts -- --ignored --nocapture` reads each text both ways and checks that the documents
-are equal. Sections are a heading, a paragraph with a link and bold words, and a two-item list; the
-typical reply is the streaming benchmarks' text repeated. ms:
+Ultra 7 270K Plus, release, one CPU with `taskset`, least of three runs, other work on the
+machine): one parse of a whole text grows faster than the text, so a long text given at once is
+read in parts the way a streamed one is (`text-view.md` "Reading only what can change").
+`cargo test --release -p nsh-base --lib bench_long_texts -- --ignored --nocapture` reads each text
+both ways, without a plugin and with one that reads paragraphs, headings, code, formulas and tables
+(the test's `Where`), and checks that the documents are equal. Sections are a heading, a paragraph
+with a link and bold words, and a two-item list; the typical reply is the streaming benchmarks'
+text repeated. ms, one parse / in parts:
 
-| Text | Size | One parse | In parts |
+| Text | Size | Without a plugin | With a plugin |
 |---|---|---|---|
-| Sections | 190 KB | 50.8 | 27.4 |
-| Sections | 475 KB | 210.9 | 75.1 |
-| Sections | 950 KB | 625.8 | 140.4 |
-| Sections | 1.9 MB | 2282.0 | 309.3 |
-| Typical reply | 950 KB | 3689.0 | 352.4 |
-| One table, 20,000 rows | 928 KB | 19357.1 | 19333.5 |
-| One list, 20,000 items | 848 KB | 422.9 | 436.8 |
-| One code block, 20,000 lines | 1.1 MB | 78.4 | 74.2 |
+| Sections | 190 KB | 59.3 / 37.1 | 57.9 / 37.9 |
+| Sections | 475 KB | 234.2 / 91.1 | 237.6 / 94.5 |
+| Sections | 950 KB | 727.3 / 184.3 | 733.8 / 189.9 |
+| Sections | 1.9 MB | 2444.6 / 369.3 | 2435.8 / 376.7 |
+| Typical reply | 950 KB | 3902.6 / 454.9 | 3938.1 / 408.4 |
+| Typical reply | 1.9 MB | 21113.9 / 734.1 | 21153.4 / 805.1 |
+| One table, 20,000 rows | 928 KB | 18485.0 / 17214.1 | 17335.0 / 17283.7 |
+| One list, 20,000 items | 848 KB | 452.8 / 460.5 | 490.6 / 471.9 |
+| One code block, 20,000 lines | 1.1 MB | 101.3 / 101.5 | 99.4 / 101.2 |
 
-A text up to twice the part's size, and one read whole (definitions, plugins, containers, MDX), is
-parsed once as before. A text the boundary cannot cross costs what one parse does: the table, list
-and code block are within noise. The table's own parse still grows with the square of its rows,
-inside `markdown-rs`.
+A plugin costs about nothing next to the parse; until plugins were read in parts, a text read
+with one took the one-parse column. A text up to twice the part's size, and one read whole
+(definitions, plugins that turn a construct on or off, containers, MDX), is parsed once as before.
+A text the boundary cannot cross costs what one parse does: the table, list and code block are
+within noise. The table's own parse still grows with the square of its rows, inside `markdown-rs`.
 
 Terminal `TextView` tables (2026-11-08, Linux x86_64, debug hosts,
 `nsh test <entry> --target tui --trace`, against `71aeb06a`, seven alternating runs per version, medians):

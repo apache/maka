@@ -7,8 +7,12 @@
 //! with each operation serialized; reads after loading never touch the
 //! disk. Every change is handed to the
 //! backend, which writes it where it may block (the file backend on a
-//! thread of its own). Every app has its storage: what the host decides is
-//! where it is kept. The quota is checked here, in Rust.
+//! thread of its own). A value the backend refuses at once (the browser's
+//! `localStorage`) is not kept, as one past the quota. What another writer
+//! changes in the backend's entries (another browser tab of the app) the
+//! platform hands in ([`changed_elsewhere`]). Every app has its storage:
+//! what the host decides is where it is kept. The quota is checked here, in
+//! Rust.
 
 use std::{
     collections::BTreeMap,
@@ -35,8 +39,12 @@ pub trait StorageBackend: Send + Sync {
     /// error leaves the app with none (logged).
     fn load(&self) -> Result<BTreeMap<String, String>, String>;
     /// Keeps `change`. Called on the engine thread: a backend that blocks
-    /// writes elsewhere, in order.
-    fn write(&self, change: StorageChange);
+    /// writes elsewhere, in order, and returns before it knows how that
+    /// went (logging what fails there). An error means the change was not
+    /// kept: a value set is then refused ([`Storage::set_item`] fails and
+    /// the entries stay as they were); a removal stays done in memory
+    /// (logged), as the app asked.
+    fn write(&self, change: StorageChange) -> Result<(), String>;
 }
 
 /// Names the backend only, so that platforms' options holding one can
@@ -68,7 +76,8 @@ impl Storage {
     }
 
     /// Sets `key` to `value` (TS: `setItem`); fails when the storage would
-    /// grow past [`QUOTA`], keeping what it held.
+    /// grow past [`QUOTA`] or the device refuses the value (the browser's
+    /// own quota, storage the user blocked), keeping what it held.
     pub fn set_item(key: impl Into<String>, value: impl Into<String>) -> Result<(), StorageFull> {
         crate::element::with_storage(|s| s.set(key.into(), value.into()))
     }
@@ -89,7 +98,9 @@ impl Storage {
     }
 }
 
-/// A value refused because the storage would grow past [`QUOTA`].
+/// A value refused because the storage would grow past [`QUOTA`], or
+/// because the device refused to keep it (the browser's own quota, storage
+/// the user blocked).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageFull {
     /// The bytes the storage would have held.
@@ -98,11 +109,19 @@ pub struct StorageFull {
 
 impl std::fmt::Display for StorageFull {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "storage is full: {} bytes would exceed the quota of {QUOTA}",
-            self.bytes
-        )
+        if self.bytes > QUOTA {
+            write!(
+                f,
+                "storage is full: {} bytes would exceed the quota of {QUOTA}",
+                self.bytes
+            )
+        } else {
+            write!(
+                f,
+                "storage is full: the device refused to keep {} bytes",
+                self.bytes
+            )
+        }
     }
 }
 
@@ -120,13 +139,36 @@ struct Shared {
     state: Weak<Mutex<Entries>>,
 }
 
+/// The state of each backend in use. Indexed by backend identity, never by
+/// an engine or app id: the host decides which views share storage by
+/// sharing the backend.
+static SHARED: Mutex<Vec<Shared>> = Mutex::new(Vec::new());
+
+/// Takes in what another writer did to `backend`'s entries (another browser
+/// tab of the same app): `change` as the backend now holds it, or `None`
+/// when any entry may have changed, to be read again on next use. Every
+/// core using `backend` sees it; nothing is written back. A backend no core
+/// uses, or one not read yet, reads it when first used.
+#[doc(hidden)]
+pub fn changed_elsewhere(backend: &dyn StorageBackend, change: Option<StorageChange>) {
+    let state = SHARED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|s| std::ptr::addr_eq(s.backend.as_ptr(), backend as *const dyn StorageBackend))
+        .and_then(|s| s.state.upgrade());
+    if let Some(state) = state {
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .changed_elsewhere(change);
+    }
+}
+
 impl Store {
     /// Shares the state of `backend`; `None` creates independent in-memory
     /// storage for this core.
     pub(crate) fn new(backend: Option<Arc<dyn StorageBackend>>) -> Self {
-        // Index by backend identity, never by an engine or app id: the
-        // host decides which views share storage by sharing the backend.
-        static SHARED: Mutex<Vec<Shared>> = Mutex::new(Vec::new());
         let Some(backend) = backend else {
             return Self {
                 state: Arc::new(Mutex::new(Entries::new(None))),
@@ -216,9 +258,20 @@ impl Entries {
         })
     }
 
-    fn write(&self, change: StorageChange) {
-        if let Some(backend) = &self.backend {
-            backend.write(change);
+    fn write(&self, change: StorageChange) -> Result<(), String> {
+        match &self.backend {
+            Some(backend) => backend.write(change),
+            None => Ok(()),
+        }
+    }
+
+    /// Writes a removal, done in memory whatever comes of it: the app asked
+    /// for the entry gone, and a backend that refuses one (the browser's
+    /// `localStorage` only does when it cannot be reached at all) has
+    /// refused every value since it was read.
+    fn write_removal(&self, change: StorageChange) {
+        if let Err(e) = self.write(change) {
+            log::error!(target: "js", "the app's storage could not be written: {e}");
         }
     }
 
@@ -241,9 +294,14 @@ impl Entries {
         if entries.get(&key) == Some(&value) {
             return Ok(());
         }
-        entries.insert(key.clone(), value.clone());
+        // Written first, the entries changing only once it is kept: under
+        // the lock, so no other core sees it in between.
+        if let Err(e) = self.write(StorageChange::Set(key.clone(), value.clone())) {
+            log::warn!(target: "js", "the app's storage refused {key:?}: {e}");
+            return Err(StorageFull { bytes: new });
+        }
+        self.entries().insert(key, value);
         self.bytes = new;
-        self.write(StorageChange::Set(key, value));
         Ok(())
     }
 
@@ -253,7 +311,7 @@ impl Entries {
             return;
         };
         self.bytes -= key.len() + value.len();
-        self.write(StorageChange::Remove(key.to_owned()));
+        self.write_removal(StorageChange::Remove(key.to_owned()));
     }
 
     /// Every key, in order.
@@ -269,7 +327,37 @@ impl Entries {
         }
         entries.clear();
         self.bytes = 0;
-        self.write(StorageChange::Clear);
+        self.write_removal(StorageChange::Clear);
+    }
+
+    /// [`changed_elsewhere`].
+    fn changed_elsewhere(&mut self, change: Option<StorageChange>) {
+        let Some(entries) = &mut self.entries else {
+            // The load reads it.
+            return;
+        };
+        let size = |key: &str, value: &str| key.len() + value.len();
+        match change {
+            Some(StorageChange::Set(key, value)) => {
+                self.bytes += size(&key, &value);
+                if let Some(old) = entries.insert(key.clone(), value) {
+                    self.bytes -= size(&key, &old);
+                }
+            }
+            Some(StorageChange::Remove(key)) => {
+                if let Some(old) = entries.remove(&key) {
+                    self.bytes -= size(&key, &old);
+                }
+            }
+            Some(StorageChange::Clear) => {
+                entries.clear();
+                self.bytes = 0;
+            }
+            None => {
+                self.entries = None;
+                self.bytes = 0;
+            }
+        }
     }
 }
 
@@ -290,8 +378,9 @@ mod tests {
             Ok(self.kept.clone())
         }
 
-        fn write(&self, change: StorageChange) {
+        fn write(&self, change: StorageChange) -> Result<(), String> {
             self.changes.lock().unwrap().push(change);
+            Ok(())
         }
     }
 
@@ -422,11 +511,118 @@ mod tests {
                 Err("unreadable".into())
             }
 
-            fn write(&self, _: StorageChange) {}
+            fn write(&self, _: StorageChange) -> Result<(), String> {
+                Ok(())
+            }
         }
         let storage = Store::new(Some(Arc::new(Broken)));
         assert_eq!(storage.get("a"), None);
         storage.set("a".into(), "1".into()).unwrap();
         assert_eq!(storage.get("a").as_deref(), Some("1"));
+    }
+
+    /// Storage that refuses every change, as `localStorage` does when the
+    /// user blocked it or the browser's quota is used up.
+    struct Refusing {
+        kept: BTreeMap<String, String>,
+    }
+
+    impl StorageBackend for Refusing {
+        fn load(&self) -> Result<BTreeMap<String, String>, String> {
+            Ok(self.kept.clone())
+        }
+
+        fn write(&self, _: StorageChange) -> Result<(), String> {
+            Err("QuotaExceededError".into())
+        }
+    }
+
+    #[test]
+    fn a_value_the_backend_refuses_is_not_kept() {
+        let backend: Arc<dyn StorageBackend> = Arc::new(Refusing {
+            kept: BTreeMap::from([("draft".into(), "old".into())]),
+        });
+        let storage = Store::new(Some(backend.clone()));
+        let other = Store::new(Some(backend));
+        let refused = storage.set("draft".into(), "new".into()).unwrap_err();
+        assert_eq!(refused, StorageFull { bytes: 8 });
+        assert!(refused.to_string().contains("refused"));
+        assert!(storage.set("added".into(), "1".into()).is_err());
+        for view in [&storage, &other] {
+            assert_eq!(view.get("draft").as_deref(), Some("old"));
+            assert_eq!(view.keys(), ["draft"]);
+        }
+    }
+
+    #[test]
+    fn removals_the_backend_refuses_are_done_in_memory() {
+        let storage = Store::new(Some(Arc::new(Refusing {
+            kept: BTreeMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]),
+        })));
+        storage.remove("a");
+        assert_eq!(storage.keys(), ["b"]);
+        storage.clear();
+        assert!(storage.keys().is_empty());
+    }
+
+    #[test]
+    fn changes_made_elsewhere_reach_every_view() {
+        let backend: Arc<dyn StorageBackend> = Arc::new(Recorder {
+            kept: BTreeMap::from([("a".into(), "1".into())]),
+            ..Recorder::default()
+        });
+        let first = Store::new(Some(backend.clone()));
+        let second = Store::new(Some(backend.clone()));
+        assert_eq!(first.get("a").as_deref(), Some("1"));
+        changed_elsewhere(&*backend, Some(StorageChange::Set("a".into(), "2".into())));
+        changed_elsewhere(&*backend, Some(StorageChange::Set("b".into(), "3".into())));
+        assert_eq!(second.get("a").as_deref(), Some("2"));
+        assert_eq!(first.keys(), ["a", "b"]);
+        changed_elsewhere(&*backend, Some(StorageChange::Remove("a".into())));
+        assert_eq!(second.keys(), ["b"]);
+        changed_elsewhere(&*backend, Some(StorageChange::Clear));
+        assert!(first.keys().is_empty());
+        // Nothing went back to the backend.
+        assert!(
+            backend
+                .load()
+                .is_ok_and(|kept| kept == BTreeMap::from([("a".into(), "1".into())]))
+        );
+        // `None`: read again on next use.
+        changed_elsewhere(&*backend, None);
+        assert_eq!(second.get("a").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn changes_made_elsewhere_count_toward_the_quota() {
+        let backend: Arc<dyn StorageBackend> = Arc::new(Recorder::default());
+        let storage = Store::new(Some(backend.clone()));
+        assert!(storage.keys().is_empty());
+        changed_elsewhere(
+            &*backend,
+            Some(StorageChange::Set("k".into(), "x".repeat(QUOTA - 1))),
+        );
+        assert!(storage.set("j".into(), "y".into()).is_err());
+        changed_elsewhere(&*backend, Some(StorageChange::Set("k".into(), "x".into())));
+        // "k" and "x", then "j" and its value: the quota exactly.
+        storage.set("j".into(), "y".repeat(QUOTA - 3)).unwrap();
+        changed_elsewhere(&*backend, Some(StorageChange::Remove("j".into())));
+        storage.set("i".into(), "y".repeat(QUOTA - 3)).unwrap();
+    }
+
+    #[test]
+    fn changes_made_elsewhere_before_the_first_read_come_with_the_load() {
+        let backend: Arc<dyn StorageBackend> = Arc::new(Recorder {
+            kept: BTreeMap::from([("a".into(), "kept".into())]),
+            ..Recorder::default()
+        });
+        let storage = Store::new(Some(backend.clone()));
+        changed_elsewhere(
+            &*backend,
+            Some(StorageChange::Set("b".into(), "lost".into())),
+        );
+        assert_eq!(storage.keys(), ["a"]);
+        // A backend no core uses takes nothing in.
+        changed_elsewhere(&Recorder::default(), Some(StorageChange::Clear));
     }
 }

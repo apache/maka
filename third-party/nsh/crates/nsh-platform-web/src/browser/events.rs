@@ -281,6 +281,10 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
                     ("locationY", number(p.location.y.0)),
                     ("changed", boolean(p.changed)),
                     ("timestamp", number(touch.timestamp)),
+                    ("pointerType", Value::string(p.pointer_type.name())?),
+                    ("pressure", number(p.pressure)),
+                    ("tiltX", number(p.tilt_x)),
+                    ("tiltY", number(p.tilt_y)),
                 ])?);
             }
             object([

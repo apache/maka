@@ -151,7 +151,7 @@ In both, a row that stays keeps its cell, its content and its measured size wher
 
 ## Props
 
-A list takes every scrolling prop of the scroll view that makes sense for a list (`pagingEnabled`, `snapToInterval`, `snapToOffsets`, `snapToAlignment`, `decelerationRate`, `disableIntervalMomentum`, `bounces`, `scrollable`, `contentInset`, `contentOffset`, `keyboardShouldPersistTaps`, `keyboardDismissMode`, `scrollEventThrottle`, `onScroll`, `onScrollDragStart`, `onScrollDragEnd`, `onMomentumStart`, `onMomentumEnd`, `onScrollEnd`, `scrollValue`, `pullValue`; in Rust the same methods as a scroll view's), described in [Scrolling](./scrolling.md). Lists keep a scale of 1. Its own props:
+A list takes every scrolling prop of the scroll view that makes sense for a list (`pagingEnabled`, `snapToInterval`, `snapToOffsets`, `snapToAlignment`, `decelerationRate`, `disableIntervalMomentum`, `bounces`, `scrollable`, `contentInset`, `scrollbarInset`, `contentOffset`, `keyboardShouldPersistTaps`, `keyboardDismissMode`, `scrollEventThrottle`, `onScroll`, `onScrollDragStart`, `onScrollDragEnd`, `onMomentumStart`, `onMomentumEnd`, `onScrollEnd`, `scrollValue`, `pullValue`; in Rust the same methods as a scroll view's), described in [Scrolling](./scrolling.md). Lists keep a scale of 1. Its own props:
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|

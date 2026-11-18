@@ -815,7 +815,6 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, area: &NshView) {
     crate::chrome::popup_actions(surface, items);
 }
 
-
 /// Keys for the current area's selection (Ctrl+C / Ctrl+Insert, Ctrl+A,
 /// Escape); true when handled.
 pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {

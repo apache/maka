@@ -3008,7 +3008,6 @@ fn selected_text(view: &NshView) -> Option<String> {
     Some(state.text.as_ref()?.text.copied_text(a..b)).filter(|t| !t.is_empty())
 }
 
-
 /// Keys for the text selection (Ctrl+C, Ctrl+A, Escape); true when
 /// handled.
 pub(crate) fn key(

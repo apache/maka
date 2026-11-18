@@ -54,8 +54,9 @@
 //!   is read from its start at once. That is a guess to save the tail's
 //!   tree, narrow because `]:` is all over code (`if seen[key]:`); the
 //!   tree alone says whether there is a definition;
-//! - plugins (they read the whole source and its positions), declared
-//!   `:::` containers (cut out of the whole source before parsing) and MDX;
+//! - plugins that turn a construct on or off (`MarkdownPlugin::configure`),
+//!   declared `:::` containers (cut out of the whole source before
+//!   parsing) and MDX;
 //! - front matter still open (`---` first, its closing line not arrived);
 //! - a line held back by the repair at the start of the tail (the repair
 //!   then reaches the block before the boundary);
@@ -70,6 +71,12 @@
 //! costs more than its length does, a read from the boundary on what its
 //! tail's does. A text the boundary cannot cross is read about as one parse
 //! reads it, and one that may define a link or a footnote is read whole.
+//!
+//! Plugins are shown what one parse shows them: the whole text as parsed
+//! (`ParseContext::source`) and positions in it, in the order one parse
+//! offers the nodes. What a plugin made of a text may depend on any of it,
+//! so no block is kept for the next text: a text read with plugins is read
+//! from its start every time, in parts when it is long.
 
 use std::{borrow::Cow, ops::Deref, rc::Rc};
 
@@ -171,6 +178,11 @@ pub(crate) struct Incremental {
 struct Prefix {
     /// Where it ends in the text.
     end: usize,
+    /// Where it ends in the text as parsed (`super::prepare`), and how
+    /// many lines it has: where the positions of the blocks after it start
+    /// in the whole text's tree.
+    parsed: usize,
+    lines: usize,
     /// Its blocks.
     blocks: Vec<SharedBlock>,
     /// The anchors of its headings.
@@ -198,7 +210,11 @@ impl Incremental {
         } else {
             source.clone()
         };
-        let grew = self.parser.as_ref().is_some_and(|p| same(p, parser))
+        // A plugin may read any of the source (`ParseContext::source`):
+        // what it made of a shorter text is not final. A text read with
+        // plugins is read from its start every time, a long one in parts.
+        let grew = parser.plugins.is_empty()
+            && self.parser.as_ref().is_some_and(|p| same(p, parser))
             && text.starts_with(self.text.as_str());
         let read = if grew {
             self.text.len()
@@ -208,9 +224,14 @@ impl Incremental {
             0
         };
         self.text = text;
+        // Plugins read the parts as one parse shows them: in the whole text
+        // as parsed, at its positions. A text read at once is that already.
+        let whole = (!parser.plugins.is_empty() && self.text.len() > 2 * step)
+            .then(|| super::prepare(parser, super::Source::original(&self.text)));
+        let whole = whole.as_ref();
         if !self.prefix.whole {
-            self.prefix.advance(parser, &self.text, read, step);
-            if let Some(parsed) = self.prefix.read(parser, &self.text) {
+            self.prefix.advance(parser, &self.text, whole, read, step);
+            if let Some(parsed) = self.prefix.read(parser, &self.text, whole) {
                 return parsed;
             }
         }
@@ -253,8 +274,8 @@ fn parse_long_in_steps(parser: &Parser, source: &str, step: usize) -> Option<Doc
 /// of it reads the whole source.
 fn incremental(parser: &Parser) -> bool {
     !parser.options.mdx
-        && parser.plugins.is_empty()
         && parser.extensions.iter().all(|e| e.container.is_none())
+        && super::plugins_keep_constructs(parser)
 }
 
 fn same(a: &Parser, b: &Parser) -> bool {
@@ -272,9 +293,15 @@ enum Read {
 
 impl Prefix {
     /// `text` read from the boundary on, which moves as far as the text
-    /// allows. `None` when the whole text is to be parsed.
-    fn read(&mut self, parser: &Parser, text: &str) -> Option<Parsed> {
-        let open = match self.settle(parser, text, true)? {
+    /// allows. `None` when the whole text is to be parsed. `whole` is the
+    /// text as parsed, for plugins (`settle`).
+    fn read(
+        &mut self,
+        parser: &Parser,
+        text: &str,
+        whole: Option<&super::Source>,
+    ) -> Option<Parsed> {
+        let open = match self.settle(parser, text, whole, true)? {
             Read::Whole(document) => return Some(document.into()),
             Read::Open(open) => open,
         };
@@ -292,7 +319,14 @@ impl Prefix {
     /// bytes past the last one, each from the boundary on (the module's
     /// documentation). What is left past the last of them, `step` bytes at
     /// least, is the next read's.
-    fn advance(&mut self, parser: &Parser, text: &str, read: usize, step: usize) {
+    fn advance(
+        &mut self,
+        parser: &Parser,
+        text: &str,
+        whole: Option<&super::Source>,
+        read: usize,
+        step: usize,
+    ) {
         let mut cut = read.max(self.end);
         if text.len() - cut <= 2 * step || may_define(&text[self.end..]) {
             return;
@@ -310,7 +344,7 @@ impl Prefix {
             }
             cut = next;
             let end = self.end;
-            match self.settle(parser, &text[..cut], false) {
+            match self.settle(parser, &text[..cut], whole, false) {
                 Some(Read::Open(_)) => {}
                 // What is read whole is the last read's.
                 Some(Read::Whole(_)) | None => return,
@@ -327,7 +361,17 @@ impl Prefix {
     /// `text` read from the boundary on, which moves as far as the text
     /// allows; the blocks after it converted when `open`. `None` when the
     /// whole text is to be parsed.
-    fn settle(&mut self, parser: &Parser, text: &str, open: bool) -> Option<Read> {
+    ///
+    /// Plugins are shown what one parse of the whole text shows them: the
+    /// source `whole` (the text as parsed; `None` when `text` is all of
+    /// it and read at once) and positions in it.
+    fn settle(
+        &mut self,
+        parser: &Parser,
+        text: &str,
+        whole: Option<&super::Source>,
+        open: bool,
+    ) -> Option<Read> {
         let tail = &text[self.end..];
         let first = self.end == 0;
         // A definition in the tail has the whole text read: when a line of
@@ -335,7 +379,7 @@ impl Prefix {
         // dropped, so the text is read from its start at once.
         if !first && may_define(tail) {
             *self = Self::default();
-            return self.settle(parser, text, open);
+            return self.settle(parser, text, whole, open);
         }
         // Where the lines after a blank line start, for the repair's scan.
         let mut blanks = Vec::new();
@@ -366,9 +410,9 @@ impl Prefix {
         // The repair can make one (`[docs][: /guide`, its open `[` removed).
         if !first && matches!(source, Cow::Owned(_)) && may_define(&source) {
             *self = Self::default();
-            return self.settle(parser, text, open);
+            return self.settle(parser, text, whole, open);
         }
-        let tree = tree(parser, super::Source::original(&source), first);
+        let mut tree = tree(parser, super::Source::original(&source), first);
         let nodes = tree.root.children().map_or(&[][..], Vec::as_slice);
         if let Some((last, before)) = nodes.split_last() {
             // A definition in a block that is closed stays: so does the
@@ -381,6 +425,10 @@ impl Prefix {
                 if !first {
                     *self = Self::default();
                     return None;
+                }
+                // A read before the last one moves the boundary only.
+                if !open {
+                    return Some(Read::Whole(Document::default()));
                 }
                 // The tree is the whole text's, definitions included: it
                 // is the document, with no second parse.
@@ -404,11 +452,37 @@ impl Prefix {
         } else {
             boundary(parser, tail, unchanged, &blanks, &written, &tree)
         };
-        let (at, count) = boundary.unwrap_or((0, 0));
+        let (at, to, count) = boundary.unwrap_or((0, 0, 0));
+        let lines = tree.source[..to].bytes().filter(|&b| b == b'\n').count();
 
-        let mut converter =
-            Converter::new(parser, &tree.source, std::slice::from_ref(&tree), false);
-
+        // What a plugin reads is the whole text's: the tail's tree moved to
+        // where the tail is in it (it starts a line, so columns stay).
+        let converted = match whole {
+            Some(whole) => {
+                // The tail is repaired and rewritten as the end of the
+                // whole text is (the module's documentation); a read before
+                // the last one ends early, so only up to the boundary.
+                debug_assert!(
+                    if open {
+                        whole[self.parsed..] == *tree.source
+                    } else {
+                        whole[self.parsed..].starts_with(&tree.source[..to])
+                    },
+                    "a tail is parsed as the whole text is"
+                );
+                shift(&mut tree.root, self.parsed, self.lines);
+                whole
+            }
+            None => {
+                debug_assert!(
+                    parser.plugins.is_empty() || self.end == 0,
+                    "plugins read a tail in the whole text"
+                );
+                &tree.source
+            }
+        };
+        let nodes = tree.root.children().map_or(&[][..], Vec::as_slice);
+        let mut converter = Converter::new(parser, converted, std::slice::from_ref(&tree), false);
         converter.slugger = std::mem::take(&mut self.slugger);
         let mut done = Vec::new();
         converter.blocks_into(&nodes[..count], &mut done);
@@ -421,14 +495,16 @@ impl Prefix {
         self.slugger = std::mem::take(&mut converter.slugger);
 
         self.end += at;
+        self.parsed += to;
+        self.lines += lines;
         self.blocks.extend(done.into_iter().map(SharedBlock::new));
         Some(Read::Open(after))
     }
 }
 
 /// The last line of `tail` a boundary can move to (the module's
-/// documentation): its offset in `tail`, and how many of the tree's
-/// blocks are before it.
+/// documentation): its offset in `tail` and in the tail as parsed, and how
+/// many of the tree's blocks are before it.
 fn boundary(
     parser: &Parser,
     tail: &str,
@@ -436,7 +512,7 @@ fn boundary(
     blanks: &[usize],
     written: &[(usize, usize)],
     tree: &Tree,
-) -> Option<(usize, usize)> {
+) -> Option<(usize, usize, usize)> {
     let nodes = tree.root.children()?;
     let splits = splits(parser, nodes);
     blanks.iter().rev().find_map(|&at| {
@@ -470,7 +546,7 @@ fn boundary(
             None => true,
         };
         let on_line = !tree.source.get(to..start)?.contains('\n');
-        (ended && on_line && splits[count]).then_some((at, count))
+        (ended && on_line && splits[count]).then_some((at, to, count))
     })
 }
 
@@ -648,6 +724,25 @@ fn labelled(text: &str) -> bool {
     )
 }
 
+/// The positions in `node` moved `offset` bytes and `lines` lines on.
+fn shift(node: &mut Node, offset: usize, lines: usize) {
+    if offset == 0 && lines == 0 {
+        return;
+    }
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        if let Some(position) = node.position_mut() {
+            for point in [&mut position.start, &mut position.end] {
+                point.offset += offset;
+                point.line += lines;
+            }
+        }
+        if let Some(children) = node.children_mut() {
+            stack.extend(children.iter_mut());
+        }
+    }
+}
+
 /// Whether a definition of a link or a footnote is in `node`.
 fn defines(node: &Node) -> bool {
     let mut stack = vec![node];
@@ -692,7 +787,7 @@ fn splits(parser: &Parser, nodes: &[Node]) -> Vec<bool> {
 mod tests {
     use super::*;
     use crate::text_view::{
-        Inline, MarkdownExtension, MarkdownOptions, MarkdownPlugin, ParseContext, mdast,
+        CustomNode, Inline, MarkdownExtension, MarkdownOptions, MarkdownPlugin, ParseContext, mdast,
     };
 
     /// `text` as a view is given it.
@@ -705,6 +800,59 @@ mod tests {
             streaming,
             ..MarkdownOptions::default()
         })
+    }
+
+    /// A plugin that shows what it is given. Paragraphs, headings, code,
+    /// formulas and tables are custom nodes, inline code and formulas too,
+    /// of the node's source as the context gives it, where the node starts
+    /// and ends (offset, line, column) and how long the whole source is.
+    /// Like an app's plugin, it configures what is read inside a paragraph.
+    struct Where;
+
+    impl MarkdownPlugin for Where {
+        fn name(&self) -> &str {
+            "where"
+        }
+
+        fn configure(&self, options: &mut markdown::ParseOptions) {
+            options.gfm_strikethrough_single_tilde = false;
+        }
+
+        fn block(&self, node: &mdast::Node, cx: &mut ParseContext<'_>) -> Option<Block> {
+            let content = match node {
+                mdast::Node::Paragraph(p) => cx.inlines(&p.children),
+                mdast::Node::Heading(h) => cx.inlines(&h.children),
+                mdast::Node::Code(_) | mdast::Node::Math(_) | mdast::Node::Table(_) => Vec::new(),
+                _ => return None,
+            };
+            Some(Block::Custom(where_node(node, cx).with_content(content)))
+        }
+
+        fn inline(&self, node: &mdast::Node, cx: &mut ParseContext<'_>) -> Option<Inline> {
+            matches!(
+                node,
+                mdast::Node::InlineCode(_) | mdast::Node::InlineMath(_)
+            )
+            .then(|| Inline::Custom(where_node(node, cx)))
+        }
+    }
+
+    fn where_node(node: &mdast::Node, cx: &ParseContext<'_>) -> CustomNode {
+        let at = node.position().map_or(String::new(), |p| {
+            format!(
+                "{}:{}:{}-{}:{}:{} of {}",
+                p.start.offset,
+                p.start.line,
+                p.start.column,
+                p.end.offset,
+                p.end.line,
+                p.end.column,
+                cx.source().len()
+            )
+        });
+        CustomNode::new("where")
+            .with_text(cx.node_source(node).unwrap_or_default())
+            .with_attribute("at", at)
     }
 
     /// `source` arriving `step` bytes at a time (to the next character),
@@ -745,6 +893,8 @@ mod tests {
             let parser = with(parser(streaming));
             for step in [1, 2, 3, 5, 7, 13, 24, 64] {
                 least = least.min(grow(&parser, source, step));
+                // With a plugin, which is shown what one parse shows it.
+                grow(&parser.clone().plugin(Where), source, step);
             }
         }
         least
@@ -904,7 +1054,7 @@ mod tests {
             let parser = parser(streaming);
             for source in [DEFINITIONS, FOOTNOTES, nested] {
                 let read = Prefix::default()
-                    .read(&parser, source)
+                    .read(&parser, source, None)
                     .expect("the tree read from the start can be converted");
                 assert_eq!(read.document(), parser.markdown(source));
                 let mut incremental = Incremental::default();
@@ -1110,6 +1260,17 @@ mod tests {
             }
         }
         let source = "Intro **x**.\n\n:::note[Heads up]\n\nInside.\n\n:::\n\n<Tag a=\"b\">\n\ntext {1 + 1}\n\n</Tag>\n\nThe **end**.\n";
+        // A plugin that turns a construct on or off: the text's blocks are
+        // not the ones the parser's options make.
+        struct Html;
+        impl MarkdownPlugin for Html {
+            fn name(&self) -> &str {
+                "no-html"
+            }
+            fn configure(&self, options: &mut markdown::ParseOptions) {
+                options.constructs.html_flow = false;
+            }
+        }
         let container = |p: Parser| p.extension(MarkdownExtension::container("note", "note"));
         assert_eq!(grows_with(container, source), 0);
         let mdx = |p: Parser| {
@@ -1120,7 +1281,19 @@ mod tests {
             p.options(options)
         };
         assert_eq!(grows_with(mdx, source), 0);
-        assert_eq!(grows_with(|p| p.plugin(Shout), source), 0);
+        assert_eq!(grows_with(|p| p.plugin(Html), source), 0);
+        assert_eq!(steps_with(|p| p.plugin(Html), &source.repeat(4)), 0);
+        // A plugin that reads the whole source: what it made of a text is
+        // not kept for the next one (`Shout` counts the bytes: the first
+        // paragraph changes with every byte), yet each text is read in
+        // parts, its boundary where it is without the plugin.
+        assert_eq!(grows_with(|p| p.plugin(Shout), source), grows(source));
+        let long = source.repeat(4);
+        assert_eq!(
+            steps_with(|p| p.plugin(Shout), &long),
+            steps_with(|p| p, &long)
+        );
+        assert!(steps_with(|p| p, &long) > 3 * source.len());
     }
 
     /// A text that is not the last one with more at its end, or another
@@ -1228,9 +1401,17 @@ mod tests {
     /// reached.
     #[track_caller]
     fn steps(source: &str) -> usize {
+        let least = steps_with(|parser| parser, source);
+        // With a plugin, which is shown what one parse shows it.
+        assert_eq!(steps_with(|parser| parser.plugin(Where), source), least);
+        least
+    }
+
+    #[track_caller]
+    fn steps_with(with: impl Fn(Parser) -> Parser, source: &str) -> usize {
         let mut least = usize::MAX;
         for streaming in [true, false] {
-            let parser = parser(streaming);
+            let parser = with(parser(streaming));
             let whole = parse_whole(&parser, source);
             for step in [1, 2, 3, 5, 8, 13, 40, 100] {
                 let mut incremental = Incremental::default();
@@ -1279,7 +1460,12 @@ mod tests {
     fn long_texts_are_parsed_a_part_at_a_time() {
         use super::super::LONGEST_PARSE;
         for (name, source) in [("sections", sections(8 * STEP)), ("reply", reply(8 * STEP))] {
-            for parser in [parser(false), parser(true)] {
+            for parser in [
+                parser(false),
+                parser(true),
+                parser(false).plugin(Where),
+                parser(true).plugin(Where),
+            ] {
                 LONGEST_PARSE.with(|longest| longest.set(0));
                 let document = super::super::parse(&parser, &source);
                 let longest = LONGEST_PARSE.with(|longest| longest.get());
@@ -1338,9 +1524,14 @@ mod tests {
     fn random_documents_read_in_steps() {
         use std::panic::{AssertUnwindSafe, catch_unwind};
         let mut rng = Rng(0x2545_F491_4F6C_DD1D);
-        let parsers = [parser(true), parser(false)];
+        let parsers = [
+            parser(true),
+            parser(false),
+            parser(true).plugin(Where),
+            parser(false).plugin(Where),
+        ];
         let mut moved = 0;
-        for _ in 0..400 {
+        for _ in 0..800 {
             let parser = &parsers[rng.below(parsers.len())];
             let count = 40 + rng.below(200);
             let source: String = (0..count)
@@ -1365,7 +1556,7 @@ mod tests {
             );
             moved += usize::from(incremental.boundary() > 0);
         }
-        assert!(moved > 50, "the boundary moved in {moved} documents");
+        assert!(moved > 100, "the boundary moved in {moved} documents");
     }
 
     struct Rng(u64);
@@ -1864,20 +2055,23 @@ mod tests {
 
     /// `cargo test --release -p nsh-base --lib bench_long_texts -- --ignored
     /// --nocapture`: a long text given at once, read in one parse and in
-    /// steps (`Parser::markdown`), ms, the minimum of three. The numbers are
-    /// in `docs/dev/performance.md`.
+    /// steps (`Parser::markdown`), ms, the minimum of three; without a
+    /// plugin and with one that reads paragraphs, headings, code, formulas
+    /// and tables ([`Where`]). The numbers are in `docs/dev/performance.md`.
     #[test]
     #[ignore]
     fn bench_long_texts() {
         use std::time::Instant;
-        let parser = Parser::new();
-        println!("ms to read, in one parse / in steps");
+        let bare = Parser::new();
+        let plugged = Parser::new().plugin(Where);
+        println!("ms to read, in one parse / in steps: without a plugin | with one");
         let mut cases: Vec<(String, String)> = [190, 475, 950, 1_900]
             .into_iter()
             .map(|kb| (format!("sections, {kb} KB"), sections(kb * 1_000)))
             .collect();
         cases.extend([
             ("typical reply, 950 KB".to_owned(), reply(950_000)),
+            ("typical reply, 1,900 KB".to_owned(), reply(1_900_000)),
             ("one table, 20,000 rows".to_owned(), table(20_000)),
             ("one list, 20,000 items".to_owned(), list(20_000)),
             ("one code block, 20,000 lines".to_owned(), program(20_000)),
@@ -1894,15 +2088,21 @@ mod tests {
                     })
                     .fold(f64::MAX, f64::min)
             };
-            let whole = time(&|| parse_whole(&parser, &source));
-            let steps = time(&|| super::super::parse(&parser, &source));
-            assert_eq!(
-                super::super::parse(&parser, &source),
-                parse_whole(&parser, &source)
-            );
+            let mut cells = Vec::new();
+            for parser in [&bare, &plugged] {
+                let whole = time(&|| parse_whole(parser, &source));
+                let steps = time(&|| super::super::parse(parser, &source));
+                assert_eq!(
+                    super::super::parse(parser, &source),
+                    parse_whole(parser, &source)
+                );
+                cells.push(format!("{whole:>9.1} / {steps:>9.1}"));
+            }
             println!(
-                "{name:<30} {:>5} KB | {whole:>9.1} / {steps:>9.1}",
-                source.len() / 1000
+                "{name:<30} {:>5} KB | {} | {}",
+                source.len() / 1000,
+                cells[0],
+                cells[1]
             );
         }
     }

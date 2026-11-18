@@ -1558,6 +1558,54 @@ test("a paused WebSocket holds its events, in order, until the engine resumes it
   }
 });
 
+test("another tab's changes to the app's storage reach the engine as this tab now reads them", () => {
+  const { player } = fakePlayer();
+  const text = (p, l) => new TextDecoder().decode(new Uint8Array(player.wasm.memory.buffer, p, l));
+  const got = [];
+  player.wasm.nsh_storage_changed = (pp, pl, kp, kl, vp, vl, kind) => {
+    got.push([text(pp, pl), text(kp, kl), text(vp, vl), kind]);
+    return -1;
+  };
+  const listeners = new Set();
+  const kept = new Map();
+  const area = { getItem: (key) => kept.get(key) ?? null };
+  const saved = { window: globalThis.window, localStorage: globalThis.localStorage };
+  globalThis.window = {
+    addEventListener: (type, f) => type === "storage" && listeners.add(f),
+    removeEventListener: (type, f) => type === "storage" && listeners.delete(f),
+  };
+  globalThis.localStorage = area;
+  const dispatch = (event) => listeners.forEach((f) => f({ storageArea: area, ...event }));
+  try {
+    player.followStorage("nsh:app:");
+    player.followStorage("nsh:app:");
+    assert.equal(listeners.size, 1, "one listener however many loads");
+    // This tab wrote "mine" after the other tab's "theirs": it keeps its own.
+    kept.set("nsh:app:draft", "mine");
+    dispatch({ key: "nsh:app:draft", newValue: "theirs" });
+    kept.delete("nsh:app:gone");
+    dispatch({ key: "nsh:app:gone", newValue: null });
+    // Other apps' keys, the page's own and `sessionStorage` are not the app's.
+    dispatch({ key: "nsh:other:draft", newValue: "x" });
+    dispatch({ key: "draft", newValue: "x" });
+    dispatch({ key: "nsh:app:draft", newValue: "x", storageArea: {} });
+    dispatch({ key: null, newValue: null });
+    assert.deepEqual(got, [
+      ["nsh:app:", "draft", "mine", 1],
+      ["nsh:app:", "gone", "", 0],
+      ["nsh:app:", "", "", 2],
+    ]);
+    // A stopped app follows nothing until the next one loads its storage.
+    globalThis.cancelAnimationFrame ??= () => {};
+    player.stop();
+    assert.equal(listeners.size, 0);
+    assert.equal(player.storagePrefixes.size, 0);
+  } finally {
+    clearTimeout(player.timer);
+    Object.assign(globalThis, saved);
+  }
+});
+
 test("a plain Shader uploads the whole built-ins block, progress and overflow at 0", () => {
   const { player } = fakePlayer();
   const uploads = [];
@@ -2287,10 +2335,11 @@ function animating(t) {
     else player.requestFrame();
     return -1;
   };
-  const frame = () => {
+  // The page's animation frame, which began at `at` (now by default).
+  const frame = (at = clock.now) => {
     const due = frames;
     frames = [];
-    for (const f of due) f(clock.now);
+    for (const f of due) f(at);
   };
   // Time passes by `ms`: the timers due run, and what the calls into the
   // engine left for after them (`deadlineSoon`).
@@ -2300,7 +2349,7 @@ function animating(t) {
     t.mock.timers.tick(ms);
     await null;
   };
-  return { player, ticks, frame, pass, ended: () => ended };
+  return { player, ticks, frame, pass, clock, ended: () => ended };
 }
 
 test("a native animation ends on time while no animation frames come", async (t) => {
@@ -2331,6 +2380,33 @@ test("while animation frames come the page runs no frames of its own", async (t)
   assert.equal(ticks.length, frames, "every frame the browser's");
   await pass(1000);
   assert.equal(ticks.length, frames);
+});
+
+test("a frame a task held steps the animations when its callbacks run", (t) => {
+  const { player, ticks, frame, clock } = animating(t);
+  player.requestFrame();
+  // The frame began at 0; a press handled before its callbacks took
+  // 170 ms (it opened a sheet, whose entrance asks for this frame).
+  clock.now = 170;
+  frame(0);
+  assert.deepEqual(ticks, [170], "the entrance starts when it was asked for, not 170 ms in");
+  // The next frames are on time: their own times keep the display's pace.
+  clock.now = 189;
+  frame(186.7);
+  clock.now = 205;
+  frame(203.3);
+  assert.deepEqual(ticks, [170, 186.7, 203.3]);
+});
+
+test("an animation frame never steps earlier than the one before", (t) => {
+  const { player, ticks, frame, clock } = animating(t);
+  player.requestFrame();
+  clock.now = 170;
+  frame(0);
+  // On time by its own measure, but begun before the held one ran.
+  clock.now = 172;
+  frame(160);
+  assert.deepEqual(ticks, [170, 170]);
 });
 
 test("a dialog comes in and reports it shown without animation frames", () => {

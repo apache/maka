@@ -361,6 +361,7 @@ impl NativeState {
     #[cfg(feature = "terminal")]
     pub(crate) fn needs_window_composition(&self) -> bool {
         self.hosts.borrow().values().any(|host| match host {
+            #[cfg(feature = "webview")]
             Host::Web(_) => true,
             Host::Component(item) => item.window.get().is_some(),
             #[cfg(feature = "media")]
