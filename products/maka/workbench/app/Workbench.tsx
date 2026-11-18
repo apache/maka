@@ -56,14 +56,34 @@ export const sidePaneRoom = (browser: boolean, preview: boolean) =>
     ) - 1,
   );
 
+export function createPreviewDialog(props: {
+  shown(): boolean;
+  suppressed(): boolean;
+  focused(): boolean;
+  close(): void;
+}) {
+  const open = signal(false);
+  let wasDocked = canDockPreview();
+  effect(() => {
+    const docked = canDockPreview();
+    if (!props.shown() || docked || props.suppressed()) open.set(false);
+    else if (!wasDocked || props.focused()) open.set(true);
+    else {
+      props.close();
+      open.set(false);
+    }
+    wasDocked = docked;
+  });
+  return open;
+}
+
 export function Workbench(props: {
   expanded(): boolean;
   previewShown(): boolean;
   previewFullscreen?(): boolean;
   togglePreviewFullscreen?(): void;
   floatingComposer?(): JSX.Element | null;
-  previewSuppressed(): boolean;
-  previewFocused(): boolean;
+  previewDialog(): boolean;
   closePreview(): void;
   navigation(): JSX.Element;
   preview(docked: boolean): JSX.Element;
@@ -115,18 +135,6 @@ export function Workbench(props: {
       : CENTER_MIN * (1 + Math.min(room(), props.sides?.().length ?? 0)) +
         (preview() ? PREVIEW_MIN : 0)) +
     INSET * (browser() ? 1 : 2);
-  const previewDialog = signal(false);
-  let wasDocked = canDockPreview();
-  effect(() => {
-    const nowDocked = canDockPreview();
-    if (!props.previewShown() || nowDocked || props.previewSuppressed()) previewDialog.set(false);
-    else if (!wasDocked || props.previewFocused()) previewDialog.set(true);
-    else {
-      props.closePreview();
-      previewDialog.set(false);
-    }
-    wasDocked = nowDocked;
-  });
   return (
     <View
       ref={(node) => {
@@ -203,7 +211,7 @@ export function Workbench(props: {
           </ResizablePanel>
         )}
       </ResizablePanelGroup>
-      <If when={previewDialog()}>
+      <If when={props.previewDialog()}>
         <Dialog
           animation="none"
           onOpenChange={inputAction(props.closePreview, null)}

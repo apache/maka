@@ -118,7 +118,7 @@ export function ComputerStageView(props: {
     () => props.controller.targets().length > 0 || props.controller.fault() !== null,
   );
   return (
-    <If when={visible() && hasContent() && !props.controller.hidden()}>
+    <If when={visible() && hasContent()}>
       <Each of={props.source() ? [props.source()!] : []} key={(owner) => owner}>
         {() => (
           <Each of={[bindingId()]} key={(binding) => binding}>
@@ -153,6 +153,7 @@ export function ComputerStageView(props: {
                     }}
                     frameError={(id) => failures().get(id) ?? live.errors().get(id)}
                     onPresent={(target) => {
+                      if (!live.canPresent(target)) return;
                       const state = parent.state();
                       const content = state?.contentBounds;
                       const area = !state?.nativeContentBounds
@@ -173,10 +174,7 @@ export function ComputerStageView(props: {
                             height: area.height - 48,
                           })
                         : Promise.reject(new Error(computerText('Window placement unavailable')));
-                      void action.catch((reason) => {
-                        if (frameFor(target)) props.controller.fault.set(reason);
-                        props.report(reason);
-                      });
+                      void action.catch(props.report);
                     }}
                     renderFrame={(target) => {
                       const id = target().id;

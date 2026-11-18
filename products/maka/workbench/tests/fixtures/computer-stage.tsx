@@ -403,6 +403,7 @@ mount(() => {
           }
           viewport={pane()}
           onPresent={(target) => {
+            if (!live.canPresent(target)) return;
             const area = pane();
             void live
               .present(target, {

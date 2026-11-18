@@ -43,7 +43,6 @@ import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
 import type { ComputerFrameSource } from './computerFrames';
 import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
-import { computerText } from './computerText';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
 import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
@@ -2603,7 +2602,6 @@ export function createConversationUi(
                 ),
               );
             }}
-            onLayout={({ bounds }) => computerViewport.set(bounds.size)}
             onFileDrop={(event) => {
               fileDragging.set(false);
               dropFiles?.(event);
@@ -2617,34 +2615,26 @@ export function createConversationUi(
             }
           >
             <If when={input.compact === undefined}>
-              <ComputerStageView
-                controller={computer}
-                source={computerSource}
-                visible={computerVisible}
-                viewport={computerViewport()}
-                report={(reason) => console.warn('Computer Stage:', reason)}
-              />
-            </If>
-            <If
-              when={
-                computer.hidden() &&
-                (computer.targets().length > 0 || computer.fault() !== null) &&
-                input.compact === undefined
-              }
-            >
-              <Button
-                accessibilityLabel={computerText('Show live view')}
-                onPress={inputAction(() => {
-                  computer.hidden.set(false);
-                }, null)}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
+              <View
+                onLayout={({ bounds }) => computerViewport.set(bounds.size)}
+                style={{
+                  position: 'absolute',
+                  top: 32,
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  zIndex: 10,
+                  pointerEvents: 'box-none',
+                }}
               >
-                <Text style={{ color: C.accent, fontSize: 12 }}>
-                  {computerText('Show live view')}
-                </Text>
-              </Button>
+                <ComputerStageView
+                  controller={computer}
+                  source={computerSource}
+                  visible={computerVisible}
+                  viewport={computerViewport()}
+                  report={(reason) => console.warn('Computer Stage:', reason)}
+                />
+              </View>
             </If>
             <If when={input.compact !== undefined}>
               <CompactComposer

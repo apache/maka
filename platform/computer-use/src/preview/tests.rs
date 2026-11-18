@@ -616,12 +616,33 @@ async fn inventory_and_inflight_pixels_stay_bounded_across_epoch_retirement() {
     }
     next.release.add_permits(1);
     assert!(sixth.await.is_ok());
-    for i in 0..8 {
-        publish(&registry, epoch, &format!("tab-{i}"), &Producer::new(i));
+    for i in 0..MAX_PREVIEW_TARGETS {
+        publish(
+            &registry,
+            epoch,
+            &format!("tab-{i}"),
+            &Producer::new(i as u64),
+        );
+    }
+    assert!(
+        registry
+            .snapshot()
+            .targets
+            .iter()
+            .any(|item| item.id == target.id)
+    );
+    for i in MAX_PREVIEW_TARGETS..MAX_RECENT_PREVIEW_TARGETS {
+        publish(
+            &registry,
+            epoch,
+            &format!("tab-{i}"),
+            &Producer::new(i as u64),
+        );
     }
     let snapshot = registry.snapshot();
-    assert_eq!(snapshot.targets.len(), MAX_PREVIEW_TARGETS);
-    assert_eq!(snapshot.targets.last().unwrap().label, "tab-7");
+    assert_eq!(snapshot.targets.len(), MAX_RECENT_PREVIEW_TARGETS);
+    assert!(!snapshot.targets.iter().any(|item| item.id == target.id));
+    assert_eq!(snapshot.targets.last().unwrap().label, "tab-15");
     assert_eq!(
         snapshot.active_target.as_ref(),
         Some(&snapshot.targets.last().unwrap().id)

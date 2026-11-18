@@ -21,7 +21,7 @@ use super::{Connection, Request, failed};
 use crate::desktop::{NativeCleanup, NativeEpochId};
 use crate::preview::{
     Capture, CaptureFuture, CapturedImage, ForegroundAuthority, MAX_PREVIEW_BYTES,
-    MAX_PREVIEW_DIMENSION, MAX_PREVIEW_TARGETS, PresentationArea, PresentationFuture,
+    MAX_PREVIEW_DIMENSION, MAX_RECENT_PREVIEW_TARGETS, PresentationArea, PresentationFuture,
     PreviewAuthority, PreviewFrame, PreviewRegistry, PreviewSnapshot, PreviewSubject,
     PreviewTarget,
 };
@@ -288,7 +288,7 @@ impl Bridge {
                     };
                     let snapshot: PreviewSnapshot =
                         serde_json::from_value(reply.value).map_err(failed)?;
-                    if snapshot.targets.len() > MAX_PREVIEW_TARGETS
+                    if snapshot.targets.len() > MAX_RECENT_PREVIEW_TARGETS
                         || after.is_some_and(|revision| snapshot.revision <= revision)
                     {
                         return Err(failed("invalid preview worker inventory revision or limit"));

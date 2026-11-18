@@ -687,6 +687,9 @@ mod tests {
             app.wait_for("text:Frame b presented true image-b").unwrap();
             app.wait_for("text:Presented none").unwrap();
             streams(&mut app, 1, 1);
+            app.press("label:Target b").unwrap();
+            app.wait_for("text:Presented none").unwrap();
+            app.wait_for("text:Fault none").unwrap();
             load(&mut app, "b", 2, 1200, 800);
             decode(&mut app, "b", true);
             app.press("label:Target b").unwrap();
@@ -1240,6 +1243,25 @@ mod tests {
                 anchored(&app, left, bottom, 700., 600.);
                 app.wait_for("text:Selected a pinned true").unwrap();
                 app.wait_for("text:Presented none").unwrap();
+                let screen = app.screen();
+                let nodes = screen.layout_nodes();
+                let bounds = |label| {
+                    let id = screen.id(label).unwrap();
+                    nodes.iter().find(|node| node.id == id).unwrap().bounds
+                };
+                let card = bounds("label:Target a");
+                for label in ["label:Unpin target", "label:Hide live view"] {
+                    let control = bounds(label);
+                    assert!(
+                        control.origin.x.0 >= card.origin.x.0 - 0.6
+                            && control.origin.y.0 >= card.origin.y.0 - 0.6
+                            && control.origin.x.0 + control.size.width.0
+                                <= card.origin.x.0 + card.size.width.0 + 0.6
+                            && control.origin.y.0 + control.size.height.0
+                                <= card.origin.y.0 + card.size.height.0 + 0.6,
+                        "{label} escaped the front card after docking: {control:?} in {card:?}"
+                    );
+                }
             }
             send(
                 &mut app,

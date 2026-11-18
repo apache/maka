@@ -124,11 +124,10 @@ export function ComputerStage(props: {
     !present()
       ? { width: 0, height: 0 }
       : {
-          width: Math.max(stage.hidden() ? 0 : layout().width, error() ? 320 : 128) + 32,
-          height:
-            (stage.hidden() ? 0 : layout().height) +
-            32 +
-            (error() ? 80 : candidates().length === 0 ? 40 : 0),
+          width: (stage.hidden() ? 128 : Math.max(layout().width, error() ? 320 : 128)) + 32,
+          height: stage.hidden()
+            ? 72
+            : layout().height + 32 + (error() ? 80 : candidates().length === 0 ? 40 : 0),
         },
   );
   const offsetX = createAnimatedValue(0);
@@ -161,10 +160,18 @@ export function ComputerStage(props: {
     void offsetY.stop();
   });
   const controls = () => hovered() || focused() || stage.pinned();
-  const toolbarMaxWidth = computed(() => {
-    const frame = layout().items.get(presented() ?? '');
-    return !stage.hidden() && !error() && frame ? Math.max(0, frame.width - 16) : undefined;
-  });
+  const toolbarPosition = () => {
+    if (stage.hidden()) return { top: 0, right: 8 };
+    if (error() || candidates().length === 0) return { top: layout().height + 8, right: 8 };
+    const card = layout().items.get(presented() ?? '');
+    if (!card) return { top: 8, right: 8 };
+    const { width, height } = layout();
+    return {
+      top: (bottom() ? height - card.height : 0) + 8,
+      right: content().width - 32 - (left() ? card.width : width) + 8,
+      maxWidth: Math.max(0, card.width - 16),
+    };
+  };
   const iconButton: ViewStyle = {
     width: 28,
     height: 28,
@@ -316,18 +323,17 @@ export function ComputerStage(props: {
               gap: 2,
               flexWrap: 'wrap',
               position: 'absolute',
-              top: error() || candidates().length === 0 ? layout().height + 8 : 8,
-              right: 8,
-              maxWidth: toolbarMaxWidth(),
+              ...toolbarPosition(),
               zIndex: 6,
               padding: 4,
               borderRadius: 10,
               backgroundColor: C.raised,
-              opacity: error() || ready().length === 0 || controls() ? 1 : 0,
+              opacity: stage.hidden() || error() || ready().length === 0 || controls() ? 1 : 0,
               transitionProperty: 'opacity',
               transitionDuration: reduceMotion() ? 0 : 150,
               justifyContent: 'flex-end',
-              pointerEvents: error() || ready().length === 0 || controls() ? 'auto' : 'none',
+              pointerEvents:
+                stage.hidden() || error() || ready().length === 0 || controls() ? 'auto' : 'none',
             }}
           >
             <If when={stage.hidden() || ready().length === 0 || error()}>

@@ -48,9 +48,10 @@ export function createComputerFrames(props: {
 }) {
   const frames = signal<ReadonlyMap<string, ComputerFrame>>(new Map());
   const errors = signal<ReadonlyMap<string, string>>(new Map());
-  let presentation:
-    | ((target: ComputerTarget, area: ComputerPresentationArea) => Promise<void>)
-    | null = null;
+  let presentation: {
+    canPresent(target: ComputerTarget): boolean;
+    present(target: ComputerTarget, area: ComputerPresentationArea): Promise<void>;
+  } | null = null;
   // Control revisions and title changes must not restart capture.
   const request = computed(() =>
     JSON.stringify({
@@ -98,20 +99,24 @@ export function createComputerFrames(props: {
     let stream: UiSubscription<Notice> | null = null;
     const readers = new Map<
       string,
-      { last: number; newest: number; busy: boolean; feedId: string }
+      { last: number; newest: number; busy: boolean; feedId: string; frame?: ComputerFrame }
     >();
+    const canPresent = (target: ComputerTarget) => {
+      const reader = readers.get(target.id);
+      const frame = frames().get(target.id);
+      return (
+        current &&
+        !!reader &&
+        !!frame &&
+        frame === reader.frame &&
+        frame.revision === target.revision &&
+        props.visible() &&
+        !props.stage.hidden()
+      );
+    };
     const present = async (target: ComputerTarget, area: ComputerPresentationArea) => {
       const reader = readers.get(target.id);
-      const currentFrame = (() => {
-        const frame = frames().get(target.id);
-        return (
-          !!frame &&
-          frame.revision === target.revision &&
-          frame.sessionId === sessionId &&
-          frame.bindingId === bindingId
-        );
-      })();
-      if (!current || !reader || !currentFrame || !props.visible() || props.stage.hidden())
+      if (!reader || !canPresent(target))
         throw new Error('Computer presentation frame is no longer current');
       const operation = await source.service.mutation('presentTarget', {
         sessionId,
@@ -145,7 +150,8 @@ export function createComputerFrames(props: {
       const result = receipt.outcome.result.value as ComputerPresentationResult;
       if (result.kind === 'partial') throw new Error(result.message);
     };
-    presentation = present;
+    const presentationBinding = { canPresent, present };
+    presentation = presentationBinding;
     const close = () => {
       const owned = stream;
       stream = null;
@@ -153,7 +159,7 @@ export function createComputerFrames(props: {
     };
     cleanup(() => {
       current = false;
-      if (presentation === present) presentation = null;
+      if (presentation === presentationBinding) presentation = null;
       close();
       readers.clear();
     });
@@ -166,7 +172,13 @@ export function createComputerFrames(props: {
     };
     const read = async (
       targetId: string,
-      reader: { last: number; newest: number; busy: boolean; feedId: string },
+      reader: {
+        last: number;
+        newest: number;
+        busy: boolean;
+        feedId: string;
+        frame?: ComputerFrame;
+      },
     ) => {
       reader.busy = true;
       try {
@@ -204,6 +216,7 @@ export function createComputerFrames(props: {
               props.stage.targets().find((target) => target.id === targetId)?.revision
           )
             continue;
+          reader.frame = frame;
           frames.set(new Map(frames()).set(targetId, frame));
           const nextErrors = new Map(errors());
           nextErrors.delete(targetId);
@@ -266,9 +279,12 @@ export function createComputerFrames(props: {
   return {
     frames,
     errors,
+    canPresent(target: ComputerTarget) {
+      return presentation?.canPresent(target) ?? false;
+    },
     present(target: ComputerTarget, area: ComputerPresentationArea) {
       if (!presentation) return Promise.reject(new Error('Computer viewer is no longer current'));
-      return presentation(target, area);
+      return presentation.present(target, area);
     },
   };
 }

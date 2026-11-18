@@ -32,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 pub(crate) mod native;
 
 pub const MAX_PREVIEW_TARGETS: usize = 5;
+// Keep recent producers available when the viewer's five visible slots rotate.
+pub(crate) const MAX_RECENT_PREVIEW_TARGETS: usize = 16;
 pub const MAX_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_PREVIEW_DIMENSION: u32 = 1600;
 
@@ -312,7 +314,7 @@ impl PreviewRegistry {
             ),
         };
         target.label = label;
-        if state.entries.len() == MAX_PREVIEW_TARGETS {
+        if state.entries.len() == MAX_RECENT_PREVIEW_TARGETS {
             state.entries.remove(0).stop.cancel();
         }
         state.entries.push(Entry {
@@ -366,7 +368,7 @@ impl PreviewRegistry {
                     Arc::new(()),
                 ),
             };
-            if state.entries.len() == MAX_PREVIEW_TARGETS {
+            if state.entries.len() == MAX_RECENT_PREVIEW_TARGETS {
                 state.entries.remove(0).stop.cancel();
             }
             state.entries.push(Entry {
