@@ -75,8 +75,20 @@ impl Engine {
             Some(step) => Some(self.store.request(view.run, step).await?),
             None => None,
         };
+        let context = match &request {
+            Some(request) => Some(
+                decode::<RequestContextEvidence>(
+                    self,
+                    view.run,
+                    &request.provenance,
+                    "request-provenance-schema",
+                )
+                .await?,
+            ),
+            None => None,
+        };
         let mut compaction = CompactionLevel::None;
-        if let Some(request) = &request {
+        if let (Some(request), Some(provenance)) = (&request, &context) {
             if request.accounting.purpose == ModelPurpose::Summary {
                 let main = if baseline
                     .as_ref()
@@ -88,14 +100,7 @@ impl Engine {
                         .compaction_fallback(view.run, request.step)
                         .await?
                 };
-                let evidence: RequestContextEvidence = decode(
-                    self,
-                    view.run,
-                    &request.provenance,
-                    "request-provenance-schema",
-                )
-                .await?;
-                let native = evidence
+                let native = provenance
                     .model_context
                     .as_ref()
                     .is_some_and(|context| context.operation == ModelOperation::CodexCompaction);
@@ -119,14 +124,28 @@ impl Engine {
                     native,
                 };
             } else {
-                let provenance: RequestContextEvidence = decode(
-                    self,
-                    view.run,
-                    &request.provenance,
-                    "request-provenance-schema",
-                )
-                .await?;
-                let (prepare, adopt) = compaction_timing(&provenance);
+                let first_main = view
+                    .current_attempt
+                    .and_then(|id| view.attempts.get(&id))
+                    .is_none_or(|attempt| {
+                        baseline.as_ref().is_some_and(|baseline| {
+                            baseline
+                                .native
+                                .as_ref()
+                                .is_some_and(|native| native.continuation.is_some())
+                                && baseline.checkpoint.summary_step_id == attempt.step
+                        })
+                    });
+                let (prepare, adopt) = if first_main
+                    && provenance
+                        .model_context
+                        .as_ref()
+                        .is_some_and(|c| c.codex.is_some())
+                {
+                    (false, false)
+                } else {
+                    compaction_timing(provenance)
+                };
                 let mut has_proactive_summary = false;
                 let mut can_prepare = true;
                 let mut proactive_baseline = baseline
@@ -254,7 +273,7 @@ impl Engine {
                 if compaction == CompactionLevel::None
                     && (!proactive_baseline
                         || (!prepare && !overflow)
-                        || self.progress_since_checkpoint(view, &provenance).await?)
+                        || self.progress_since_checkpoint(view, provenance).await?)
                     && (request.compaction_recovery.is_none()
                         || self
                             .store
@@ -270,6 +289,10 @@ impl Engine {
             }
         }
         Ok(ModelLevel {
+            codex: context
+                .as_ref()
+                .and_then(|c| c.model_context.as_ref())
+                .is_some_and(|c| c.codex.is_some()),
             input,
             request,
             baseline,
@@ -498,7 +521,11 @@ impl Engine {
                 .ok_or_else(|| unsupported("native-compaction-output-usage-missing"))?;
             (
                 CheckpointContent::native(&item, estimated_tokens),
-                Some(NativeCheckpoint { item, producer }),
+                Some(NativeCheckpoint {
+                    item,
+                    producer,
+                    continuation: provenance.codex_preflight.map(|p| p.target),
+                }),
             )
         } else {
             if protocol.compaction.is_some() {

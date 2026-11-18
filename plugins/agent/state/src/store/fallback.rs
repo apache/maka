@@ -388,7 +388,20 @@ pub(crate) fn validate_resume(
         view.revision,
     )?;
     let current = current_summary(c, &scope, summary.step)?;
-    let source = current.request.compaction_recovery.or(view.current_attempt);
+    let evidence = context(c, view.run, &current.request.provenance)?;
+    let preflight = evidence.codex_preflight.is_some()
+        && evidence.model_context.as_ref().is_some_and(|model| {
+            model.operation == ModelOperation::CodexCompaction && model.codex.is_some()
+        });
+    let adopted = compacted(c, &scope, view, summary.step)?;
+    let source = if preflight {
+        if !adopted {
+            return Err(invalid("ChatGPT preflight must be adopted before Main"));
+        }
+        None
+    } else {
+        current.request.compaction_recovery.or(view.current_attempt)
+    };
     if incoming.accounting.purpose != ModelPurpose::Main
         || incoming.compaction_recovery != source
         || incoming.summary_repair_of.is_some()
@@ -397,7 +410,7 @@ pub(crate) fn validate_resume(
             "Main continuation changed its original Summary recovery lineage",
         ));
     }
-    if compacted(c, &scope, view, summary.step)? {
+    if adopted {
         return Ok(None);
     }
     if current.request.compaction_recovery.is_some() {
@@ -1243,6 +1256,79 @@ fn known_summary_failure(
     if !safe {
         return Err(invalid(
             "failed Summary does not prove a known terminal no-output provider failure",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_codex_fallback(
+    c: &Connection,
+    view: &RunView,
+    incoming: &RequestSpec,
+) -> Result<(), StoreError> {
+    use maka_agent_facts::{context::CodexPreflightStage, history_snapshot::RequestSource};
+    let Some(attempt) = view
+        .retry_pending
+        .and_then(|id| view.attempts.get(&id))
+        .filter(|attempt| {
+            matches!(
+                attempt.recovery,
+                Some(AttemptRecovery::CodexCompactionFallback)
+            )
+        })
+    else {
+        return Ok(());
+    };
+    let scope = scope(
+        c,
+        view.run,
+        serde_json::to_string(&view.spec.owner)?,
+        view.spec.session_id.clone(),
+        view.revision,
+    )?;
+    let original = current_summary(c, &scope, attempt.step)?.request;
+    let before = context(c, view.run, &original.provenance)?;
+    let after: RequestContextEvidence = sql::decode(c, &incoming.provenance)?;
+    let failure: maka_agent_facts::context::ModelFailureProtocol = serde_json::from_value(
+        attempt
+            .closed
+            .as_ref()
+            .ok_or_else(|| invalid("native fallback has no closed failure"))?
+            .protocol
+            .clone(),
+    )?;
+    let native = |evidence: &RequestContextEvidence| {
+        evidence.model_context.as_ref().is_some_and(|model| {
+            model.operation == ModelOperation::CodexCompaction && model.codex.is_some()
+        })
+    };
+    let valid = before
+        .codex_preflight
+        .as_ref()
+        .zip(after.codex_preflight.as_ref())
+        .is_some_and(|(before, after)| {
+            before.retry_with_target(&original.accounting.model_id, &failure.failure)
+                && after.stage == CodexPreflightStage::Fallback
+                && after.target.model == before.target.model
+                && incoming.accounting.model_id == before.target.model
+                && incoming.accounting.binding.connection_id
+                    == before.target.provenance.connection_id
+        });
+    let before_source: RequestSource = sql::decode(c, &original.source_capture)?;
+    let after_source: RequestSource = sql::decode(c, &incoming.source_capture)?;
+    if !valid
+        || !native(&before)
+        || !native(&after)
+        || incoming.accounting.purpose != ModelPurpose::Summary
+        || incoming.compaction_recovery.is_some()
+        || incoming.summary_repair_of.is_some()
+        || before_source.cut != after_source.cut
+        || before_source.current != after_source.current
+        || before_source.current_revision != 0
+        || after_source.current_revision != 0
+    {
+        return Err(invalid(
+            "native compaction fallback changed its target or pre-turn source",
         ));
     }
     Ok(())

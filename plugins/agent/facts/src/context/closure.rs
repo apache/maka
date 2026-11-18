@@ -94,6 +94,7 @@ impl SummaryResult {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestContextEvidence {
+    pub codex_preflight: Option<super::CodexPreflight>,
     pub estimated_input_tokens: u64,
     pub breakdown: PreparedContextBreakdown,
     pub model_context: Option<ModelRequestContext>,
