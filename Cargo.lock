@@ -9356,6 +9356,7 @@ name = "maka-provider-protocol"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
 ]

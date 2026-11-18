@@ -199,10 +199,64 @@ impl Content {
         }
     }
 }
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum Annotation {
+    UrlCitation {
+        url_citation: UrlCitation,
+    },
+    #[serde(other)]
+    Other,
+}
+#[derive(Debug, Deserialize)]
+pub(super) struct UrlCitation {
+    url: String,
+    title: Option<String>,
+    start_index: Option<u64>,
+    pub(super) end_index: Option<u64>,
+}
+
+/// Cumulative scalar ends in visible content. Reasoning contributes no offsets.
+pub(super) struct TextSpan<T> {
+    pub part: T,
+    pub end: u64,
+}
+
+impl UrlCitation {
+    pub(super) fn source<T: Clone>(
+        self,
+        spans: &[TextSpan<T>],
+        next_id: &mut dyn FnMut() -> String,
+    ) -> (output::Source, Option<output::CitationAnchor<T>>) {
+        let anchor = self
+            .start_index
+            .zip(self.end_index)
+            .and_then(|(start, end)| {
+                let index = spans.partition_point(|span| span.end <= start);
+                let span = spans.get(index)?;
+                let base = index.checked_sub(1).map_or(0, |i| spans[i].end);
+                (start < end && end <= span.end).then(|| output::CitationAnchor::Range {
+                    part: span.part.clone(),
+                    start: start - base,
+                    end: end - base,
+                })
+            });
+        (
+            output::Source::Url {
+                id: next_id(),
+                url: self.url,
+                title: self.title,
+                extensions: None,
+            },
+            anchor,
+        )
+    }
+}
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct Message {
     pub role: Option<String>,
     pub content: Option<Content>,
+    pub annotations: Option<Vec<Annotation>>,
     pub reasoning_content: Option<String>,
     pub reasoning: Option<String>,
     pub tool_calls: Option<Vec<ToolDelta>>,
@@ -287,12 +341,29 @@ pub fn generate(
         .map(|v| (TextKind::Reasoning, v))
         .into_iter()
         .chain(message.content.into_iter().flat_map(Content::text));
-    parts.extend(texts.map(|(kind, text)| Part::Text {
-        kind,
-        text,
-        citations: vec![],
-        extensions: None,
-    }));
+    let mut spans = Vec::new();
+    let mut end = 0;
+    for (kind, text) in texts {
+        if kind == TextKind::Text && message.annotations.is_some() {
+            end += text.chars().count() as u64;
+            spans.push(TextSpan {
+                part: parts.len(),
+                end,
+            });
+        }
+        parts.push(Part::Text {
+            kind,
+            text,
+            citations: vec![],
+            extensions: None,
+        });
+    }
+    for annotation in message.annotations.into_iter().flatten() {
+        if let Annotation::UrlCitation { url_citation } = annotation {
+            let (source, anchor) = url_citation.source(&spans, generate_id);
+            parts.push(Part::Source { source, anchor });
+        }
+    }
     for tool in message.tool_calls.into_iter().flatten() {
         let extensions = tool.signature(namespace);
         parts.push(Part::ToolCall(output::ToolCall {

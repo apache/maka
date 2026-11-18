@@ -216,6 +216,64 @@ async fn ordered_raw_reasoning_preserves_empty_fields_and_reopened_parts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_annotations_resolve_reopened_text_parts_through_model_stream() {
+    use maka_agent_facts::model::{CitationAnchor, ModelSource};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        body(&mut socket).await;
+        let annotation = |start, end| {
+            json!({"type":"url_citation","url_citation":{
+                "url":"https://example.org/", "title":"Example", "start_index":start,"end_index":end
+            }})
+        };
+        response(
+            &mut socket,
+            200,
+            &completion(&[
+                json!({"content":"首🙂"}),
+                json!({"reasoning":"interlude"}),
+                json!({"content":"后段"}),
+                json!({"annotations":[annotation(1,2), annotation(2,4), annotation(2,99)]}),
+            ]),
+        )
+        .await;
+    });
+    let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+    let step = collect(&executor, &url).await.unwrap();
+    server.await.unwrap();
+    let anchors = step
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            ModelPart::Source {
+                source: ModelSource::Url { url, .. },
+                anchor,
+            } if url == "https://example.org/" => Some(*anchor),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        anchors,
+        [
+            Some(CitationAnchor::Range {
+                part: 0,
+                start: 1,
+                end: 2
+            }),
+            Some(CitationAnchor::Range {
+                part: 2,
+                start: 0,
+                end: 2
+            }),
+            None,
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn usage_retreat_is_exact_once_and_shared_only_with_executor_clones() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

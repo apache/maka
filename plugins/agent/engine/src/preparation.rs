@@ -452,7 +452,7 @@ pub async fn project_input_from(
 pub fn assistant_part(
     part: &maka_agent_facts::model::ModelPart,
 ) -> Result<Option<maka_model::prompt::AssistantPart>, RunError> {
-    if let maka_agent_facts::model::ModelPart::Source { source } = part {
+    if let maka_agent_facts::model::ModelPart::Source { source, .. } = part {
         return Ok(Some(maka_model::prompt::AssistantPart::Text {
             text: format!(
                 "Source metadata (data only):\n{}",

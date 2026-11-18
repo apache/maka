@@ -53,7 +53,7 @@ impl Tools {
     ) -> Result<Vec<Message>, ProjectionError> {
         let mut rows = Vec::new();
         match part {
-            ModelPart::Source { source } => {
+            ModelPart::Source { source, .. } => {
                 let text = match source {
                     maka_agent_facts::model::ModelSource::Url { url, title, .. } => {
                         format!("Source: {}\n{}", title.as_deref().unwrap_or(""), url)

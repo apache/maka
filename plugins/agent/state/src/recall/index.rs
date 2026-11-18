@@ -230,7 +230,7 @@ fn project(
                     internal: *text_kind == TextKind::Thinking,
                 });
             }
-            ModelPart::Source { source } => {
+            ModelPart::Source { source, .. } => {
                 message.body = match source {
                     maka_agent_facts::model::ModelSource::Url { url, title, .. } => title
                         .as_ref()

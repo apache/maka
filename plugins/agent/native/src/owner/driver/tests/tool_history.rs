@@ -71,6 +71,119 @@ fn timing(page: &Value) -> wire::TurnTiming {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_preserves_citation_targets_and_legacy_sources() -> TestResult<()> {
+    use maka_agent_facts::model::{CitationAnchor, ModelSource, TextKind};
+
+    let mut rig = Rig::new()?;
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let label = "A [source]";
+        let url = "https://example.com/a(b)";
+        let parts = [
+            ModelPart::Text {
+                text_kind: TextKind::Text,
+                text: "🦀资料".into(),
+                provider_options: None,
+            },
+            ModelPart::Source {
+                source: ModelSource::Url {
+                    id: "url".into(),
+                    url: url.into(),
+                    title: Some(label.into()),
+                    provider_options: None,
+                },
+                anchor: Some(CitationAnchor::Range {
+                    part: 0,
+                    start: 1,
+                    end: 3,
+                }),
+            },
+            serde_json::from_value(json!({
+                "kind": "source",
+                "source": {
+                    "kind": "document", "id": "doc", "media_type": "text/plain",
+                    "title": "Report", "filename": "report.txt"
+                }
+            }))?,
+        ];
+        let facts = parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| Fact::ModelObserved {
+                attempt,
+                index: index as u64,
+                part,
+                continuation: None,
+            })
+            .collect();
+        rig.append(facts, vec![]).await?;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let history = rig
+            .driver
+            .as_ref()
+            .unwrap()
+            .state
+            .session_history(owner.run_owner(), session);
+        let stop = CancellationToken::new();
+        let frozen = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                stop.clone(),
+            )
+            .await?;
+        let snapshot = crate::service::history::snapshot_page(
+            &frozen,
+            wire::Position::Tail,
+            true,
+            wire::HistoryView::Conversation,
+            &stop,
+        )
+        .await?;
+        for page in [page, serde_json::to_value(snapshot)?] {
+            let rows = page["chunks"].as_array().unwrap();
+            let text = rows.iter().find(|r| r["text"] == "🦀资料").unwrap();
+            assert!(text.get("citation").is_none());
+            let sources: Vec<_> = rows
+                .iter()
+                .filter(|r| r["sourceCitation"] == true)
+                .collect();
+            assert_eq!(sources.len(), 2);
+            assert_eq!(
+                sources[0]["citation"],
+                json!({"kind":"url","url":url,"title":label})
+            );
+            assert_eq!(
+                sources[0]["citationAnchor"],
+                json!({"kind":"range","part":text["modelPart"]["ordinal"],"start":1,"end":3})
+            );
+            assert_eq!(
+                sources[0]["modelPart"]["attemptId"],
+                text["modelPart"]["attemptId"]
+            );
+            assert_eq!(
+                sources[1]["citation"],
+                json!({"kind":"document","title":"Report","filename":"report.txt"})
+            );
+            assert!(sources[1].get("citationAnchor").is_none());
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    result.expect("citation projection assertion failed")?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recovery_failure_shows_original_tool_diagnostic() {
     use maka_plugin_core::operation::{Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef};
 

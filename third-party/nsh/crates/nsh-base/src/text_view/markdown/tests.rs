@@ -2007,3 +2007,79 @@ fn native_root_rows_group_only_referenced_footnotes_and_keep_custom_origins() {
     assert_eq!(fragment.plain_text(), "first\n\nsecond");
     assert_eq!(fragment.rows.to_vec(), vec![vec![3..8], vec![10..16]]);
 }
+
+#[test]
+fn source_anchors_preserve_markdown_and_original_text() {
+    let source = "**😀A&amp;B** [website](https://example.com) and more.";
+    let ends = ["**😀A", "**😀A&amp;", "**😀A&amp;B** [web", source];
+    let extensions: Vec<_> = ends
+        .iter()
+        .enumerate()
+        .map(|(index, prefix)| MarkdownExtension {
+            name: format!("ref{index}").into(),
+            after_byte: Some(prefix.len() as u32),
+            ..MarkdownExtension::default()
+        })
+        .collect();
+    let parsed = Parser::new()
+        .extensions(extensions)
+        .markdown_projection(source);
+    assert_eq!(parsed.document.plain_text(), "😀A&B website and more.");
+    let marker = |n| Inline::Custom(CustomNode::new(format!("ref{n}")));
+    let expected = p(vec![
+        strong(vec![t("😀A"), marker(0), t("&"), marker(1), t("B")]),
+        t(" "),
+        link("https://example.com", vec![t("website")]),
+        marker(2),
+        t(" and more."),
+        marker(3),
+    ]);
+    assert_eq!(
+        serde_json::to_value(&parsed.document.blocks[0]).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}
+
+#[test]
+fn source_anchors_keep_their_ranges_across_streaming_repairs_and_appends() {
+    use nsh_core::TextSourceKind::{Literal, Replacement};
+    let parser = Parser::new()
+        .options(MarkdownOptions {
+            streaming: true,
+            ..options()
+        })
+        .extension(MarkdownExtension {
+            name: "site".into(),
+            after_byte: Some("**😀&amp;".len() as u32),
+            ..MarkdownExtension::default()
+        });
+    let prefix = parser.markdown_projection("**😀");
+    assert_eq!(
+        serde_json::to_value(&prefix.blocks[0]).unwrap(),
+        serde_json::to_value(p(vec![strong(vec![t("😀")])])).unwrap()
+    );
+
+    let marker = || Inline::Custom(CustomNode::new("site"));
+    for (text, tail) in [
+        ("**😀&amp;", ""),
+        ("**😀&amp;中", "中"),
+        ("**😀&amp;中**", "中"),
+    ] {
+        let parsed = parser.markdown_projection(text);
+        let mut expected = vec![t("😀"), t("&"), marker()];
+        let mut leaves = vec![
+            ("😀".into(), vec![(0, 2, 2, 6, Literal)]),
+            ("&".into(), vec![(0, 1, 6, 11, Replacement)]),
+        ];
+        if !tail.is_empty() {
+            expected.push(t(tail));
+            leaves.push((tail.into(), vec![(0, 1, 11, 14, Literal)]));
+        }
+        assert_eq!(
+            serde_json::to_value(&parsed.blocks[0]).unwrap(),
+            serde_json::to_value(p(vec![strong(expected)])).unwrap(),
+            "{text}"
+        );
+        assert_eq!(source_leaves(&parsed), leaves, "{text}");
+    }
+}

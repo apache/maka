@@ -24,6 +24,7 @@ import type {
   WorkspacePullRequestTarget,
   WorkspaceSourceItem,
 } from '../../../../packages/plugin-sdk/src/workspace-view.js';
+import { type AnswerSource, AnswerSourceList } from './AnswerSources';
 import { useHost } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -75,6 +76,8 @@ export function SessionInspector(props: {
   activeWorktree?(): string | null;
   selectWorktree?(worktreePath: string | null): void;
   sources?(): readonly WorkspaceSourceItem[];
+  answerSources(): readonly AnswerSource[];
+  openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   childSessions(): readonly AgentSession[];
   openChanges?(worktreePath?: string | null): void;
   openFiles?(): void;
@@ -264,6 +267,13 @@ export function SessionInspector(props: {
           onLayout={({ bounds }) => contentHeight.set(bounds.size.height)}
           style={{ paddingVertical: 4 }}
         >
+          <If when={props.answerSources().length > 0}>
+            <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
+              <Text style={sectionTitleStyle}>{tr('Answer sources')}</Text>
+              <AnswerSourceList sources={props.answerSources} openLink={props.openLink} />
+            </View>
+            {divider()}
+          </If>
           {/* 1. Worktree reference & switcher */}
           <If when={Boolean(effectivePath())}>
             <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 8 }}>
@@ -649,7 +659,7 @@ export function SessionInspector(props: {
 
           {divider()}
 
-          {/* 5. Sources */}
+          {/* Open workspace tabs */}
           <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
             <View
               style={{
@@ -659,7 +669,7 @@ export function SessionInspector(props: {
                 marginBottom: 4,
               }}
             >
-              <Text style={{ ...sectionTitleStyle, flex: 1 }}>{tr('Sources')}</Text>
+              <Text style={{ ...sectionTitleStyle, flex: 1 }}>{tr('Open tabs')}</Text>
               <If when={props.openFiles !== undefined}>
                 <Button
                   accessibilityLabel={tr('Browse files')}

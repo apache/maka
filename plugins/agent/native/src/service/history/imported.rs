@@ -61,7 +61,7 @@ enum Model {
         text_kind: TextKind,
     },
     Source {
-        source: Citation,
+        source: wire::HistoryCitation,
     },
     ToolCall {
         call: Call,
@@ -119,7 +119,7 @@ impl<'de> Deserialize<'de> for Header {
 struct ModelClaims {
     kind: ModelKind,
     text_kind: Option<TextKind>,
-    source: Option<Citation>,
+    source: Option<CitationClaims>,
     call: Option<Call>,
     id: Option<String>,
     name: Option<String>,
@@ -146,7 +146,8 @@ impl<'de> Deserialize<'de> for Model {
             ModelKind::Source => Self::Source {
                 source: value
                     .source
-                    .ok_or_else(|| D::Error::missing_field("source"))?,
+                    .ok_or_else(|| D::Error::missing_field("source"))?
+                    .into_citation()?,
             },
             ModelKind::ToolCall => Self::ToolCall {
                 call: value.call.ok_or_else(|| D::Error::missing_field("call"))?,
@@ -161,16 +162,6 @@ impl<'de> Deserialize<'de> for Model {
         })
     }
 }
-enum Citation {
-    Url {
-        url: String,
-        title: Option<String>,
-    },
-    Document {
-        title: String,
-        filename: Option<String>,
-    },
-}
 #[derive(Deserialize)]
 struct CitationClaims {
     kind: CitationKind,
@@ -184,20 +175,17 @@ enum CitationKind {
     Url,
     Document,
 }
-impl<'de> Deserialize<'de> for Citation {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-        let value = CitationClaims::deserialize(deserializer)?;
-        Ok(match value.kind {
-            CitationKind::Url => Self::Url {
-                url: value.url.ok_or_else(|| D::Error::missing_field("url"))?,
-                title: value.title,
+impl CitationClaims {
+    fn into_citation<E: serde::de::Error>(self) -> Result<wire::HistoryCitation, E> {
+        Ok(match self.kind {
+            CitationKind::Url => wire::HistoryCitation::Url {
+                url: self.url.ok_or_else(|| E::missing_field("url"))?,
+                title: self.title,
             },
-            CitationKind::Document => Self::Document {
-                title: value
-                    .title
-                    .ok_or_else(|| D::Error::missing_field("title"))?,
-                filename: value.filename,
+            CitationKind::Document => wire::HistoryCitation::Document {
+                title: self.title.ok_or_else(|| E::missing_field("title"))?,
+                filename: self.filename,
+                document_index: None,
             },
         })
     }
@@ -283,6 +271,8 @@ pub(super) async fn row(
             run_id: None,
             model_part: None,
             source_citation: false,
+            citation: None,
+            citation_anchor: None,
             has_references: false,
             quotes: Vec::new(),
             final_output: false,
@@ -352,15 +342,8 @@ pub(super) async fn row(
         Header::Model {
             part: Model::Source { source },
         } => {
-            let text = match source {
-                Citation::Url { url, title, .. } => {
-                    title.map_or_else(|| url.clone(), |title| format!("[{title}]({url})"))
-                }
-                Citation::Document {
-                    title, filename, ..
-                } => filename.map_or(title.clone(), |name| format!("{title} ({name})")),
-            };
-            row.body = projection::Body::Text(text.into());
+            row.body =
+                projection::Body::Text(projection::citation_body(&mut row.chunk, source).into());
             row.fields.push((
                 SourceField::Body,
                 field(reference, &["part", "source"], false),
