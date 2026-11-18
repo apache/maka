@@ -31,6 +31,7 @@ pub(in crate::owner) struct ReplayTarget<'a> {
     pub codex: Option<&'a CodexRequestProvenance>,
     provider: &'a ProviderKind,
     operation: ModelOperation,
+    conversion: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -50,22 +51,29 @@ impl<'a> ReplayTarget<'a> {
                 .and_then(|context| context.codex.as_ref()),
             provider: &model.provider.kind,
             operation,
+            conversion: false,
         }
+    }
+
+    pub fn converting(mut self) -> Self {
+        self.conversion = self.operation == ModelOperation::CodexCompaction && self.codex.is_some();
+        self
     }
 
     pub fn encrypted_allowed(self, model: &str, source: Option<&CodexRequestProvenance>) -> bool {
         let (Some(target), Some(source)) = (self.codex, source) else {
             return false;
         };
-        codex_replay_allowed(
-            self.model == model,
-            source
-                .compatibility
-                .as_ref()
-                .zip(target.compatibility.as_ref())
-                .map(|(old, new)| old.comp_hash == new.comp_hash),
-            self.operation,
-        )
+        self.conversion
+            || codex_replay_allowed(
+                self.model == model,
+                source
+                    .compatibility
+                    .as_ref()
+                    .zip(target.compatibility.as_ref())
+                    .map(|(old, new)| old.comp_hash == new.comp_hash),
+                self.operation,
+            )
     }
 
     fn reasoning(self, model: &str, source: Option<&CodexRequestProvenance>) -> Reasoning {
@@ -129,6 +137,7 @@ impl<'a> ReplayTarget<'a> {
         let admission = RecipeAdmission {
             target: ReplayOrigin::observed(self.model, self.codex),
             operation: self.operation,
+            conversion: self.conversion,
             incompatible: self.incompatible(),
         };
         let mut len = 0usize;
@@ -155,6 +164,7 @@ impl<'a> ReplayTarget<'a> {
 struct RecipeAdmission {
     target: ReplayOrigin,
     operation: ModelOperation,
+    conversion: bool,
     incompatible: Reasoning,
 }
 impl RecipeAdmission {
@@ -170,14 +180,17 @@ impl RecipeAdmission {
                     model: new,
                     codex: target,
                 },
-            ) if source != Absent && target != Absent => codex_replay_allowed(
-                old == new,
-                match (source, target) {
-                    (Hashed(old), Hashed(new)) => Some(old == new),
-                    _ => None,
-                },
-                self.operation,
-            ),
+            ) if source != Absent && target != Absent => {
+                self.conversion
+                    || codex_replay_allowed(
+                        old == new,
+                        match (source, target) {
+                            (Hashed(old), Hashed(new)) => Some(old == new),
+                            _ => None,
+                        },
+                        self.operation,
+                    )
+            }
             _ => false,
         };
         let non_codex = matches!(
@@ -437,6 +450,7 @@ mod tests {
             let target = ReplayTarget {
                 model,
                 codex: target_codex.then_some(&target),
+                conversion: false,
                 provider: &provider,
                 operation: ModelOperation::Inference,
             };
@@ -468,6 +482,7 @@ mod tests {
         let target = ReplayTarget {
             model: "other",
             codex: None,
+            conversion: false,
             provider: &provider,
             operation: ModelOperation::Inference,
         };
@@ -517,6 +532,7 @@ mod tests {
             let target = ReplayTarget {
                 model,
                 codex,
+                conversion: false,
                 provider: &provider,
                 operation,
             };

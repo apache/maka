@@ -22,6 +22,7 @@ use super::*;
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::Metadata;
 use maka_agent_facts::artifact::content_digest;
+use sha2::{Digest, Sha256};
 use std::io::Read;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -72,41 +73,17 @@ impl Directory {
         expected_version: Option<&str>,
         cancel: &AtomicBool,
     ) -> io::Result<FileCapture> {
-        interrupted(cancel)?;
-        self.validate_inner()?;
-        let relative =
-            gix::path::from_bstring(path.bytes().map_err(|_| error("files_invalid_path"))?)
-                .map_err(|_| error("files_invalid_path"))?;
-        let parent = relative
-            .parent()
-            .ok_or_else(|| error("files_invalid_path"))?;
-        let name = relative
-            .file_name()
-            .ok_or_else(|| error("files_invalid_path"))?;
-        let anchor = self.anchors.last().expect("target anchor");
-        let mut directory = Self {
-            anchors: vec![Anchor {
-                path: anchor.path.clone(),
-                directory: anchor.directory.try_clone()?,
-                identity: anchor.identity.clone(),
-            }],
-            relative: self.relative.join(parent),
-            private_root: self.private_root.clone(),
-            control: self.control.clone(),
-            managed: self.managed,
-        };
-        if let Err(reason) = directory.descend(parent, cancel) {
-            if reason.kind() == io::ErrorKind::NotFound {
-                self.validate_inner()?;
+        let (directory, name) = match self.file_parent(path, cancel) {
+            Ok(parent) => parent,
+            Err(reason) if reason.kind() == io::ErrorKind::NotFound => {
                 return Ok(FileCapture::Absent);
             }
-            return Err(reason);
-        }
+            Err(reason) => return Err(reason),
+        };
+        let name = name.as_os_str();
         directory.validate_inner()?;
         let target = directory.anchors.last().expect("file parent anchor");
-        if directory.excluded_child(&target.path, name) {
-            return Err(error("files_private"));
-        }
+
         let visible = match target.directory.symlink_metadata(name) {
             Ok(value) => value,
             Err(reason) if reason.kind() == io::ErrorKind::NotFound => {
@@ -163,19 +140,7 @@ impl Directory {
             return Ok(FileCapture::Changed);
         }
         let digest = content_digest(&bytes);
-        let version = content_digest(
-            &serde_json::to_vec(&(
-                self.directory_identity(),
-                directory.directory_identity(),
-                path,
-                before.dev(),
-                before.ino(),
-                time(before.created().ok()),
-                time(before.modified().ok()),
-                &digest,
-            ))
-            .map_err(io::Error::other)?,
-        );
+        let version = self.file_version(&directory, path, &before, &digest)?;
         if expected_version.is_some_and(|expected| expected != version) {
             return Ok(FileCapture::Changed);
         }
@@ -197,6 +162,165 @@ impl Directory {
             content,
             data: bytes,
         }))
+    }
+
+    fn file_parent(
+        &self,
+        path: &WorkspacePath,
+        cancel: &AtomicBool,
+    ) -> io::Result<(Self, std::ffi::OsString)> {
+        interrupted(cancel)?;
+        self.validate_inner()?;
+        let relative =
+            gix::path::from_bstring(path.bytes().map_err(|_| error("files_invalid_path"))?)
+                .map_err(|_| error("files_invalid_path"))?;
+        let parent = relative
+            .parent()
+            .ok_or_else(|| error("files_invalid_path"))?;
+        let name = relative
+            .file_name()
+            .ok_or_else(|| error("files_invalid_path"))?;
+        let anchor = self.anchors.last().expect("target anchor");
+        let mut directory = Self {
+            anchors: vec![Anchor {
+                path: anchor.path.clone(),
+                directory: anchor.directory.try_clone()?,
+                identity: anchor.identity.clone(),
+            }],
+            relative: self.relative.join(parent),
+            private_root: self.private_root.clone(),
+            control: self.control.clone(),
+            managed: self.managed,
+        };
+        directory.descend(parent, cancel)?;
+        directory.validate_inner()?;
+        let target = directory.anchors.last().expect("file parent");
+        if directory.excluded_child(&target.path, name) {
+            return Err(error("files_private"));
+        }
+        Ok((directory, name.to_owned()))
+    }
+
+    fn file_version(
+        &self,
+        directory: &Self,
+        path: &WorkspacePath,
+        metadata: &Metadata,
+        digest: &str,
+    ) -> io::Result<String> {
+        Ok(content_digest(
+            &serde_json::to_vec(&(
+                self.directory_identity(),
+                directory.directory_identity(),
+                path,
+                metadata.dev(),
+                metadata.ino(),
+                time(metadata.created().ok()),
+                time(metadata.modified().ok()),
+                digest,
+            ))
+            .map_err(io::Error::other)?,
+        ))
+    }
+
+    /// Replace an existing, single-link text file only while its captured version still matches.
+    pub fn save_text(
+        &self,
+        path: &WorkspacePath,
+        expected: &str,
+        text: &str,
+        policy: Option<&maka_sandbox::filesystem::Compiled>,
+        cancel: &AtomicBool,
+    ) -> io::Result<Option<String>> {
+        use std::io::Write;
+        if text.contains('\0') {
+            return Err(error("files_invalid_text"));
+        }
+        let (parent, name) = match self.file_parent(path, cancel) {
+            Ok(parent) => parent,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let target = parent.anchors.last().expect("file parent");
+        if policy.is_some_and(|p| {
+            !p.access(&target.path.join(&name)).can_write() || !p.access(&target.path).can_write()
+        }) {
+            return Err(error("files_read_only"));
+        }
+        let dir = &target.directory;
+        let mut opts = crate::workspace::options();
+        let meta = match dir.symlink_metadata(&name) {
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => return Ok(None),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        if meta.nlink() != 1 {
+            return Err(error("files_hard_link"));
+        }
+        let original = dir.open_with(&name, opts.read(true).write(true))?;
+        if !same_version(&meta, &original.metadata()?)? {
+            return Ok(None);
+        }
+        let mut digest = Sha256::new();
+        let mut reader = (&original).take(meta.len());
+        let mut buffer = [0; 8192];
+        while reader.limit() != 0 {
+            interrupted(cancel)?;
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                return Ok(None);
+            }
+            digest.update(&buffer[..count]);
+        }
+        let digest = crate::publication::finish_digest(digest);
+        if self.file_version(&parent, path, &meta, &digest)? != expected {
+            return Ok(None);
+        }
+        let temporary = format!(".maka-edit-{}", uuid::Uuid::new_v4());
+        let mut staged = dir.open_with(
+            &temporary,
+            crate::workspace::options().write(true).create_new(true),
+        )?;
+        let apply = (|| {
+            staged.write_all(text.as_bytes())?;
+            staged.set_permissions(meta.permissions())?;
+            let staged_meta = staged.metadata()?;
+            let version = self.file_version(
+                &parent,
+                path,
+                &staged_meta,
+                &content_digest(text.as_bytes()),
+            )?;
+            let coordinator = crate::WriteCoordinator::shared();
+            let _guard = coordinator
+                .mutation
+                .lock()
+                .map_err(|_| io::Error::other("file writer lock poisoned"))?;
+            interrupted(cancel)?;
+            self.validate_inner()?;
+            parent.validate_inner()?;
+            let current = match dir.symlink_metadata(&name) {
+                Ok(current) => current,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(err),
+            };
+            if !same_version(&meta, &current)? || current.permissions() != meta.permissions() {
+                return Ok(None);
+            }
+            if current.nlink() != 1 {
+                return Err(error("files_hard_link"));
+            }
+            if !same_version(&staged_meta, &dir.symlink_metadata(&temporary)?)? {
+                return Ok(None);
+            }
+            dir.rename(&temporary, dir, &name)?;
+            Ok(Some(version))
+        })();
+        if !matches!(apply, Ok(Some(_))) {
+            dir.remove_file(&temporary)?;
+        }
+        apply
     }
 }
 

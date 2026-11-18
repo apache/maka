@@ -24,7 +24,7 @@ use crate::queue::{
 use maka_agent_facts::{
     execution::ModelBinding,
     input::{DeliveredMessage, MessageInput, RunInput},
-    message::{MessageDisposition, RootSourceMessage},
+    message::{MessageDisposition, MessageOrigin, RootSourceMessage},
 };
 use maka_event_log::{
     RootStore,
@@ -123,18 +123,19 @@ async fn enqueue(
     store: &Store,
     basis: &RunSpec,
     message: &str,
-    scheduled: bool,
+    origin: Option<MessageOrigin>,
 ) -> PreparedRequest {
     let content = MessageInput::from(message);
+    let schedule = match &origin {
+        Some(MessageOrigin::Automation { automation_id, .. }) => Some(automation_id.clone()),
+        _ => None,
+    };
     let source = ContentBlob::json(&RootSourceMessage {
         message: DeliveredMessage {
             message_id: message.into(),
             submitted_content_digest: content.content_digest().unwrap(),
             content: content.clone(),
-            origin: scheduled.then(|| maka_agent_facts::message::MessageOrigin::Automation {
-                automation_id: "schedule".into(),
-                title: "Scheduled follow-up".into(),
-            }),
+            origin,
         },
         unprepared_content: content,
         submitted_placement: maka_agent_facts::message::Placement::NextTurn,
@@ -145,18 +146,14 @@ async fn enqueue(
     let resources = ContentBlob::json(&Vec::<serde_json::Value>::new()).unwrap();
     let mut spec = basis.clone();
     spec.turn_id = format!("turn-{message}");
-    spec.trigger = if scheduled {
-        Trigger::Schedule {
-            schedule_id: "schedule".into(),
-        }
+    spec.trigger = if let Some(schedule_id) = schedule {
+        spec.budget_basis = Some(resources.reference().clone());
+        Trigger::Schedule { schedule_id }
     } else {
         Trigger::Message {
             message_id: message.into(),
         }
     };
-    if scheduled {
-        spec.budget_basis = Some(resources.reference().clone());
-    }
     let request = PreparedRequest {
         id: RequestId(format!("request-{message}")),
         message_id: message.into(),
@@ -207,7 +204,7 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
     let goal = Admission::new(spec.clone(), UnixMillis(1), contents);
     store.admit(goal.clone()).await.unwrap();
 
-    let request = enqueue(&store, &spec, "keep-this-message", false).await;
+    let request = enqueue(&store, &spec, "keep-this-message", None).await;
     let view = store.frontier(goal.run()).await.unwrap();
     let head = Head::from(&view);
     let queue = store.queue();
@@ -356,9 +353,35 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     };
     let current = Admission::new(current_spec, UnixMillis(2), contents);
     store.admit(current.clone()).await.unwrap();
-    enqueue(&store, &spec, "queued-one", false).await;
-    enqueue(&store, &spec, "queued-two", false).await;
-    enqueue(&store, &spec, "scheduled", true).await;
+    enqueue(&store, &spec, "queued-one", None).await;
+    enqueue(
+        &store,
+        &spec,
+        "worker-finished",
+        Some(MessageOrigin::BotWorker {
+            session_id: "worker".into(),
+        }),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
+        "discovery-report",
+        Some(MessageOrigin::DiscoveryReport {
+            session_id: "investigation".into(),
+        }),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
+        "scheduled",
+        Some(MessageOrigin::Automation {
+            automation_id: "schedule".into(),
+            title: "Scheduled follow-up".into(),
+        }),
+    )
+    .await;
     let stop = Change::new(
         Fact::StopRequested {
             diagnostic: "user_requested_stop".into(),
@@ -429,15 +452,19 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
         MessageResolution::Cancelled
     );
     assert_eq!(
-        resolution(&store, "queued-two").await,
+        resolution(&store, "worker-finished").await,
         MessageResolution::Cancelled
+    );
+    assert_eq!(
+        resolution(&store, "discovery-report").await,
+        MessageResolution::Pending
     );
     assert_eq!(
         resolution(&store, "scheduled").await,
         MessageResolution::Pending
     );
 
-    let later = enqueue(&store, &spec, "after-stop", false).await;
+    let later = enqueue(&store, &spec, "after-stop", None).await;
     let cut = store.queue().read(spec.session_id.clone()).await.unwrap();
     store
         .data
@@ -473,6 +500,14 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     assert_eq!(
         resolution(&store, "scheduled").await,
         MessageResolution::Pending
+    );
+    assert_eq!(
+        resolution(&store, "discovery-report").await,
+        MessageResolution::Pending
+    );
+    assert_eq!(
+        resolution(&store, "worker-finished").await,
+        MessageResolution::Cancelled
     );
     store
         .data
@@ -540,7 +575,7 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
             .await
             .unwrap();
     }
-    enqueue(&store, &spec, "after-terminal", false).await;
+    enqueue(&store, &spec, "after-terminal", None).await;
     let cut = store.queue().read(spec.session_id.clone()).await.unwrap();
     store
         .data
@@ -617,7 +652,7 @@ async fn confirmed_native_exit_unblocks_a_previously_failed_conversation() {
         )
         .await
         .unwrap();
-    let request = enqueue(&store, &spec, "followup-after-native-exit", false).await;
+    let request = enqueue(&store, &spec, "followup-after-native-exit", None).await;
     let queue = store.queue().read(spec.session_id.clone()).await.unwrap();
     let successor = Admission::new(request.spec, UnixMillis(4), vec![]).with_queue(Consume {
         session: spec.session_id,

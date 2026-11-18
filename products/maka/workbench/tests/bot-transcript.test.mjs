@@ -90,7 +90,14 @@ function host({
     const asked = input.sessionId ?? current;
     const isBot = asked === current || former.includes(asked);
     const through = isBot ? state.messages.length : 0;
-    if (input.limit === 0) return { sessionId: current, isBot, through, messages: [] };
+    if (input.limit === 0)
+      return {
+        sessionId: current,
+        isBot,
+        through,
+        messages: [],
+        discoveryLink: state.discoveryLink,
+      };
     state.reads.push(input.after ?? 0);
     if (state.hold) await new Promise((resolve) => state.releases.push(resolve));
     if (state.fail) throw new Error('outbox read failed');
@@ -132,6 +139,50 @@ test('replies are grouped by the Turn that sent them and read in order across pa
   assert.deepEqual(replies(core, 'c'), ['m5']);
   assert.deepEqual(replies(core, 'none'), []);
   assert.deepEqual(state.reads, [0, 2, 4], 'each page is read once, in order');
+  core.close();
+});
+
+test('late discovery links update the displayed send and recover changes missed between watches', async () => {
+  const parts = [
+    message(1, 'a'),
+    { ...message(2, 'a'), messageId: 'id1', index: 1 },
+    message(3, 'b'),
+  ];
+  const { state, announce, host: h } = host({ messages: parts });
+  const core = createBotTranscriptCore(h, SESSION, () => {});
+  await core.started;
+  await settle();
+  const first = { recordId: 'A', workerSessionId: 'worker-A', workerTurnId: 'turn-A' };
+  const second = { recordId: 'B', workerSessionId: 'worker-B', workerTurnId: 'turn-B' };
+  state.messages = parts.map((m) => (m.turnId === 'a' ? { ...m, discovery: first } : m));
+  state.discoveryLink = { revision: 1, messageId: 'id1', turnId: 'a', discovery: first };
+  announce();
+  await settle();
+  assert.deepEqual(
+    core.forTurn('a').map((m) => m.discovery),
+    [first, first],
+  );
+  assert.deepEqual(
+    state.reads,
+    [0],
+    'a single link updates the cached call without reloading history',
+  );
+
+  state.messages[2] = { ...parts[2], discovery: second };
+  state.discoveryLink = { revision: 3, messageId: 'id3', turnId: 'b', discovery: second };
+  state.fail = true;
+  announce();
+  await settle();
+  assert.deepEqual(
+    replies(core, 'a'),
+    ['m1', 'm2'],
+    'a failed reload preserves the visible transcript',
+  );
+  state.fail = false;
+  announce();
+  await settle();
+  assert.deepEqual(core.latest().discovery, second);
+  assert.deepEqual(replies(core, 'a'), ['m1', 'm2']);
   core.close();
 });
 

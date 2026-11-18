@@ -45,7 +45,9 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
     blocked() ||
     composing() ||
     !!input.session()?.blockedReason() ||
-    (!input.session()?.draft().trim() && !input.session()?.attachments.files().length);
+    (!input.session()?.draft().trim() &&
+      !input.session()?.attachments.files().length &&
+      !input.session()?.quotes().length);
   const intake = async (source: ComposerIntake | (() => Promise<ComposerIntake>)) => {
     const session = input.session();
     const node = editor();
@@ -166,6 +168,21 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                 uploadLabel="Upload selected file"
                 uploadingLabel="Uploading…"
               />
+              <Each of={session.quotes()}>
+                {(quote, index) => (
+                  <View style={{ padding: 8, gap: 4 }}>
+                    <Text>{quote().label ?? 'Quote'}</Text>
+                    <Text style={{ numberOfLines: 3 }}>{quote().text}</Text>
+                    <Button
+                      accessibilityLabel="Remove quote"
+                      disabled={blocked()}
+                      onPress={() => session.removeQuote(index())}
+                    >
+                      <Text>Remove quote</Text>
+                    </Button>
+                  </View>
+                )}
+              </Each>
               <Each of={session.attachments.files()} key={(file) => file.id}>
                 {(file) => (
                   <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -228,6 +245,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                     text: session.draft(),
                     backend: session.backend(),
                     attachments: session.attachments.ids(),
+                    quotes: session.quotes(),
                   })}
                 >
                   <Text>{session.run() ? 'Queue message' : 'Send message'}</Text>

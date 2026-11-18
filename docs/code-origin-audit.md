@@ -46,6 +46,16 @@ OpenCode V2 at [`55276f2108c8853f94cf16dc530e7754a6ce8318`](https://github.com/a
 
 The upstream MIT license is preserved in the root `LICENSE`. No upstream tests are distributed.
 
+### ChatGPT model-switch compaction
+
+`plugins/agent/native/src/owner/driver_model/codex_switch.rs` and
+`plugins/agent/facts/src/context/codex.rs` follow the pre-sampling model-switch
+order and qualifying previous-model fallback policy in OpenAI Codex at
+[`ba0d0e1f74ee0f41c27ef24b37ed5fc030b487e7`](https://github.com/openai/codex/tree/ba0d0e1f74ee0f41c27ef24b37ed5fc030b487e7),
+Apache-2.0 (`codex-rs/core/src/session/turn.rs` and
+`codex-rs/core/src/compact_model_fallback.rs`). Maka uses its own durable Engine
+and original-request ownership model; no upstream implementation or tests are copied.
+
 ### Source archive non-text inventory
 
 - `third-party/deno-tls/testdata/*.der`: Unmodified self-signed TLS certificates and keys used by the vendored crate’s tests. Their hashes and MIT license are recorded alongside the crate.

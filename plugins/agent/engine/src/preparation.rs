@@ -18,7 +18,9 @@
  */
 
 //! Semantic request preparation. No attempt admission, execution or recovery decisions.
-pub use crate::continuation::{validate_continuation, validate_replay_boundary};
+pub use crate::continuation::{
+    validate_continuation, validate_continuation_source, validate_replay_boundary,
+};
 use crate::{RunError, digest, history, prepared_prompt::PreparedPrompt};
 use maka_agent_facts::tool_output::ReturnedToolResult;
 use maka_agent_facts::{context::ModelPurpose, language::Language};

@@ -198,18 +198,48 @@ impl Owner {
         render: impl FnOnce(Language) -> String,
         origin: MessageOrigin,
     ) -> Result<Option<PreparedRequest>, String> {
-        let session_id = &source.session_id;
+        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. })
+            || matches!(&origin, MessageOrigin::Session { execution } if execution == source && identity == super::external_recovery::recovery_request_id(source.run_id))
+        {
+            QueuePlacement::Completion {
+                caller: source.run_id,
+            }
+        } else {
+            QueuePlacement::Followup
+        };
+        self.prepare_notification_checked(
+            &source.session_id,
+            route,
+            identity,
+            render,
+            origin,
+            placement,
+            None,
+        )
+        .await
+        .map_err(String::from)
+    }
+    pub(super) async fn prepare_notification_checked(
+        &self,
+        session_id: &str,
+        route: &ReturnRoute,
+        identity: &str,
+        render: impl FnOnce(Language) -> String,
+        origin: MessageOrigin,
+        placement: QueuePlacement,
+        boundary: Option<&ScheduledTarget>,
+    ) -> Result<Option<PreparedRequest>, send::CaptureError> {
         if let Some(original) = self
             .durable
             .queue()
-            .entry(session_id.clone(), RequestId(identity.into()))
+            .entry(session_id.to_owned(), RequestId(identity.into()))
             .await
             .map_err(|e| e.to_string())?
         {
             return Ok(Some(original.request));
         }
         if self.stop.is_cancelled() {
-            return Err("agent_closed".into());
+            return Err("agent_closed".to_owned().into());
         }
         let session = self.session(session_id).await?;
         if session.archived
@@ -236,35 +266,17 @@ impl Owner {
             )
             .await;
         let cleanup = native.finish().await;
-        let mut basis = match (capture, cleanup) {
-            (Ok(basis), Ok(())) => basis,
-            (Err(error), Ok(())) => return Err(error.into()),
-            (result, Err(cleanup)) => {
-                return Err(format!(
-                    "{}; background preparation cleanup: {cleanup}",
-                    result.err().map(String::from).unwrap_or_default()
-                ));
-            }
-        };
+        let mut basis = send::finish_capture(capture, cleanup)?;
         if let Some(model) = &route.model {
             let current = basis
                 .model
                 .as_ref()
-                .ok_or("notification_model_unavailable")?;
+                .ok_or_else(|| "notification_model_unavailable".to_owned())?;
             if !model.same_execution_route(current) {
-                return Err("notification_route_changed".into());
+                return Err(send::CaptureError::RouteChanged);
             }
             basis.model = Some(model.clone());
         }
-        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. })
-            || matches!(&origin, MessageOrigin::Session { execution } if execution == source && identity == super::external_recovery::recovery_request_id(source.run_id))
-        {
-            QueuePlacement::Completion {
-                caller: source.run_id,
-            }
-        } else {
-            QueuePlacement::Followup
-        };
         let message: MessageInput = render(basis.language).into();
         let source = RootSourceMessage {
             message: DeliveredMessage {
@@ -278,7 +290,7 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        self.enqueue_background(
+        self.enqueue_background_checked(
             session_id,
             source,
             &basis,
@@ -286,9 +298,11 @@ impl Owner {
             Default::default(),
             placement,
             false,
+            boundary,
         )
         .await
         .map(Some)
+        .map_err(Into::into)
     }
 
     /// Original requests are observed, never re-frozen from a stored execution grant.
@@ -330,8 +344,31 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
+        placement: QueuePlacement,
+        steer: bool,
+    ) -> Result<PreparedRequest, String> {
+        self.enqueue_background_checked(
+            session,
+            source,
+            basis,
+            key,
+            required_tools,
+            placement,
+            steer,
+            None,
+        )
+        .await
+    }
+    async fn enqueue_background_checked(
+        &self,
+        session: &str,
+        source: RootSourceMessage,
+        basis: &CapturedRun,
+        key: &str,
+        required_tools: BTreeSet<String>,
         mut placement: QueuePlacement,
         steer: bool,
+        boundary: Option<&ScheduledTarget>,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
         let queue = self.durable.queue();
@@ -344,7 +381,13 @@ impl Owner {
         }
         self.validate_background(basis).await?;
         let current = self.session(session).await?;
-        basis.validate_background_target(&current)?;
+        basis.validate_background_target(
+            &current,
+            self.scheduler.investigation_profile(&current.id),
+        )?;
+        if let Some(boundary) = boundary {
+            discovery::check_target(&current, boundary)?;
+        }
         let native = self
             .services
             .request(

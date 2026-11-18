@@ -19,7 +19,7 @@
 
 # Dependency patches
 
-Root installation applies these exact-version patches with `patch-package --error-on-fail`. Product bundles use the pinned dependencies.
+Root installation applies these exact-version patches with `git apply`. Product bundles use the pinned dependencies.
 
 ## `zod@4.6.7`
 
@@ -30,3 +30,7 @@ When updating the dependency, verify its behavior before replacing or removing t
 ## `pele@1.13.0`
 
 The synchronous `render()` API works without a DOM, but the package's shared declarations also reference browser-only `HTMLElement` and `Node` types. The declaration-only patch resolves those types from `globalThis` when available, and to `never` otherwise. It does not add DOM globals, change runtime code, or relax the UI's library checks. Recheck native and browser type compatibility when upgrading Pele.
+
+## `json-schema-to-typescript@16.0.0`
+
+The schema compiler uses a glob library only in its command-line entry point. The root override substitutes `glob` to avoid the affected `picomatch` dependency (GHSA-fc5q-39xc-vjpf). The patch adapts glob detection and file matching in that entry point. Revisit the override when the upstream dependency has a fixed release.

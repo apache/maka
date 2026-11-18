@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  appendDraftQuote,
   mergeRestoredIntoHeldDraft,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
@@ -142,26 +143,49 @@ test('accepted queued sends already visible in transcript or followups hide tran
 test('typing while restoreSend is in flight merges the restored message once onto the latest local edit', () => {
   const fileA = { id: 'att-1', name: 'sample.txt', mimeType: 'text/plain', bytes: 11 };
   const fileB = { id: 'att-2', name: 'new.txt', mimeType: 'text/plain', bytes: 5 };
+  const fresh = { text: 'same passage', sourceMessageId: 'new' };
+  const old = { text: 'same passage', sourceMessageId: 'original' };
   assert.deepEqual(
     mergeRestoredIntoHeldDraft(
-      { text: 'next draft!', attachments: [fileB], settledUploads: ['upload-2'] },
-      { text: 'review this', attachments: [fileA, fileB] },
+      { text: 'next draft!', attachments: [fileB], settledUploads: ['upload-2'], quotes: [fresh] },
+      { text: 'review this', attachments: [fileA, fileB], quotes: [{ ...fresh }, old] },
     ),
     {
       text: 'next draft!\n\nreview this',
       attachments: [fileB, fileA],
+      quotes: [fresh, old],
       settledUploads: ['upload-2'],
     },
   );
   assert.deepEqual(
     mergeRestoredIntoHeldDraft(
-      { text: '   ', attachments: [], settledUploads: [] },
+      { text: '   ', attachments: [], settledUploads: [], quotes: [] },
       { text: 'review this', attachments: [fileA] },
     ),
     {
       text: 'review this',
       attachments: [fileA],
+      quotes: [],
       settledUploads: [],
     },
   );
+});
+
+test('an in-flight restore reserves exactly its distinct quotes while the draft stays editable', () => {
+  const original = Array.from({ length: 16 }, (_, i) => ({ text: `source ${i}` }));
+  const added = { text: 'concurrent selection' };
+  assert.equal(appendDraftQuote([], added, original), null);
+
+  const current = [{ ...original[0] }];
+  const fifteen = original.slice(0, 15);
+  const accepted = appendDraftQuote(current, added, fifteen);
+  assert.deepEqual(accepted, [...current, added]);
+  assert.equal(appendDraftQuote(accepted, { text: 'one more' }, fifteen), null);
+  const restored = mergeRestoredIntoHeldDraft(
+    { text: 'typed during restore', attachments: [], quotes: accepted, settledUploads: [] },
+    { text: 'restored text', attachments: [], quotes: fifteen },
+  );
+  assert.equal(restored.quotes.length, 16);
+  assert.deepEqual(restored.quotes, [current[0], added, ...fifteen.slice(1)]);
+  assert.equal(restored.text, 'typed during restore\n\nrestored text');
 });

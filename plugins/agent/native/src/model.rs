@@ -149,6 +149,16 @@ pub(crate) struct Source {
     revision: SourceRevision,
 }
 impl Source {
+    pub(crate) fn for_compaction(&self, accepted: AcceptedModel) -> Result<Self, RunError> {
+        Self::restore(
+            self.configuration.clone(),
+            self.credentials.clone(),
+            accepted,
+            self.session.clone(),
+            self.revision.clone(),
+        )
+    }
+
     pub async fn select(
         configuration: Arc<ConfigurationStore>,
         catalog: Arc<maka_providers::catalog::Catalog>,
@@ -430,7 +440,14 @@ impl Source {
                     &row.connection_id,
                     &row.provider.name,
                 );
-                RunError::InvalidInput("agent_authentication_unavailable".into())
+                if matches!(
+                    error,
+                    maka_agent_ports::provider::Error::AuthenticationRequired
+                ) {
+                    RunError::AuthenticationRequired
+                } else {
+                    RunError::InvalidInput("agent_authentication_unavailable".into())
+                }
             })?;
         let auth = match credentials {
             maka_agent_ports::model::Credentials::ApiKey(key) => ProviderAuth::ApiKey(key),

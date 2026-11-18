@@ -451,7 +451,13 @@ impl DriverModel {
                 let request = reader
                     .request(producer, body.checkpoint.summary_step_id)
                     .await?;
-                if !target.encrypted_allowed(&request.accounting.model_id, Some(&native.producer)) {
+                // The leaf carries its adopted replay basis; the checkpoint retains
+                // the actual compactor's immutable producer provenance separately.
+                let (model, provenance) = native.continuation.as_ref().map_or(
+                    (request.accounting.model_id.as_str(), &native.producer),
+                    |target| (target.model.as_str(), &target.provenance),
+                );
+                if !target.encrypted_allowed(model, Some(provenance)) {
                     return Err(RunError::InvalidInput(
                         "native Codex checkpoint requires compatible ChatGPT state or re-compaction".into(),
                     ));
@@ -465,8 +471,8 @@ impl DriverModel {
                         provider_options: None,
                     },
                     maka_agent_facts::model::prompt_source::source::ReplayOrigin::observed(
-                        &request.accounting.model_id,
-                        Some(&native.producer),
+                        model,
+                        Some(provenance),
                     ),
                 )
                 .await?;

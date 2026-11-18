@@ -22,7 +22,7 @@ use crate::{
     Error,
     command::Update,
     invalid,
-    schedule::Schedule,
+    schedule::{IntervalCadence, Schedule},
     task::{Create, Intent, Status, TaskEffect},
 };
 use jiff::tz::TimeZone;
@@ -84,11 +84,18 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         if reschedule
             || (next.task.next_fire_at.is_none_or(|at| at <= now) && next.pending.is_none())
         {
-            next.task.next_fire_at = if next.task.status == Status::Active {
+            next.task.next_fire_at = if next.task.status == Status::Active
+                || matches!(
+                    next.task.schedule,
+                    Schedule::Interval {
+                        cadence: IntervalCadence::AfterCompletion,
+                        ..
+                    }
+                ) {
                 Some(
                     next.task
                         .schedule
-                        .next_after(now, &TimeZone::get(&next.timezone)?)?
+                        .next_due(now, &TimeZone::get(&next.timezone)?, next.task.last_fire_at)?
                         .ok_or_else(|| invalid("schedule has no remaining trigger"))?,
                 )
             } else {
@@ -143,6 +150,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             }
             next.check_expiry()?;
         }
+        next.pause_source = None;
         next.task.updated_at = next.task.updated_at.max(now);
         Ok(next)
     }

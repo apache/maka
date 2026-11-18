@@ -52,6 +52,7 @@ use uuid::Uuid;
 pub type Result<T> = std::result::Result<T, String>;
 
 const CONTROL_METHODS: &[&str] = &[
+    "saveFile",
     "create",
     "predictNextMessage",
     "trustProjectMcp",
@@ -138,7 +139,10 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
         || (endpoint == "management"
-            && matches!(method, "setEnabled" | "configure" | "configureBatch"))
+            && matches!(
+                method,
+                "setEnabled" | "configure" | "configureBatch" | "installUrl" | "editComposition"
+            ))
         || (endpoint == "authentication" && method == "loginCredential")
         || (endpoint == "web" && matches!(method, "save" | "saveKey" | "deleteKey" | "checkKey"))
 }
@@ -843,6 +847,16 @@ impl Client {
     }
     /// Reserve a shell control attempt separately from composer draft sends.
     pub async fn control(&self, id: Uuid, method: &str, input: Value) -> Result<Mutation> {
+        self.control_with_resources(id, method, input, Attachments::new())
+            .await
+    }
+    pub async fn control_with_resources(
+        &self,
+        id: Uuid,
+        method: &str,
+        input: Value,
+        resources: Attachments,
+    ) -> Result<Mutation> {
         if !CONTROL_METHODS.contains(&method) {
             return Err("unsupported agent control method".into());
         }
@@ -865,7 +879,7 @@ impl Client {
             "agent",
             method,
             input,
-            Attachments::new(),
+            resources,
             session_id,
             correlation,
         )
@@ -976,7 +990,7 @@ impl Client {
         if draft.revision != revision {
             return Err("saved draft revision changed before sending".into());
         }
-        if draft.text.trim().is_empty() && draft.attachments.is_empty() {
+        if draft.text.trim().is_empty() && draft.attachments.is_empty() && draft.quotes.is_empty() {
             return Err("saved draft is empty or already consumed".into());
         }
         if !selection.is_object() {
@@ -1509,6 +1523,10 @@ impl DraftSend {
             serde_json::to_value(&self.operation.session_id).map_err(error)?,
         );
         input.insert("message".into(), Value::String(snapshot.draft.text));
+        input.insert(
+            "quotes".into(),
+            serde_json::to_value(snapshot.draft.quotes).map_err(error)?,
+        );
         input.insert(
             "mentions".into(),
             serde_json::to_value(snapshot.draft.mentions).map_err(error)?,

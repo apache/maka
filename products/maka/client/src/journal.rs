@@ -38,7 +38,7 @@ use uuid::Uuid;
 // Keep admission and pending observations on the same immutable Settings owner.
 macro_rules! settings_owner_sql {
     () => {
-        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer','createPreset','updatePreset','deletePreset','changeMemory','reconcileMemories','saveGitHubToken','deleteGitHubToken')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure','configureBatch')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential') OR (json_extract(context,'$.endpoint')='web' AND json_extract(context,'$.method') IN ('save','saveKey','deleteKey','checkKey')))"
+        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer','createPreset','updatePreset','deletePreset','changeMemory','reconcileMemories','saveGitHubToken','deleteGitHubToken')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure','configureBatch','installUrl','editComposition')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential') OR (json_extract(context,'$.endpoint')='web' AND json_extract(context,'$.method') IN ('save','saveKey','deleteKey','checkKey')))"
     };
 }
 
@@ -123,6 +123,8 @@ pub struct Draft {
     pub text: String,
     pub attachments: Vec<DraftAttachment>,
     #[serde(default)]
+    pub quotes: Vec<maka_agent_facts::input::QuoteRef>,
+    #[serde(default)]
     pub mentions: Vec<String>,
     pub reply_to: Option<String>,
 }
@@ -152,6 +154,8 @@ pub struct DraftAttachment {
 #[schemars(rename = "ClientDraftEdit")]
 pub struct DraftEdit {
     pub text: String,
+    /// Omit to preserve the quotes at the expected revision. An empty list clears them.
+    pub quotes: Option<Vec<maka_agent_facts::input::QuoteRef>>,
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
     #[serde(default)]
@@ -191,6 +195,8 @@ pub struct DraftReference {
     pub revision: u64,
 }
 
+#[cfg(test)]
+mod quote_tests;
 mod recovery;
 #[cfg(test)]
 mod room_tests;
@@ -431,11 +437,12 @@ impl Journal {
                 sqlx::query(index).execute(&mut *transaction).await
                     .map_err(|error| format!("client journal creating recovery index: {error}"))?;
             }
-            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', reply_to TEXT)")
+            sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', reply_to TEXT, quotes TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
             for (column, add) in [
                 ("mentions", "ALTER TABLE drafts ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'"),
                 ("reply_to", "ALTER TABLE drafts ADD COLUMN reply_to TEXT"),
+                ("quotes", "ALTER TABLE drafts ADD COLUMN quotes TEXT NOT NULL DEFAULT '[]'"),
             ] {
                 let present: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pragma_table_info('drafts') WHERE name=?)")
                     .bind(column).fetch_one(&mut *transaction).await.map_err(error)?;
@@ -469,13 +476,15 @@ impl Journal {
         })
     }
     pub(crate) async fn load_draft(&self, key: &DraftKey) -> Result<Option<Draft>> {
-        let row = sqlx::query("SELECT revision,CASE WHEN consumed=1 THEN '' ELSE text END AS text,CASE WHEN consumed=1 THEN '[]' ELSE attachments END AS attachments,CASE WHEN consumed=1 THEN '[]' ELSE mentions END AS mentions,CASE WHEN consumed=1 THEN NULL ELSE reply_to END AS reply_to FROM drafts WHERE owner=?")
+        let row = sqlx::query("SELECT d.revision,CASE WHEN d.consumed=1 THEN '' ELSE d.text END AS text,CASE WHEN d.consumed=1 THEN '[]' ELSE d.attachments END AS attachments,CASE WHEN d.consumed=1 THEN '[]' ELSE d.mentions END AS mentions,CASE WHEN d.consumed=1 THEN NULL ELSE d.reply_to END AS reply_to,CASE WHEN d.consumed=1 THEN '[]' ELSE d.quotes END AS quotes FROM drafts d WHERE d.owner=?")
             .bind(serde_json::to_string(key).map_err(error)?)
             .fetch_optional(&self.pool)
             .await
             .map_err(error)?;
         row.map(|row| {
             Ok(Draft {
+                quotes: serde_json::from_str(row.try_get("quotes").map_err(error)?)
+                    .map_err(error)?,
                 revision: row.try_get::<i64, _>("revision").map_err(error)? as u64,
                 text: row.try_get("text").map_err(error)?,
                 attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)

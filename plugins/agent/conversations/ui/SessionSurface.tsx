@@ -44,6 +44,7 @@ import { createComputerStage, type ComputerSnapshot } from './computerStageContr
 import type { ComputerFrameSource } from './computerFrames';
 import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
 import { computerText } from './computerText';
+import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
 import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
@@ -1512,6 +1513,7 @@ export function createConversationUi(
       text: owner.draft(),
       backend: owner.backend(),
       attachments: owner.attachments.ids(),
+      quotes: owner.quotes(),
       delivery: 'queue',
     });
     owner.focus();
@@ -2670,6 +2672,7 @@ export function createConversationUi(
             <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
               {(id) => (
                 <Conversation
+                  chooseModel={() => open({ kind: 'models', sessionId: id() })}
                   compact={input.compact !== undefined}
                   client={host.session(id())}
                   connectionLost={connectionLost}
@@ -3092,7 +3095,7 @@ export function createConversationUi(
           owner.editable() &&
           owner.run() !== null &&
           !owner.blockedReason() &&
-          (!!owner.draft().trim() || owner.attachments.files().length > 0) &&
+          hasComposerContent(owner.draft().trim(), owner.attachments.files(), owner.quotes()) &&
           !matchComposerCommand(
             commandCandidates().map((entry) => entry.metadata),
             owner.draft(),
@@ -3246,6 +3249,8 @@ function projectComposerSession(
       dismiss: owner.projectMcp.dismiss,
     },
     draft: owner.draft,
+    quotes: owner.quotes,
+    removeQuote: owner.removeQuote,
     previewImage: owner.previewImage,
     editable: owner.editable,
     loading: owner.loading,

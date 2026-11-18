@@ -132,6 +132,57 @@ impl Owner {
         }))
     }
 
+    pub async fn save_file(
+        &self,
+        input: SaveFile,
+        context: &Context,
+    ) -> Result<SaveFileResult, String> {
+        let scope = context.scope();
+        if !matches!(
+            scope.identity,
+            maka_capabilities::call::Identity::Native
+                | maka_capabilities::call::Identity::Remote { .. }
+        ) {
+            return Err("Only the workspace client may save an edited file.".into());
+        }
+        let (original, directory) = self.file_directory(&input.session_id, None, scope).await?;
+        let sandbox = self
+            .capture_sandbox(&original, scope.sandbox_floor())
+            .await?;
+        self.check_file_session(&input.session_id, &original, scope)
+            .await?;
+        let content = context
+            .attachments()
+            .get("content")
+            .ok_or("Missing file content.")?
+            .clone();
+        worktrees::blocking(scope, &self.stop, move |cancel| {
+            let policy = match sandbox {
+                maka_sandbox::Sandbox::Managed { filesystem, .. } => {
+                    Some(filesystem.compile().map_err(|e| e.to_string())?)
+                }
+                maka_sandbox::Sandbox::Disabled => None,
+                maka_sandbox::Sandbox::External { .. } => {
+                    return Err("File editing requires a local workspace.".into());
+                }
+            };
+            let bytes = content.read(0..content.bytes())?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| "files_invalid_text")?;
+            match directory.save_text(
+                &input.path,
+                &input.expected_version,
+                text,
+                policy.as_ref(),
+                &cancel,
+            ) {
+                Ok(Some(version)) => Ok(SaveFileResult::Saved { version }),
+                Ok(None) => Ok(SaveFileResult::Conflict),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await
+    }
+
     pub async fn read_file(
         self: &Arc<Self>,
         input: FileRead,

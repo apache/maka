@@ -114,24 +114,46 @@ impl Statement for PreparedAgentSend {
 #[derive(Debug)]
 pub(super) enum CaptureError {
     ModelUnavailable,
+    AuthenticationRequired,
+    WorkspaceUnavailable,
+    RouteChanged,
     Other(String),
 }
 impl From<String> for CaptureError {
     fn from(error: String) -> Self {
-        Self::Other(error)
+        match error.as_str() {
+            "agent_workspace_unavailable" => Self::WorkspaceUnavailable,
+            _ => Self::Other(error),
+        }
     }
 }
 impl From<&str> for CaptureError {
     fn from(error: &str) -> Self {
-        Self::Other(error.into())
+        Self::from(error.to_owned())
     }
 }
 impl From<CaptureError> for String {
     fn from(error: CaptureError) -> Self {
         match error {
             CaptureError::ModelUnavailable => "agent_model_unavailable".into(),
+            CaptureError::AuthenticationRequired => "agent_authentication_required".into(),
+            CaptureError::WorkspaceUnavailable => "agent_workspace_unavailable".into(),
+            CaptureError::RouteChanged => "notification_route_changed".into(),
             CaptureError::Other(error) => error,
         }
+    }
+}
+
+pub(super) fn finish_capture(
+    capture: Result<CapturedRun, CaptureError>,
+    cleanup: Result<(), String>,
+) -> Result<CapturedRun, CaptureError> {
+    match cleanup {
+        Ok(()) => capture,
+        Err(cleanup) => Err(CaptureError::Other(format!(
+            "{}; background preparation cleanup: {cleanup}",
+            capture.err().map(String::from).unwrap_or_default()
+        ))),
     }
 }
 
@@ -187,6 +209,7 @@ impl Owner {
                 .await
                 .map_err(|error| match error {
                     RunError::ModelUnavailable => CaptureError::ModelUnavailable,
+                    RunError::AuthenticationRequired => CaptureError::AuthenticationRequired,
                     error => CaptureError::Other(public_error(error)),
                 })?;
                 (Some(source.accepted), None)
@@ -215,7 +238,9 @@ impl Owner {
         let mcp_floor = self
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
-        let selected_catalog = if external && !host_bridge {
+        let read_only_discovery =
+            self.scheduler.investigation_profile(id) == Some(DiscoveryWorkerTools::ReadOnly);
+        let selected_catalog = if read_only_discovery || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -229,7 +254,11 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
+        let selected_catalog = if read_only_discovery {
+            selected_catalog
+        } else {
+            self.mcp_projects.with_client(id, selected_catalog)?
+        };
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
@@ -259,7 +288,9 @@ impl Owner {
             )),
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
-            tool_discovery: (!external || host_bridge) && self.settings.tool_discovery,
+            tool_discovery: (!external || host_bridge)
+                && !read_only_discovery
+                && self.settings.tool_discovery,
             allowed_tools,
             background: None,
             background_sandbox_ceiling: None,
@@ -285,10 +316,13 @@ impl Owner {
 
     pub async fn send(
         self: &Arc<Self>,
-        input: Send,
+        mut input: Send,
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<SendResult>, String> {
+        if input.quotes.len() > 16 || input.quotes.iter().any(|q| q.text.trim().is_empty()) {
+            return Err("agent_message_invalid".into());
+        }
         if self
             .rooms()?
             .exists(&input.session_id)
@@ -302,6 +336,7 @@ impl Owner {
         }
         let key = self.send_key(operation, &input.session_id);
         let mut message: MessageInput = input.message.clone().into();
+        message.quotes = (!input.quotes.is_empty()).then(|| std::mem::take(&mut input.quotes));
         message.attachments = self
             .attachment_refs(&input.session_id, input.attachments.clone(), parent)
             .await?;
@@ -352,6 +387,7 @@ impl Owner {
         let Send {
             session_id: id,
             message: _,
+            quotes: _,
             backend,
             attachments: _,
             delivery,
@@ -360,9 +396,7 @@ impl Owner {
             mentions: _,
             reply_to: _,
         } = input;
-        if unprepared.text.trim().is_empty()
-            && unprepared.attachments.as_ref().is_none_or(Vec::is_empty)
-        {
+        if !unprepared.has_content() {
             return Err("agent_message_invalid".into());
         }
         let admission = self.runs.session(&id).await;
@@ -463,7 +497,7 @@ impl Owner {
                     skills: None,
                 }));
             }
-            Err(CaptureError::Other(error)) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         if let (Some(view), SendDelivery::Steer) = (&active, delivery)
             && interrupt.is_none()

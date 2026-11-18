@@ -179,3 +179,73 @@ async fn write_contract_authority_bounds_and_inode() {
         .unwrap();
     assert_eq!(fs::read(outside.path()).unwrap(), b"bypass");
 }
+
+#[test]
+fn editor_saves_the_opened_version_and_rejects_stale_writers() {
+    use maka_fs_tools::{
+        directory,
+        files::{Directory, FileCapture},
+        path::WorkspacePath,
+    };
+    use std::sync::atomic::AtomicBool;
+    let f = tempfile::tempdir().unwrap();
+    let (workspace, identity) = directory::capture(f.path()).unwrap();
+    fs::create_dir(workspace.join("private")).unwrap();
+    fs::create_dir(workspace.join("control")).unwrap();
+    let root = Directory::open(
+        &workspace,
+        &identity,
+        &workspace.join("private"),
+        &workspace.join("control"),
+        None,
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let path = WorkspacePath::from_bytes(b"README.md").unwrap();
+    let file = workspace.join("README.md");
+    let cancel = AtomicBool::new(false);
+    let bytes = "# 标题\r\n\r\n- one\r\n";
+    fs::write(&file, bytes).unwrap();
+    let FileCapture::Ready(before) = root.read_file(&path, None, &cancel).unwrap() else {
+        panic!("text")
+    };
+    let edited = format!("{bytes}{}", "追加\r\n".repeat(300_000));
+    let version = root
+        .save_text(&path, &before.version, &edited, None, &cancel)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        root.read_file(&path, Some(&version), &cancel).unwrap(),
+        FileCapture::Ready(_)
+    ));
+    assert_eq!(fs::read_to_string(&file).unwrap(), edited);
+    assert_eq!(
+        root.save_text(&path, &before.version, "stale", None, &cancel)
+            .unwrap(),
+        None
+    );
+    let version = root
+        .save_text(&path, &version, "smaller", None, &cancel)
+        .unwrap()
+        .unwrap();
+    fs::hard_link(&file, workspace.join("alias.md")).unwrap();
+    assert_eq!(
+        root.save_text(&path, &version, "draft", None, &cancel)
+            .unwrap_err()
+            .to_string(),
+        "files_hard_link"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("alias.md")).unwrap(),
+        "smaller"
+    );
+    fs::remove_file(workspace.join("alias.md")).unwrap();
+    fs::write(&file, "agent").unwrap();
+    assert_eq!(
+        root.save_text(&path, &version, "draft", None, &cancel)
+            .unwrap(),
+        None
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "agent");
+}

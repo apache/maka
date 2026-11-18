@@ -376,6 +376,7 @@ pub enum Terminal {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AttemptRecovery {
+    CodexCompactionFallback,
     ContextOverflow {
         observed_output: bool,
     },

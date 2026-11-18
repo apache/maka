@@ -391,6 +391,7 @@ impl Rig {
         if model_test {
             maka_settings_native::provide(&mut registry, catalog.clone())?;
             maka_files_native::provide(&mut registry)?;
+            maka_processes_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
         }
         let primary_agent = store
@@ -469,6 +470,7 @@ impl Rig {
                 "create",
                 "continuationAvailability",
                 "continueRun",
+                "history",
                 "models",
                 "observe",
                 "history",
@@ -485,6 +487,8 @@ impl Rig {
                 "work",
                 "workReadiness",
                 "queue",
+                "queueMessage",
+                "editQueue",
                 "openBot",
                 "botOutbox",
                 "sessionList",
@@ -493,6 +497,12 @@ impl Rig {
                 "sessionSend",
                 "sessionStop",
                 "sessionManage",
+                "schedule",
+                "schedules",
+                "metadata",
+                "project",
+                "projects",
+                "stop",
             ]
         } else {
             &[
@@ -3180,6 +3190,8 @@ mod source_recovery {
 
 mod model_recovery {
     mod bot_tools;
+    mod codex_switch;
+    mod discovery;
     mod memory;
     mod predictions;
     mod preset_acceptance;
@@ -3274,6 +3286,12 @@ mod model_recovery {
             .remove("memoryTestPeer")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let with_processes = configuration["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["target"]["name"] == "processes")
+        });
+
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -3287,7 +3305,7 @@ mod model_recovery {
         let agent = package(
             "maka.tests.model-agent",
             maka_agent_api::native(),
-            BTreeMap::from([
+            [
                 (
                     "files".into(),
                     Import {
@@ -3302,7 +3320,18 @@ mod model_recovery {
                         cardinality: Cardinality::One,
                     },
                 ),
-            ]),
+            ]
+            .into_iter()
+            .chain(with_processes.then(|| {
+                (
+                    "processes".into(),
+                    Import {
+                        contract: maka_workspace_api::processes::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                )
+            }))
+            .collect(),
         )?;
         let files = package(
             "maka.tests.files",
@@ -3399,6 +3428,7 @@ mod model_recovery {
                         configuration,
                         ["files", "web"]
                             .into_iter()
+                            .chain(with_processes.then_some("processes"))
                             .map(|name| {
                                 (
                                     name.into(),
@@ -3472,15 +3502,32 @@ mod model_recovery {
                 }],
             );
         }
+        let mut packages = vec![agent, settings, client, files, web, receipts];
+        if with_processes {
+            let processes = package(
+                "maka.tests.processes",
+                maka_workspace_api::processes::native(),
+                BTreeMap::new(),
+            )?;
+            input.instances.insert(
+                "processes".into(),
+                node(
+                    Uuid::new_v4(),
+                    processes.application_ref(),
+                    // Grants may add network; each command's base sandbox still denies it.
+                    json!({
+                        "filesystem": {"default":"write","rules":[],"denyGlobs":[]},
+                        "network":"allowed",
+                        "sessionOwner":InstanceId(vec![boot.agent]),
+                    }),
+                    BTreeMap::new(),
+                ),
+            );
+            packages.push(processes);
+        }
         let store = root(base, true).await?;
         store
-            .commit_application(
-                boot.deployment,
-                0,
-                input,
-                vec![],
-                vec![agent, settings, client, files, web, receipts],
-            )
+            .commit_application(boot.deployment, 0, input, vec![], packages)
             .await?;
         let loaded = store
             .load_application(boot.deployment)
@@ -5754,6 +5801,18 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
         let [notice] = pending.entries.as_slice() else {
             return Err("original caller did not get the pending notification".into());
         };
+        let recovery = owner
+            .prepare_notification(
+                &source,
+                &route,
+                &crate::owner::external_recovery::recovery_request_id(source.run_id),
+                |_| "Continue the interrupted turn.".into(),
+                maka_agent_facts::message::MessageOrigin::Session {
+                    execution: source.clone(),
+                },
+            )
+            .await?
+            .ok_or("recovery notification was not prepared")?;
         rig.append(
             vec![Fact::StopRequested {
                 diagnostic: "user_requested_stop".into(),
@@ -5769,10 +5828,12 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
             maka_agent_state::queue::MessageResolution::Cancelled
         );
         queue.rebuild(session.clone()).await?;
-        assert_eq!(
-            queue.resolve_message(session, message).await?,
-            maka_agent_state::queue::MessageResolution::Cancelled
-        );
+        for id in [message, recovery.message_id] {
+            assert_eq!(
+                queue.resolve_message(session.clone(), id).await?,
+                maka_agent_state::queue::MessageResolution::Cancelled
+            );
+        }
         Ok(())
     }
     .await;

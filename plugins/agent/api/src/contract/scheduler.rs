@@ -45,13 +45,29 @@ pub enum ScheduledEffect {
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     },
+    /// Investigation in a fresh worker. The target is the current Bot.
+    Discovery {
+        target: ScheduledTarget,
+        model: ModelSelection,
+        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+        /// Tool and permission profile requested for this plan.
+        worker_tools: DiscoveryWorkerTools,
+    },
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryWorkerTools {
+    #[default]
+    ReadOnly,
+    Session,
 }
 impl ScheduledEffect {
     pub fn target(&self) -> &ScheduledTarget {
         match self {
             Self::Session { target, .. }
             | Self::ExecutorSession { target, .. }
-            | Self::AgentRun { target, .. } => target,
+            | Self::AgentRun { target, .. }
+            | Self::Discovery { target, .. } => target,
         }
     }
 }
@@ -74,6 +90,9 @@ impl maka_scheduler::task::TaskEffect for ScheduledEffect {
                 .map_err(|error| maka_scheduler::Error::Invalid(error.into()))?;
         }
         Ok(())
+    }
+    fn allows_empty_intent(&self) -> bool {
+        matches!(self, Self::Discovery { .. })
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -103,6 +122,9 @@ pub struct ScheduledInput {
     pub task: maka_scheduler::task::Create<ScheduledEffect>,
     pub timezone: String,
     pub misfire: TaskMisfire,
+    /// Tool names presented to the user when approving a discovery plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved_tools: Option<Vec<String>>,
 }
 #[derive(Clone, Deserialize, JsonSchema)]
 #[serde(
@@ -113,6 +135,15 @@ pub struct ScheduledInput {
 )]
 #[schemars(rename = "AgentScheduleRead")]
 pub enum ScheduleRead {
+    PreviewDiscovery {
+        effect: ScheduledEffect,
+        task_id: Option<String>,
+    },
+    Discovery {
+        session_id: String,
+        cursor: Option<String>,
+        expected_revision: Option<u64>,
+    },
     List {
         cursor: Option<String>,
         expected_revision: Option<u64>,
@@ -130,7 +161,11 @@ pub struct ScheduledSummary {
     pub title: String,
     pub session_id: String,
     pub script: bool,
+    pub approved: bool,
     pub status: maka_scheduler::task::Status,
+    /// A Bot-created one-time discovery that no longer needs approval.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background_followup: bool,
     pub next_fire_at: Option<i64>,
     pub pending_fire: Option<String>,
     pub last_error: Option<String>,
@@ -139,11 +174,32 @@ pub struct ScheduledSummary {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentScheduledDetail")]
 pub struct ScheduledDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub investigation: Option<ScheduledInvestigation>,
     pub revision: u64,
     pub task: maka_scheduler::task::Task<ScheduledEffect>,
     pub timezone: String,
     pub misfire: TaskMisfire,
+    pub approved: bool,
     pub pending_fire: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentScheduledInvestigation")]
+pub struct ScheduledInvestigation {
+    pub session_id: String,
+    pub turn_id: String,
+    pub phase: InvestigationPhase,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentInvestigationPhase")]
+pub enum InvestigationPhase {
+    Investigating,
+    Delivering,
+    Stopping,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(
@@ -154,6 +210,9 @@ pub struct ScheduledDetail {
 )]
 #[schemars(rename = "AgentSchedules")]
 pub enum Schedules {
+    DiscoveryTools {
+        names: Vec<String>,
+    },
     Page {
         revision: u64,
         tasks: Vec<ScheduledSummary>,
@@ -182,6 +241,12 @@ pub enum ScheduleChange {
         task_id: String,
         revision: u64,
         input: ScheduledInput,
+    },
+    Approve {
+        task_id: String,
+        revision: u64,
+        /// Refresh the discovery target and approve it in one operation.
+        input: Option<ScheduledInput>,
     },
     Pause {
         task_id: String,

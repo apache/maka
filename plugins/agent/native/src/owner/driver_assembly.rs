@@ -91,8 +91,10 @@ impl Owner {
                 .into());
             }
         };
+        let read_only_discovery = self.scheduler.investigation_profile(&view.spec.session_id)
+            == Some(DiscoveryWorkerTools::ReadOnly);
         let external_bridge = matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external");
-        let host_tools = model.is_some() || external_bridge;
+        let host_tools = !read_only_discovery && (model.is_some() || external_bridge);
         let catalog = if !host_tools {
             self.mcp_projects.base.clone()
         } else {
@@ -219,12 +221,13 @@ impl Owner {
             .map(|definition| definition.name.as_str())
             .collect();
         let catalog = live_tools.excluding(&excluded);
-        let bot_controls: Vec<_> = [bot::SEND_USER, bot::SLEEP]
+        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP]
             .into_iter()
+            .chain(discovery::VISIBLE_TOOLS.iter().copied())
             .filter(|name| catalog.contains(name))
             .collect();
         catalog
-            .with_always_visible(&bot_controls)
+            .with_always_visible(&always_visible)
             .map_err(|error| RunError::InvalidInput(error.to_string()))
     }
 

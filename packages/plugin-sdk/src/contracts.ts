@@ -607,6 +607,17 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              discoveryLink: {
+                description: 'Updates existing messages without advancing the unread cursor.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentBotDiscoveryLink',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               messages: {
                 type: 'array',
                 items: {
@@ -637,10 +648,61 @@ export const contracts: {
             additionalProperties: false,
             required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
+              AgentBotDiscoveryLink: {
+                description:
+                  'Most recent discovery association added after a Bot message was published.',
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: ['string', 'null'],
+                  },
+                  discovery: {
+                    $ref: '#/$defs/AgentDiscoveryPublication',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'messageId', 'discovery'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
+              },
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
                 properties: {
+                  discovery: {
+                    description:
+                      'Original investigation behind this publication, independent of later Bot Turns.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryPublication',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   sequence: {
                     description: 'Monotonic position in the outbox, starting at 1.',
                     type: 'integer',
@@ -15926,6 +15988,14 @@ export const contracts: {
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
                     type: 'boolean',
                   },
+                  quotes: {
+                    description:
+                      'Bounded quote display, present only on the first message fragment.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryQuote',
+                    },
+                  },
                   finalOutput: {
                     description:
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
@@ -16092,6 +16162,24 @@ export const contracts: {
                 type: 'string',
                 format: 'uuid',
               },
+              HistoryQuote: {
+                description:
+                  'Display preview only; the original input retains complete text and provenance.',
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'truncated'],
+              },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
                 oneOf: [
@@ -16227,6 +16315,22 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
                       },
                       sessionId: {
                         type: 'string',
@@ -17923,6 +18027,22 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
                       },
                       sessionId: {
                         type: 'string',
@@ -21416,6 +21536,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -21432,6 +21558,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -24460,6 +24591,14 @@ export const contracts: {
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
                     type: 'boolean',
                   },
+                  quotes: {
+                    description:
+                      'Bounded quote display, present only on the first message fragment.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/HistoryQuote',
+                    },
+                  },
                   finalOutput: {
                     description:
                       "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
@@ -24626,6 +24765,24 @@ export const contracts: {
                 type: 'string',
                 format: 'uuid',
               },
+              HistoryQuote: {
+                description:
+                  'Display preview only; the original input retains complete text and provenance.',
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['text', 'truncated'],
+              },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
                 oneOf: [
@@ -24761,6 +24918,22 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
                       },
                       sessionId: {
                         type: 'string',
@@ -25992,6 +26165,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -26975,6 +27164,17 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              discoveryLink: {
+                description: 'Updates existing messages without advancing the unread cursor.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentBotDiscoveryLink',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               messages: {
                 type: 'array',
                 items: {
@@ -27005,10 +27205,61 @@ export const contracts: {
             additionalProperties: false,
             required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
+              AgentBotDiscoveryLink: {
+                description:
+                  'Most recent discovery association added after a Bot message was published.',
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: ['string', 'null'],
+                  },
+                  discovery: {
+                    $ref: '#/$defs/AgentDiscoveryPublication',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'messageId', 'discovery'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
+              },
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
                 properties: {
+                  discovery: {
+                    description:
+                      'Original investigation behind this publication, independent of later Bot Turns.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryPublication',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   sequence: {
                     description: 'Monotonic position in the outbox, starting at 1.',
                     type: 'integer',
@@ -32857,6 +33108,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -32963,9 +33230,15 @@ export const contracts: {
                   message: {
                     type: 'string',
                   },
+                  quotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/QuoteRef',
+                    },
+                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'revision', 'hasAttachments', 'message'],
+                required: ['kind', 'revision', 'hasAttachments', 'message', 'quotes'],
               },
               {
                 type: 'object',
@@ -33004,6 +33277,62 @@ export const contracts: {
               },
             ],
             $defs: {
+              QuoteRef: {
+                type: 'object',
+                properties: {
+                  sourceMessageId: {
+                    type: ['string', 'null'],
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  sourceTurnId: {
+                    type: ['string', 'null'],
+                  },
+                  source: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SessionQuoteSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['text'],
+              },
+              SessionQuoteSource: {
+                description:
+                  'Display provenance of an immutable excerpt, never authority to read its source.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sessionName: {
+                    type: 'string',
+                  },
+                  capturedAt: {
+                    $ref: '#/$defs/CaptureTime',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'sessionName', 'capturedAt', 'truncated'],
+              },
+              CaptureTime: {
+                description:
+                  "JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.",
+                type: 'number',
+                format: 'double',
+              },
               AgentQueueMessageMissingReason: {
                 type: 'string',
                 enum: ['delivered', 'cancelled', 'unknown'],
@@ -36201,6 +36530,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -36217,6 +36552,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -37225,6 +37565,79 @@ export const contracts: {
           },
           resources: {},
         },
+        saveFile: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFile',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              expectedVersion: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'expectedVersion'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFileResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  version: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'version'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {
+            content: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
+        },
         saveGitHubToken: {
           mode: 'mutation',
           input: {
@@ -37356,6 +37769,36 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'approve',
+                  },
+                  taskId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  input: {
+                    description: 'Refresh the discovery target and approve it in one operation.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentScheduledInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'taskId', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'pause',
                   },
                   taskId: {
@@ -37460,6 +37903,14 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
+                  approvedTools: {
+                    description:
+                      'Tool names presented to the user when approving a discovery plan.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
                 },
                 additionalProperties: false,
                 required: ['task', 'timezone', 'misfire'],
@@ -37551,6 +38002,9 @@ export const contracts: {
                         type: 'integer',
                         format: 'int64',
                       },
+                      cadence: {
+                        $ref: '#/$defs/IntervalCadence',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'everySeconds', 'startAt'],
@@ -37592,6 +38046,10 @@ export const contracts: {
                     required: ['kind', 'expression', 'startAt'],
                   },
                 ],
+              },
+              IntervalCadence: {
+                type: 'string',
+                enum: ['fixed', 'after_completion'],
               },
               Recurrence: {
                 type: 'string',
@@ -37673,6 +38131,38 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description: 'Investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      workerTools: {
+                        description: 'Tool and permission profile requested for this plan.',
+                        $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model', 'workerTools'],
                   },
                 ],
               },
@@ -37854,6 +38344,10 @@ export const contracts: {
                 description: "Runtime-native effort, not a Host model's closed reasoning enum.",
                 type: 'string',
               },
+              DiscoveryWorkerTools: {
+                type: 'string',
+                enum: ['read_only', 'session'],
+              },
               Misfire: {
                 type: 'string',
                 enum: ['skip', 'latest'],
@@ -37928,6 +38422,45 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'preview_discovery',
+                  },
+                  effect: {
+                    $ref: '#/$defs/AgentScheduledEffect',
+                  },
+                  taskId: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'effect'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'list',
                   },
                   cursor: {
@@ -37957,11 +38490,323 @@ export const contracts: {
                 required: ['kind', 'taskId'],
               },
             ],
+            $defs: {
+              AgentScheduledEffect: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description: 'Investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      workerTools: {
+                        description: 'Tool and permission profile requested for this plan.',
+                        $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model', 'workerTools'],
+                  },
+                ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
+              },
+              AgentScheduledTarget: {
+                description:
+                  'Exact observed source boundary. This data is checked against the original\nSession; passing it never grants execution by itself.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/AgentWorkspacePermissions',
+                  },
+                  boundaryRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
+              },
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
+              },
+              AgentWorkspacePermissions: {
+                type: 'object',
+                properties: {
+                  access: {
+                    $ref: '#/$defs/AgentWorkspaceAccess',
+                  },
+                  requestPermissions: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['access', 'requestPermissions'],
+              },
+              AgentWorkspaceAccess: {
+                description:
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
+                type: 'string',
+                enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+              DiscoveryWorkerTools: {
+                type: 'string',
+                enum: ['read_only', 'session'],
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentSchedules',
             oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'discovery_tools',
+                  },
+                  names: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'names'],
+              },
               {
                 type: 'object',
                 properties: {
@@ -38046,8 +38891,15 @@ export const contracts: {
                   script: {
                     type: 'boolean',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
+                  },
+                  backgroundFollowup: {
+                    description: 'A Bot-created one-time discovery that no longer needs approval.',
+                    type: 'boolean',
                   },
                   nextFireAt: {
                     type: ['integer', 'null'],
@@ -38061,7 +38913,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
               },
               Status: {
                 type: 'string',
@@ -38070,6 +38922,16 @@ export const contracts: {
               AgentScheduledDetail: {
                 type: 'object',
                 properties: {
+                  investigation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentScheduledInvestigation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
@@ -38084,12 +38946,35 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire'],
+                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+              },
+              AgentScheduledInvestigation: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  phase: {
+                    $ref: '#/$defs/AgentInvestigationPhase',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'phase'],
+              },
+              AgentInvestigationPhase: {
+                type: 'string',
+                enum: ['investigating', 'delivering', 'stopping'],
               },
               Task: {
                 type: 'object',
@@ -38245,6 +39130,9 @@ export const contracts: {
                         type: 'integer',
                         format: 'int64',
                       },
+                      cadence: {
+                        $ref: '#/$defs/IntervalCadence',
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'everySeconds', 'startAt'],
@@ -38286,6 +39174,10 @@ export const contracts: {
                     required: ['kind', 'expression', 'startAt'],
                   },
                 ],
+              },
+              IntervalCadence: {
+                type: 'string',
+                enum: ['fixed', 'after_completion'],
               },
               Recurrence: {
                 type: 'string',
@@ -38367,6 +39259,38 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description: 'Investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      workerTools: {
+                        description: 'Tool and permission profile requested for this plan.',
+                        $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model', 'workerTools'],
                   },
                 ],
               },
@@ -38547,6 +39471,10 @@ export const contracts: {
               ExecutorEffort: {
                 description: "Runtime-native effort, not a Host model's closed reasoning enum.",
                 type: 'string',
+              },
+              DiscoveryWorkerTools: {
+                type: 'string',
+                enum: ['read_only', 'session'],
               },
               Creator: {
                 oneOf: [
@@ -39955,6 +40883,16 @@ export const contracts: {
                   },
                 ],
               },
+              quotes: {
+                description:
+                  'Immutable user-selected excerpts; source metadata grants no read authority.',
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/QuoteRef',
+                },
+                maxItems: 16,
+                default: [],
+              },
               delivery: {
                 description:
                   'Defaults to steer. Omit or use steer for updates to ongoing work;\nuse queue only when this message should wait until the current turn ends.',
@@ -40006,6 +40944,62 @@ export const contracts: {
               AgentOnComplete: {
                 type: 'string',
                 enum: ['notify_caller'],
+              },
+              QuoteRef: {
+                type: 'object',
+                properties: {
+                  sourceMessageId: {
+                    type: ['string', 'null'],
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  sourceTurnId: {
+                    type: ['string', 'null'],
+                  },
+                  source: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SessionQuoteSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['text'],
+              },
+              SessionQuoteSource: {
+                description:
+                  'Display provenance of an immutable excerpt, never authority to read its source.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sessionName: {
+                    type: 'string',
+                  },
+                  capturedAt: {
+                    $ref: '#/$defs/CaptureTime',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'sessionName', 'capturedAt', 'truncated'],
+              },
+              CaptureTime: {
+                description:
+                  "JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.",
+                type: 'number',
+                format: 'double',
               },
               AgentSendDelivery: {
                 oneOf: [
@@ -45120,6 +46114,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -45136,6 +46136,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -48334,6 +49339,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -50686,6 +51707,22 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'A scheduled investigation submitted findings for the Bot to review.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery_report',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
               ExecutionIdentity: {
@@ -51061,6 +52098,17 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              discoveryLink: {
+                description: 'Updates existing messages without advancing the unread cursor.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentBotDiscoveryLink',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               messages: {
                 type: 'array',
                 items: {
@@ -51091,10 +52139,61 @@ export const contracts: {
             additionalProperties: false,
             required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
+              AgentBotDiscoveryLink: {
+                description:
+                  'Most recent discovery association added after a Bot message was published.',
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: ['string', 'null'],
+                  },
+                  discovery: {
+                    $ref: '#/$defs/AgentDiscoveryPublication',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'messageId', 'discovery'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
+              },
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
                 properties: {
+                  discovery: {
+                    description:
+                      'Original investigation behind this publication, independent of later Bot Turns.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryPublication',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   sequence: {
                     description: 'Monotonic position in the outbox, starting at 1.',
                     type: 'integer',
@@ -51759,6 +52858,45 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'preview_discovery',
+                  },
+                  effect: {
+                    $ref: '#/$defs/AgentScheduledEffect',
+                  },
+                  taskId: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'effect'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'list',
                   },
                   cursor: {
@@ -51788,340 +52926,7 @@ export const contracts: {
                 required: ['kind', 'taskId'],
               },
             ],
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentSchedules',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'page',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  tasks: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/AgentScheduledSummary',
-                    },
-                  },
-                  nextCursor: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'revision', 'tasks'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'task',
-                  },
-                  detail: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentScheduledDetail',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'revision'],
-              },
-            ],
             $defs: {
-              AgentScheduledSummary: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  title: {
-                    type: 'string',
-                  },
-                  sessionId: {
-                    type: 'string',
-                  },
-                  script: {
-                    type: 'boolean',
-                  },
-                  status: {
-                    $ref: '#/$defs/Status',
-                  },
-                  nextFireAt: {
-                    type: ['integer', 'null'],
-                    format: 'int64',
-                  },
-                  pendingFire: {
-                    type: ['string', 'null'],
-                  },
-                  lastError: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
-              },
-              Status: {
-                type: 'string',
-                enum: ['active', 'paused', 'completed', 'expired'],
-              },
-              AgentScheduledDetail: {
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  task: {
-                    $ref: '#/$defs/Task',
-                  },
-                  timezone: {
-                    type: 'string',
-                  },
-                  misfire: {
-                    $ref: '#/$defs/Misfire',
-                  },
-                  pendingFire: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire'],
-              },
-              Task: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  title: {
-                    type: 'string',
-                  },
-                  intent: {
-                    $ref: '#/$defs/Intent',
-                  },
-                  schedule: {
-                    $ref: '#/$defs/Schedule',
-                  },
-                  effect: {
-                    $ref: '#/$defs/AgentScheduledEffect',
-                  },
-                  status: {
-                    $ref: '#/$defs/Status',
-                  },
-                  nextFireAt: {
-                    type: ['integer', 'null'],
-                    format: 'int64',
-                  },
-                  lastFireAt: {
-                    type: ['integer', 'null'],
-                    format: 'int64',
-                  },
-                  fireCount: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  maxFires: {
-                    type: ['integer', 'null'],
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  expiresAt: {
-                    type: ['integer', 'null'],
-                    format: 'int64',
-                  },
-                  createdBy: {
-                    $ref: '#/$defs/Creator',
-                  },
-                  createdAt: {
-                    type: 'integer',
-                    format: 'int64',
-                  },
-                  updatedAt: {
-                    type: 'integer',
-                    format: 'int64',
-                  },
-                  runs: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/Run',
-                    },
-                  },
-                  lastError: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'title',
-                  'intent',
-                  'schedule',
-                  'effect',
-                  'status',
-                  'fireCount',
-                  'createdBy',
-                  'createdAt',
-                  'updatedAt',
-                  'runs',
-                ],
-              },
-              Intent: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'text',
-                      },
-                      body: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'body'],
-                  },
-                ],
-              },
-              Schedule: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'script',
-                      },
-                      source: {
-                        type: 'string',
-                      },
-                      everySeconds: {
-                        type: 'integer',
-                        format: 'uint32',
-                        minimum: 0,
-                        default: 60,
-                      },
-                      startAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'source', 'startAt'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'once',
-                      },
-                      runAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'runAt'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'interval',
-                      },
-                      everySeconds: {
-                        type: 'integer',
-                        format: 'uint32',
-                        minimum: 0,
-                      },
-                      startAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'everySeconds', 'startAt'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'calendar',
-                      },
-                      recurrence: {
-                        $ref: '#/$defs/Recurrence',
-                      },
-                      anchorAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'recurrence', 'anchorAt'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'cron',
-                      },
-                      expression: {
-                        type: 'string',
-                      },
-                      startAt: {
-                        type: 'integer',
-                        format: 'int64',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'expression', 'startAt'],
-                  },
-                ],
-              },
-              Recurrence: {
-                type: 'string',
-                enum: ['daily', 'weekly', 'monthly'],
-              },
               AgentScheduledEffect: {
                 oneOf: [
                   {
@@ -52198,6 +53003,38 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description: 'Investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      workerTools: {
+                        description: 'Tool and permission profile requested for this plan.',
+                        $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model', 'workerTools'],
                   },
                 ],
               },
@@ -52378,6 +53215,702 @@ export const contracts: {
               ExecutorEffort: {
                 description: "Runtime-native effort, not a Host model's closed reasoning enum.",
                 type: 'string',
+              },
+              DiscoveryWorkerTools: {
+                type: 'string',
+                enum: ['read_only', 'session'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSchedules',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'discovery_tools',
+                  },
+                  names: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'names'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'page',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  tasks: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentScheduledSummary',
+                    },
+                  },
+                  nextCursor: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'revision', 'tasks'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'task',
+                  },
+                  detail: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentScheduledDetail',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'revision'],
+              },
+            ],
+            $defs: {
+              AgentScheduledSummary: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  script: {
+                    type: 'boolean',
+                  },
+                  approved: {
+                    type: 'boolean',
+                  },
+                  status: {
+                    $ref: '#/$defs/Status',
+                  },
+                  backgroundFollowup: {
+                    description: 'A Bot-created one-time discovery that no longer needs approval.',
+                    type: 'boolean',
+                  },
+                  nextFireAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  pendingFire: {
+                    type: ['string', 'null'],
+                  },
+                  lastError: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
+              },
+              Status: {
+                type: 'string',
+                enum: ['active', 'paused', 'completed', 'expired'],
+              },
+              AgentScheduledDetail: {
+                type: 'object',
+                properties: {
+                  investigation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentScheduledInvestigation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  task: {
+                    $ref: '#/$defs/Task',
+                  },
+                  timezone: {
+                    type: 'string',
+                  },
+                  misfire: {
+                    $ref: '#/$defs/Misfire',
+                  },
+                  approved: {
+                    type: 'boolean',
+                  },
+                  pendingFire: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+              },
+              AgentScheduledInvestigation: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  phase: {
+                    $ref: '#/$defs/AgentInvestigationPhase',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'phase'],
+              },
+              AgentInvestigationPhase: {
+                type: 'string',
+                enum: ['investigating', 'delivering', 'stopping'],
+              },
+              Task: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  intent: {
+                    $ref: '#/$defs/Intent',
+                  },
+                  schedule: {
+                    $ref: '#/$defs/Schedule',
+                  },
+                  effect: {
+                    $ref: '#/$defs/AgentScheduledEffect',
+                  },
+                  status: {
+                    $ref: '#/$defs/Status',
+                  },
+                  nextFireAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  lastFireAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  fireCount: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxFires: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  expiresAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  createdBy: {
+                    $ref: '#/$defs/Creator',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  runs: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Run',
+                    },
+                  },
+                  lastError: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'title',
+                  'intent',
+                  'schedule',
+                  'effect',
+                  'status',
+                  'fireCount',
+                  'createdBy',
+                  'createdAt',
+                  'updatedAt',
+                  'runs',
+                ],
+              },
+              Intent: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'text',
+                      },
+                      body: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'body'],
+                  },
+                ],
+              },
+              Schedule: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'once',
+                      },
+                      runAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'runAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      cadence: {
+                        $ref: '#/$defs/IntervalCadence',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'everySeconds', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'calendar',
+                      },
+                      recurrence: {
+                        $ref: '#/$defs/Recurrence',
+                      },
+                      anchorAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'recurrence', 'anchorAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cron',
+                      },
+                      expression: {
+                        type: 'string',
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'expression', 'startAt'],
+                  },
+                ],
+              },
+              IntervalCadence: {
+                type: 'string',
+                enum: ['fixed', 'after_completion'],
+              },
+              Recurrence: {
+                type: 'string',
+                enum: ['daily', 'weekly', 'monthly'],
+              },
+              AgentScheduledEffect: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_session',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description: 'Investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      workerTools: {
+                        description: 'Tool and permission profile requested for this plan.',
+                        $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model', 'workerTools'],
+                  },
+                ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
+              },
+              AgentScheduledTarget: {
+                description:
+                  'Exact observed source boundary. This data is checked against the original\nSession; passing it never grants execution by itself.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/AgentWorkspacePermissions',
+                  },
+                  boundaryRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
+              },
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
+              },
+              AgentWorkspacePermissions: {
+                type: 'object',
+                properties: {
+                  access: {
+                    $ref: '#/$defs/AgentWorkspaceAccess',
+                  },
+                  requestPermissions: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['access', 'requestPermissions'],
+              },
+              AgentWorkspaceAccess: {
+                description:
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
+                type: 'string',
+                enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+              DiscoveryWorkerTools: {
+                type: 'string',
+                enum: ['read_only', 'session'],
               },
               Creator: {
                 oneOf: [

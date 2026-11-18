@@ -34,6 +34,16 @@
 | [`acp/`](acp/src/lib.rs) | `maka-acp` | Exposes Maka sessions to external editors and clients over the Agent Client Protocol |
 | [`cli/`](cli/src/main.rs) | `maka-cli` | Builds the `maka` binary: terminal entry, Host daemon (`host serve`), `desktop` launcher, `acp`, `sandbox`, `browser`, and `application` commands |
 
+## Proactive discovery
+
+Open **Proactive discovery** in the Bot header. Leave the direction blank for broad exploration, or enter a topic for focused checks. New interval plans wait 30 minutes after each run finishes. The editor also offers a fixed interval, manual checks, and pause or resume controls.
+
+Choose **Read-only tools** or **Standard Session tools** as a preset. Adjust file reads, history, writes, terminal commands, and web access as needed, then approve them together. **View tool details** lists the concrete tools. The worker stays within the approved workspace and network permissions.
+
+**Files to exclude** starts empty. Add a folder, file, or suffix to protect it from future investigations and automatic follow-ups. The Host applies these rules to file access. On Linux and Windows, a suffix rule makes terminal commands unavailable during investigations. Access to copies in conversation history follows the history permission.
+
+Use **View investigation** to open the original worker conversation. Select and quote text from a Bot reply to attach feedback to its investigation.
+
 ## Running and testing
 
 From the repository root:

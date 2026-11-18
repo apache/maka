@@ -741,7 +741,12 @@ impl Engine {
                     let fact = Fact::ContextCompacted {
                         baseline: baseline.reference().clone(),
                     };
-                    if material.checkpoint.mode == CheckpointMode::Standalone {
+                    if material.checkpoint.mode == CheckpointMode::Standalone
+                        || material
+                            .native
+                            .as_ref()
+                            .is_some_and(|native| native.continuation.is_some())
+                    {
                         self.publish(Some(&claim), &view, vec![fact], vec![baseline], now)
                             .await?;
                     } else {
@@ -1297,6 +1302,7 @@ impl Engine {
                         | RunError::InvalidInput(_)
                         | RunError::Json(_)
                         | RunError::ModelUnavailable
+                        | RunError::AuthenticationRequired
                         | RunError::Preparation(_)
                         | RunError::Store(
                             StoreError::InvalidTransition(_) | StoreError::Json(_),

@@ -94,6 +94,7 @@ uuid.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 maka-packages.workspace = true
+maka-processes-native.workspace = true
 rusqlite = { workspace = true, features = ["functions"] }
 maka-settings-native.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }

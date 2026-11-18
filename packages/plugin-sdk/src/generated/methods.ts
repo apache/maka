@@ -1985,6 +1985,10 @@ export type AgentSessionReadOutput_AuthorizationObligation =
 export type AgentSessionReadOutput_ExternalTaskId = string;
 export type AgentSessionReadOutput_ModelAttemptId = string;
 export type AgentSessionReadOutput_CellId = string;
+/**
+ * The tool family whose authority raised a permission request.
+ */
+export type AgentSessionReadOutput_PermissionSource = 'processes' | 'web' | 'files';
 export type AgentSessionReadOutput_FormField = {
   name: string;
   label: string;
@@ -2619,6 +2623,10 @@ export interface ServiceMethods {
          * Highest sequence recorded so far; 0 when empty.
          */
         through: number;
+        /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentBotOutboxOutput_AgentBotDiscoveryLink | null;
         /**
          * @maxItems 100
          */
@@ -3452,6 +3460,10 @@ export interface ServiceMethods {
          */
         through: number;
         /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentMarkBotReadOutput_AgentBotDiscoveryLink | null;
+        /**
          * @maxItems 100
          */
         messages: AgentMarkBotReadOutput_AgentBotMessage[];
@@ -3817,6 +3829,22 @@ export interface ServiceMethods {
         workspace: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSnapshot;
         path: string;
       };
+    };
+    saveFile: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        path: Runtime.WorkspacePath;
+        expectedVersion: string;
+      };
+      output:
+        | {
+            kind: 'saved';
+            version: string;
+          }
+        | {
+            kind: 'conflict';
+          };
     };
     saveGitHubToken: {
       mode: 'mutation';
@@ -4246,6 +4274,10 @@ export interface ServiceMethods {
          * Highest sequence recorded so far; 0 when empty.
          */
         through: number;
+        /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentWatchBotOutboxOutput_AgentBotDiscoveryLink | null;
         /**
          * @maxItems 100
          */
@@ -5134,9 +5166,27 @@ export interface ServiceMethods {
   };
 }
 /**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentBotOutboxOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentBotOutboxOutput_AgentDiscoveryPublication;
+}
+export interface AgentBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
+}
+/**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentBotOutboxOutput_AgentBotMessage {
+  /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentBotOutboxOutput_AgentDiscoveryPublication | null;
   /**
    * Monotonic position in the outbox, starting at 1.
    */
@@ -5868,9 +5918,27 @@ export interface AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspe
   operationId: string;
 }
 /**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentMarkBotReadOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentMarkBotReadOutput_AgentDiscoveryPublication;
+}
+export interface AgentMarkBotReadOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
+}
+/**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentMarkBotReadOutput_AgentBotMessage {
+  /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentMarkBotReadOutput_AgentDiscoveryPublication | null;
   /**
    * Monotonic position in the outbox, starting at 1.
    */
@@ -6520,6 +6588,13 @@ export interface AgentSessionReadOutput_PermissionRequest {
   reason: string;
   command?: AgentSessionReadOutput_PermissionCommand | null;
   permissions: AgentSessionReadOutput_Permissions;
+  /**
+   * Network access granted for this request covers only later requests from
+   * the same source; filesystem access covers all of them. Requests stored
+   * before sources were recorded decode as Web, the only source that could
+   * be granted network access then.
+   */
+  source?: AgentSessionReadOutput_PermissionSource & string;
 }
 export interface AgentSessionReadOutput_PermissionCommand {
   command: string;
@@ -6656,9 +6731,27 @@ export interface AgentUpdatePresetOutput_ModelSelection {
   [k: string]: unknown | undefined;
 }
 /**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentWatchBotOutboxOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentWatchBotOutboxOutput_AgentDiscoveryPublication;
+}
+export interface AgentWatchBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
+}
+/**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentWatchBotOutboxOutput_AgentBotMessage {
+  /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentWatchBotOutboxOutput_AgentDiscoveryPublication | null;
   /**
    * Monotonic position in the outbox, starting at 1.
    */

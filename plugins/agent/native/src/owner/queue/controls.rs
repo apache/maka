@@ -77,15 +77,25 @@ impl Owner {
         let mut entries = Vec::with_capacity(queue.entries.len());
         for entry in queue.entries {
             let source = self.queued_source(session, &entry.request).await?;
-            let text = if source.unprepared_content.text.trim().is_empty() {
-                source
-                    .unprepared_content
-                    .attachments
-                    .as_ref()
-                    .and_then(|files| files.first())
-                    .map_or("", |file| file.name.as_str())
+            let content = &source.unprepared_content;
+            let text = if content.text.trim().is_empty() {
+                content
+                    .quotes
+                    .iter()
+                    .flatten()
+                    .find(|quote| !quote.text.trim().is_empty())
+                    .map(|quote| quote.text.as_str())
+                    .or_else(|| {
+                        content
+                            .attachments
+                            .iter()
+                            .flatten()
+                            .next()
+                            .map(|file| file.name.as_str())
+                    })
+                    .unwrap_or_default()
             } else {
-                &source.unprepared_content.text
+                &content.text
             };
             entries.push(QueueEntry {
                 origin: source.message.origin,
@@ -124,14 +134,15 @@ impl Owner {
             let source = self
                 .queued_source(&input.session_id, &entry.request)
                 .await?;
+            let content = source.unprepared_content;
             return Ok(QueueMessageResult::Ready {
                 revision: queue.revision,
-                has_attachments: source
-                    .unprepared_content
+                has_attachments: content
                     .attachments
                     .as_ref()
                     .is_some_and(|files| !files.is_empty()),
-                message: source.unprepared_content.text,
+                message: content.text,
+                quotes: content.quotes.unwrap_or_default(),
             });
         }
         let resolution = self
@@ -270,16 +281,10 @@ impl Owner {
             QueueAction::Update { message, .. } => {
                 let (entry, source) = targets.pop().expect("targeted update");
                 let mut source = source;
-                if message.trim().is_empty()
-                    && source
-                        .unprepared_content
-                        .attachments
-                        .as_ref()
-                        .is_none_or(Vec::is_empty)
-                {
+                source.unprepared_content.text = message;
+                if !source.unprepared_content.has_content() {
                     return rejected(QueueRejection::InvalidEdit);
                 }
-                source.unprepared_content.text = message;
                 let bytes = self
                     .durable
                     .queue()

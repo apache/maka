@@ -91,6 +91,7 @@ impl Handler for Agent {
                 | "stopComputerApp"
                 | "editQueue"
                 | "uploadAttachment"
+                | "saveFile"
                 | "snapshotPatch"
                 | "fork"
                 | "compact"
@@ -211,6 +212,9 @@ impl Handler for Agent {
                             .change_session(decode(input)?, operation)
                             .await?
                             .complete(&context),
+                        "saveFile" => Ok(HandlerValue::Json(encode(
+                            owner.save_file(decode(input)?, &context).await?,
+                        )?)),
                         "snapshotPatch" => owner
                             .snapshot_patch(decode(input)?, operation, context.scope())
                             .await?

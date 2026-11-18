@@ -20,7 +20,7 @@
 use super::*;
 use maka_agent_api::contract::WorkspaceAccess;
 use maka_agent_facts::interaction::PermissionCommand;
-use maka_agent_facts::interaction::PermissionRequest;
+use maka_agent_facts::interaction::{PermissionRequest, PermissionSource};
 use maka_plugin_core::shell_run::ShellOutput;
 use maka_plugin_core::shell_run::ShellPermissions;
 use maka_plugin_core::shell_run::ShellRun;
@@ -50,16 +50,23 @@ pub(super) fn capture(
         maka_workspace_support::capture_selected(workspace).map_err(failed)?;
     let workspace_directory = directory.try_clone().map_err(failed)?.into_std_file();
     if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
-        let sandbox = Sandbox::Disabled.intersect(floor).map_err(failed)?;
-        let executor = maka_process::ShellExecutor::from_directory(
-            path,
-            directory.into_std_file(),
-            sandbox.clone(),
-        )?;
+        let ceiling = Sandbox::Disabled.intersect(floor).map_err(failed)?;
+        // A managed floor comes from a Run captured below full access. Its network
+        // is that Run's approval ceiling, so the command starts without network
+        // until a grant applies, as it would in a managed Session.
+        let sandbox = match &ceiling {
+            Sandbox::Managed { filesystem, .. } => Sandbox::Managed {
+                filesystem: filesystem.clone(),
+                network: Network::Denied,
+            },
+            unmanaged => unmanaged.clone(),
+        };
+        let executor =
+            maka_process::ShellExecutor::from_directory(path, directory.into_std_file(), sandbox)?;
         return Ok(Captured {
             executor: select_shell(platform(executor, settings, state_root), shell)?,
             workspace: workspace_directory,
-            ceiling: sandbox,
+            ceiling,
         });
     }
     let (base, protections) =
@@ -147,6 +154,7 @@ impl Processes {
                     cwd: configuration.workspace.path.clone(),
                 }),
                 permissions,
+                source: PermissionSource::Processes,
             });
         let captured = self
             .prepare(
@@ -292,7 +300,11 @@ impl Processes {
         .await
         .map_err(failed)??;
         let grants = access
-            .permission_grants(access.target(), &configuration.permission_basis())
+            .permission_grants(
+                access.target(),
+                &configuration.permission_basis(),
+                PermissionSource::Processes,
+            )
             .await?;
         let mut sandbox = captured.executor.sandbox().clone();
         for grant in grants {
@@ -317,9 +329,8 @@ impl Processes {
                 let grant = maka_agent_authority::permissions::request(
                     access,
                     PermissionRequest {
-                        reason: requested.reason,
-                        command: requested.command,
                         permissions: required.clone(),
+                        ..requested
                     },
                     access.target(),
                     cancellation,
@@ -348,5 +359,59 @@ impl Processes {
             .with_sandbox(sandbox.intersect(floor).map_err(failed)?)
             .with_network_route(route);
         Ok(captured)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::configuration::policy::{ShellPolicy, ShellPreference};
+
+    /// A full-access Session can run a Run captured below full access, such as a
+    /// read-only external recovery Run. Its commands start without network.
+    #[test]
+    fn full_access_commands_start_with_the_runs_base_network() {
+        let directory = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&directory).unwrap();
+        let path = std::fs::canonicalize(&directory).unwrap();
+        let configuration: ResolvedConfiguration = serde_json::from_value(serde_json::json!({
+            "title": "Full access", "titleIsManual": false, "labels": [],
+            "workspace": {"path": path},
+            "binding": {"id": uuid::Uuid::new_v4(), "permissionEpoch": 0},
+            "permissions": {"access": "danger_full_access", "requestPermissions": false},
+            "boundary_revision": 0
+        }))
+        .unwrap();
+        let settings: Configuration = serde_json::from_value(serde_json::json!({
+            "filesystem": {"default": "write", "rules": [], "denyGlobs": []},
+            "network": "allowed",
+            "helper": null
+        }))
+        .unwrap();
+        let shell = ShellPolicy {
+            preference: ShellPreference::Auto,
+            executable: String::new(),
+            titles: false,
+        };
+        let capped = Sandbox::Managed {
+            filesystem: Policy {
+                default: Access::Read,
+                rules: Vec::new(),
+                deny_globs: Vec::new(),
+            },
+            // The Run's network approval ceiling, raised in the floor of process tools.
+            network: Network::Allowed,
+        };
+        let captured = capture(&configuration, &settings, &path, &shell, &capped).unwrap();
+        let networks =
+            [captured.executor.sandbox(), &captured.ceiling].map(|sandbox| match sandbox {
+                Sandbox::Managed { network, .. } => network.clone(),
+                other => panic!("expected a managed sandbox, got {other:?}"),
+            });
+        assert_eq!(networks, [Network::Denied, Network::Allowed]);
+        let captured =
+            capture(&configuration, &settings, &path, &shell, &Sandbox::Disabled).unwrap();
+        assert_eq!(captured.executor.sandbox(), &Sandbox::Disabled);
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

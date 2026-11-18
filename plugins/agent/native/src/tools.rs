@@ -269,6 +269,7 @@ pub(crate) struct Catalog<T> {
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
+    pub discovery_reads: Vec<String>,
 }
 
 pub(crate) fn catalog(
@@ -280,11 +281,13 @@ pub(crate) fn catalog(
         tools,
         basis,
         editing,
+        discovery_reads,
     } = catalog_inner(services, selected, additional, None)?;
     Ok(Catalog {
         tools: Declarations(tools),
         basis,
         editing,
+        discovery_reads,
     })
 }
 
@@ -321,6 +324,7 @@ fn catalog_inner(
     run: Option<RunBindings>,
 ) -> Result<Catalog<ToolCatalog>, String> {
     let mut basis = Vec::new();
+    let mut discovery_reads = Vec::new();
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
         .iter()
@@ -371,6 +375,11 @@ fn catalog_inner(
                 return Err("agent_tool_contract_invalid".to_owned());
             };
             let contract = binding.contract();
+            if contract == &file_contract
+                && selection.method == "read"
+            {
+                discovery_reads.push(selection.name.clone());
+            }
             let method = methods
                 .get(&selection.method)
                 .ok_or("agent_tool_method_unavailable")?;
@@ -507,6 +516,8 @@ fn catalog_inner(
                     tool_names: tool_names.clone(),
                     selection: selection.clone(),
                     computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
+                    network_ceiling: selection.input == ToolInput::Web
+                        || contract == &process_contract,
                     input_projection,
                     title_kind,
                     presentation,
@@ -617,6 +628,7 @@ fn catalog_inner(
         tools: catalog,
         basis,
         editing,
+        discovery_reads,
     })
 }
 #[derive(Clone)]
@@ -648,6 +660,9 @@ struct Service {
     target: String,
     selection: ServiceTool,
     computer: bool,
+    /// Host Web effects and the workspace process tools ask for network per
+    /// request, so their floor carries the Run's network approval ceiling.
+    network_ceiling: bool,
     input_projection: Projection,
     title_kind: Option<title::Kind>,
     presentation: Option<String>,
@@ -774,6 +789,7 @@ impl Service {
             selection,
             mode,
             computer,
+            network_ceiling,
             ..
         } = self;
         Box::pin(async move {
@@ -853,11 +869,11 @@ impl Service {
             } else {
                 access.sandbox_floor(&context.call.origin).await?
             };
-            if selection.input == ToolInput::Web
-                && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor
-            {
-                // Host HTTP still requires a destination grant. Its inherited ceiling
-                // is independent of the workspace process sandbox's base network.
+            if network_ceiling && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor {
+                // Network still requires a grant from the same tool family. The
+                // ceiling is independent of the preset's base network, which a
+                // process keeps until one applies. Process controls share it so
+                // a PTY launched with a grant stays usable.
                 *network = access.spec().network_approval_ceiling().clone();
             }
             let request = services

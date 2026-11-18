@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::interaction::PermissionRequest;
+use maka_agent_facts::interaction::{PermissionRequest, PermissionSource};
 use std::path::Component;
 
 pub(super) async fn authorize(
@@ -34,7 +34,11 @@ pub(super) async fn authorize(
         return Ok(captured);
     }
     let grants = access
-        .permission_grants(access.target(), &configuration.permission_basis())
+        .permission_grants(
+            access.target(),
+            &configuration.permission_basis(),
+            PermissionSource::Files,
+        )
         .await?;
     let floor = floor.clone();
     let grant_floor = floor.clone();
@@ -154,6 +158,7 @@ pub(super) async fn authorize(
             reason: format!("{tool} needs write access to these files."),
             command: None,
             permissions: required.clone(),
+            source: PermissionSource::Files,
         },
         access.target(),
         cancellation,

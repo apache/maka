@@ -21,6 +21,8 @@ import { signal, Text, View, type InputRef, type JSX } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import type { ClientDraftAttachment } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { DraftQuotes } from '../../composer/ui/DraftQuotes';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import {
   MakaMark,
@@ -63,7 +65,7 @@ export function CompactComposer(props: {
     const session = props.session();
     if (!session || unavailable()) return;
     const text = session.draft();
-    if (text.trim() === '' && session.attachments.files().length === 0) return;
+    if (!hasComposerContent(text.trim(), session.attachments.files(), session.quotes())) return;
     // Commands and their arguments need the full composer.
     if (text.startsWith('/')) {
       props.expand();
@@ -101,6 +103,9 @@ export function CompactComposer(props: {
             }
             style={{ ...quickInputStyle(), height: inputHeight() }}
           />
+          <If when={props.session() !== null}>
+            <DraftQuotes owner={props.session()!} />
+          </If>
           <If when={(props.session()?.attachments.files().length ?? 0) > 0}>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
               <Each

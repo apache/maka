@@ -19,8 +19,10 @@
 
 import type {
   AgentSendResult,
+  QuoteRef,
   Receipt,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
+import { sameValue } from '../../../shared/value.ts';
 import { message, type UiText } from '../../../../products/maka/workbench/app/text-value.ts';
 
 export function sendReceiptFailure(
@@ -96,20 +98,42 @@ export function shouldHideAcceptedQueuedStatus(options: {
   );
 }
 
+export const DRAFT_QUOTE_LIMIT = 16;
+
+/** The journal restores original quotes after the current ones, deduplicating full references. */
+export function restoredDraftQuotes(current: QuoteRef[], original: readonly QuoteRef[] = []) {
+  const quotes = [...current];
+  for (const quote of original) {
+    if (!quotes.some((existing) => sameValue(existing, quote))) quotes.push(quote);
+  }
+  return quotes;
+}
+
+/** Account for quotes in an in-flight journal restore before accepting a new selection. */
+export function appendDraftQuote(
+  current: QuoteRef[],
+  quote: QuoteRef,
+  restoring: readonly QuoteRef[],
+) {
+  const next = [...current, quote];
+  return restoredDraftQuotes(next, restoring).length <= DRAFT_QUOTE_LIMIT ? next : null;
+}
+
 /**
  * Combines local edits typed while `restoreSend` was in flight with the
  * original unsent message's content, without re-appending the pre-restore draft
  * already folded into `restoreSend`'s persisted return value.
  */
 export function mergeRestoredIntoHeldDraft<File extends { id: string }>(
-  typed: { text: string; attachments: File[]; settledUploads: string[] },
-  restoredSource: { text: string; attachments: File[] },
-): { text: string; attachments: File[]; settledUploads: string[] } {
+  typed: { text: string; attachments: File[]; settledUploads: string[]; quotes: QuoteRef[] },
+  restoredSource: { text: string; attachments: File[]; quotes?: QuoteRef[] },
+) {
   const seen = new Set(typed.attachments.map((file) => file.id));
   const attachments = [
     ...typed.attachments,
     ...restoredSource.attachments.filter((file) => !seen.has(file.id)),
   ];
+  const quotes = restoredDraftQuotes(typed.quotes, restoredSource.quotes);
   const text =
     restoredSource.text === ''
       ? typed.text
@@ -120,5 +144,6 @@ export function mergeRestoredIntoHeldDraft<File extends { id: string }>(
     text,
     attachments,
     settledUploads: typed.settledUploads,
+    quotes,
   };
 }
