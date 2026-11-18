@@ -44,6 +44,7 @@ use tokio::sync::mpsc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub(super) mod auxiliary;
+mod codex_switch;
 mod compacted;
 mod history_source;
 mod imported;
@@ -111,6 +112,7 @@ pub(super) struct PreparedContinuation {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenInput {
+    continuing: Option<AcceptedModel>,
     accepted: AcceptedModel,
     adapter: SourceRevision,
     item_acceptance: bool,
@@ -315,9 +317,25 @@ impl DriverModel {
                     .await
             }
             .boxed(),
-            Preparation::AfterCompaction { attempt } => self
-                .prepare_compacted_main(view, attempt, None, driver)
-                .boxed(),
+            Preparation::AfterCompaction { attempt } => async move {
+                let request = self
+                    .state
+                    .request(
+                        view.run,
+                        self.state.model_attempt(view.run, attempt).await?.step,
+                    )
+                    .await?;
+                let evidence: maka_agent_facts::context::RequestContextEvidence =
+                    self.decode(view.run, &request.provenance).await?;
+                if evidence.codex_preflight.is_some() {
+                    self.prepare_main_step(view, Preparation::AfterCompaction { attempt }, driver)
+                        .await
+                } else {
+                    self.prepare_compacted_main(view, attempt, None, driver)
+                        .await
+                }
+            }
+            .boxed(),
             mode => self.prepare_main_step(view, mode, driver).boxed(),
         }
     }
@@ -335,17 +353,23 @@ impl DriverModel {
         if let Preparation::Prefix { attempt, proof } = &mode {
             self.validate_prefix(view, *attempt, proof).await?;
         }
-        let summary = matches!(mode, Preparation::Summary)
+        let mut summary = matches!(mode, Preparation::Summary)
             || matches!(input, RunInput::ContextCompact { .. });
         let model = tokio::select! {
             biased;
             _ = self.cancellation.cancelled() => return Err(RunError::Cancelled),
             result = self.source.capture() => result?,
         };
+        let switch = self.switch_plan(view, &mode, &model).await?;
+        summary |= switch.is_some();
+        let previous = switch.as_ref().and_then(|plan| plan.previous.as_ref());
+        let source = previous.map_or(self.source.as_ref(), |(source, _)| source);
+        let model = previous.map_or(&model, |(_, model)| model);
+        let preflight = switch.as_ref().map(|plan| &plan.evidence);
         let (definitions, catalog) = if summary {
             (Vec::new(), None)
         } else {
-            let bound = driver.bind_step_tools(view, &model, false).await?;
+            let bound = driver.bind_step_tools(view, model, false).await?;
             (bound.definitions, Some(bound.catalog))
         };
         let definitions: Vec<_> = definitions.into_iter().map(Arc::new).collect();
@@ -385,7 +409,14 @@ impl DriverModel {
             previous_checkpoint_id,
             recovered_cells,
         } = self
-            .project_step_input(view, &input, &model, summary, prefix_attempt)
+            .project_step_input(
+                view,
+                &input,
+                model,
+                summary,
+                prefix_attempt,
+                preflight.is_some(),
+            )
             .await?;
         let reader = &reader;
         let mut steering_refs = Vec::new();
@@ -529,10 +560,10 @@ impl DriverModel {
             tool_choice: ToolChoiceMode::Auto,
         };
         let accounting = maka_agent_facts::accounting::ModelEvidence {
-            binding: self.source.accepted.binding.clone(),
+            binding: source.accepted.binding.clone(),
             model_id: model.provider.model.clone(),
             purpose,
-            quote: Some(self.source.quote(&model).await?),
+            quote: Some(source.quote(model).await?),
         };
         let adapter = self.executor.binding(&model.provider)?;
         let dynamic_context = vec![format!(
@@ -615,7 +646,7 @@ impl DriverModel {
                 .await?;
             }
             let calibration = if purpose==ModelPurpose::Main {
-                self.calibration(view,&source_evidence,&model,previous_checkpoint_id.as_deref()).await?
+                self.calibration(view,&source_evidence,model,previous_checkpoint_id.as_deref()).await?
             }else{None};
             let request = preparation::prepare_request(
                 &settings,
@@ -626,6 +657,12 @@ impl DriverModel {
                 calibration,
             )?;
             if let Some(claim) = continuation {
+                if preflight.is_some() {
+                    preparation::validate_continuation_source(
+                        &self.state, &self.execution, claim,
+                        &view.spec.permission_basis, &view.spec.workspace,
+                    ).await?;
+                } else {
                 maka_agent_engine::preparation::validate_continuation(
                     &self.state,
                     &self.execution,
@@ -637,6 +674,7 @@ impl DriverModel {
                     logical_prompt_digest.as_deref(),
                 )
                 .await?;
+                }
             }
             let snapshot = preparation::snapshot_prompt(
                 self.preparation_io()?,
@@ -653,7 +691,8 @@ impl DriverModel {
                 }
             });
             let frozen = FrozenInput {
-                accepted: self.source.accepted.clone(),
+                continuing: preflight.map(|_| self.source.accepted.clone()),
+                accepted: source.accepted.clone(),
                 adapter: adapter.source().clone(),
                 item_acceptance: purpose == ModelPurpose::Main
                     && adapter.supports_item_acceptance(),
@@ -709,6 +748,7 @@ impl DriverModel {
                 "breakdown": request.context_breakdown,
                 "estimatedInputTokens":request.estimated_input_tokens,
                 "modelContext": request_context,
+                "codexPreflight": preflight,
                 "previousCheckpointId":previous_checkpoint_id,
                 "steering": steering_evidence,
                 "notifications": &frozen.notifications,
@@ -736,7 +776,7 @@ impl DriverModel {
                 accounting,
                 summary_repair_of: None,
                 compaction_recovery: match (&mode,view.current_step) {
-                    (Preparation::Summary,_)=>None,
+                    (_,_) if summary || matches!(mode, Preparation::AfterCompaction { .. }) =>None,
                     (_,Some(step)) => {
                         let prior = reader.request(view.run, step).await?;
                         prior.compaction_recovery.or_else(|| {
@@ -807,6 +847,7 @@ impl DriverModel {
         model: &'a maka_agent_engine::PreparedModel,
         summary: bool,
         prefix_attempt: Option<ModelAttemptId>,
+        conversion: bool,
     ) -> BoxFuture<'a, Result<ProjectedStepInput<'a>, RunError>> {
         Box::pin(async move {
             let target = ReplayTarget::new(
@@ -818,6 +859,11 @@ impl DriverModel {
                 },
             );
 
+            let target = if conversion {
+                target.converting()
+            } else {
+                target
+            };
             let mut system: Option<SystemPrompt> =
                 self.decode(view.run, &view.spec.system_prompt).await?;
             merge_input_skills(&mut system, input)?;
@@ -892,28 +938,41 @@ impl DriverModel {
             let pre_turn_summary = summary && !has_main_attempt;
             if pre_turn_summary {
                 let before = history.capture_before(view.run).await?;
-                previous_checkpoint_id = match input {
-                    RunInput::Continuation { claim, .. } => {
-                        self.inherited_messages(
-                            target,
-                            reader,
-                            claim.source.execution.run_id,
-                            view.spec.language,
-                            model.supports_vision,
-                            &mut system,
-                            &mut messages,
-                        )
-                        .await?
-                    }
-                    _ => {
-                        self.canonical_messages(
-                            target,
-                            &before,
-                            model.supports_vision,
-                            view.spec.language,
-                            &mut messages,
-                        )
-                        .await?
+                previous_checkpoint_id = if let Some(baseline) = &view.baseline {
+                    self.append_compacted(
+                        reader,
+                        view.run,
+                        baseline,
+                        target,
+                        view.spec.language,
+                        &mut messages,
+                    )
+                    .await?;
+                    Some(self.switch_checkpoint_id(view, baseline).await?)
+                } else {
+                    match input {
+                        RunInput::Continuation { claim, .. } => {
+                            self.inherited_messages(
+                                target,
+                                reader,
+                                claim.source.execution.run_id,
+                                view.spec.language,
+                                model.supports_vision,
+                                &mut system,
+                                &mut messages,
+                            )
+                            .await?
+                        }
+                        _ => {
+                            self.canonical_messages(
+                                target,
+                                &before,
+                                model.supports_vision,
+                                view.spec.language,
+                                &mut messages,
+                            )
+                            .await?
+                        }
                     }
                 };
                 source_evidence.current = before;
@@ -1019,13 +1078,11 @@ impl DriverModel {
         }
         let reader = self.history_reader(view.run).await?;
         let frozen = self.frozen_input(&reader, view.run, request).await?;
-        if frozen.accepted != self.source.accepted
-            || request.request_contents != frozen.content_refs()
-        {
+        if request.request_contents != frozen.content_refs() {
             return Err(unsupported("frozen-tool-model-source-changed"));
         }
         let original = self.workers.spawn({
-            let source = Arc::clone(&self.source);
+            let source = self.request_source(&frozen)?;
             async move { source.capture().await }
         });
         let model = original
@@ -1367,7 +1424,14 @@ impl DriverModel {
             digest: resolved.base.digest,
         };
         let model = self.source.capture().await?;
-        let target = ReplayTarget::new(&model, ModelOperation::Inference);
+        // Admission seals the inherited source; native preflight may replace its
+        // opaque state before ordinary inference performs replay admission.
+        let cut = self.history.capture().await?;
+        let target = if self.initial_switch_plan(&cut, &model).await?.is_some() {
+            ReplayTarget::new(&model, ModelOperation::CodexCompaction).converting()
+        } else {
+            ReplayTarget::new(&model, ModelOperation::Inference)
+        };
         let mut messages = preparation::PromptBuilder::new(
             self.preparation_io()?,
             self.resources.clone(),
@@ -2213,11 +2277,7 @@ impl DriverModel {
         }
         let frozen: FrozenInput = serde_json::from_slice(&bytes)
             .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
-        if frozen.accepted != self.source.accepted {
-            return Err(RunError::ReconciliationRequired(
-                "frozen model input differs from admitted composition".into(),
-            ));
-        }
+        let source = self.request_source(&frozen)?;
         let recovery: FrozenRecovery = self
             .protocol_data(run, &request.recovery_contract, "recovery-contract-schema")
             .await?;
@@ -2229,6 +2289,8 @@ impl DriverModel {
             return Err(unsupported("admitted-recovery-contract"));
         }
         let provenance: Value = self.decode(run, &request.provenance).await?;
+        let context_evidence: maka_agent_facts::context::RequestContextEvidence =
+            serde_json::from_value(provenance.clone()).map_err(RunError::Json)?;
         let expected_breakdown: maka_agent_facts::context::PreparedContextBreakdown =
             serde_json::from_value(
                 provenance
@@ -2265,7 +2327,6 @@ impl DriverModel {
         let can_replay_without_output = recovery.contract.is_some();
         let prefix_request = request.request.clone();
         let prefix_adapter = frozen.adapter.clone();
-        let source = self.source.clone();
         let executor = self.executor.clone();
         let conversation = self.conversation.clone();
         let retry_phase = view.retry_phase;
@@ -2692,6 +2753,13 @@ impl DriverModel {
                             }
                         } else {
                             let parts = canonical_parts_for(&state, &view, attempt).await?;
+                            if let RunError::Model(failure) = &error
+                                && let Some(evidence) = codex_switch::fallback_recovery(
+                                    &context_evidence, &request, failure, &view.attempts[&attempt],
+                                )
+                            {
+                                evidence
+                            } else {
                             recovery_for_failure(
                                 &error,
                                 run,
@@ -2700,6 +2768,7 @@ impl DriverModel {
                                 prefix_adapter,
                                 &parts,
                             )?
+                            }
                         };
                     if let Some(fact) = witness.recovery(evidence, witnessed_at()?).await? {
                         emit(
@@ -2801,11 +2870,10 @@ impl DriverModel {
             || recovery.version != VERSION
             || recovery.request != request.request
             || recovery.adapter != frozen.adapter
-            || frozen.accepted != self.source.accepted
         {
             return Err(unsupported("recovery-contract-version"));
         }
-        let model = self.source.capture().await?;
+        let model = self.request_source(frozen)?.capture().await?;
         let binding = self.executor.binding(&model.provider)?;
         let Some(contract) = recovery.contract.as_ref() else {
             return Err(unsupported("provider-effects-or-unproved-adapter"));
@@ -2959,6 +3027,12 @@ impl DriverModel {
         let parts = self.canonical_parts(view, attempt).await?;
         if !parts.is_empty() && !frozen.item_acceptance {
             return Err(unsupported("retained-item-contract"));
+        }
+        let evidence = reader.decode(view.run, &request.provenance).await?;
+        if let Some(evidence) =
+            codex_switch::fallback_recovery(&evidence, &request, &failure, original)
+        {
+            return Ok(evidence);
         }
         recovery_for_failure(
             &RunError::Model(failure),

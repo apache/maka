@@ -35,6 +35,28 @@ pub async fn validate_continuation(
     prepared: &PreparedRequest,
     logical_prompt_digest: Option<&str>,
 ) -> Result<(), RunError> {
+    validate_continuation_source(state, target, claim, basis, workspace).await?;
+    let invalid = |message: &str| RunError::ReconciliationRequired(message.into());
+    validate_replay_boundary(prompt).await?;
+    let digest = if claim.replay.uses_logical_prompt() {
+        logical_prompt_digest
+            .ok_or_else(|| invalid("continuation lacks a logical prompt digest"))?
+    } else {
+        &prepared.input_digest
+    };
+    if digest != claim.replay.digest || prepared.route_identity != claim.replay.route_identity {
+        return Err(invalid("continuation replay signature changed"));
+    }
+    Ok(())
+}
+
+pub async fn validate_continuation_source(
+    state: &Store,
+    target: &ExecutionIdentity,
+    claim: &ContinuationClaim,
+    basis: &maka_sandbox::workspace::PermissionBasis,
+    workspace: &str,
+) -> Result<(), RunError> {
     let invalid = |message: &str| RunError::ReconciliationRequired(message.into());
     claim.validate(target).map_err(invalid)?;
     let original = state.frontier(claim.source.execution.run_id).await?;
@@ -63,16 +85,6 @@ pub async fn validate_continuation(
         || resolved.base.digest != claim.base.digest
     {
         return Err(invalid("continuation canonical base changed"));
-    }
-    validate_replay_boundary(prompt).await?;
-    let digest = if claim.replay.uses_logical_prompt() {
-        logical_prompt_digest
-            .ok_or_else(|| invalid("continuation lacks a logical prompt digest"))?
-    } else {
-        &prepared.input_digest
-    };
-    if digest != claim.replay.digest || prepared.route_identity != claim.replay.route_identity {
-        return Err(invalid("continuation replay signature changed"));
     }
     Ok(())
 }

@@ -121,34 +121,11 @@ impl CheckpointContent {
     }
 }
 
-/// ChatGPT subscription facts. Account/connection identify provenance, not replay permission.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CodexRequestProvenance {
-    pub connection_id: String,
-    pub account_id: Option<String>,
-    pub compatibility: Option<CodexCompatibility>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CodexCompatibility {
-    pub comp_hash: String,
-    /// Unix seconds, matching the canonical account inventory timestamp.
-    pub fetched_at: u64,
-}
-
-/// Call only with ChatGPT provenance on both sides. Recorded observations do not
-/// expire with the catalog; a later catalog cannot certify a missing old hash.
-/// Native re-compaction may ask the producing model to convert its own old state.
-pub fn codex_replay_allowed(
-    same_model: bool,
-    hashes_match: Option<bool>,
-    operation: ModelOperation,
-) -> bool {
-    (same_model && operation == ModelOperation::CodexCompaction)
-        || hashes_match.unwrap_or(same_model)
-}
+mod codex;
+pub use codex::{
+    CodexCompatibility, CodexContinuation, CodexPreflight, CodexPreflightStage,
+    CodexRequestProvenance, codex_replay_allowed,
+};
 
 impl ModelRequestContext {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -246,6 +223,7 @@ pub struct SummaryOrigin {
 pub struct NativeCheckpoint {
     pub item: crate::model::NativeCompaction,
     pub producer: CodexRequestProvenance,
+    pub continuation: Option<CodexContinuation>,
 }
 impl CompactedContext {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -255,6 +233,9 @@ impl CompactedContext {
             (CheckpointContent::Text(_), None) => Ok(()),
             (CheckpointContent::CodexNative { item_digest, .. }, Some(native)) => {
                 native.producer.validate()?;
+                if let Some(target) = &native.continuation {
+                    target.provenance.validate()?;
+                }
                 if native.item.digest() != *item_digest {
                     return Err("native checkpoint item differs from its original digest");
                 }

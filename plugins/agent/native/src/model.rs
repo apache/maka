@@ -149,6 +149,16 @@ pub(crate) struct Source {
     revision: SourceRevision,
 }
 impl Source {
+    pub(crate) fn for_compaction(&self, accepted: AcceptedModel) -> Result<Self, RunError> {
+        Self::restore(
+            self.configuration.clone(),
+            self.credentials.clone(),
+            accepted,
+            self.session.clone(),
+            self.revision.clone(),
+        )
+    }
+
     pub async fn select(
         configuration: Arc<ConfigurationStore>,
         catalog: Arc<maka_providers::catalog::Catalog>,

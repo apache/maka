@@ -343,7 +343,14 @@ pub(super) fn validate(
     }
     if let Some(marker) = &provenance.previous_checkpoint_id {
         let marker = serde_json::from_value::<FactId>(serde_json::Value::String(marker.clone()))?;
-        if !crate::session_history::snapshot::checkpoint_member(c, view, &source, marker)? {
+        if !crate::session_history::snapshot::checkpoint_member(c, view, &source, marker)?
+            && !(provenance.codex_preflight.is_some()
+                && provenance
+                    .model_context
+                    .as_ref()
+                    .is_some_and(|context| context.operation == ModelOperation::CodexCompaction)
+                && same_preturn_dependency(c, view, &source, marker)?)
+        {
             return Err(invalid(
                 "compaction predecessor is outside its actual canonical source closure",
             ));
@@ -387,6 +394,8 @@ pub(super) fn validate(
             .ok_or_else(|| invalid("native compaction has no original output-token observation"))?;
         if native.item != *item
             || native.producer != *producer
+            || native.continuation.as_ref()
+                != provenance.codex_preflight.as_ref().map(|plan| &plan.target)
             || checkpoint.summary != CheckpointContent::native(item, tokens)
         {
             return Err(invalid(
@@ -420,4 +429,36 @@ pub(super) fn validate(
     }
     pin(c, view.run, &material.source_capture)?;
     Ok(())
+}
+
+// A second pre-turn compaction consumes the installed first result without
+// extending raw-history coverage across this turn's still-pending user input.
+fn same_preturn_dependency(
+    c: &Connection,
+    view: &RunView,
+    source: &RequestSource,
+    marker: FactId,
+) -> Result<bool, StoreError> {
+    if source.current_revision != 0 {
+        return Ok(false);
+    }
+    let Some(baseline) = &view.baseline else {
+        return Ok(false);
+    };
+    let Some(recorded) = super::fact(c, view.run, marker)? else {
+        return Ok(false);
+    };
+    if recorded.revision > view.revision
+        || !matches!(&recorded.fact, Fact::ContextCompacted { baseline: actual } if actual == baseline)
+    {
+        return Ok(false);
+    }
+    let previous: CompactedContext = original(c, view.run, baseline)?;
+    let producer = previous
+        .summary_origin
+        .map_or(view.run, |origin| origin.run);
+    let captured: RequestSource = original(c, producer, &previous.source_capture)?;
+    Ok(captured.current_revision == 0
+        && captured.cut == source.cut
+        && captured.current == source.current)
 }
