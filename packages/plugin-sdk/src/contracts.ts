@@ -62328,6 +62328,12 @@ export const contracts: {
               SettingsConnectionEditingFacts: {
                 type: 'object',
                 properties: {
+                  discoveredModelIds: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
                   enabledModelIds: {
                     type: 'array',
                     items: {
@@ -62346,7 +62352,12 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['enabledModelIds', 'modelOverrides', 'requestBodyOverlay'],
+                required: [
+                  'discoveredModelIds',
+                  'enabledModelIds',
+                  'modelOverrides',
+                  'requestBodyOverlay',
+                ],
               },
               ModelOverride: {
                 type: 'object',

@@ -712,11 +712,7 @@ export const settingsMessages = {
   'Model saved.': ['Model saved.', '模型已保存。', '模型已儲存。'],
   'Model selection error': ['Model selection error', '模型选择错误', '模型選擇錯誤'],
   'Model settings': msg_modelSettings,
-  'Models fetched and enabled.': [
-    'Models fetched and enabled.',
-    '模型已获取并启用。',
-    '模型已取得並啟用。',
-  ],
+  'Model list refreshed.': ['Model list refreshed.', '模型列表已刷新。', '模型清單已重新整理。'],
   'Models · {count}': ['Models · {count}', '模型 · {count}', '模型 · {count}'],
   Network: msg_permissionNetwork,
   'Network settings saved.': ['Network settings saved.', '网络设置已保存。', '網路設定已儲存。'],
@@ -986,11 +982,6 @@ export const settingsMessages = {
     'Support effort {level}',
     '支持 {level} 推理强度',
     '支援 {level} 推理強度',
-  ],
-  'Supported reasoning efforts': [
-    'Supported reasoning efforts',
-    '支持的推理强度',
-    '支援的推理強度',
   ],
   Text: ['Text', '文本', '文字'],
   'That connection ID is already in use. Choose another ID.': [

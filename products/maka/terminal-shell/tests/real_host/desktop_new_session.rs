@@ -3162,6 +3162,9 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     );
     desktop.artifact(&format!("connection-model-retry-{theme}-{layout}"));
     desktop.press("Fetch models").await;
+    desktop.press("gpt-6.2-sol: Off").await;
+    desktop.press("gpt-6.2-sol: On").await;
+    desktop.control("gpt-6.2-sol: Off").await;
     desktop.control("Edit model gpt-4.1").await;
     {
         let outcome = desktop.outcome.lock().unwrap();

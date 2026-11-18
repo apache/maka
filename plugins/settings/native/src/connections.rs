@@ -224,7 +224,12 @@ pub(crate) async fn detail(store: &ConfigurationStore, input: Value) -> Result<V
                 enabled_model_count: row.enabled_model_ids.len(),
                 editing: expected
                     .include_editing_facts
-                    .then_some(ConnectionEditingFacts {
+                    .then(|| ConnectionEditingFacts {
+                        discovered_model_ids: row
+                            .models
+                            .into_iter()
+                            .map(|model| model.id)
+                            .collect(),
                         enabled_model_ids: row.enabled_model_ids,
                         model_overrides: row.model_overrides,
                         request_body_overlay: row.request_body_overlay,
