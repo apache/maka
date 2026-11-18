@@ -1370,10 +1370,11 @@ fn state_of(
         .map_or(1.0, |surface| surface.scale() as f64);
     let native = native_content_bounds(window, content);
     if let Some(native) = native {
-        bounds.origin.x = Points((native.x / scale) as f32 - content_bounds.origin.x.0);
-        bounds.origin.y = Points((native.y / scale) as f32 - content_bounds.origin.y.0);
-        content_bounds.origin.x = Points((native.x / scale) as f32);
-        content_bounds.origin.y = Points((native.y / scale) as f32);
+        let x = (f64::from(native.x.0) / scale) as f32;
+        let y = (f64::from(native.y.0) / scale) as f32;
+        bounds.origin.x = Points(x - content_bounds.origin.x.0);
+        bounds.origin.y = Points(y - content_bounds.origin.y.0);
+        content_bounds.origin = point(Points(x), Points(y));
     }
     let minimized = gdk_surface
         .as_ref()
