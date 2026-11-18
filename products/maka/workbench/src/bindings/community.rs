@@ -100,7 +100,14 @@ pub async fn search(text: String, page: u32, locale: String) -> Result<Page, Str
         let client = client.clone();
         let locale = locale.clone();
         tasks.spawn(async move {
-            let manifest = manifest(&client, &item.full_name).await;
+            let bundle_url = format!(
+                "https://github.com/{}/releases/latest/download/plugin.maka-plugin",
+                item.full_name
+            );
+            let (manifest, installable) = tokio::join!(
+                manifest(&client, &item.full_name),
+                bundle_available(&client, &bundle_url),
+            );
             let field = |key: &str| {
                 manifest["localizations"][&locale][key]
                     .as_str()
@@ -112,7 +119,7 @@ pub async fn search(text: String, page: u32, locale: String) -> Result<Page, Str
                 Repository {
                     category: category(&manifest).into(),
                     title: field("displayName").unwrap_or_default().into(),
-                    installable: item.topics.iter().any(|t| t == "maka-ui-plugin"),
+                    installable,
                     name: item.full_name,
                     description: field("description")
                         .map(str::to_owned)
@@ -131,6 +138,15 @@ pub async fn search(text: String, page: u32, locale: String) -> Result<Page, Str
         more,
         repositories: rows.into_iter().map(|(_, repo)| repo).collect(),
     })
+}
+
+// Follow GitHub's latest-release and asset redirects without downloading the package.
+async fn bundle_available(client: &reqwest::Client, url: &str) -> bool {
+    client
+        .head(url)
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
 }
 
 fn category(manifest: &serde_json::Value) -> &'static str {
@@ -182,6 +198,47 @@ async fn manifest(client: &reqwest::Client, repo: &str) -> serde_json::Value {
 mod tests {
     use super::category;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn availability_checks_the_asset_without_downloading_it() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", server.local_addr().unwrap());
+        let worker = tokio::spawn(async move {
+            for (path, response) in [
+                ("/latest", "302 Found\r\nLocation: /asset"),
+                ("/asset", "200 OK"),
+                ("/missing", "404 Not Found"),
+            ] {
+                let (socket, _) = server.accept().await.unwrap();
+                let mut socket = BufReader::new(socket);
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                assert_eq!(line, format!("HEAD {path} HTTP/1.1\r\n"));
+                loop {
+                    line.clear();
+                    socket.read_line(&mut line).await.unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                socket
+                    .get_mut()
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {response}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        assert!(super::bundle_available(&client, &format!("{url}/latest")).await);
+        assert!(!super::bundle_available(&client, &format!("{url}/missing")).await);
+        worker.await.unwrap();
+    }
 
     #[test]
     fn marketplace_categories_follow_declared_contributions() {
