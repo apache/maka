@@ -196,12 +196,14 @@ mod tests {
             Size::new(px(1100.0), px(900.0)),
             false,
         );
+        app.wait_for("role:button[Proactive discovery]").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("role:button[Approve and enable]").unwrap();
         app.press("role:button[Approve and enable]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.press_key("mod+shift+b").unwrap();
         app.press("role:button[Close]").unwrap();
+        app.wait_for("role:button[Proactive discovery]").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("role:button[View background follow-ups]")
             .unwrap();
@@ -226,6 +228,18 @@ mod tests {
         app.wait_for("role:button[Change model]").unwrap();
         app.press("role:button[Change model]").unwrap();
         app.wait_for("text:Opened models").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("role:button[View background follow-ups]")
+            .unwrap();
+        app.press("role:button[View background follow-ups]")
+            .unwrap();
+        app.wait_for("role:button[Resume]").unwrap();
+        app.press("role:button[Resume]").unwrap();
+        app.wait_for("role:button[Approve and resume]").unwrap();
+        app.press("role:button[Approve and resume]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.wait_for("text:Action approved replacement").unwrap();
     }
 
     #[test]

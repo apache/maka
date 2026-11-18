@@ -47,6 +47,8 @@ mount(() => {
     binding: { revision: 1 },
   };
   const model = { connectionId: 'sample-command-code', modelId: 'deepseek' };
+  let selectedModel = model;
+  const replacement = { connectionId: 'replacement', modelId: 'available' };
   const page = () => ({
     kind: 'page',
     revision,
@@ -137,7 +139,11 @@ mount(() => {
         },
       };
     } else {
-      if (input.kind === 'resume' && disabledModel)
+      if (
+        input.kind === 'resume' &&
+        disabledModel &&
+        detail.task.effect.model.connectionId === model.connectionId
+      )
         return { kind: 'rejected', reason: 'agent_model_unavailable' };
       if (input.revision !== detail.revision) return { kind: 'conflict' };
       revision++;
@@ -156,6 +162,7 @@ mount(() => {
           lastError: null,
         };
         detail.approved = true;
+        calls.set('approved ' + detail.task.effect.model.connectionId);
       }
       if (input.kind === 'update') {
         detail.task = {
@@ -251,9 +258,16 @@ mount(() => {
         host={host}
         sessionId="bot"
         control={control}
-        selection={async () => (disabledModel ? null : { model, thinkingLevel: null })}
+        selection={async () =>
+          disabledModel && selectedModel === model
+            ? null
+            : { model: selectedModel, thinkingLevel: null }
+        }
         openWorker={opened.set}
-        chooseModel={() => opened.set('models')}
+        chooseModel={() => {
+          selectedModel = replacement;
+          opened.set('models');
+        }}
       />
       <BotReply
         messages={() => [

@@ -704,7 +704,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           <If when={editing()}>
             <SettingsButton
               label={tr(
-                reapproving() && needsRenewedApproval(editingPlan())
+                reapproving() && (editingPlan()?.approved || needsRenewedApproval(editingPlan()))
                   ? 'Approve and resume discovery'
                   : editingPlan() && !reapproving()
                     ? 'Approve and save discovery'

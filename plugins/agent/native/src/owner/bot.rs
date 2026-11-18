@@ -848,10 +848,8 @@ impl Owner {
             _ => None,
         })
     }
-    /// The tools a Session may use when new work is admitted. The Bot's are derived
-    /// from the coordination policy and the current composition, so a newer build's
-    /// tools reach an existing Bot; every other Session keeps its explicit selection.
-    /// Work already accepted keeps the list it was admitted with.
+    /// The Bot uses the available coordination tools within its Session's explicit
+    /// ceiling. Admitted work retains the authority captured for it.
     pub(super) fn admitted_tools(
         &self,
         session: &str,

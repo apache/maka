@@ -348,7 +348,6 @@ impl scheduler::Scheduler {
         before: Option<u64>,
         query: Option<&str>,
         related: Option<&str>,
-        limit: usize,
     ) -> Result<MemoryPage, String> {
         let oldest = if let Some(id) = related {
             self.memory_entry(scope, id).await?.sequence
@@ -361,11 +360,11 @@ impl scheduler::Scheduler {
         let budget = if query.is_some() || related.is_some() {
             FILTER_SCAN_LIMIT
         } else {
-            limit as u64
+            PAGE_SIZE as u64
         };
         let floor = oldest.max(sequence.saturating_sub(budget - 1));
         let mut records = Vec::new();
-        while sequence >= floor && records.len() < limit {
+        while sequence >= floor && records.len() < PAGE_SIZE {
             let start = floor.max(sequence.saturating_sub(INDEX_BATCH - 1));
             let count = (sequence - start + 1) as usize;
             let mut ids = Vec::with_capacity(count);
@@ -408,7 +407,7 @@ impl scheduler::Scheduler {
                     continue;
                 }
                 records.push(entry);
-                if records.len() == limit {
+                if records.len() == PAGE_SIZE {
                     break;
                 }
             }
@@ -586,7 +585,7 @@ impl Owner {
                 }
                 let page = tokio::select! {
                     _ = cancel.cancelled() => return Err(fail("Discovery memory cancelled".into())),
-                    page = self.scheduler.memory_page(&scope, *before, query.as_deref(), related.as_deref(), PAGE_SIZE) => page.map_err(fail)?,
+                    page = self.scheduler.memory_page(&scope, *before, query.as_deref(), related.as_deref()) => page.map_err(fail)?,
                 };
                 let records: Vec<_> = page.records.iter().map(Entry::preview).collect();
                 return Ok(serde_json::json!({"records":records,"next_before":page.next_before}));
@@ -865,5 +864,94 @@ impl Owner {
             return Err("feedback_requires_user_message_in_current_turn".into());
         }
         Ok(source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+
+    #[tokio::test]
+    async fn discovery_filtered_history_fills_pages_and_resumes_after_its_scan_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = RootOwner::create(
+            &temp.path().join("root"),
+            &RootNamespaces {
+                ownership: temp.path().join("owners"),
+                control: temp.path().join("control"),
+            },
+        )
+        .unwrap();
+        let scheduler = scheduler::Scheduler::new(
+            Arc::new(
+                RootStore::open(Arc::new(root), maka_event_log::ROOT_MIGRATIONS)
+                    .await
+                    .unwrap(),
+            ),
+            "search-test/".into(),
+        );
+        let scope = "scope";
+        let source = ExecutionIdentity {
+            session_id: "worker".into(),
+            turn_id: "turn".into(),
+            run_id: maka_agent_facts::durable::RunId::new(),
+        };
+        let head = FILTER_SCAN_LIMIT + 8;
+        let original = format!("{:064x}", 1);
+        for sequence in 1..=head {
+            let text = match sequence {
+                1 => "Migration original-search-marker",
+                11..=14 => "Migration observation",
+                n if n == head => "Migration latest",
+                _ => "Unrelated",
+            };
+            let content = if sequence == 1 {
+                Content::Investigation {
+                    task_id: "plan".into(),
+                    fire_id: "first".into(),
+                    outcome: Outcome::Ok,
+                    result: Some(Report::Report {
+                        text: text.into(),
+                        notes: vec![],
+                    }),
+                    checkpoint: None,
+                }
+            } else {
+                Content::Correction {
+                    record: original.clone(),
+                    note: Note {
+                        text: text.into(),
+                        references: vec![],
+                    },
+                }
+            };
+            let (_, writes) = scheduler
+                .memory_append(scope, format!("{sequence:064x}"), source.clone(), content)
+                .await
+                .unwrap();
+            scheduler.storage.batch(writes).await.unwrap();
+        }
+        let list = |before, term| scheduler.memory_page(scope, before, Some(term), Some(&original));
+        let sequences = |page: &MemoryPage| {
+            page.records
+                .iter()
+                .map(|record| record.sequence)
+                .collect::<Vec<_>>()
+        };
+        let first = list(None, "migration").await.unwrap();
+        assert_eq!(sequences(&first), [head, 14, 13, 12]);
+        assert_eq!(first.next_before, Some(12));
+        let second = list(first.next_before, "migration").await.unwrap();
+        assert_eq!(sequences(&second), [11, 1]);
+        assert_eq!(second.next_before, None);
+        let sparse = list(None, "original-search-marker").await.unwrap();
+        assert!(sparse.records.is_empty());
+        assert_eq!(sparse.next_before, Some(9));
+        let oldest = list(sparse.next_before, "original-search-marker")
+            .await
+            .unwrap();
+        assert_eq!(sequences(&oldest), [1]);
+        assert_eq!(oldest.next_before, None);
     }
 }

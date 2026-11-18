@@ -706,6 +706,13 @@ async fn check_removed_credential(at_delivery: bool) {
         f.settled(&healthy, 1).await["task"]["runs"][0]["outcome"],
         "ok"
     );
+    assert_eq!(f.reapprove(&task, "session").await["kind"], "committed");
+    let renewed = f.detail(&task).await;
+    assert_eq!(
+        renewed["task"]["effect"]["model"]["connectionId"],
+        f.model["connectionId"]
+    );
+    assert_eq!(renewed["task"]["status"], "active");
     f.close().await;
 }
 
@@ -1130,7 +1137,7 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_memory_search_paginates_and_matches_record_text() {
+async fn discovery_memory_tool_searches_record_text_and_relationships() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     let task = f.create("Older useful record").await;
@@ -1145,71 +1152,28 @@ async fn discovery_memory_search_paginates_and_matches_record_text() {
     let (mut socket, _) = next(&listener).await;
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     let record = page["records"][0]["id"].clone();
-    for index in 0..70 {
-        let text = if index == 69 {
-            "Migration observation: He said \"stop\"\nCheck the next line".into()
-        } else if index < 4 {
-            format!("Migration observation {index}")
-        } else {
-            format!("Unrelated observation {index}")
-        };
-        let (next_socket, saved) = memory(
-            &listener,
-            &mut socket,
-            json!({"action":"correct","record":record,"note":{"text":text}}),
-        )
-        .await;
-        assert_eq!(saved["recorded"], true, "{saved}");
-        socket = next_socket;
-    }
-    let sequences = |page: &Value| {
-        page["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|record| record["sequence"].as_u64().unwrap())
-            .collect::<Vec<_>>()
-    };
-    let (mut socket, first) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"list","query":"migration"}),
-    )
-    .await;
-    assert_eq!(sequences(&first), [71, 5, 4, 3]);
-    assert_eq!(first["next_before"], 3);
-    let (mut socket, second) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"list","query":"migration","before":first["next_before"]}),
-    )
-    .await;
-    assert_eq!(sequences(&second), [2, 1]);
-    assert_eq!(second["next_before"], Value::Null);
-
+    let (mut socket, saved) = memory(
+        &listener, &mut socket,
+        json!({"action":"correct","record":record,"note":{"text":"He said \"stop\"\nCheck the next line"}})
+    ).await;
+    assert_eq!(saved["recorded"], true);
     let (mut socket, page) = memory(
         &listener,
         &mut socket,
-        json!({"action":"list","query":"original-search-marker"}),
+        json!({"action":"list","query":"He said \"stop\"\nCheck","related":record}),
     )
     .await;
-    assert_eq!(sequences(&page), [1]);
-    assert_eq!(page["records"][0]["id"], record);
+    assert_eq!(page["records"].as_array().unwrap().len(), 1);
+    assert_eq!(page["records"][0]["sequence"], 2);
+    assert_eq!(page["records"][0]["related"], record);
     assert_eq!(page["next_before"], Value::Null);
-    let (mut socket, page) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"list","query":"He said \"stop\"\nCheck"}),
-    )
-    .await;
-    assert_eq!(sequences(&page), [71]);
     let (mut socket, page) = memory(
         &listener,
         &mut socket,
         json!({"action":"list","query":"kind"}),
     )
     .await;
-    assert!(sequences(&page).is_empty());
+    assert_eq!(page["records"], json!([]));
     quiet(&f, &listener, &mut socket).await;
     f.close().await;
 }

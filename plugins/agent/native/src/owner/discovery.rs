@@ -993,11 +993,8 @@ impl Owner {
         {
             return Err(CaptureError::RouteChanged);
         }
-        // Reuse the frozen opening only while its sources remain authorized. Older
-        // grants omitted protocol tools; rebuild their opening from the durable fire.
-        let input = if allowed_tools == job.tools.names
-            && allowed_tools.iter().any(|name| name == MEMORY)
-        {
+        // A narrower live ceiling must also narrow the references supplied to the model.
+        let input = if allowed_tools == job.tools.names {
             job.input.clone()
         } else {
             self.discovery_input(job, fire, previous, timezone, &allowed_tools)
