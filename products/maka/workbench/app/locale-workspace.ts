@@ -431,6 +431,11 @@ export const workspaceMessages = {
   ],
   Staged: ['Staged', '已暂存', '已暫存'],
   'Stop terminal process': ['Stop terminal process', '停止终端进程', '停止終端程序'],
+  'Stop this agent command?': [
+    'Stop this agent command?',
+    '停止这条 agent 命令？',
+    '停止這條 agent 命令？',
+  ],
   'Stop this terminal and its running process?': [
     'Stop this terminal and its running process?',
     '停止此终端及其正在运行的进程？',
@@ -486,6 +491,11 @@ export const workspaceMessages = {
     'The Host returned a different directory view. Reopen the folder.',
     '主机返回了不同的目录视图。请重新打开文件夹。',
     '主機傳回了不同的目錄檢視。請重新開啟資料夾。',
+  ],
+  'The agent sees it as stopped and may start it again.': [
+    'The agent sees it as stopped and may start it again.',
+    'agent 会看到它已被停止，可能会重新启动它。',
+    'agent 會看到它已被停止，可能會重新啟動它。',
   ],
   'The current patch has no displayable rows.': [
     'The current patch has no displayable rows.',

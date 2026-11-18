@@ -18,15 +18,7 @@
  */
 
 import { createPendingRecovery } from './pendingRecovery';
-import { ActionPending, errorText, renderText, UiError } from './text';
-import {
-  completed,
-  followTerminalList,
-  stopWatch as stop,
-  terminalRunning,
-  type Stream,
-  type Watch,
-} from './terminalList';
+import { ActionPending, errorText, isObservationCancelled, renderText, UiError } from './text';
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
 import { terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
@@ -40,7 +32,8 @@ import type {
   TerminalSize,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
-export { completed, terminalRunning };
+type Stream<T> = { next(): Promise<T | null>; close(): Promise<void> };
+type Watch<T> = { closed: boolean; stream: Stream<T> | null };
 type TerminalRow = { value: Signal<ResourceUpdate> };
 type TerminalTarget = { sessionId: string; ref: string };
 export function terminalStatus(status: ResourceUpdate['result']['status']): string {
@@ -61,6 +54,21 @@ export function terminalStatus(status: ResourceUpdate['result']['status']): stri
       return tr('orphaned');
   }
 }
+export function completed<T>(
+  outcome: { kind: 'completed'; value: T } | { kind: 'failed'; message: string },
+): T {
+  if (outcome.kind === 'failed') throw new Error(outcome.message);
+  return outcome.value;
+}
+export const terminalRunning = (entry: ResourceUpdate) =>
+  entry.result.status === 'starting' || entry.result.status === 'running';
+const stop = (watch: Watch<unknown> | null) => {
+  if (!watch) return;
+  watch.closed = true;
+  const stream = watch.stream;
+  watch.stream = null;
+  if (stream) void stream.close().catch(() => {});
+};
 const DEFAULT_SIZE = { cols: 80, rows: 24 };
 
 export function createTerminals(
@@ -156,10 +164,53 @@ export function createTerminals(
     error.set('');
     void (async () => {
       try {
-        await followTerminalList(host, session, run, current, (resources) => {
-          accept(resources);
-          loading.set(false);
-        });
+        for (let reconnects = 0; current(); ) {
+          try {
+            const opened = await host.subscribe('terminal', 'watchList', {
+              sessionId: session,
+              offset: 0,
+            });
+            if (!current()) {
+              await opened.close();
+              return;
+            }
+            run.stream = opened;
+            try {
+              for (;;) {
+                const outcome = await opened.next();
+                if (!current()) return;
+                if (!outcome) throw new UiError('The Host closed the terminal list.');
+                reconnects = 0;
+                const page = completed(outcome);
+                const resources = [...page.resources];
+                for (let offset = page.nextOffset ?? null; offset !== null; ) {
+                  const more = completed(
+                    await host.query('terminal', 'list', { sessionId: session, offset }),
+                  );
+                  if (!current()) return;
+                  resources.push(...more.resources);
+                  offset = more.nextOffset ?? null;
+                }
+                accept(resources);
+                loading.set(false);
+              }
+            } finally {
+              if (run.stream === opened) {
+                run.stream = null;
+                await opened.close().catch(() => {});
+              }
+            }
+          } catch (reason) {
+            if (!current()) return;
+            if (isObservationCancelled(reason) && reconnects < 3) {
+              reconnects += 1;
+              if (reconnects > 1)
+                await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+              continue;
+            }
+            throw reason;
+          }
+        }
       } catch (reason) {
         if (current()) {
           console.warn('Could not load conversation terminals:', reason);
@@ -693,7 +744,6 @@ function createTerminal(
         !alive ||
         !active ||
         !hooks.admitted() ||
-        agentOwned() ||
         !local() ||
         !terminalRunning(entry()) ||
         stopping()

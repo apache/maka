@@ -37,7 +37,6 @@ import { createMessagesDock } from './MessagesDock';
 import { createGoalContent, goalStatusLabel } from './GoalDialog';
 import { LoadingIndicator } from './Loading';
 import { AppliedPresetDetails } from './AppliedPresetDetails';
-import { createBackgroundTaskPanel } from './BackgroundTasks';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
@@ -53,7 +52,6 @@ export function ComposerDetails(props: {
     | 'sessionId'
     | 'checklist'
     | 'computerAccess'
-    | 'backgroundTasks'
     | 'queue'
     | 'connected'
     | 'goal'
@@ -69,15 +67,6 @@ export function ComposerDetails(props: {
   const renderGoal = session.goal ? createGoalContent({ goal: session.goal }) : null;
   const todo = createChecklist(session.checklist, height, session.sessionId);
   const preset = () => session.permissions.snapshot()?.appliedPreset;
-  const tasks = session.backgroundTasks
-    ? createBackgroundTaskPanel(session.backgroundTasks, height)
-    : {
-        shown: () => false,
-        summary: () => '',
-        preview: () => '',
-        problem: () => false,
-        content: () => null,
-      };
   const panels = {
     preset: {
       shown: () => !!preset(),
@@ -108,12 +97,10 @@ export function ComposerDetails(props: {
     todo,
     computer: createComputerAppControls(session.computerAccess, height),
     messages: createMessagesDock(session, height),
-    tasks,
   };
   type Panel = keyof typeof panels;
   type OtherPanel = Exclude<Panel, 'todo'>;
-  // Background tasks come last and sit at the row's far end.
-  const keys: Panel[] = ['preset', 'goal', 'todo', 'computer', 'messages', 'tasks'];
+  const keys: Panel[] = ['preset', 'goal', 'todo', 'computer', 'messages'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
   const labels = {
@@ -122,14 +109,12 @@ export function ComposerDetails(props: {
     todo: () => tr('Todo'),
     computer: () => tr('Computer access'),
     messages: () => tr('Messages'),
-    tasks: () => tr('Background tasks'),
   };
-  const icons: Record<OtherPanel, 'statusPending' | 'shield' | 'queue' | 'terminal'> = {
+  const icons: Record<OtherPanel, 'statusPending' | 'shield' | 'queue'> = {
     preset: 'statusPending',
     goal: 'statusPending',
     computer: 'shield',
     messages: 'queue',
-    tasks: 'terminal',
   };
   const accessibilityLabels = {
     preset: () => tr('Applied subagent'),
@@ -137,7 +122,6 @@ export function ComposerDetails(props: {
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
     messages: () => tr('Messages'),
-    tasks: () => `${tr('Background tasks')}: ${panels.tasks.summary()}`,
   };
   let alive = true;
   cleanup(() => {
@@ -165,8 +149,7 @@ export function ComposerDetails(props: {
     <If
       when={
         (key === 'goal' && goal()?.status === 'active') ||
-        (key === 'messages' && session.sends().some((item) => item.busy)) ||
-        (key === 'tasks' && (session.backgroundTasks?.running().length ?? 0) > 0)
+        (key === 'messages' && session.sends().some((item) => item.busy))
       }
       else={
         <Icon
@@ -350,16 +333,7 @@ export function ComposerDetails(props: {
       <Each of={available()} key={(key) => key}>
         {(key) => {
           const current = key();
-          if (current === 'todo') return todoItem();
-          if (current !== 'tasks') return otherItem(current);
-          return (
-            <>
-              <If when={available().length > 1}>
-                <View style={{ flex: 1, minWidth: 0 }} />
-              </If>
-              {otherItem(current)}
-            </>
-          );
+          return current === 'todo' ? todoItem() : otherItem(current);
         }}
       </Each>
     </View>
