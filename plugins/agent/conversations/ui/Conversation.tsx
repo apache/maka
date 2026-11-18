@@ -4456,6 +4456,16 @@ export function Conversation(props: ConversationProps) {
                 openLink={openLink}
                 senders={senders}
                 userScroll={() => cancelNavigation()}
+                revealTerminalGroup={
+                  platform.idiom === 'terminal'
+                    ? () =>
+                        list?.scrollToIndex({
+                          index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
+                          viewPosition: 0,
+                          animated: false,
+                        })
+                    : undefined
+                }
                 activity={activity}
                 viewport={readingSize}
                 reading={(away) => {

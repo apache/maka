@@ -577,6 +577,7 @@ function ActivityLog(props: {
 }
 
 type TurnPanelProps = {
+  revealTerminalGroup?(): void;
   group: () => ProcessGroup;
   toolProgress(id: string): ToolActivity['phase'] | null;
   turn: () => TurnPresentation;
@@ -719,6 +720,7 @@ function GroupHeader(props: TurnPanelProps) {
     props.reading(action.open && props.group().closed);
     animateDisclosure();
     props.state.open.set(action.open);
+    if (action.open) props.revealTerminalGroup?.();
   };
   const icon = () => {
     const last =
