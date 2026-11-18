@@ -138,7 +138,10 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
         || (endpoint == "management"
-            && matches!(method, "setEnabled" | "configure" | "configureBatch"))
+            && matches!(
+                method,
+                "setEnabled" | "configure" | "configureBatch" | "installUrl" | "editComposition"
+            ))
         || (endpoint == "authentication" && method == "loginCredential")
         || (endpoint == "web" && matches!(method, "save" | "saveKey" | "deleteKey" | "checkKey"))
 }

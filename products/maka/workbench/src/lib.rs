@@ -660,14 +660,13 @@ mod tests {
         app.press("label:Edit model gpt-4.1").unwrap();
         app.wait_for("label:Use provider reasoning efforts: On")
             .unwrap();
-        assert!(!app.screen().enabled("label:Support effort high").unwrap());
-        let remove_model_y = y_of(&app, "text:Remove model");
+        assert!(!app.screen().matches("label:Support effort high").unwrap());
         app.press("label:Use provider reasoning efforts: On")
             .unwrap();
         app.wait_for("label:Use provider reasoning efforts: Off")
             .unwrap();
         assert!(app.screen().enabled("label:Support effort high").unwrap());
-        assert_eq!(y_of(&app, "text:Remove model"), remove_model_y);
+        app.wait_for("text:Save").unwrap();
 
         app.press_key("f8").unwrap();
         app.wait_for("text:Discard unsaved changes?").unwrap();

@@ -253,6 +253,13 @@ function plugins() {
   return owner;
 }
 
+test('marketplace recognizes an installed package under a custom instance name', () => {
+  const owner = plugins();
+  const instance = owner.communityInstance('acme/maka-plugin-greeter', 'example.greeter');
+  assert.deepEqual(instance?.path, ['greeter']);
+  assert.equal(owner.communityInstance('acme/maka-plugin-greeter', 'example.other'), undefined);
+});
+
 test('a plugin setting asks before leaving a changed value, not the value it opened with', () => {
   const owner = plugins();
   const exit = exits();

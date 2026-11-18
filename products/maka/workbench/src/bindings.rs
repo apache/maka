@@ -20,6 +20,7 @@
 //! The application receives this already connected Host object; it cannot choose a Root.
 
 mod assets;
+mod community;
 mod diagrams;
 mod file_search;
 mod files;
@@ -369,6 +370,17 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn community_plugins(
+        this: Instance<Self>,
+        query: String,
+        page: u32,
+        locale: String,
+    ) -> Result<community::Page, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, community::search(query, page, locale)).await
+    }
+
     pub async fn installed_applications(this: Instance<Self>) -> Result<Vec<String>, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
