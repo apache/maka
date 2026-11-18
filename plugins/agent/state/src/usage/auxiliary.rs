@@ -382,6 +382,7 @@ fn validate_source(c: &Connection, spec: &AuxiliarySpec) -> Result<(), StoreErro
             namespace,
             operation,
             fingerprint,
+            ..
         } => {
             let (revision,contract_digest,request,contract): (i64,String,String,String) = c.query_row(
                 "SELECT o.source_revision,o.contract_digest,o.request_json,k.contract_json FROM application_operations o

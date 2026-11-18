@@ -90,11 +90,95 @@ const icons = {
   undo: { lucide: 'undo-2', glyph: '↶' },
   redo: { lucide: 'redo-2', glyph: '↷' },
   download: { lucide: 'download', glyph: '↓' },
-} satisfies Record<string, { lucide: keyof typeof lucide; glyph: string }>;
+  panelRight: { custom: 'panelRight', glyph: '◫' },
+  panelRightClose: { custom: 'panelRightClose', glyph: '▷' },
+  panelRightOpen: { custom: 'panelRightOpen', glyph: '◁' },
+  inspector: { custom: 'inspector', glyph: '▤' },
+  pullRequest: { custom: 'pullRequest', glyph: '⊶' },
+  gitBranch: { custom: 'gitBranch', glyph: '⑂' },
+  gitCommit: { custom: 'gitCommit', glyph: '●' },
+  diff: { custom: 'diff', glyph: '±' },
+  minimize: { custom: 'minimize', glyph: '⤡' },
+  globe: { custom: 'globe', glyph: '⊕' },
+  eyeOff: { custom: 'eyeOff', glyph: '◌' },
+} satisfies Record<
+  string,
+  | { lucide: keyof typeof lucide; glyph: string }
+  | { custom: keyof typeof customIcons; glyph: string }
+>;
+
+const customIcons = {
+  panelRight: [
+    { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
+    { tag: 'path', d: 'M15 3v18' },
+  ],
+  panelRightClose: [
+    { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
+    { tag: 'path', d: 'M15 3v18' },
+    { tag: 'path', d: 'm8 9 3 3-3 3' },
+  ],
+  panelRightOpen: [
+    { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
+    { tag: 'path', d: 'M15 3v18' },
+    { tag: 'path', d: 'm10 15-3-3 3-3' },
+  ],
+  inspector: [
+    { tag: 'rect', x: 3, y: 4, width: 18, height: 16, rx: 2 },
+    { tag: 'path', d: 'M7 9h5' },
+    { tag: 'path', d: 'M7 13h7' },
+    { tag: 'path', d: 'M16 9h1' },
+    { tag: 'path', d: 'M16 13h1' },
+  ],
+  pullRequest: [
+    { tag: 'circle', cx: 6, cy: 6, r: 3 },
+    { tag: 'circle', cx: 18, cy: 18, r: 3 },
+    { tag: 'path', d: 'M13 6h3a2 2 0 0 1 2 2v7' },
+    { tag: 'line', x1: 6, y1: 9, x2: 6, y2: 21 },
+  ],
+  gitBranch: [
+    { tag: 'line', x1: 6, y1: 3, x2: 6, y2: 15 },
+    { tag: 'circle', cx: 18, cy: 6, r: 3 },
+    { tag: 'circle', cx: 6, cy: 18, r: 3 },
+    { tag: 'path', d: 'M18 9a9 9 0 0 1-9 9' },
+  ],
+  gitCommit: [
+    { tag: 'circle', cx: 12, cy: 12, r: 3 },
+    { tag: 'line', x1: 3, y1: 12, x2: 9, y2: 12 },
+    { tag: 'line', x1: 15, y1: 12, x2: 21, y2: 12 },
+  ],
+  diff: [
+    { tag: 'path', d: 'M12 4v10' },
+    { tag: 'path', d: 'M7 9h10' },
+    { tag: 'path', d: 'M7 19h10' },
+  ],
+  minimize: [
+    { tag: 'path', d: 'M4 14h6v6' },
+    { tag: 'path', d: 'M20 10h-6V4' },
+    { tag: 'path', d: 'm14 10 7-7' },
+    { tag: 'path', d: 'm3 21 7-7' },
+  ],
+  globe: [
+    { tag: 'circle', cx: 12, cy: 12, r: 10 },
+    { tag: 'path', d: 'M2 12h20' },
+    {
+      tag: 'path',
+      d: 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',
+    },
+  ],
+  eyeOff: [
+    { tag: 'path', d: 'M9.88 9.88a3 3 0 1 0 4.24 4.24' },
+    {
+      tag: 'path',
+      d: 'M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68',
+    },
+    { tag: 'path', d: 'M6.61 6.61A13.52 13.52 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61' },
+    { tag: 'line', x1: 2, y1: 2, x2: 22, y2: 22 },
+  ],
+} satisfies Record<string, LucideElement[]>;
 
 const paths = new Map<string, Path2D>();
 const pointLists = new Map<string, number[]>();
-for (const elements of Object.values(lucide)) {
+for (const elements of [...Object.values(lucide), ...Object.values(customIcons)]) {
   for (const el of elements as LucideElement[]) {
     if (el.tag === 'path') paths.set(el.d, new Path2D(el.d));
     if (el.tag === 'polygon' || el.tag === 'polyline') pointLists.set(el.points, points(el.points));
@@ -184,7 +268,11 @@ export function Icon(props: { name: keyof typeof icons; color: string; size?: nu
           cx.fill();
           return;
         }
-        for (const el of lucide[icons[props.name].lucide] as LucideElement[]) {
+        const spec = icons[props.name];
+        const elements = (
+          'lucide' in spec ? lucide[spec.lucide] : customIcons[spec.custom]
+        ) as LucideElement[];
+        for (const el of elements) {
           if (props.name === 'play' || props.name === 'stop' || props.name === 'pause') {
             // Transport controls retain their filled affordance.
             if (el.tag === 'path') cx.fill(paths.get(el.d)!);

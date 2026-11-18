@@ -34,6 +34,7 @@ import {
 export type SessionMenuAction =
   | 'children'
   | 'open_beside'
+  | 'preset'
   | 'rename'
   | 'fork'
   | 'remove'
@@ -94,7 +95,15 @@ export function SessionMenuItems(props: {
           icon="split"
         />
       </If>
-      <If when={props.childrenAvailable || props.besideAvailable}>
+      <If when={!!session.appliedPreset}>
+        <Item
+          action="preset"
+          label={tr('Applied subagent')}
+          text={tr('Applied subagent')}
+          icon="bot"
+        />
+      </If>
+      <If when={props.childrenAvailable || props.besideAvailable || !!session.appliedPreset}>
         <MenuSeparator style={menuSeparatorStyle()} />
       </If>
       <Item

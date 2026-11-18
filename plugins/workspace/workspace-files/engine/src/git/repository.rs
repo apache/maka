@@ -307,15 +307,22 @@ impl Repository {
         }
         entries.sort();
         entries.dedup();
+        let baseline = self
+            .repo
+            .index_from_tree(&self.tree)
+            .map_err(io::Error::other)?;
         Ok(GitStatus {
             head: self.head.clone(),
             entries: entries
                 .into_iter()
                 .map(|(area, name, kind)| {
+                    let digest =
+                        super::diff::status_entry_digest(self, &baseline, area, &name, kind)?;
                     Ok(GitStatusEntry {
                         area,
                         path: WorkspacePath::from_bytes(&name)?,
                         kind,
+                        digest,
                     })
                 })
                 .collect::<io::Result<_>>()?,

@@ -86,6 +86,7 @@ pub enum Control {
     Cancel,
     Complete,
     SetBudget,
+    Dismiss,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -192,6 +193,8 @@ pub struct Goal<A = Id> {
     pub report: Option<Report>,
     pub note: String,
     pub authority_blocked: bool,
+    #[serde(default)]
+    pub dismissed: bool,
 }
 impl<A> Goal<A> {
     pub fn keeps_host_awake(&self) -> bool {
@@ -219,6 +222,9 @@ impl<A> Goal<A> {
             }
             Control::Complete if !self.status.terminal() => self.status = Status::Achieved,
             Control::SetBudget if !self.status.terminal() => {}
+            Control::Dismiss if self.status.terminal() && self.pending.is_none() => {
+                self.dismissed = true;
+            }
             _ => return Err(invalid("Control is not valid in the current Goal state")),
         }
         Ok(())
@@ -451,6 +457,7 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
             report: None,
             note: String::new(),
             authority_blocked: false,
+            dismissed: false,
         };
         index.update(&goal);
         let mutations = vec![
@@ -584,5 +591,85 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
             });
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_arm(id: Uuid, start: bool) -> Arm<String> {
+        Arm {
+            language: Language::En,
+            operation_id: id,
+            objective: "Ship composer lifecycle".into(),
+            grant: "grant".into(),
+            token_budget: Some(10_000),
+            start,
+        }
+    }
+
+    #[test]
+    fn dismiss_requires_settled_terminal_goal_and_resets_on_replacement() {
+        let pending_run = Pending::Existing {
+            run: maka_agent_facts::durable::RunId::new(),
+            managed: true,
+        };
+        let (mut goal, _) = Repository::prepare_arm(
+            "s1",
+            sample_arm(Uuid::from_u128(10), true),
+            Meter::default(),
+            Some(pending_run),
+            None,
+            None,
+            ScheduleIndex::default(),
+        )
+        .unwrap();
+
+        for non_terminal in [
+            Status::Armed,
+            Status::Active,
+            Status::Paused,
+            Status::Blocked,
+            Status::BudgetLimited,
+        ] {
+            goal.status = non_terminal;
+            goal.pending = None;
+            assert!(goal.control(Control::Dismiss).is_err());
+            assert!(!goal.dismissed);
+        }
+
+        // Terminal but still awaiting run settlement cannot be dismissed yet.
+        goal.status = Status::Achieved;
+        goal.pending = Some(Pending::Existing {
+            run: maka_agent_facts::durable::RunId::new(),
+            managed: true,
+        });
+        assert!(goal.control(Control::Dismiss).is_err());
+        assert!(!goal.dismissed);
+
+        // Once terminal and settled, Dismiss succeeds and round-trips through JSON.
+        goal.pending = None;
+        goal.control(Control::Dismiss).unwrap();
+        assert!(goal.dismissed);
+        let decoded: Goal<String> =
+            serde_json::from_value(serde_json::to_value(&goal).unwrap()).unwrap();
+        assert!(decoded.dismissed);
+
+        // Replacing a dismissed terminal Goal starts fresh with dismissed = false.
+        let (replacement, _) = Repository::prepare_arm(
+            "s1",
+            sample_arm(Uuid::from_u128(11), true),
+            Meter::default(),
+            None,
+            Some(Saved {
+                revision: 1,
+                goal: decoded,
+            }),
+            Some(1),
+            ScheduleIndex::default(),
+        )
+        .unwrap();
+        assert!(!replacement.dismissed);
     }
 }

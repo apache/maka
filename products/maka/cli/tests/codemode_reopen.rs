@@ -1086,6 +1086,49 @@ async fn case(
             .map_err(|error| error.to_string())?,
         expected_effect
     );
+    // Waiting on the Cell only proves logical model completion. The Host can
+    // still be committing the physical cleanup receipt for that attempt.
+    phase("original model cleanup committed", async {
+        let database = sandbox.root.join(maka_event_log::root::ROOT_DATABASE);
+        let run = run.as_str().unwrap();
+        loop {
+            let database = database.clone();
+            let run = run.to_owned();
+            let clean = tokio::task::spawn_blocking(move || -> rusqlite::Result<bool> {
+                let connection = rusqlite::Connection::open_with_flags(
+                    database,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )?;
+                connection.query_row(
+                    "WITH facts AS (
+                         SELECT CAST(c.payload AS TEXT) AS body
+                         FROM agent_facts f JOIN contents c ON c.id = f.body_content_id
+                         WHERE f.run = ?1
+                     ), prepared AS (
+                         SELECT json_extract(body, '$.fact.attempt') AS attempt
+                         FROM facts WHERE json_extract(body, '$.fact.kind') = 'model_attempt_prepared'
+                     )
+                     SELECT count(*) >= 3 AND count(*) = count(cleaned.attempt)
+                     FROM prepared LEFT JOIN (
+                         SELECT DISTINCT json_extract(body, '$.fact.attempt') AS attempt
+                         FROM facts
+                         WHERE json_extract(body, '$.fact.kind') = 'model_cleanup_observed'
+                           AND json_extract(body, '$.fact.cleanup.kind') = 'confirmed'
+                     ) cleaned USING (attempt)",
+                    [run],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+            if clean {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
     phase("close settled first client", clients[0].close()).await?;
     phase(
         "SIGKILL exact original Host, EOF and wait",

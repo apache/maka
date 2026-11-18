@@ -179,6 +179,30 @@ export type AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceConsistency =
   | 'unverified';
 export type AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentCodeDefinitionOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
+export type AgentCodeHoverOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
+export type AgentCodeReferencesOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
 export type AgentCompactOutput_RunId = string;
 export type AgentCompactOutput_AgentExecutionState =
   | {
@@ -346,6 +370,12 @@ export type AgentCreatePresetOutput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type AgentDeleteGitHubTokenOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
 export type AgentDeletePresetOutput_PresetRevision = number;
 export type AgentDeletePresetOutput_ThinkingLevel =
   | 'off'
@@ -391,6 +421,66 @@ export type AgentExternalUsageLimitsOutput_UsagePeriod =
   | {
       kind: 'monthly';
     };
+export type AgentGitCompareInput_AgentGitCompareSpec =
+  | {
+      kind: 'branch';
+      base: string;
+    }
+  | {
+      kind: 'commit';
+      oid: string;
+    }
+  | {
+      kind: 'range';
+      base: string;
+      head: string;
+    };
+export type AgentGitCompareOutput_GitChangeKind =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'type_changed'
+  | 'conflicted';
+export type AgentGitCompareDiffInput_AgentGitCompareSpec =
+  | {
+      kind: 'branch';
+      base: string;
+    }
+  | {
+      kind: 'commit';
+      oid: string;
+    }
+  | {
+      kind: 'range';
+      base: string;
+      head: string;
+    };
+export type AgentGithubPullRequestDetailOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
+export type AgentGithubPullRequestDetailOutput_AgentGitHubPullFileStatus =
+  | 'added'
+  | 'modified'
+  | 'removed'
+  | 'renamed'
+  | 'copied'
+  | 'changed';
+export type AgentGithubPullRequestDetailOutput_AgentGitHubDiffSide = 'LEFT' | 'RIGHT';
+export type AgentGithubPullRequestsInput_AgentGitHubPullStateFilter = 'open' | 'closed' | 'all';
+export type AgentGithubPullRequestsOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
+export type AgentGithubSubmitReviewInput_AgentGitHubReviewEvent =
+  | 'comment'
+  | 'approve'
+  | 'request_changes';
+export type AgentGithubSubmitReviewInput_AgentGitHubDiffSide = 'LEFT' | 'RIGHT';
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -820,11 +910,43 @@ export type AgentMemoryHistoryOutput_MemorySource =
       operationId: string;
       observedAt: number;
     };
-export type AgentMemoryHistoryOutput_MemoryGeneration = 'user_input';
+export type AgentMemoryHistoryOutput_MemoryGeneration = 'user_input' | 'extraction';
 export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
   | 'no_workspace';
+export type AgentPendingMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentPendingMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
+export type AgentPendingMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentPendingMemoriesOutput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentPendingMemoriesOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentPendingMemoriesOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
 export type AgentPredictNextMessageInput_AgentPredictionTrigger = 'live' | 'catch_up';
 export type AgentPresetOutput_PresetRevision = number;
 export type AgentPresetOutput_ThinkingLevel =
@@ -969,6 +1091,122 @@ export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency
   | 'unverified';
 export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentReconcileMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentReconcileMemoriesInput_MemoryEdit =
+  | {
+      kind: 'add_evidence';
+      id: string;
+      expectedRevision: number;
+      assertion: number;
+      reference: AgentReconcileMemoriesInput_MemoryEvidenceReference;
+    }
+  | {
+      kind: 'create';
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    }
+  | {
+      kind: 'correct';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    }
+  | {
+      kind: 'set_always';
+      id: string;
+      expectedRevision: number;
+      always: boolean;
+    }
+  | {
+      kind: 'delete';
+      id: string;
+      expectedRevision: number;
+    }
+  | {
+      kind: 'restore';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    };
+export type AgentReconcileMemoriesInput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentReconcileMemoriesInput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentReconcileMemoriesInput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentReconcileMemoriesOutput_MemoryResult =
+  | {
+      kind: 'created';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'revised';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'unresolved';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'retryable';
+      reason: string;
+    }
+  | {
+      kind: 'evidence_added';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'suppressed';
+    }
+  | {
+      kind: 'saved';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'deleted';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'conflict';
+      actual: number;
+    }
+  | {
+      kind: 'not_found';
+    }
+  | {
+      kind: 'invalid_state';
+    };
 export type AgentRequestSystemPermissionOutput_AgentSystemPermissionOutcome =
   | {
       kind: 'system_permission_granted';
@@ -1036,6 +1274,12 @@ export type AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceConsiste
   | 'unverified';
 export type AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentSaveGitHubTokenOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -2143,6 +2387,10 @@ export type SettingsUsageOutput_UsageAuxiliarySource =
       namespace: SettingsUsageOutput_InstanceId;
       operation: string;
       fingerprint: string;
+      /**
+       * Absent for the initial attempt, preserving existing source identities.
+       */
+      attempt?: number | null;
       [k: string]: unknown | undefined;
     }
   | {
@@ -2423,8 +2671,36 @@ export interface ServiceMethods {
       input: {
         scope: AgentChangeMemoryInput_MemoryScope;
         edit: AgentChangeMemoryInput_MemoryEdit;
+        resolution?: AgentChangeMemoryInput_MemoryResolution | null;
       };
       output:
+        | {
+            kind: 'created';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'revised';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'unresolved';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'retryable';
+            reason: string;
+          }
+        | {
+            kind: 'evidence_added';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'suppressed';
+          }
         | {
             kind: 'saved';
             id: string;
@@ -2475,6 +2751,47 @@ export interface ServiceMethods {
          * Absence is not permission to recapture under a replacement operation.
          */
         publication?: AgentCheckpointReceiptOutput_AgentCheckpointPublication | null;
+      };
+    };
+    codeDefinition: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeDefinitionInput_WorkspacePath;
+        position: AgentCodeDefinitionInput_AgentCodePosition;
+        symbol?: string | null;
+        hoverOnly?: boolean;
+      };
+      output: {
+        backend: AgentCodeDefinitionOutput_AgentCodeBackend;
+        symbol: string;
+        originRange: AgentCodeDefinitionOutput_AgentCodeRange | null;
+        locations: AgentCodeDefinitionOutput_AgentCodeLocation[];
+      };
+    };
+    codeHover: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeHoverInput_WorkspacePath;
+        position: AgentCodeHoverInput_AgentCodePosition;
+      };
+      output: AgentCodeHoverOutput_AgentCodeHoverResult | null;
+    };
+    codeReferences: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeReferencesInput_WorkspacePath;
+        position: AgentCodeReferencesInput_AgentCodePosition;
+        symbol?: string | null;
+        includeDeclaration?: boolean;
+      };
+      output: {
+        backend: AgentCodeReferencesOutput_AgentCodeBackend;
+        symbol: string;
+        locations: AgentCodeReferencesOutput_AgentCodeLocation[];
+        truncated: boolean;
       };
     };
     compact: {
@@ -2579,6 +2896,20 @@ export interface ServiceMethods {
           }
         | {
             kind: 'thinkingLevelUnavailable';
+          };
+    };
+    deleteGitHubToken: {
+      mode: 'mutation';
+      input: {
+        host: string;
+      };
+      output:
+        | {
+            kind: 'updated';
+            auth: AgentDeleteGitHubTokenOutput_AgentGitHubAuthStatus;
+          }
+        | {
+            kind: 'invalid_token';
           };
     };
     deletePreset: {
@@ -2689,15 +3020,232 @@ export interface ServiceMethods {
       input: Runtime.AgentRecapGenerate;
       output: Runtime.AgentRecapReceipt;
     };
+    gitCompare: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        spec: AgentGitCompareInput_AgentGitCompareSpec;
+        includePatch?: boolean;
+        worktreePath?: string | null;
+      };
+      output: AgentGitCompareOutput_AgentGitCompare | null;
+    };
+    gitCompareDiff: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        spec: AgentGitCompareDiffInput_AgentGitCompareSpec;
+        path: AgentGitCompareDiffInput_WorkspacePath;
+        worktreePath?: string | null;
+      };
+      output: Runtime.GitDiff | null;
+    };
     gitDiff: {
       mode: 'query';
       input: Runtime.AgentGitDiffRead;
       output: Runtime.GitDiff | null;
     };
+    gitRevisions: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        worktreePath?: string | null;
+      };
+      output: AgentGitRevisionsOutput_AgentGitRevisions | null;
+    };
     gitStatus: {
       mode: 'query';
-      input: Runtime.AgentSessionRead;
+      input: {
+        sessionId: string;
+        worktreePath?: string | null;
+      };
       output: Runtime.GitStatus | null;
+    };
+    gitWorkspaceDiff: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        area?: Runtime.GitArea | null;
+        worktreePath?: string | null;
+      };
+      output: AgentGitWorkspaceDiffOutput_GitWorkspaceDiff | null;
+    };
+    githubCommentPullRequest: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubCommentPullRequestInput_AgentGitHubRepoRef | null;
+        number: number;
+        body: string;
+      };
+      output:
+        | {
+            kind: 'replied';
+            comment: AgentGithubCommentPullRequestOutput_AgentGitHubReviewComment;
+          }
+        | {
+            kind: 'unauthorized';
+            message: string;
+          }
+        | {
+            kind: 'rejected';
+            message: string;
+          };
+    };
+    githubPullRequestDetail: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubPullRequestDetailInput_AgentGitHubRepoRef | null;
+        number: number;
+        includePatch?: boolean;
+      };
+      output:
+        | {
+            kind: 'ready';
+            detail: AgentGithubPullRequestDetailOutput_AgentGitHubPullDetail;
+          }
+        | {
+            kind: 'unauthorized';
+            repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef;
+            auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+            message: string;
+          }
+        | {
+            kind: 'not_found';
+            repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef;
+            auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+            number: number;
+          }
+        | {
+            kind: 'error';
+            repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef | null;
+            auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+            message: string;
+          };
+    };
+    githubPullRequestFileDiff: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubPullRequestFileDiffInput_AgentGitHubRepoRef | null;
+        number: number;
+        path: string;
+        baseSha?: string | null;
+        headSha?: string | null;
+      };
+      output:
+        | {
+            kind: 'full';
+            patch: string;
+            before: string;
+            after: string;
+            digest: string;
+          }
+        | {
+            kind: 'patch_only';
+            patch: string;
+            digest: string;
+          }
+        | {
+            kind: 'binary';
+          }
+        | {
+            kind: 'large';
+          }
+        | {
+            kind: 'not_found';
+          };
+    };
+    githubPullRequests: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubPullRequestsInput_AgentGitHubRepoRef | null;
+        state?: AgentGithubPullRequestsInput_AgentGitHubPullStateFilter & string;
+        headBranch?: string | null;
+      };
+      output:
+        | {
+            kind: 'ready';
+            repo: AgentGithubPullRequestsOutput_AgentGitHubRepoRef;
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+            auth: AgentGithubPullRequestsOutput_AgentGitHubAuthStatus;
+            currentBranchPr: number | null;
+            pulls: AgentGithubPullRequestsOutput_AgentGitHubPullSummary[];
+          }
+        | {
+            kind: 'no_remote';
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+          }
+        | {
+            kind: 'unauthorized';
+            repo: AgentGithubPullRequestsOutput_AgentGitHubRepoRef;
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+            auth: AgentGithubPullRequestsOutput_AgentGitHubAuthStatus;
+            message: string;
+          }
+        | {
+            kind: 'error';
+            repo: AgentGithubPullRequestsOutput_AgentGitHubRepoRef | null;
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+            auth: AgentGithubPullRequestsOutput_AgentGitHubAuthStatus;
+            message: string;
+          };
+    };
+    githubReplyComment: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubReplyCommentInput_AgentGitHubRepoRef | null;
+        number: number;
+        commentId: number;
+        body: string;
+      };
+      output:
+        | {
+            kind: 'replied';
+            comment: AgentGithubReplyCommentOutput_AgentGitHubReviewComment;
+          }
+        | {
+            kind: 'unauthorized';
+            message: string;
+          }
+        | {
+            kind: 'rejected';
+            message: string;
+          };
+    };
+    githubSubmitReview: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubSubmitReviewInput_AgentGitHubRepoRef | null;
+        number: number;
+        expectedHeadSha: string;
+        event: AgentGithubSubmitReviewInput_AgentGitHubReviewEvent;
+        body?: string;
+        comments?: AgentGithubSubmitReviewInput_AgentGitHubDraftReviewComment[];
+      };
+      output:
+        | {
+            kind: 'submitted';
+            reviewId: number;
+            state: string;
+            htmlUrl: string;
+          }
+        | {
+            kind: 'stale_head';
+            actualHeadSha: string;
+          }
+        | {
+            kind: 'unauthorized';
+            message: string;
+          }
+        | {
+            kind: 'rejected';
+            message: string;
+          };
     };
     globalInstructions: {
       mode: 'query';
@@ -3070,6 +3618,18 @@ export interface ServiceMethods {
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentPendingInteractions;
     };
+    pendingMemories: {
+      mode: 'query';
+      input: {
+        scope: AgentPendingMemoriesInput_MemoryScope;
+        after?: string | null;
+        limit: number;
+      };
+      output: {
+        records: AgentPendingMemoriesOutput_MemoryRecord[];
+        next?: string | null;
+      };
+    };
     predictNextMessage: {
       mode: 'mutation';
       input: {
@@ -3217,6 +3777,23 @@ export interface ServiceMethods {
       input: Runtime.AgentRecapRead;
       output: Runtime.AgentRecapReceipt | null;
     };
+    reconcileMemories: {
+      mode: 'mutation';
+      input: {
+        scope: AgentReconcileMemoriesInput_MemoryScope;
+        writes: AgentReconcileMemoriesInput_MemoryWrite[];
+        resolution?: AgentReconcileMemoriesInput_MemoryResolution | null;
+      };
+      output:
+        | {
+            kind: 'committed';
+            results: AgentReconcileMemoriesOutput_MemoryResult[];
+          }
+        | {
+            kind: 'retryable';
+            reason: string;
+          };
+    };
     requestSystemPermission: {
       mode: 'mutation';
       input: {
@@ -3259,6 +3836,20 @@ export interface ServiceMethods {
         workspace: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSnapshot;
         path: string;
       };
+    };
+    saveGitHubToken: {
+      mode: 'mutation';
+      input: {
+        host: string;
+      };
+      output:
+        | {
+            kind: 'updated';
+            auth: AgentSaveGitHubTokenOutput_AgentGitHubAuthStatus;
+          }
+        | {
+            kind: 'invalid_token';
+          };
     };
     schedule: {
       mode: 'mutation';
@@ -4578,6 +5169,18 @@ export interface AgentChangeMemoryInput_MemoryMetadata {
   statement: AgentChangeMemoryInput_MemoryStatement;
   temporal: AgentChangeMemoryInput_MemoryTemporal;
 }
+export interface AgentChangeMemoryInput_MemoryResolution {
+  sessionId: string;
+  model: AgentChangeMemoryInput_ModelSelection;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentChangeMemoryInput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
 export interface AgentCheckpointReceiptInput_RecoveryRef {
   source: AgentCheckpointReceiptInput_DeploymentRef;
   namespace: AgentCheckpointReceiptInput_InstanceId;
@@ -4666,6 +5269,91 @@ export interface AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceWarning;
 }
+export interface AgentCodeDefinitionInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeDefinitionInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeDefinitionOutput_AgentCodeRange {
+  start: AgentCodeDefinitionOutput_AgentCodePosition;
+  end: AgentCodeDefinitionOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeDefinitionOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeDefinitionOutput_AgentCodeLocation {
+  path: AgentCodeDefinitionOutput_WorkspacePath;
+  range: AgentCodeDefinitionOutput_AgentCodeRange;
+  preview: string;
+}
+export interface AgentCodeDefinitionOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentCodeHoverInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeHoverInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeHoverOutput_AgentCodeHoverResult {
+  backend: AgentCodeHoverOutput_AgentCodeBackend;
+  symbol: string;
+  range: AgentCodeHoverOutput_AgentCodeRange | null;
+  markdown: string;
+}
+export interface AgentCodeHoverOutput_AgentCodeRange {
+  start: AgentCodeHoverOutput_AgentCodePosition;
+  end: AgentCodeHoverOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeHoverOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeReferencesInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeReferencesInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeReferencesOutput_AgentCodeLocation {
+  path: AgentCodeReferencesOutput_WorkspacePath;
+  range: AgentCodeReferencesOutput_AgentCodeRange;
+  preview: string;
+}
+export interface AgentCodeReferencesOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentCodeReferencesOutput_AgentCodeRange {
+  start: AgentCodeReferencesOutput_AgentCodePosition;
+  end: AgentCodeReferencesOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeReferencesOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
 /**
  * Stable logical Run receipt, independent of activations and the current Session tip.
  */
@@ -4734,6 +5422,11 @@ export interface AgentCreatePresetOutput_ModelSelection {
   modelId: string;
   [k: string]: unknown | undefined;
 }
+export interface AgentDeleteGitHubTokenOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentDeleteGitHubTokenOutput_AgentGitHubTokenSource | null;
+}
 export interface AgentDeletePresetOutput_Preset {
   id: string;
   revision: AgentDeletePresetOutput_PresetRevision;
@@ -4756,6 +5449,215 @@ export interface AgentExternalUsageLimitsOutput_UsageQuantity {
   used: number;
   limit: number;
   unit?: string | null;
+}
+export interface AgentGitCompareOutput_AgentGitCompare {
+  baseOid: string | null;
+  headOid: string;
+  entries: AgentGitCompareOutput_AgentGitCompareEntry[];
+  patch: AgentGitCompareOutput_GitWorkspaceDiff | null;
+}
+export interface AgentGitCompareOutput_AgentGitCompareEntry {
+  path: AgentGitCompareOutput_WorkspacePath;
+  kind: AgentGitCompareOutput_GitChangeKind;
+  digest: string;
+}
+export interface AgentGitCompareOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentGitCompareOutput_GitWorkspaceDiff {
+  patch: string;
+  truncated: boolean;
+  skippedFiles: number;
+}
+export interface AgentGitCompareDiffInput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentGitRevisionsOutput_AgentGitRevisions {
+  headBranch: string | null;
+  headOid: string | null;
+  defaultBase: string | null;
+  branches: AgentGitRevisionsOutput_AgentGitBranchEntry[];
+  commits: AgentGitRevisionsOutput_AgentGitCommitSummary[];
+  remotes: AgentGitRevisionsOutput_AgentGitRemoteRepo[];
+  worktrees: AgentGitRevisionsOutput_AgentGitWorktreeEntry[];
+}
+export interface AgentGitRevisionsOutput_AgentGitBranchEntry {
+  name: string;
+  oid: string;
+  remote: boolean;
+}
+export interface AgentGitRevisionsOutput_AgentGitCommitSummary {
+  oid: string;
+  shortOid: string;
+  summary: string;
+  author: string;
+  timestamp: number;
+}
+export interface AgentGitRevisionsOutput_AgentGitRemoteRepo {
+  remote: string;
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGitRevisionsOutput_AgentGitWorktreeEntry {
+  path: string;
+  name: string;
+  branch: string | null;
+  headOid: string | null;
+  isCurrent: boolean;
+  isMain: boolean;
+}
+export interface AgentGitWorkspaceDiffOutput_GitWorkspaceDiff {
+  patch: string;
+  truncated: boolean;
+  skippedFiles: number;
+}
+export interface AgentGithubCommentPullRequestInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubCommentPullRequestOutput_AgentGitHubReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubPullRequestDetailInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubPullDetail {
+  repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef;
+  auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  draft: boolean;
+  merged: boolean;
+  author: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  baseSha: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  htmlUrl: string;
+  files: AgentGithubPullRequestDetailOutput_AgentGitHubPullFile[];
+  threads: AgentGithubPullRequestDetailOutput_AgentGitHubReviewThread[];
+  reviews: AgentGithubPullRequestDetailOutput_AgentGitHubReviewSummary[];
+  issueComments: AgentGithubPullRequestDetailOutput_AgentGitHubReviewComment[];
+  patch: AgentGithubPullRequestDetailOutput_GitWorkspaceDiff | null;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentGithubPullRequestDetailOutput_AgentGitHubTokenSource | null;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubPullFile {
+  path: string;
+  previousPath: string | null;
+  status: AgentGithubPullRequestDetailOutput_AgentGitHubPullFileStatus;
+  additions: number;
+  deletions: number;
+  digest: string;
+  hasPatch: boolean;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubReviewThread {
+  id: number;
+  path: string;
+  side: AgentGithubPullRequestDetailOutput_AgentGitHubDiffSide;
+  line: number | null;
+  startLine: number | null;
+  outdated: boolean;
+  diffHunk: string;
+  comments: AgentGithubPullRequestDetailOutput_AgentGitHubReviewComment[];
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubReviewSummary {
+  id: number;
+  author: string;
+  state: string;
+  body: string;
+  submittedAt: string;
+}
+export interface AgentGithubPullRequestDetailOutput_GitWorkspaceDiff {
+  patch: string;
+  truncated: boolean;
+  skippedFiles: number;
+}
+export interface AgentGithubPullRequestFileDiffInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestsInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestsOutput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestsOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentGithubPullRequestsOutput_AgentGitHubTokenSource | null;
+}
+export interface AgentGithubPullRequestsOutput_AgentGitHubPullSummary {
+  number: number;
+  title: string;
+  state: string;
+  draft: boolean;
+  author: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  baseSha: string;
+  updatedAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubReplyCommentInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubReplyCommentOutput_AgentGitHubReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubSubmitReviewInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubSubmitReviewInput_AgentGitHubDraftReviewComment {
+  path: string;
+  side: AgentGithubSubmitReviewInput_AgentGitHubDiffSide;
+  line: number;
+  startLine?: number | null;
+  startSide?: AgentGithubSubmitReviewInput_AgentGitHubDiffSide | null;
+  body: string;
 }
 export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
   revision: string;
@@ -5067,6 +5969,22 @@ export interface AgentMemoryHistoryOutput_MemoryEvidenceReference {
   end: number;
   quote: string;
 }
+export interface AgentPendingMemoriesOutput_MemoryRecord {
+  assertion: number;
+  id: string;
+  revision: number;
+  mode: AgentPendingMemoriesOutput_MemoryMode;
+  state: AgentPendingMemoriesOutput_MemoryState;
+  body: string;
+  metadata: AgentPendingMemoriesOutput_MemoryMetadata;
+  createdAt: number;
+  modifiedAt: number;
+}
+export interface AgentPendingMemoriesOutput_MemoryMetadata {
+  kind: AgentPendingMemoriesOutput_MemoryKind;
+  statement: AgentPendingMemoriesOutput_MemoryStatement;
+  temporal: AgentPendingMemoriesOutput_MemoryTemporal;
+}
 export interface AgentPresetOutput_PresetDetail {
   preset: AgentPresetOutput_Preset;
   availability: AgentPresetOutput_PresetAvailability;
@@ -5166,6 +6084,43 @@ export interface AgentReadPatchOutput_AgentWorkspacePatch {
   baseCommit: string;
   bytes: number;
 }
+export interface AgentReconcileMemoriesInput_MemoryWrite {
+  edit: AgentReconcileMemoriesInput_MemoryEdit;
+  /**
+   * A verified conversation source grants automatic extraction authority only.
+   */
+  evidence?: AgentReconcileMemoriesInput_MemoryEvidenceReference | null;
+}
+export interface AgentReconcileMemoriesInput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
+}
+export interface AgentReconcileMemoriesInput_MemoryMetadata {
+  kind: AgentReconcileMemoriesInput_MemoryKind;
+  statement: AgentReconcileMemoriesInput_MemoryStatement;
+  temporal: AgentReconcileMemoriesInput_MemoryTemporal;
+}
+export interface AgentReconcileMemoriesInput_MemoryResolution {
+  sessionId: string;
+  model: AgentReconcileMemoriesInput_ModelSelection;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentReconcileMemoriesInput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
 export interface AgentRequestSystemPermissionOutput_AgentSystemPermissionState {
   grant: AgentRequestSystemPermissionOutput_SystemPermissionGrant;
   effective: boolean;
@@ -5205,6 +6160,11 @@ export interface AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSna
   consistency: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentRestoreSessionCheckpointOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentSaveGitHubTokenOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentSaveGitHubTokenOutput_AgentGitHubTokenSource | null;
 }
 export interface AgentSessionCheckpointRestoreReceiptInput_RecoveryRef {
   source: AgentSessionCheckpointRestoreReceiptInput_DeploymentRef;

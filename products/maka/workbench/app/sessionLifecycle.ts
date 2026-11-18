@@ -27,6 +27,8 @@ export type SessionActionTarget = Pick<
   'id' | 'revision' | 'title' | 'labels' | 'archived' | 'pinned'
 > & {
   workspace: Pick<AgentSession['workspace'], 'path'>;
+  appliedPreset?: AgentSession['appliedPreset'];
+  backend?: AgentSession['backend'];
 };
 // Catalog activity is presentation data; it must not rebind a metadata action.
 export function sessionActionTarget(session: AgentSession): SessionActionTarget {
@@ -38,6 +40,8 @@ export function sessionActionTarget(session: AgentSession): SessionActionTarget 
     archived: session.archived,
     pinned: session.pinned,
     workspace: { path: session.workspace.path },
+    appliedPreset: session.appliedPreset ?? null,
+    backend: session.backend ?? null,
   };
 }
 

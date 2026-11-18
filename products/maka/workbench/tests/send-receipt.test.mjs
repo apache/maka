@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  mergeRestoredIntoHeldDraft,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
@@ -136,4 +137,31 @@ test('accepted queued sends already visible in transcript or followups hide tran
     true,
   );
   assert.equal(shouldHideAcceptedQueuedStatus({ ...base, inTranscript: () => false }), false);
+});
+
+test('typing while restoreSend is in flight merges the restored message once onto the latest local edit', () => {
+  const fileA = { id: 'att-1', name: 'sample.txt', mimeType: 'text/plain', bytes: 11 };
+  const fileB = { id: 'att-2', name: 'new.txt', mimeType: 'text/plain', bytes: 5 };
+  assert.deepEqual(
+    mergeRestoredIntoHeldDraft(
+      { text: 'next draft!', attachments: [fileB], settledUploads: ['upload-2'] },
+      { text: 'review this', attachments: [fileA, fileB] },
+    ),
+    {
+      text: 'next draft!\n\nreview this',
+      attachments: [fileB, fileA],
+      settledUploads: ['upload-2'],
+    },
+  );
+  assert.deepEqual(
+    mergeRestoredIntoHeldDraft(
+      { text: '   ', attachments: [], settledUploads: [] },
+      { text: 'review this', attachments: [fileA] },
+    ),
+    {
+      text: 'review this',
+      attachments: [fileA],
+      settledUploads: [],
+    },
+  );
 });

@@ -181,6 +181,9 @@ export function createHost(application: UiHost) {
         : {
             path: { bytesBase64: link.path },
             parent: link.parent == null ? null : { bytesBase64: link.parent },
+            ...(typeof link.line === 'number' ? { line: link.line } : {}),
+            ...(typeof link.endLine === 'number' ? { endLine: link.endLine } : {}),
+            ...(typeof link.column === 'number' ? { column: link.column } : {}),
           };
     },
     query,
@@ -296,6 +299,8 @@ export async function confirmSend(scope: ScopedHost, id: string) {
 export const pendingSends = (scope: ScopedHost) => scope.pending() as Promise<SendOperation[]>;
 export const retrySend = (scope: ScopedHost, id: string, selection: unknown) =>
   scope.retrySend(id, selection) as Promise<string>;
+export const restoreSend = (scope: ScopedHost, id: string, revision: number) =>
+  scope.restoreSend(id, revision) as Promise<SavedDraft>;
 export const dismissSend = (scope: ScopedHost, id: string) =>
   scope.dismissSend(id) as Promise<void>;
 export type SendDelivery = 'accepted' | 'delivered' | 'cancelled' | 'unknown';

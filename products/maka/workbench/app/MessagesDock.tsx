@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { createText, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
-import { cleanup, computed, effect, inputAction, Scroll, signal, Text, View, List } from 'nsh';
+import { cleanup, computed, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
@@ -77,7 +77,7 @@ const actionStyle = {
 export function createMessagesDock(
   session: Pick<
     ComposerSession,
-    'queue' | 'sends' | 'connected' | 'retrySend' | 'checkSend' | 'dismissSend'
+    'queue' | 'sends' | 'connected' | 'retrySend' | 'editSend' | 'checkSend' | 'dismissSend'
   >,
   height: () => number,
 ) {
@@ -273,6 +273,25 @@ export function createMessagesDock(
   };
   const rowHeight = platform.idiom === 'terminal' ? 32 : 40;
   const readerHeight = height;
+  const clearError = () => {
+    if (alive) error.set('');
+  };
+  const canDismissAll = computed(
+    () =>
+      items().length === 0 &&
+      editing() === null &&
+      busy() === null &&
+      (sends().length > 0
+        ? sends().every((item) => !item.busy && item.state === 'failed')
+        : connected() && !!error()),
+  );
+  const dismissAll = () => {
+    if (!alive || !canDismissAll()) return;
+    error.set('');
+    for (const item of sends()) {
+      if (!item.busy && item.state === 'failed') void session.dismissSend(item.id);
+    }
+  };
   const feedback = () => (
     <>
       <If when={busy()}>
@@ -281,17 +300,33 @@ export function createMessagesDock(
         </Text>
       </If>
       <If when={connected() && error()}>
-        <Text
-          style={[{ ...captionTextStyle, padding: 12, color: C.warning }, { userSelect: 'text' }]}
-        >
-          {error()}
-        </Text>
+        <View style={{ padding: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text
+            style={[{ ...captionTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}
+          >
+            {error()}
+          </Text>
+          <If when={editing() === null}>
+            <Button
+              accessibilityLabel={tr('Dismiss error')}
+              tooltip={textTooltip(() => tr('Dismiss error'))}
+              onPress={inputAction(clearError, null)}
+              style={actionStyle}
+              hoverStyle={{ backgroundColor: C.cardRaised }}
+              focusStyle={{ backgroundColor: C.line }}
+            >
+              <Icon name="close" color={C.muted} />
+            </Button>
+          </If>
+        </View>
       </If>
     </>
   );
   return {
     shown: () =>
       messages().length > 0 || editing() !== null || busy() !== null || (connected() && !!error()),
+    dismiss: () => (canDismissAll() ? dismissAll : null),
+    dismissLabel: () => (sends().length > 0 ? tr('Dismiss messages') : tr('Dismiss error')),
     summary: () =>
       problems().length
         ? tr('{count} · {problems} to review', {
@@ -311,113 +346,90 @@ export function createMessagesDock(
     content: () => (
       <View style={{ minHeight: 0, flexShrink: 1 }}>
         <If when={editing() === null}>
-          <List
-            accessibilityLabel={tr('Messages')}
-            each={messages()}
-            keyExtractor={(row) => row.id}
-            estimatedItemSize={rowHeight}
-            style={{
-              height: Math.min(sends().length * 96 + items().length * rowHeight, height()),
-              minHeight: 0,
-              flexShrink: 1,
-              flexGrow: 0,
-            }}
-          >
-            {(item) => {
-              const pending = () => {
-                const message = item();
-                return message.kind === 'send' ? [message.status] : [];
-              };
-              const queued = () => {
-                const message = item();
-                return message.kind === 'queued' ? [message.entry] : [];
-              };
-              return (
-                <>
-                  <Each of={pending()} key={(status) => status.id}>
-                    {(status) => <PendingMessage session={session} message={status()} />}
-                  </Each>
-                  <Each of={queued()} key={(entry) => entry.messageId}>
-                    {(row) => {
-                      const number = () =>
-                        items().findIndex((item) => item.messageId === row().messageId) + 1;
-                      const request = (kind: RowAction['kind']): RowAction => ({
-                        sessionId: queue.sessionId,
-                        revision: revision(),
-                        messageId: row().messageId,
-                        kind,
-                      });
-                      return (
-                        <View
-                          style={{
-                            height: rowHeight,
-                            paddingHorizontal: 8,
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 8,
-                          }}
-                        >
-                          <Icon name="queue" color={C.muted} />
-                          <Text
-                            style={[
-                              { ...captionTextStyle, color: C.secondary, flex: 1 },
-                              { numberOfLines: 1 },
-                            ]}
-                          >
-                            {row().preview}
-                          </Text>
-                          <Button
-                            accessibilityLabel={tr('Edit queued message {number}', {
-                              number: number(),
-                            })}
-                            tooltip={textTooltip(() => tr('Edit message'))}
-                            disabled={!connected() || busy() !== null || editing() !== null}
-                            onPress={inputAction(act, request('edit'))}
-                            style={actionStyle}
-                            hoverStyle={{ backgroundColor: C.cardRaised }}
-                            focusStyle={{ backgroundColor: C.line }}
-                          >
-                            <Icon name="edit" color={C.muted} />
-                          </Button>
-                          <Button
-                            accessibilityLabel={tr('Remove queued message {number}', {
-                              number: number(),
-                            })}
-                            tooltip={textTooltip(() => tr('Remove message'))}
-                            disabled={!connected() || busy() !== null || editing() !== null}
-                            onPress={inputAction(act, request('retract'))}
-                            style={actionStyle}
-                            hoverStyle={{ backgroundColor: C.cardRaised }}
-                            focusStyle={{ backgroundColor: C.line }}
-                          >
-                            <Icon name="close" color={C.muted} />
-                          </Button>
-                          <Button
-                            accessibilityLabel={tr('Steer queued message {number} now', {
-                              number: number(),
-                            })}
-                            tooltip={textTooltip(() => tr('Steer now · use in the current turn'))}
-                            disabled={
-                              !connected() ||
-                              busy() !== null ||
-                              editing() !== null ||
-                              !queue.running()
-                            }
-                            onPress={inputAction(act, request('promote'))}
-                            style={actionStyle}
-                            hoverStyle={{ backgroundColor: C.cardRaised }}
-                            focusStyle={{ backgroundColor: C.line }}
-                          >
-                            <Icon name="send" color={C.muted} />
-                          </Button>
-                        </View>
-                      );
-                    }}
-                  </Each>
-                </>
-              );
-            }}
-          </List>
+          <If when={messages().length > 0}>
+            <Scroll
+              accessibilityLabel={tr('Messages')}
+              style={{ maxHeight: height(), minHeight: 0, flexShrink: 1, flexGrow: 0 }}
+            >
+              <Each of={sends()} key={(status) => status.id}>
+                {(status) => <PendingMessage session={session} message={status()} />}
+              </Each>
+              <Each of={items()} key={(entry) => entry.messageId}>
+                {(row) => {
+                  const number = () =>
+                    items().findIndex((item) => item.messageId === row().messageId) + 1;
+                  const request = (kind: RowAction['kind']): RowAction => ({
+                    sessionId: queue.sessionId,
+                    revision: revision(),
+                    messageId: row().messageId,
+                    kind,
+                  });
+                  return (
+                    <View
+                      style={{
+                        height: rowHeight,
+                        paddingHorizontal: 8,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <Icon name="queue" color={C.muted} />
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.secondary, flex: 1 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {row().preview}
+                      </Text>
+                      <Button
+                        accessibilityLabel={tr('Edit queued message {number}', {
+                          number: number(),
+                        })}
+                        tooltip={textTooltip(() => tr('Edit message'))}
+                        disabled={!connected() || busy() !== null || editing() !== null}
+                        onPress={inputAction(act, request('edit'))}
+                        style={actionStyle}
+                        hoverStyle={{ backgroundColor: C.cardRaised }}
+                        focusStyle={{ backgroundColor: C.line }}
+                      >
+                        <Icon name="edit" color={C.muted} />
+                      </Button>
+                      <Button
+                        accessibilityLabel={tr('Remove queued message {number}', {
+                          number: number(),
+                        })}
+                        tooltip={textTooltip(() => tr('Remove message'))}
+                        disabled={!connected() || busy() !== null || editing() !== null}
+                        onPress={inputAction(act, request('retract'))}
+                        style={actionStyle}
+                        hoverStyle={{ backgroundColor: C.cardRaised }}
+                        focusStyle={{ backgroundColor: C.line }}
+                      >
+                        <Icon name="close" color={C.muted} />
+                      </Button>
+                      <Button
+                        accessibilityLabel={tr('Steer queued message {number} now', {
+                          number: number(),
+                        })}
+                        tooltip={textTooltip(() => tr('Steer now · use in the current turn'))}
+                        disabled={
+                          !connected() || busy() !== null || editing() !== null || !queue.running()
+                        }
+                        onPress={inputAction(act, request('promote'))}
+                        style={actionStyle}
+                        hoverStyle={{ backgroundColor: C.cardRaised }}
+                        focusStyle={{ backgroundColor: C.line }}
+                      >
+                        <Icon name="send" color={C.muted} />
+                      </Button>
+                    </View>
+                  );
+                }}
+              </Each>
+            </Scroll>
+          </If>
           {feedback()}
         </If>
         <Each of={editing() ? [editing()!] : []} key={(edit) => edit.messageId}>

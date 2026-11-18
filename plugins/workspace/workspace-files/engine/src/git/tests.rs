@@ -141,25 +141,63 @@ fn staged_worktree_and_untracked_are_distinct_and_diff_literal_images() {
             ),
         ]
     );
-    let GitDiff::Text { patch } = f.diff(GitArea::Staged, b"file.txt") else {
+    let st = f.status();
+    let find_digest = |area: GitArea, name: &[u8]| {
+        st.entries
+            .iter()
+            .find(|e| e.area == area && e.path.bytes().unwrap() == name)
+            .map(|e| e.digest.clone())
+            .expect("status entry digest")
+    };
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+        digest: staged_digest,
+    } = f.diff(GitArea::Staged, b"file.txt")
+    else {
         panic!("expected staged text")
     };
+    assert_eq!(staged_digest, find_digest(GitArea::Staged, b"file.txt"));
+    assert_eq!(before, "original\n");
+    assert_eq!(after, "staged\n");
     assert!(
         patch.contains("@@ -1,1 +1,1 @@\n-original\n+staged\n"),
         "{patch}"
     );
     assert!(!patch.contains("working"));
-    let GitDiff::Text { patch } = f.diff(GitArea::Worktree, b"file.txt") else {
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+        digest: worktree_digest,
+    } = f.diff(GitArea::Worktree, b"file.txt")
+    else {
         panic!("expected working text")
     };
+    assert_eq!(worktree_digest, find_digest(GitArea::Worktree, b"file.txt"));
+    assert_eq!(before, "staged\n");
+    assert_eq!(after, "working\n");
     assert!(
         patch.contains("@@ -1,1 +1,1 @@\n-staged\n+working\n"),
         "{patch}"
     );
     assert_eq!(f.diff(GitArea::Untracked, b"file.txt"), GitDiff::Unchanged);
-    let GitDiff::Text { patch } = f.diff(GitArea::Untracked, b"untracked.txt") else {
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+        digest: untracked_digest,
+    } = f.diff(GitArea::Untracked, b"untracked.txt")
+    else {
         panic!("expected untracked text")
     };
+    assert_eq!(
+        untracked_digest,
+        find_digest(GitArea::Untracked, b"untracked.txt")
+    );
+    assert_eq!(before, "");
+    assert_eq!(after, "new content\n");
     assert!(
         patch.contains("--- /dev/null\n+++ \"b/untracked.txt\"\n@@ -1,0 +1,1 @@\n+new content\n"),
         "{patch}"
@@ -188,7 +226,7 @@ fn unborn_repository_uses_empty_head_and_prunes_ignored_dependency_tree() {
             ),
         ]
     );
-    let GitDiff::Text { patch } = f.diff(GitArea::Staged, b"new.txt") else {
+    let GitDiff::Text { patch, .. } = f.diff(GitArea::Staged, b"new.txt") else {
         panic!("expected unborn staged text")
     };
     assert!(patch.contains("+before commit\n"));
@@ -400,7 +438,7 @@ fn raw_names_and_link_content_roundtrip_without_following_control_file_escapes()
     ));
     fs::write(f.private.join("secret"), "private sentinel").unwrap();
     symlink(f.private.join("secret"), f.root.join("link")).unwrap();
-    let GitDiff::Text { patch } = f.diff(GitArea::Untracked, b"link") else {
+    let GitDiff::Text { patch, .. } = f.diff(GitArea::Untracked, b"link") else {
         panic!("expected link literal")
     };
     assert!(!patch.contains("private sentinel"));
@@ -605,4 +643,423 @@ fn disk_and_index_attributes_and_ignore_rules_are_read_without_mutation() {
         ]
     );
     assert_eq!(indexed_diff.unwrap().unwrap(), GitDiff::Unchanged);
+}
+
+#[test]
+fn workspace_diff_combines_changed_files_and_counts_binary_skips() {
+    let f = Fixture::new();
+    fs::write(
+        f.root.join("a.rs"),
+        "fn a() -> i32 { 1 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("b.rs"),
+        "fn b() -> i32 { 2 }
+",
+    )
+    .unwrap();
+    f.commit();
+    fs::write(
+        f.root.join("a.rs"),
+        "fn a() -> i32 { 10 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("b.rs"),
+        "fn b() -> i32 { 20 }
+",
+    )
+    .unwrap();
+    fs::write(f.root.join("bin.dat"), [0_u8, 1, 2, 3]).unwrap();
+    let all = workspace_diff(&f.root, &f.identity, &f.private, None, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert!(!all.truncated);
+    assert_eq!(all.skipped_files, 1);
+    assert!(all.patch.contains("a/a.rs"));
+    assert!(all.patch.contains("a/b.rs"));
+    let worktree_only = workspace_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        Some(GitArea::Worktree),
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(worktree_only.skipped_files, 0);
+    assert!(worktree_only.patch.contains("+fn a() -> i32 { 10 }"));
+
+    // Stage a.rs=10, then edit worktree a.rs=100; All-area workspace_diff emits one HEAD->worktree diff.
+    git(&f.root, &["add", "a.rs"]);
+    fs::write(
+        f.root.join("a.rs"),
+        "fn a() -> i32 { 100 }
+",
+    )
+    .unwrap();
+    let combined = workspace_diff(&f.root, &f.identity, &f.private, None, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        combined.patch.matches(r#"diff --git "a/a.rs""#).count(),
+        1,
+        "must not emit duplicate file sections when staged and worktree both touch a.rs"
+    );
+    assert!(combined.patch.contains("-fn a() -> i32 { 1 }"));
+    assert!(combined.patch.contains("+fn a() -> i32 { 100 }"));
+}
+
+#[test]
+fn revisions_and_merge_base_compare_across_diverged_branches_and_commits() {
+    let f = Fixture::new();
+    git(&f.root, &["checkout", "-b", "main", "--quiet"]);
+    git(
+        &f.root,
+        &["remote", "add", "origin", "git@github.com:forker/maka.git"],
+    );
+    git(
+        &f.root,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            "https://github.com/apache/maka.git",
+        ],
+    );
+
+    fs::write(
+        f.root.join("shared.rs"),
+        "pub fn v() -> i32 { 1 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("unrelated.rs"),
+        "pub fn keep() -> i32 { 1 }
+",
+    )
+    .unwrap();
+    git(&f.root, &["add", "."]);
+    git(&f.root, &["commit", "--quiet", "-m", "initial on main"]);
+    let base_oid = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    // Create feature branch from base_oid.
+    git(&f.root, &["checkout", "-b", "feat/review", "--quiet"]);
+    fs::write(
+        f.root.join("shared.rs"),
+        "pub fn v() -> i32 { 2 }
+",
+    )
+    .unwrap();
+    fs::write(
+        f.root.join("added.rs"),
+        "pub fn added() {}
+",
+    )
+    .unwrap();
+    git(&f.root, &["add", "."]);
+    git(
+        &f.root,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "feat: update shared and add file",
+        ],
+    );
+    let feat_oid = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    // Advance main independently so main and feat/review diverge!
+    git(&f.root, &["checkout", "main", "--quiet"]);
+    fs::write(
+        f.root.join("unrelated.rs"),
+        "pub fn keep() -> i32 { 99 }
+",
+    )
+    .unwrap();
+    git(&f.root, &["add", "."]);
+    git(
+        &f.root,
+        &["commit", "--quiet", "-m", "chore: unrelated main advance"],
+    );
+    git(&f.root, &["checkout", "feat/review", "--quiet"]);
+
+    let rev = revisions(&f.root, &f.identity, &f.private, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert_eq!(rev.head_branch.as_deref(), Some("feat/review"));
+    assert_eq!(rev.head_oid.as_deref(), Some(feat_oid.as_str()));
+    assert_eq!(rev.default_base.as_deref(), Some("main"));
+    assert_eq!(rev.commits.len(), 2);
+    assert_eq!(rev.commits[0].summary, "feat: update shared and add file");
+    assert_eq!(rev.remotes.len(), 2);
+    assert_eq!(
+        (
+            rev.remotes[0].remote.as_str(),
+            rev.remotes[0].host.as_str(),
+            rev.remotes[0].owner.as_str(),
+            rev.remotes[0].repo.as_str()
+        ),
+        ("origin", "github.com", "forker", "maka")
+    );
+    assert_eq!(
+        (
+            rev.remotes[1].remote.as_str(),
+            rev.remotes[1].owner.as_str(),
+            rev.remotes[1].repo.as_str()
+        ),
+        ("upstream", "apache", "maka")
+    );
+
+    // Branch compare must diff merge-base(main, feat/review) -> feat/review, excluding unrelated.rs!
+    let branch_cmp = compare(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &GitCompareSpec::Branch {
+            base: "main".into(),
+        },
+        true,
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(branch_cmp.base_oid.as_deref(), Some(base_oid.as_str()));
+    assert_eq!(branch_cmp.head_oid, feat_oid);
+    let paths: Vec<_> = branch_cmp
+        .entries
+        .iter()
+        .map(|e| (String::from_utf8(e.path.bytes().unwrap()).unwrap(), e.kind))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            ("added.rs".to_owned(), GitChangeKind::Added),
+            ("shared.rs".to_owned(), GitChangeKind::Modified),
+        ]
+    );
+    let combined_patch = branch_cmp.patch.unwrap();
+    assert!(combined_patch.patch.contains("+pub fn v() -> i32 { 2 }"));
+    assert!(!combined_patch.patch.contains("unrelated.rs"));
+
+    let single = compare_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &GitCompareSpec::Branch {
+            base: "main".into(),
+        },
+        &WorkspacePath::from_bytes(b"shared.rs").unwrap(),
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    match single {
+        GitDiff::Text {
+            patch,
+            before,
+            after,
+            digest,
+        } => {
+            let cmp_digest = branch_cmp
+                .entries
+                .iter()
+                .find(|e| e.path.bytes().unwrap() == b"shared.rs")
+                .unwrap()
+                .digest
+                .clone();
+            assert_eq!(digest, cmp_digest);
+            assert_eq!(
+                before,
+                "pub fn v() -> i32 { 1 }
+"
+            );
+            assert_eq!(
+                after,
+                "pub fn v() -> i32 { 2 }
+"
+            );
+            assert!(patch.contains("-pub fn v() -> i32 { 1 }"));
+            assert!(patch.contains("+pub fn v() -> i32 { 2 }"));
+        }
+        other => panic!("expected text diff, got {other:?}"),
+    }
+
+    // Root commit compare (no parent) treats all files in initial commit as Added.
+    let root_cmp = compare(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &GitCompareSpec::Commit {
+            oid: base_oid.clone(),
+        },
+        false,
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(root_cmp.base_oid, None);
+    assert_eq!(root_cmp.entries.len(), 2);
+    assert!(
+        root_cmp
+            .entries
+            .iter()
+            .all(|e| e.kind == GitChangeKind::Added)
+    );
+}
+
+#[test]
+fn parses_ssh_https_and_enterprise_remotes_safely() {
+    assert_eq!(
+        parse_remote_repo(
+            "origin",
+            "ssh://git@github.corp.example:2222/team/service.git"
+        ),
+        Some(GitRemoteRepo {
+            remote: "origin".into(),
+            host: "github.corp.example".into(),
+            owner: "team".into(),
+            repo: "service".into(),
+        })
+    );
+    assert_eq!(parse_remote_repo("origin", "/local/path/repo"), None);
+    assert_eq!(parse_remote_repo("origin", "C:\\Users\\repo"), None);
+    assert_eq!(
+        parse_remote_repo("origin", "https://github.com/../escape.git"),
+        None
+    );
+    assert_eq!(
+        parse_remote_repo("origin", "https://localhost/owner/repo.git"),
+        None
+    );
+    assert_eq!(
+        parse_remote_repo("origin", "https://127.0.0.1/owner/repo.git"),
+        None
+    );
+}
+
+#[test]
+fn status_digest_invalidates_on_same_length_rewrite_and_pr_merge_base_handles_renames() {
+    let f = Fixture::new();
+    git(&f.root, &["checkout", "-b", "main"]);
+    fs::write(
+        f.root.join("orig.rs"),
+        b"pub fn alpha() -> i32 {\n    10\n}\n",
+    )
+    .unwrap();
+    fs::write(f.root.join("other.txt"), b"aaaa\n").unwrap();
+    f.commit();
+
+    // Rewrite working tree file with identical byte length: digest must change immediately.
+    fs::write(f.root.join("other.txt"), b"bbbb\n").unwrap();
+    let d1 = f.status().entries[0].digest.clone();
+    fs::write(f.root.join("other.txt"), b"cccc\n").unwrap();
+    let d2 = f.status().entries[0].digest.clone();
+    assert_ne!(
+        d1, d2,
+        "same-length content edit must invalidate Viewed digest"
+    );
+    git(&f.root, &["checkout", "--", "other.txt"]);
+
+    // Feature branch renames orig.rs -> renamed.rs and modifies it.
+    git(&f.root, &["checkout", "-b", "feat-rename"]);
+    git(&f.root, &["mv", "orig.rs", "renamed.rs"]);
+    fs::write(
+        f.root.join("renamed.rs"),
+        b"pub fn alpha() -> i32 {\n    20\n}\n",
+    )
+    .unwrap();
+    f.commit();
+    let head_sha = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    // Base branch advances independently (three-dot merge-base must ignore this commit).
+    git(&f.root, &["checkout", "main"]);
+    fs::write(f.root.join("other.txt"), b"main-diverged\n").unwrap();
+    f.commit();
+    let base_tip_sha = String::from_utf8(git_stdout(&f.root, &["rev-parse", "HEAD"]))
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    let untouched_in_pr = merge_base_file_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &base_tip_sha,
+        &head_sha,
+        &WorkspacePath::from_bytes(b"other.txt").unwrap(),
+        None,
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(untouched_in_pr, GitDiff::Unchanged);
+
+    let renamed_diff = merge_base_file_diff(
+        &f.root,
+        &f.identity,
+        &f.private,
+        None,
+        &base_tip_sha,
+        &head_sha,
+        &WorkspacePath::from_bytes(b"renamed.rs").unwrap(),
+        Some(&WorkspacePath::from_bytes(b"orig.rs").unwrap()),
+        cancel(),
+    )
+    .unwrap()
+    .unwrap();
+    let GitDiff::Text {
+        patch,
+        before,
+        after,
+        ..
+    } = renamed_diff
+    else {
+        panic!("expected renamed text diff");
+    };
+    assert_eq!(before, "pub fn alpha() -> i32 {\n    10\n}\n");
+    assert_eq!(after, "pub fn alpha() -> i32 {\n    20\n}\n");
+    assert!(patch.contains("rename from \"orig.rs\""), "{patch}");
+    assert!(patch.contains("rename to \"renamed.rs\""), "{patch}");
+    assert!(patch.contains("-    10\n+    20\n"), "{patch}");
+
+    // Linked git worktrees are discovered with branch names and share same_repository.
+    let wt_path = f.root.parent().unwrap().join("linked-wt");
+    git(
+        &f.root,
+        &["worktree", "add", wt_path.to_str().unwrap(), "feat-rename"],
+    );
+    assert!(same_repository(&f.root, &wt_path));
+    let rev = revisions(&f.root, &f.identity, &f.private, None, cancel())
+        .unwrap()
+        .unwrap();
+    assert_eq!(rev.worktrees.len(), 2);
+    assert!(
+        rev.worktrees
+            .iter()
+            .any(|w| w.is_main && w.is_current && w.branch.as_deref() == Some("main"))
+    );
+    assert!(
+        rev.worktrees
+            .iter()
+            .any(|w| !w.is_main && !w.is_current && w.branch.as_deref() == Some("feat-rename"))
+    );
 }

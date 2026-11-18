@@ -285,6 +285,7 @@ pub struct ConnectionRead {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsConnectionEditingFacts")]
 pub struct ConnectionEditingFacts {
+    pub discovered_model_ids: Vec<String>,
     pub enabled_model_ids: Vec<String>,
     #[schemars(
         with = "maka_plugin_core::wire_schema::RequiredNullable<BTreeMap<String, maka_agent_facts::configuration::ModelOverride>>"

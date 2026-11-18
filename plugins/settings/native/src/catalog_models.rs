@@ -28,7 +28,7 @@ pub(crate) fn page(snapshot: &Snapshot, request: CatalogModelsRead) -> CatalogMo
         .models(request.after.as_ref())
         .filter(|(provider, model)| {
             let text = format!(
-                "{provider}\n{}\n{}",
+                "{provider}/{}\n{}",
                 model.id,
                 model.display_name.as_deref().unwrap_or("")
             )
@@ -90,12 +90,12 @@ mod tests {
             })
             .collect();
         assert_eq!(found, expected);
-        let reference = expected.iter().next().unwrap();
+        let reference = expected.last().unwrap();
         let page = page(
             &snapshot,
             CatalogModelsRead {
                 query: format!(
-                    "{}  {}",
+                    "{}/{}",
                     reference.provider.to_uppercase(),
                     reference.model_id.to_uppercase()
                 ),

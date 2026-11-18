@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, inputAction, signal, Text } from 'nsh';
+import { cleanup, computed, effect, inputAction, signal, Text, View } from 'nsh';
+import { Switch } from 'nsh/base';
 import type { CredentialStatus } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionLogin } from './ConnectionLogin';
@@ -42,7 +43,6 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
   const owner = props.settings;
   const form = () => owner.editor()!;
   const disabled = () => blocked(owner);
-  const models = () => form().baseline?.editing?.enabledModelIds ?? [];
   const interactive = () =>
     form().provider.descriptor.authentication.some((method) => method.interactive);
   const usageAuthentication = () => form().provider.descriptor.usageAuthentication;
@@ -112,7 +112,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
       >
         <UsageAccessKey owner={owner} requiresTeam={usageAuthentication() === 'team_access_key'} />
       </If>
-      <If when={form().baseline && (models().length > 8 || owner.modelQuery().trim())}>
+      <If when={form().baseline && (owner.modelCount() > 8 || owner.modelQuery().trim())}>
         <SettingsSearch
           label={tr('Search models')}
           value={owner.modelQuery()}
@@ -121,7 +121,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
       </If>
       <If when={form().baseline}>
         <SettingsSection
-          title={tr('Models · {count}', { count: models().length })}
+          title={tr('Models · {count}', { count: owner.modelCount() })}
           note={
             owner.discovery() === 'failed'
               ? tr(
@@ -157,19 +157,53 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
         >
           <Each of={owner.filteredModels()} key={(id) => id}>
             {(id) => (
-              <SettingsRow
-                label={name(id())}
-                description={name(id()) === id() ? undefined : id()}
-                accessibilityLabel={tr('Edit model {id}', { id: id() })}
-                trailing={
-                  <If when={isDefault(id())}>
-                    <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Default')}</Text>
-                  </If>
-                }
-                opens
-                disabled={disabled() || owner.dirty()}
-                onPress={inputAction(owner.editModel, { ...owner.action(), id: id() })}
-              />
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <SettingsRow
+                    label={name(id())}
+                    description={name(id()) === id() ? undefined : id()}
+                    accessibilityLabel={tr('Edit model {id}', { id: id() })}
+                    trailing={
+                      <If when={isDefault(id())}>
+                        <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                          {tr('Default')}
+                        </Text>
+                      </If>
+                    }
+                    opens
+                    disabled={disabled() || owner.dirty()}
+                    onPress={inputAction(owner.editModel, { ...owner.action(), id: id() })}
+                  />
+                </View>
+                <Switch
+                  accessibilityLabel={tr('{label}: {state}', {
+                    label: name(id()),
+                    state: owner.enabledModels().has(id()) ? tr('On') : tr('Off'),
+                  })}
+                  checked={owner.enabledModels().has(id())}
+                  disabled={disabled() || owner.dirty()}
+                  onChange={inputAction(owner.setModelEnabled, {
+                    ...owner.action(),
+                    id: id(),
+                    enabled: !owner.enabledModels().has(id()),
+                  })}
+                  style={{
+                    width: 52,
+                    alignSelf: 'stretch',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
+                  trackStyle={{
+                    backgroundColor: owner.enabledModels().has(id()) ? C.accent : C.line,
+                  }}
+                  thumbClass="size-[10px] rounded-full"
+                  thumbStyle={{
+                    backgroundColor: owner.enabledModels().has(id()) ? C.background : C.secondary,
+                  }}
+                  disabledStyle={{ opacity: 0.5 }}
+                />
+              </View>
             )}
           </Each>
           <If when={!owner.filteredModels().length && owner.discovery() !== 'fetching'}>

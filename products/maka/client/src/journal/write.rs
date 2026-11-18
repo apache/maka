@@ -80,6 +80,12 @@ pub(super) enum Command {
         original: Uuid,
         reservation: Reservation,
     },
+    RestoreSend {
+        host: DeploymentRef,
+        key: DraftKey,
+        original: Uuid,
+        expected: Option<u64>,
+    },
     DismissSend(Uuid),
     ReserveSettings {
         reservation: Reservation,
@@ -144,6 +150,14 @@ impl Command {
                 retry_send(connection, original, reservation).await?;
                 Ok(Output::Unit)
             }
+            Self::RestoreSend {
+                host,
+                key,
+                original,
+                expected,
+            } => restore_send(connection, &host, &key, original, expected)
+                .await
+                .map(Output::Draft),
             Self::DismissSend(id) => {
                 dismiss_send(connection, id).await?;
                 Ok(Output::Unit)
@@ -441,6 +455,134 @@ async fn retry_send(
     reserve(connection, reservation).await?;
     pending_send(connection, &id, &owner).await?;
     dismiss_send(connection, original).await
+}
+
+async fn restore_send(
+    connection: &mut SqliteConnection,
+    host: &DeploymentRef,
+    key: &DraftKey,
+    original: Uuid,
+    expected: Option<u64>,
+) -> Result<Draft> {
+    if expected.is_some_and(|revision| revision == 0 || revision >= 9_007_199_254_740_991) {
+        return Err("invalid draft revision".into());
+    }
+    let owner = serde_json::to_string(key).map_err(error)?;
+    let row = sqlx::query(
+        "SELECT context,reference,receipt,abandoned FROM operations WHERE id=? AND domain=? AND deployment=? AND draft_owner=? AND EXISTS (SELECT 1 FROM pending_sends WHERE operation=operations.id AND owner=?)",
+    )
+    .bind(original.to_string())
+    .bind(&host.state_domain)
+    .bind(host.deployment.to_string())
+    .bind(&owner)
+    .bind(&owner)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(error)?
+    .ok_or("original send is no longer pending for this draft")?;
+    let previous = decode_operation(row)?;
+    if previous.method != "send"
+        || (!super::retryable_send(&previous) && super::queued_send(&previous).is_none())
+    {
+        return Err("original send must be confirmed unsent before restoring".into());
+    }
+    let snapshot: super::SendSnapshot =
+        serde_json::from_value(previous.correlation).map_err(error)?;
+
+    let current = sqlx::query(
+        "SELECT revision,consumed,text,attachments,mentions,reply_to FROM drafts WHERE owner=?",
+    )
+    .bind(&owner)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(error)?;
+    let actual_revision = current
+        .as_ref()
+        .map(|row| row.try_get::<i64, _>("revision").map(|value| value as u64))
+        .transpose()
+        .map_err(error)?;
+    if actual_revision != expected {
+        return Err("draft revision conflicts with a newer saved value".into());
+    }
+    let (existing_text, mut next_attachments, mut next_mentions, existing_reply_to) = match current
+    {
+        Some(row) if row.try_get::<i64, _>("consumed").map_err(error)? == 0 => (
+            row.try_get::<String, _>("text").map_err(error)?,
+            serde_json::from_str::<Vec<DraftAttachment>>(
+                row.try_get("attachments").map_err(error)?,
+            )
+            .map_err(error)?,
+            serde_json::from_str::<Vec<String>>(row.try_get("mentions").map_err(error)?)
+                .map_err(error)?,
+            row.try_get::<Option<String>, _>("reply_to")
+                .map_err(error)?,
+        ),
+        _ => (String::new(), Vec::new(), Vec::new(), None),
+    };
+
+    let restored_text = snapshot.draft.text;
+    let next_text = if restored_text.is_empty() {
+        existing_text
+    } else if existing_text.trim().is_empty() || existing_text == restored_text {
+        restored_text
+    } else {
+        format!("{existing_text}\n\n{restored_text}")
+    };
+    for attachment in snapshot.draft.attachments {
+        if !next_attachments
+            .iter()
+            .any(|existing| existing.id == attachment.id)
+        {
+            next_attachments.push(attachment);
+        }
+    }
+    for mention in snapshot.draft.mentions {
+        if !next_mentions.contains(&mention) {
+            next_mentions.push(mention);
+        }
+    }
+    let next_reply_to = existing_reply_to.or(snapshot.draft.reply_to);
+    let encoded_attachments = serde_json::to_string(&next_attachments).map_err(error)?;
+    let encoded_mentions = serde_json::to_string(&next_mentions).map_err(error)?;
+
+    let saved = if let Some(revision) = expected {
+        sqlx::query(
+            "UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to",
+        )
+        .bind(&next_text)
+        .bind(&encoded_attachments)
+        .bind(&encoded_mentions)
+        .bind(&next_reply_to)
+        .bind(&owner)
+        .bind(revision as i64)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(error)?
+    } else {
+        sqlx::query(
+            "INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to) VALUES (?,1,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to",
+        )
+        .bind(&owner)
+        .bind(&next_text)
+        .bind(&encoded_attachments)
+        .bind(&encoded_mentions)
+        .bind(&next_reply_to)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(error)?
+    }
+    .ok_or("draft revision conflicts with a newer saved value")?;
+
+    dismiss_send(connection, original).await?;
+
+    Ok(Draft {
+        revision: saved.try_get::<i64, _>("revision").map_err(error)? as u64,
+        text: saved.try_get("text").map_err(error)?,
+        attachments: serde_json::from_str(saved.try_get("attachments").map_err(error)?)
+            .map_err(error)?,
+        mentions: serde_json::from_str(saved.try_get("mentions").map_err(error)?).map_err(error)?,
+        reply_to: saved.try_get("reply_to").map_err(error)?,
+    })
 }
 
 async fn dismiss_send(connection: &mut SqliteConnection, id: Uuid) -> Result<()> {

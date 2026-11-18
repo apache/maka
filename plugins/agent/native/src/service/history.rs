@@ -660,6 +660,7 @@ pub(super) async fn observation(
         authorize(owner, scope, &input.session_id).await?;
         return Ok(ui::Observation {
             session,
+            latest_run_id: None,
             through,
             run: None,
             parts: Vec::new(),
@@ -676,6 +677,7 @@ pub(super) async fn observation(
         .await
         .map_err(|e| e.to_string())?;
     let cut = observed.cut;
+    let mut latest_run_id = None;
     let mut run = None;
     let mut last_completed_turn_id = None;
     let mut compacting = None;
@@ -739,6 +741,9 @@ pub(super) async fn observation(
             BackendSpec::Executor { .. } => Some(ui::RunBackend::Executor),
             BackendSpec::Historical {} => None,
         };
+        if backend.is_some() {
+            latest_run_id = Some(view.run);
+        }
         if backend.is_some() && view.terminal == Some(Terminal::Completed) {
             last_completed_turn_id = Some(view.spec.turn_id.clone());
         }
@@ -833,6 +838,7 @@ pub(super) async fn observation(
         compacting,
         remembered_backend,
         metrics,
+        latest_run_id,
         through: cut.through_sequence,
         run,
         parts: Vec::new(),

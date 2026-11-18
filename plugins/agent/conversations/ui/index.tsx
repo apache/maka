@@ -65,6 +65,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       ...rooms().map((room) => room.id),
     ],
     command: (id) => invokeFocusedConversation([views, ...sides()], id),
+    prompt: (sessionId, action) =>
+      [views, ...sides()].find((pane) => pane.sessionId() === sessionId)?.deliverPrompt(action) ??
+      false,
   };
   const views = createConversationUi(context, host, window);
   const owner = (sessionId: string | null) =>

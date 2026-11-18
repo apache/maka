@@ -1404,6 +1404,32 @@ impl ScopedHost {
         .await
     }
 
+    /// Restore a confirmed unsent message and its verified attachments into the
+    /// persisted draft and dismiss the pending send in one journal transaction.
+    pub async fn restore_send(
+        this: Instance<Self>,
+        operation_id: String,
+        expected_revision: u64,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let original = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, original).await?;
+            let draft = client
+                .restore_send(
+                    original,
+                    AGENT,
+                    &scope.session,
+                    EDITOR,
+                    (expected_revision != 0).then_some(expected_revision),
+                )
+                .await?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
     /// Hide one original message without replaying or cancelling it.
     pub async fn dismiss_send(this: Instance<Self>, operation_id: String) -> Result<(), String> {
         let scope = this.with(|host| host.scope.clone());

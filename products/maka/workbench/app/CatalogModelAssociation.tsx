@@ -189,6 +189,9 @@ function CatalogModelPicker(props: {
       <List
         each={models()}
         estimatedItemSize={64}
+        onLoadMore={() => {
+          if (!failure()) void search(query(), true);
+        }}
         ref={(node) => {
           list = node;
         }}
@@ -242,9 +245,9 @@ function CatalogModelPicker(props: {
         <Text style={{ ...captionTextStyle, color: C.danger }}>{failure()}</Text>
       </If>
       <DialogFooter>
-        <If when={after() || failure()}>
+        <If when={failure()}>
           <SettingsButton
-            label={loading() ? tr('Loading…') : failure() ? tr('Retry') : tr('Load more')}
+            label={tr('Retry')}
             disabled={loading()}
             onPress={() => void search(query(), !!after())}
           />

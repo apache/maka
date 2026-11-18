@@ -510,9 +510,29 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       {props.request}
       <View style={{ flexShrink: 0 }}>
         <If when={props.session()?.error()}>
-          <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-            {props.session()?.error()}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={[{ color: C.danger, flex: 1 }, { userSelect: 'text' }]}>
+              {props.session()?.error()}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Dismiss error')}
+              tooltip={textTooltip(() => tr('Dismiss error'))}
+              onPress={() => props.session()?.dismissError()}
+              style={{
+                ...controlStyle,
+                width: 32,
+                height: 32,
+                paddingHorizontal: 8,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 16,
+              }}
+              hoverStyle={{ backgroundColor: C.surface }}
+              focusStyle={{ backgroundColor: C.raised }}
+            >
+              <Icon name="close" color={C.muted} />
+            </Button>
+          </View>
         </If>
         <If when={props.session()?.notice()}>
           <Text
@@ -895,6 +915,45 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             </If>
             {/* After the sandbox, so leaving the start pane moves neither. */}
             <If when={platform.idiom !== 'terminal' && hero()}>{workspaceControl()}</If>
+            <If
+              when={
+                platform.idiom !== 'terminal' &&
+                !hero() &&
+                props.openFiles !== undefined &&
+                Boolean(props.session()?.workspace())
+              }
+            >
+              <Button
+                accessibilityLabel={tr('Browse workspace files')}
+                tooltip={textTooltip(
+                  () => props.session()?.workspace() || tr('Browse workspace files'),
+                )}
+                ref={props.filesOpener ? (node) => props.filesOpener!(node) : undefined}
+                onPress={props.openFiles!}
+                style={{
+                  ...toolbarControlStyle,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  maxWidth: 200,
+                  minWidth: 0,
+                  flexShrink: 1,
+                  gap: 4,
+                }}
+                hoverStyle={{ backgroundColor: C.line }}
+                focusStyle={{ backgroundColor: C.line }}
+                activeStyle={{ backgroundColor: C.surface }}
+              >
+                <Icon name="folder" color={C.muted} />
+                <Text
+                  style={[
+                    { ...captionTextStyle, color: C.secondary, flexShrink: 1, minWidth: 0 },
+                    { numberOfLines: 1 },
+                  ]}
+                >
+                  {workspaceLabel()}
+                </Text>
+              </Button>
+            </If>
             <If when={props.session() !== null || pending() !== null}>
               <View
                 style={[

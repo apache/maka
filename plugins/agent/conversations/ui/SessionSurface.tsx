@@ -36,15 +36,18 @@ import {
   type Signal,
   type JSX,
 } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button, Dialog, TextView } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
+import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
 import type {
   AgentCompletionTarget,
   AgentInteractionResult,
+  AgentSession,
   AgentWorkspaceAccess,
   SettingsAssistantPreferences,
   SettingsPreferencesUpdated,
@@ -120,6 +123,7 @@ import {
 } from '../../../../products/maka/workbench/app/RecentWorkspaces';
 import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
 import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
+import { AppliedPresetDialog } from '../../../../products/maka/workbench/app/AppliedPresetDetails';
 import { GoalDialog } from '../../../../products/maka/workbench/app/GoalDialog';
 import { CompactDialog } from '../../../../products/maka/workbench/app/CompactDialog';
 import type {
@@ -176,6 +180,11 @@ type OverlayTarget = {
       goal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal;
     }
   | { kind: 'compact'; owner: ConversationHandle; prompt?: string }
+  | {
+      kind: 'preset';
+      preset: NonNullable<AgentSession['appliedPreset']>;
+      backend?: AgentSession['backend'];
+    }
 );
 type Overlay = OverlayTarget & { instance: number };
 function unavailableSession(reason: unknown): boolean {
@@ -235,6 +244,7 @@ export type ConversationWindow = {
   workspace: Signal<WorkspaceViewHandle | null>;
   sessions(): readonly string[];
   command(id: string): void;
+  prompt?(sessionId: string, input: { text: string; mode: 'insert' | 'send' }): boolean;
 };
 
 // A pane opened beside the main one shares its catalog read and leaves the
@@ -264,9 +274,22 @@ export function createConversationUi(
   };
   const resources = {
     shown: () => workspace()?.shown() ?? false,
+    fullscreen: () => workspace()?.fullscreen?.() ?? false,
+    setFullscreen: (value: boolean) => workspace()?.setFullscreen?.(value),
     hide: () => workspace()?.hide(),
     openFiles: (target: { sessionId: string }) => workspace()?.openFiles(target),
-    attachOpener: (sessionId: string, node: ViewRef) => workspace()?.attachOpener(sessionId, node),
+    openChanges: (target: { sessionId: string; worktreePath?: string | null }) =>
+      workspace()?.openChanges ? workspace()!.openChanges!(target) : workspace()?.openFiles(target),
+    toggleStage: (target: { sessionId: string }) =>
+      workspace()?.toggleStage ? workspace()!.toggleStage!(target) : workspace()?.openFiles(target),
+    openLaunchpad: (target: { sessionId: string }) => workspace()?.openLaunchpad?.(target),
+    openPullRequest: (target: WorkspacePullRequestTarget) => workspace()?.openPullRequest?.(target),
+    activeWorktree: (sessionId: string) => workspace()?.activeWorktree?.(sessionId) ?? null,
+    selectWorktree: (target: { sessionId: string; worktreePath: string | null }) =>
+      workspace()?.selectWorktree?.(target),
+    sources: (sessionId: string) => workspace()?.sources?.(sessionId) ?? [],
+    attachOpener: (sessionId: string, node: { focus(): void }) =>
+      workspace()?.attachOpener(sessionId, node),
     focused: () => workspace()?.focused() ?? false,
   };
   const sidebarExpanded = Object.assign(() => shell()?.sidebarShown() ?? false, {
@@ -2158,6 +2181,47 @@ export function createConversationUi(
   );
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
+    floatingComposer: () =>
+      selected() === null ? null : (
+        <StageFloatingComposer
+          title={() => handle()?.title() ?? tr('Untitled conversation')}
+          session={composerSession}
+          stop={() => stopAction()()}
+          exitFullscreen={() => resources.setFullscreen(false)}
+          transcript={() => {
+            const items = handle()?.recentMessages?.() ?? [];
+            if (items.length === 0) return null;
+            return (
+              <Scroll style={{ maxHeight: 248 }}>
+                <View style={{ paddingHorizontal: 8, paddingVertical: 8, gap: 12 }}>
+                  <Each of={items} key={(item) => item.id}>
+                    {(item) =>
+                      item().role === 'user' ? (
+                        <View
+                          style={{
+                            alignSelf: 'flex-end',
+                            maxWidth: '85%',
+                            paddingHorizontal: 12,
+                            paddingVertical: 8,
+                            borderRadius: 12,
+                            backgroundColor: C.card,
+                          }}
+                        >
+                          <Text style={{ ...bodyTextStyle, color: C.text }}>{item().text}</Text>
+                        </View>
+                      ) : (
+                        <View style={{ paddingHorizontal: 4 }}>
+                          <TextView selectable markdown={item().text} />
+                        </View>
+                      )
+                    }
+                  </Each>
+                </View>
+              </Scroll>
+            );
+          }}
+        />
+      ),
     async kind(sessionId) {
       const listed = browsing.sessions().find((session) => session.id === sessionId);
       if (listed) return listed.kind;
@@ -2194,14 +2258,32 @@ export function createConversationUi(
       );
     },
   };
+  const deliverPrompt = (input: { text: string; mode: 'insert' | 'send' }): boolean => {
+    const owner = handle();
+    const sid = selected();
+    if (!owner || !sid || !owner.editable()) return false;
+    if (input.mode === 'insert') {
+      const prev = owner.draft();
+      const sep =
+        prev.length === 0 || prev.endsWith('\n\n') ? '' : prev.endsWith('\n') ? '\n' : '\n\n';
+      owner.changeDraft(prev + sep + input.text);
+      owner.focus();
+      return true;
+    }
+    if (!owner.connected()) return false;
+    return owner.sendExternalPrompt(input.text);
+  };
   const previewHandle = {
     shown: resources.shown,
+    fullscreen: resources.fullscreen,
+    setFullscreen: resources.setFullscreen,
     close: () => workspace()?.close(),
     focused: resources.focused,
     modalSuppressed: () => workspace()?.modalSuppressed() ?? false,
   };
   return {
     sessionId: selected,
+    deliverPrompt,
     focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
     command: invokeOwn,
     browsing,
@@ -2218,8 +2300,11 @@ export function createConversationUi(
         workspaceViewContract,
         {
           sessions: window.sessions,
-          directory: (id) =>
-            browsing.sessions().find((session) => session.id === id)?.workspace.path,
+          directory: (id) => {
+            const found = browsing.sessions().find((session) => session.id === id);
+            return found?.workspace.worktree?.directory ?? found?.workspace.path;
+          },
+          prompt: (id, action) => window.prompt?.(id, action) ?? false,
           blocked: () => reloading() || !(shell()?.visible() ?? false),
           get docked() {
             return input.docked;
@@ -2591,6 +2676,45 @@ export function createConversationUi(
                         })
                       : undefined
                   }
+                  changes={
+                    workspace()
+                      ? inputAction(resources.openChanges, {
+                          sessionId: id(),
+                        })
+                      : undefined
+                  }
+                  stage={() =>
+                    workspace()
+                      ? {
+                          open: resources.shown(),
+                          toggle: () => resources.toggleStage({ sessionId: id() }),
+                        }
+                      : undefined
+                  }
+                  activeWorktree={() => resources.activeWorktree(id())}
+                  selectWorktree={(worktreePath) =>
+                    resources.selectWorktree({ sessionId: id(), worktreePath })
+                  }
+                  sources={() => resources.sources(id())}
+                  childSessions={() =>
+                    browsing.sessions().filter((s) => s.parentSessionId === id())
+                  }
+                  openChangesWithWorktree={
+                    workspace()
+                      ? (worktreePath) => resources.openChanges({ sessionId: id(), worktreePath })
+                      : undefined
+                  }
+                  openLaunchpad={
+                    workspace() ? () => resources.openLaunchpad({ sessionId: id() }) : undefined
+                  }
+                  openPullRequest={
+                    workspace()
+                      ? (target) => resources.openPullRequest({ sessionId: id(), ...target })
+                      : undefined
+                  }
+                  openPreset={(preset, backend) =>
+                    open({ kind: 'preset', sessionId: id(), preset, backend })
+                  }
                   filesOpener={(node) => resources.attachOpener(id(), node)}
                   previewImage={previewImage}
                   previewTerminal={(ref, restoreFocus) => previewTerminal(id(), ref, restoreFocus)}
@@ -2713,6 +2837,22 @@ export function createConversationUi(
                   id: 'workspace',
                   sessionId: selected(),
                 })}
+                openFiles={
+                  selected() !== null && workspace()
+                    ? inputAction(invokeCommand, {
+                        id: 'files',
+                        sessionId: selected(),
+                      })
+                    : undefined
+                }
+                filesOpener={
+                  selected() !== null
+                    ? (node) => {
+                        const sid = selected();
+                        if (sid) resources.attachOpener(sid, node);
+                      }
+                    : undefined
+                }
                 workspacePicker={
                   platform.idiom === 'terminal' || side ? undefined : (
                     <RecentWorkspaces
@@ -2769,6 +2909,14 @@ export function createConversationUi(
                     <GoalDialog
                       goal={current.goal}
                       objective={current.objective}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  );
+                if (current.kind === 'preset')
+                  return (
+                    <AppliedPresetDialog
+                      preset={current.preset}
+                      backend={current.backend}
                       close={() => closeOverlay(current.instance)}
                     />
                   );
@@ -2999,6 +3147,7 @@ function projectComposerSession(
     prediction: owner.prediction,
     sends: owner.sends,
     retrySend: owner.retrySend,
+    editSend: owner.editSend,
     checkSend: owner.checkSend,
     dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
@@ -3053,6 +3202,7 @@ function projectComposerSession(
     workspace: owner.workspace,
     empty: owner.empty,
     error: owner.error,
+    dismissError: owner.dismissError,
     notice: owner.notice,
     recovering: owner.recovering,
     connected: owner.connected,

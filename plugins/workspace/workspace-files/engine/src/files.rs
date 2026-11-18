@@ -131,6 +131,11 @@ pub struct Directory {
     managed: bool,
 }
 impl Directory {
+    /// Canonical path of the bound workspace root.
+    pub fn root_path(&self) -> &Path {
+        &self.anchors[0].path
+    }
+
     /// All paths and the Binding are trusted Owner authority; path alone is caller data.
     pub fn open(
         workspace: &Path,

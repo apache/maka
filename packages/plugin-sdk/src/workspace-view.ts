@@ -35,8 +35,30 @@ export interface WorkspaceImagePreview {
 }
 
 /** Session actions address the workspace owner's resources without retaining its models. */
+export interface WorkspacePullRequestTarget {
+  readonly sessionId: string;
+  readonly repo?: { readonly host: string; readonly owner: string; readonly repo: string };
+  readonly number: number;
+  readonly title?: string;
+}
+
+export interface WorkspaceSourceItem {
+  readonly id: string;
+  readonly title: string;
+  readonly detail?: string;
+  readonly kind: 'file' | 'diff' | 'pr' | 'image';
+  select(): void;
+}
+
 export interface WorkspaceActions {
   openFiles(target: { sessionId: string }): void;
+  openChanges?(target: { sessionId: string; worktreePath?: string | null }): void;
+  toggleStage?(target: { sessionId: string }): void;
+  openLaunchpad?(target: { sessionId: string }): void;
+  openPullRequest?(target: WorkspacePullRequestTarget): void;
+  activeWorktree?(sessionId: string): string | null;
+  selectWorktree?(target: { sessionId: string; worktreePath: string | null }): void;
+  sources?(sessionId: string): readonly WorkspaceSourceItem[];
   openAgentTerminal(
     target: { sessionId: string; ref: string },
     restoreFocus: () => boolean,
@@ -48,6 +70,8 @@ export interface WorkspaceActions {
 
 export interface WorkspaceViewHandle extends WorkspaceActions {
   shown(): boolean;
+  fullscreen?(): boolean;
+  setFullscreen?(value: boolean): void;
   hide(): void;
   close(): void;
   focused(): boolean;
@@ -59,6 +83,7 @@ export interface WorkspaceViewInput {
   sessions(): readonly string[];
   blocked(): boolean;
   directory(sessionId: string): string | undefined;
+  prompt?(sessionId: string, input: { text: string; mode: 'insert' | 'send' }): boolean;
   readonly surface: 'pane' | 'overlays';
   readonly docked: boolean;
   report(reason: unknown): void;

@@ -87,7 +87,7 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
     sql.execute("CREATE TRIGGER fail_onboard BEFORE UPDATE ON connection_catalog BEGIN SELECT RAISE(ABORT, 'injected'); END", rusqlite::params![]).unwrap();
     assert!(
         ticket
-            .complete(vec![ModelInfo::new("one")], vec![], 1)
+            .complete(vec![ModelInfo::new("one")], 1)
             .await
             .is_err()
     );
@@ -104,18 +104,14 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
     let losing = prepare(&store, create()).await;
     assert!(matches!(
         first
-            .complete(
-                vec![ModelInfo::new("one"), ModelInfo::new("manual")],
-                vec![],
-                2,
-            )
+            .complete(vec![ModelInfo::new("one"), ModelInfo::new("manual")], 2,)
             .await
             .unwrap(),
         OnboardingSaveResult::Saved { .. }
     ));
     assert_eq!(
         losing
-            .complete(vec![ModelInfo::new("one")], vec![], 3)
+            .complete(vec![ModelInfo::new("one")], 3)
             .await
             .unwrap(),
         OnboardingSaveResult::Rejected {
@@ -129,7 +125,7 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
     let ticket = prepare(&store, existing(row)).await;
     assert!(matches!(
         ticket
-            .complete(vec![ModelInfo::new("one")], vec!["one".into()], 4)
+            .complete(vec![ModelInfo::new("one"), ModelInfo::new("new")], 4)
             .await
             .unwrap(),
         OnboardingSaveResult::Saved { .. }
@@ -157,7 +153,7 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
     let before = store.catalog().await.unwrap();
     assert_eq!(
         stale
-            .complete(vec![ModelInfo::new("new")], vec![], 5)
+            .complete(vec![ModelInfo::new("new")], 5)
             .await
             .unwrap(),
         OnboardingSaveResult::Rejected {
@@ -197,7 +193,7 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
         .unwrap();
     assert_eq!(
         stale
-            .complete(vec![ModelInfo::new("new")], vec![], 7)
+            .complete(vec![ModelInfo::new("new")], 7)
             .await
             .unwrap(),
         OnboardingSaveResult::Rejected {

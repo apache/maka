@@ -252,9 +252,11 @@ export interface ComposerSession<Element = unknown> {
   workspace(): string;
   empty(): boolean;
   error(): string;
+  dismissError(): void;
   notice(): string;
   sends(): ComposerSendStatus[];
   retrySend(id: string): Promise<void>;
+  editSend(id: string): Promise<void>;
   checkSend(id: string): Promise<void>;
   dismissSend(id: string): Promise<void>;
   recovering(): boolean;
@@ -317,6 +319,9 @@ export interface ComposerViewInput<Element = unknown> {
   chooseWorkspace(): void;
   /** Optional product-owned directory switcher, in the existing composer location. */
   readonly workspacePicker?: Element;
+  /** Opens workspace files in an established conversation, at the same slot as workspacePicker. */
+  openFiles?(): void;
+  filesOpener?(node: { focus(): void }): void;
   settings(): void;
   /** The Host has no model connection: a desktop start pane asks for one first. */
   needsConnection?(): boolean;

@@ -75,7 +75,12 @@ function connectionEditor() {
     target: { connectionId: 'connection', revision: 1, slug: 'chatgpt', provider, configuration },
     name: 'ChatGPT Subscription',
     enabled: true,
-    editing: { enabledModelIds: [], modelOverrides: null, requestBodyOverlay: null },
+    editing: {
+      discoveredModelIds: [],
+      enabledModelIds: [],
+      modelOverrides: null,
+      requestBodyOverlay: null,
+    },
   };
   const api = {
     pendingSettings: async () => [],

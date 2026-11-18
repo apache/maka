@@ -2464,7 +2464,8 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.expect_text("Keep the sidebar compact.").await;
     drop(original);
 
-    desktop.type_text("Summarize the changes afterwards.").await;
+    let queued_followup = "Summarize the changes afterwards for [@REA review](maka://session/ma_8b708bb06d73d5d83a9265c0464928803a7478a2a9083b6c3647cfc8c7c0f102_8fface6128fd12c727e1b3ab8e96acf2) across every remaining edge case in detail.";
+    desktop.type_text(queued_followup).await;
     desktop.right_click("Send message").await;
     desktop.control("Add to queue").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-queue-menu"));
@@ -2498,8 +2499,9 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
                     .await
                     .unwrap();
                 if queue["entries"].as_array().unwrap().iter().any(|row| {
-                    row["preview"] == "Summarize the changes afterwards."
-                        && row["kind"] == "followup"
+                    row["preview"].as_str().is_some_and(|preview| {
+                        preview.starts_with("Summarize the changes afterwards")
+                    }) && row["kind"] == "followup"
                 }) {
                     return;
                 }
@@ -2618,11 +2620,33 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         desktop.controls("Retry message").is_empty(),
         "a failed message does not force the details panel open"
     );
+    desktop.control("Dismiss messages").await;
     desktop.press("Messages").await;
-    desktop.control("Retry message").await;
+    let messages_strip = desktop.control("Messages").await;
+    let retry = desktop.control("Retry message").await;
+    let edit_in_composer = desktop.control("Edit message in composer").await;
+    let dismiss_status = desktop.control("Dismiss message status").await;
+    assert!(
+        retry.bottom() <= messages_strip.top()
+            && edit_in_composer.bottom() <= messages_strip.top()
+            && dismiss_status.bottom() <= messages_strip.top(),
+        "wrapped stopped message clipped its actions: strip={messages_strip:?}, retry={retry:?}, edit={edit_in_composer:?}, dismiss={dismiss_status:?}"
+    );
     desktop.press("Focus message composer").await;
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-stopped"));
+    desktop.press("Edit message in composer").await;
+    desktop
+        .until(
+            "restoring stopped message to composer did not clear Messages",
+            || desktop.controls("Messages").is_empty().then_some(()),
+        )
+        .await;
+    desktop
+        .expect_text(&format!(
+            "Preserve this draft after stopping.\n\n{queued_followup}"
+        ))
+        .await;
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
     desktop.close().await;
     fixture.finish().await;
@@ -2801,9 +2825,16 @@ async fn shell_shares_its_lines(desktop: &Desktop, docked: bool) {
     };
     for (name, bounds) in [
         ("sidebar toggle", toggle),
+        (
+            "session details",
+            desktop.control("Toggle session details").await,
+        ),
         ("Chat view", desktop.control("Chat").await),
         ("Trajectory view", desktop.control("Trajectory").await),
-        ("workspace", desktop.control("Browse workspace files").await),
+        (
+            "workspace pane",
+            desktop.control("Toggle workspace pane").await,
+        ),
     ] {
         assert_eq!(
             bounds.center().y,
@@ -3202,6 +3233,9 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     );
     desktop.artifact(&format!("connection-model-retry-{theme}-{layout}"));
     desktop.press("Fetch models").await;
+    desktop.press("gpt-6.2-sol: Off").await;
+    desktop.press("gpt-6.2-sol: On").await;
+    desktop.control("gpt-6.2-sol: Off").await;
     desktop.control("Edit model gpt-4.1").await;
     {
         let outcome = desktop.outcome.lock().unwrap();
@@ -3609,6 +3643,10 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.submit().await;
     let next = desktop.request(&mut fixture).await;
     assert!(next.body.to_string().contains("Finish the follow-up"));
+    assert!(
+        desktop.controls("Dismiss Goal").is_empty(),
+        "an active Goal must not offer strip dismissal"
+    );
     desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.press(active_goal).await;
@@ -3648,10 +3686,18 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.control("Start Goal").await;
     desktop.key("escape", false);
     desktop
-        .until("the Goal dialog did not close", || {
+        .until("the Goal dialog did not cancel editing", || {
             desktop.controls("Start Goal").is_empty().then_some(())
         })
         .await;
+    desktop.press("Close Goal").await;
+    desktop.press("Dismiss Goal").await;
+    desktop
+        .until("dismissed Goal remained on the composer strip", || {
+            desktop.controls(finished_goal).is_empty().then_some(())
+        })
+        .await;
+    assert!(desktop.controls("Dismiss Goal").is_empty());
     drop(first);
     desktop.close().await;
     fixture.finish().await;
@@ -3988,6 +4034,438 @@ async fn desktop_composer_sandbox_choice_becomes_the_default() {
     fixture.finish().await;
 }
 
+async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: cfg!(not(windows)),
+            ..Options::default()
+        },
+        |config, directory| {
+            config["agent"]["permissions"]["access"] = json!("workspace_write");
+            config["agent"]["toolDiscovery"] = json!(false);
+            let linked_wt = directory.join("feature-worktree");
+            let wt_parent = directory.join("worktrees");
+            std::fs::create_dir_all(&wt_parent).unwrap();
+            let roots = config["agent"]["workspaceRoots"].as_array_mut().unwrap();
+            roots.push(json!({
+                "label": "Feature Worktree",
+                "path": linked_wt,
+            }));
+            roots.push(json!({
+                "label": "Worktrees",
+                "path": wt_parent,
+            }));
+            config["agent"]["skillLibrary"] = Value::Null;
+        let workspace = directory.join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("Cargo.lock"),
+            "# Automatically generated by Cargo.\nversion = 4\n\n[[package]]\nname = \"maka-engine\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/engine.rs"),
+            "pub struct ReviewEngine {\n    pub max_files: usize,\n    pub collapse_locks: bool,\n}\n\nimpl ReviewEngine {\n    pub fn new() -> Self {\n        Self {\n            max_files: 30,\n            collapse_locks: false,\n        }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {\n    416\n}\n",
+        )
+        .unwrap();
+        let run_git = |cwd: &Path, args: &[&str]| {
+            let result = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        run_git(&workspace, &["init", "-b", "main", "--quiet"]);
+        run_git(
+            &workspace,
+            &["remote", "add", "origin", "https://github.com/apache/maka.git"],
+        );
+        run_git(&workspace, &["add", "."]);
+        run_git(
+            &workspace,
+            &[
+                "-c",
+                "user.name=M4n5ter",
+                "-c",
+                "user.email=m4n5terrr@gmail.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "feat(review): initial review engine",
+            ],
+        );
+        run_git(
+            &workspace,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "feat/linked-stage",
+                linked_wt.to_str().unwrap(),
+            ],
+        );
+        for (name, branch) in [
+            ("agy-maka-host", "codex/agy-maka-host"),
+            ("dependency-audit", "codex/dependency-audit-baseline"),
+            ("external-agent-automations", "codex/external-agent-automations"),
+            ("external-agent-interruption", "codex/external-agent-interruption"),
+            ("goal-recovery-followup", "codex/goal-recovery-followup"),
+            ("history-entry", "codex/history-entry"),
+            ("history-navigation", "codex/history-navigation"),
+            ("history-prompt-anchors", "codex/history-prompt-anchors"),
+            ("json-render", "feat/json-render"),
+            ("kimi-parallel-tool-results", "codex/kimi-parallel-tool-results"),
+            ("maka-activity-edge-fade", "codex/maka-activity-edge-fade"),
+            ("maka-automatic-run-recovery", "codex/maka-automatic-run-recovery"),
+            ("maka-background-compaction", "codex/maka-background-compaction"),
+        ] {
+            let path = wt_parent.join(name);
+            run_git(
+                &workspace,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    branch,
+                    path.to_str().unwrap(),
+                ],
+            );
+        }
+        std::fs::write(
+            wt_parent.join("external-agent-automations/src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {
+    560
+}
+// Long branch worktree change
+",
+        )
+        .unwrap();
+        // Dirty changes in main workspace (Cargo.lock + src/engine.rs + src/stage.rs)
+        std::fs::write(
+            workspace.join("Cargo.lock"),
+            "# Automatically generated by Cargo.\nversion = 4\n\n[[package]]\nname = \"maka-engine\"\nversion = \"0.3.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/engine.rs"),
+            "pub struct ReviewEngine {\n    pub max_files: usize,\n    pub collapse_locks: bool,\n    pub preserve_scroll: bool,\n}\n\nimpl ReviewEngine {\n    pub fn new() -> Self {\n        Self {\n            max_files: 30,\n            collapse_locks: true,\n            preserve_scroll: true,\n        }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {\n    496\n}\n\npub fn supports_fullscreen() -> bool {\n    true\n}\n",
+        )
+        .unwrap();
+        // Distinct dirty change in linked worktree
+        std::fs::write(
+            linked_wt.join("src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {\n    640\n}\n// Linked worktree experiment\n",
+        )
+        .unwrap();
+    })
+    .await;
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(840),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+
+    desktop.new_draft().await;
+    desktop
+        .type_text("Review the multi-file engine refactor and fullscreen stage UX")
+        .await;
+    desktop.submit().await;
+    #[cfg(not(windows))]
+    for title in [
+        "Trace Windows and rich editor CI failures",
+        "Audit Stage blur and native anchor bounds",
+        "Verify multi-worktree search and scroll",
+        "Check Composer dock lifecycle",
+        "Run workspace-files Git engine tests",
+        "Validate GitHub PR inline review threads",
+        "Inspect SessionInspector overflow bounds",
+        "Measure DiffView 60fps scroll preservation",
+        "Verify Fullscreen Stage floating PiP",
+        "Audit token allowlist security boundaries",
+        "Check compact tab truncation width",
+        "Verify worktree branch badge layout",
+    ] {
+        desktop
+            .request(&mut fixture)
+            .await
+            .tool_call(
+                "SessionCreate",
+                json!({
+                    "title": title,
+                    "labels": [],
+                    "workspace": {"kind": "directory", "path": fixture.directory.path().join("workspace")}
+                }),
+            )
+            .await;
+    }
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .delta("已经核对过 `src/engine.rs` 和 `src/stage.rs` 的改动：\n\n- `Cargo.lock` 默认自动折叠，不会挡住正文代码浏览。\n- 右侧 Stage 支持可搜索、带滚动条的 Git worktree 选择器与严格受限高度的详情面板。")
+        .await;
+    desktop
+        .wait("the model response did not finish", reply.finish())
+        .await;
+
+    // 1. Verify Composer holds [Browse workspace files] on the same toolbar row as [Add to message]
+    let ws_btn = desktop.control("Browse workspace files").await;
+    let add_btn = desktop.control("Add to message").await;
+    assert!(
+        (ws_btn.center().y - add_btn.center().y).abs() <= px(2.0),
+        "Browse workspace files must sit in Composer toolbar beside Add to message: ws={ws_btn:?}, add={add_btn:?}"
+    );
+    let composer_before = desktop.control("Focus message composer").await;
+    assert!(
+        composer_before.bottom() <= px(840.0),
+        "Composer started off screen: {composer_before:?}"
+    );
+
+    let sessions = desktop.sessions().await;
+    let active_sid = sessions
+        .iter()
+        .find(|s| s["id"] != fixture.session && s["parentSessionId"].is_null())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rev = desktop
+        .client
+        .query("agent", "gitRevisions", json!({"sessionId": active_sid}))
+        .await;
+    assert!(
+        rev.as_ref()
+            .ok()
+            .and_then(|v| v["worktrees"].as_array())
+            .is_some_and(|w| w.len() >= 15),
+        "expected >=15 worktrees in gitRevisions, got: {rev:?}"
+    );
+
+    // Verify Conversation header layout
+    let inspector_toggle = desktop.control("Toggle session details").await;
+    let chat_tab = desktop.control("Chat").await;
+    let trajectory_tab = desktop.control("Trajectory").await;
+    let stage_toggle = desktop.control("Toggle workspace pane").await;
+    assert!(
+        inspector_toggle.right() <= chat_tab.left() + px(1.0)
+            && stage_toggle.left() >= trajectory_tab.right() - px(1.0),
+        "Header controls out of order: inspector={inspector_toggle:?}, chat={chat_tab:?}, trajectory={trajectory_tab:?}, stage={stage_toggle:?}"
+    );
+    assert!(
+        (inspector_toggle.center().y - chat_tab.center().y).abs() <= px(2.0)
+            && (stage_toggle.center().y - chat_tab.center().y).abs() <= px(2.0),
+        "Header controls misaligned vertically: inspector={inspector_toggle:?}, chat={chat_tab:?}, stage={stage_toggle:?}"
+    );
+
+    // 2. Open Session Context Inspector with 12 subagents & 15 worktrees:
+    //    Composer MUST NOT move or get pushed off screen even when all subagents are expanded!
+    desktop.press("Toggle session details").await;
+    let inspector_wt = desktop.control("Switch worktree").await;
+    let inspector_changes = desktop.control("Review workspace changes").await;
+    assert!(
+        inspector_wt.size.height >= px(40.0)
+            && inspector_wt.size.height <= px(64.0)
+            && inspector_changes.size.height >= px(24.0),
+        "SessionInspector controls unexpected size: wt={inspector_wt:?}, changes={inspector_changes:?}"
+    );
+    #[cfg(not(windows))]
+    {
+        desktop.press("Show all (12)").await;
+        desktop.control("Show less").await;
+    }
+    let composer_with_expanded_inspector = desktop.control("Focus message composer").await;
+    assert!(
+        (composer_with_expanded_inspector.top() - composer_before.top()).abs() <= px(2.0)
+            && composer_with_expanded_inspector.bottom() <= px(840.0),
+        "SessionInspector pushed Composer down! before={composer_before:?}, after={composer_with_expanded_inspector:?}"
+    );
+    desktop.artifact("ux-01-inspector-bounded-height");
+
+    // Open searchable, scrollable WorktreePicker from SessionInspector:
+    // verify search box + bounded popup height, then filter and select long-branch worktree
+    desktop.press("Switch worktree").await;
+    let wt_filter = desktop.control("Filter worktrees…").await;
+    assert!(
+        wt_filter.bottom() <= px(800.0),
+        "Worktree filter out of bounds: {wt_filter:?}"
+    );
+    // Visible items inside the scrollable popover must stay strictly above window bottom (840pt)
+    for visible_wt in desktop.controls("external-agent-automations") {
+        assert!(
+            visible_wt.bottom() <= px(820.0),
+            "Worktree popover overflowed window bottom: {visible_wt:?}"
+        );
+    }
+    desktop.artifact("ux-02-worktree-picker-scrollable");
+
+    desktop.type_text("external-agent-automations").await;
+    desktop.key("enter", false);
+    desktop
+        .until("Worktree popover did not close after selection", || {
+            desktop
+                .controls("Filter worktrees…")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let wt_after_long = desktop.control("Switch worktree").await;
+    assert!(
+        wt_after_long.size.height <= px(64.0) && wt_after_long.size.width >= px(220.0),
+        "Long branch name squashed or wrapped worktree card in SessionInspector: {wt_after_long:?}"
+    );
+    desktop.artifact("ux-03-inspector-long-branch-clean");
+
+    // Close inspector and open Right Workspace Stage -> Launchpad -> Changes Studio
+    desktop.press("Toggle session details").await;
+    desktop.press("Toggle workspace pane").await;
+    desktop.control("Files").await;
+
+    // 3. Open Changes Studio while long-branch worktree is active: verify sub-header never squashes!
+    desktop.press("Changes").await;
+    let uncommitted_btn = desktop.control("Uncommitted").await;
+    let studio_wt_pill = desktop.control("Switch worktree").await;
+    assert!(
+        uncommitted_btn.size.width >= px(72.0)
+            && (uncommitted_btn.center().y - studio_wt_pill.center().y).abs() <= px(2.0),
+        "ChangesStudio sub-header squashed by long worktree pill: uncommitted={uncommitted_btn:?}, wt={studio_wt_pill:?}"
+    );
+    desktop.artifact("ux-04-changes-studio-long-worktree");
+
+    // Filter and switch back to main workspace via ChangesStudio WorktreePicker, then test compact file tab
+    desktop.press("Switch worktree").await;
+    desktop.control("Filter worktrees…").await;
+    desktop.type_text("workspace").await;
+    desktop.artifact("ux-05-worktree-picker-search");
+    desktop.key("enter", false);
+    desktop
+        .until("Worktree picker did not close after pressing Enter", || {
+            desktop
+                .controls("Filter worktrees…")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.control("Changed files").await;
+
+    let open_src = desktop
+        .until("Open source file buttons did not appear", || {
+            let btns = desktop.controls("Open source file");
+            btns.get(1).copied().or_else(|| btns.first().copied())
+        })
+        .await;
+    desktop.press_at(open_src.center());
+    desktop.control("Go back").await;
+    let file_tab = desktop
+        .until("Compact file stage tab did not appear", || {
+            desktop
+                .controls("Preview src/engine.rs")
+                .into_iter()
+                .next()
+                .or_else(|| desktop.controls("Preview Cargo.lock").into_iter().next())
+        })
+        .await;
+    assert!(
+        file_tab.size.width <= px(200.0),
+        "Stage tab stretched abnormally wide: {file_tab:?}"
+    );
+    let def_btn = desktop.control("Go to definition").await;
+    let editor_body_probe = Bounds::new(
+        point(def_btn.left(), def_btn.bottom() + px(24.0)),
+        size(px(280.0), px(180.0)),
+    );
+    desktop
+        .until(
+            "CurrentFile Editor body collapsed to 0px or stayed blank",
+            || desktop.draws_in(editor_body_probe).then_some(()),
+        )
+        .await;
+    desktop.artifact("ux-06-file-editor-full-height");
+    desktop.press("Go back").await;
+    desktop.control("Changed files").await;
+
+    // 4. Enter Fullscreen Stage + Expandable Floating Conversation PiP
+    desktop.press("Enter fullscreen").await;
+    desktop
+        .until("Exit fullscreen control did not appear", || {
+            (!desktop.controls("Exit fullscreen").is_empty()).then_some(())
+        })
+        .await;
+    desktop.control("Expand conversation").await;
+    desktop.artifact("ux-06-fullscreen-collapsed-pip");
+
+    desktop.press("Expand conversation").await;
+    desktop
+        .until("Expanded conversation did not appear", || {
+            (desktop.controls("Collapse conversation").len() >= 2).then_some(())
+        })
+        .await;
+    desktop.artifact("ux-07-fullscreen-expanded-pip");
+
+    // Optional live GitHub PR capture when MAKA_UX_CAPTURE_GITHUB_PR=1
+    if std::env::var_os("MAKA_UX_CAPTURE_GITHUB_PR").is_some() {
+        let new_tab = desktop
+            .until("New tab control did not appear", || {
+                desktop.controls("New tab").into_iter().next()
+            })
+            .await;
+        desktop.press_at(new_tab.center());
+        let search_box = desktop
+            .until("Launchpad search box did not appear", || {
+                desktop
+                    .controls("Search files, PR #number, or branch…")
+                    .into_iter()
+                    .next()
+            })
+            .await;
+        let previous = desktop.platform.text_input_target();
+        desktop.press_at(search_box.center());
+        desktop.target_after(previous).await;
+        desktop.type_text("#6974").await;
+        desktop.key("enter", false);
+        desktop.control("Summary").await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(8), desktop.control("Open on GitHub")).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        desktop.artifact("ux-08-github-pr-summary");
+    }
+
+    let exit_fs = desktop
+        .until("Exit fullscreen button missing", || {
+            desktop.controls("Exit fullscreen").into_iter().next()
+        })
+        .await;
+    desktop.press_at(exit_fs.center());
+    desktop.control("Enter fullscreen").await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
@@ -4028,6 +4506,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
     "desktop_composer_sandbox_choice_becomes_the_default",
+    "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
 ];
 
 pub(crate) fn run(name: &str) {
@@ -4151,6 +4630,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_composer_sandbox_choice_becomes_the_default" => {
             runtime.block_on(desktop_composer_sandbox_choice_becomes_the_default())
+        }
+        "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review" => {
+            runtime.block_on(desktop_workspace_stage_inspector_worktrees_and_fullscreen_review())
         }
         _ => panic!("unknown native test: {name}"),
     }

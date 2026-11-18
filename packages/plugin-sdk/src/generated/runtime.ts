@@ -1379,6 +1379,10 @@ export type UsageAuxiliarySource =
       namespace: InstanceId;
       operation: string;
       fingerprint: string;
+      /**
+       * Absent for the initial attempt, preserving existing source identities.
+       */
+      attempt?: number | null;
       [k: string]: unknown | undefined;
     }
   | {
@@ -2427,7 +2431,7 @@ export type AgentGoalChange =
        */
       approval?: AgentGoalApproval | null;
     };
-export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete' | 'set_budget';
+export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete' | 'set_budget' | 'dismiss';
 export type AgentGoalResult =
   | {
       kind: 'committed';
@@ -3917,6 +3921,9 @@ export type GitDiff =
   | {
       kind: 'text';
       patch: string;
+      before: string;
+      after: string;
+      digest: string;
     }
   | {
       kind: 'binary';
@@ -6786,6 +6793,7 @@ export interface ConnectionCredentialTarget {
   };
 }
 export interface SettingsConnectionEditingFacts {
+  discoveredModelIds: string[];
   enabledModelIds: string[];
   modelOverrides: {
     [k: string]: ModelOverride | undefined;
@@ -7319,6 +7327,7 @@ export interface AgentGoalDetail {
   retryAt?: number | null;
   createdAt: number;
   pending: boolean;
+  dismissed: boolean;
   report?: GoalReport | null;
   note: string;
 }
@@ -8203,6 +8212,7 @@ export interface GitStatusEntry {
   area: GitArea;
   path: WorkspacePath;
   kind: GitChangeKind;
+  digest: string;
 }
 export interface GitStatus {
   head: string | null;
@@ -8212,6 +8222,7 @@ export interface AgentGitDiffRead {
   sessionId: string;
   area: GitArea;
   path: WorkspacePath;
+  worktreePath?: string | null;
 }
 export interface TerminalList {
   sessionId: string;
@@ -8348,6 +8359,7 @@ export interface AgentObservation {
   compacting: AgentCompactionProgress | null;
   rememberedBackend?: AgentBackendPreference | null;
   metrics?: AgentSessionMetrics | null;
+  latestRunId?: RunId | null;
   through: number;
   run?: AgentRun | null;
   parts: AgentPart[];

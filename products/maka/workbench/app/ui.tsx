@@ -490,7 +490,13 @@ export function Header(props: {
   browser: BrowserHeader;
   files?(): void;
   filesOpener?(node: ViewRef): void;
-  /** Extra controls for this conversation, after the files button. */
+  changes?(): void;
+  preset?: { name: string; open(): void };
+  /** Toggles the right-hand session context inspector card (left of Chat / Trajectory). */
+  inspector?: { open: boolean; toggle(): void };
+  /** Proactively opens or closes the right-hand workspace stage pane. */
+  stage?: { open: boolean; toggle(): void };
+  /** Extra controls for this conversation, before the header's view switcher. */
   actions?: JSX.Element;
   views?: JSX.Element;
 }) {
@@ -563,7 +569,7 @@ export function Header(props: {
       >
         {props.title}
       </Text>
-      <If when={props.files}>
+      <If when={!desktop && props.files}>
         <Button
           accessibilityLabel={tr('Browse workspace files')}
           tooltip={textTooltip(() => props.workspace || tr('Browse workspace files'))}
@@ -571,19 +577,52 @@ export function Header(props: {
           onPress={props.files}
           style={{
             ...toolbarControlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            maxWidth: 240,
+            minWidth: 0,
+            flexShrink: 1,
+          }}
+          hoverStyle={{ backgroundColor: C.surface }}
+          focusStyle={{ backgroundColor: C.raised }}
+        >
+          <Icon name="folder" color={C.secondary} size={16} />
+          <Text
+            style={[
+              {
+                ...captionTextStyle,
+                color: C.secondary,
+                minWidth: 0,
+                flexShrink: 1,
+              },
+              { numberOfLines: 1 },
+            ]}
+          >
+            {workspaceName()}
+          </Text>
+        </Button>
+      </If>
+      <If when={props.preset}>
+        <Button
+          accessibilityLabel={tr('Applied subagent')}
+          tooltip={textTooltip(() => `${tr('Applied subagent')}: ${props.preset!.name}`)}
+          onPress={() => props.preset?.open()}
+          style={{
+            ...toolbarControlStyle,
             ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
             flexDirection: 'row',
             alignItems: 'center',
-            gap: desktop ? 4 : 8,
-            maxWidth: 240,
+            gap: desktop ? 4 : 6,
+            maxWidth: 200,
             minWidth: 0,
-            flexShrink: desktop ? 2 : 1,
+            flexShrink: 2,
           }}
           hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
           activeStyle={desktop ? quietActiveStyle() : undefined}
           focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
         >
-          <Icon name="folder" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
+          <Icon name="bot" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
           <Text
             style={[
               {
@@ -595,7 +634,7 @@ export function Header(props: {
               { numberOfLines: 1 },
             ]}
           >
-            {workspaceName()}
+            {props.preset!.name}
           </Text>
         </Button>
       </If>
@@ -603,7 +642,71 @@ export function Header(props: {
         <View style={{ flex: 1 }} />
       </If>
       {props.actions}
+      <If when={desktop && props.inspector !== undefined}>
+        <Button
+          accessibilityLabel={tr('Toggle session details')}
+          tooltip={textTooltip(() => tr('Toggle session details'))}
+          selected={props.inspector!.open}
+          onPress={props.inspector!.toggle}
+          style={{
+            ...controlStyle,
+            width: 28,
+            minHeight: 28,
+            height: 28,
+            paddingHorizontal: 0,
+            paddingVertical: 0,
+            alignItems: 'center',
+            backgroundColor: props.inspector!.open ? C.card : 'transparent',
+          }}
+          hoverStyle={quietHoverStyle()}
+          activeStyle={quietActiveStyle()}
+          focusStyle={quietFocusStyle()}
+        >
+          <Icon name="inspector" size={15} color={props.inspector!.open ? C.text : C.muted} />
+        </Button>
+      </If>
       {props.views}
+      <If when={desktop && props.stage !== undefined && !props.browser.close}>
+        <Button
+          class="group/stage-toggle"
+          accessibilityLabel={tr('Toggle workspace pane')}
+          tooltip={textTooltip(() => tr('Toggle workspace pane'))}
+          selected={props.stage!.open}
+          onPress={props.stage!.toggle}
+          style={{
+            ...controlStyle,
+            width: 28,
+            minHeight: 28,
+            height: 28,
+            paddingHorizontal: 0,
+            paddingVertical: 0,
+            alignItems: 'center',
+            backgroundColor: props.stage!.open ? C.card : 'transparent',
+          }}
+          hoverStyle={quietHoverStyle()}
+          activeStyle={quietActiveStyle()}
+          focusStyle={quietFocusStyle()}
+        >
+          <View
+            accessibilityElementsHidden
+            style={[{ width: 15, height: 15 }, { pointerEvents: 'none' }]}
+          >
+            <View class="group-hover/stage-toggle:opacity-0">
+              <Icon name="panelRight" size={15} color={props.stage!.open ? C.text : C.muted} />
+            </View>
+            <View
+              class="opacity-0 group-hover/stage-toggle:opacity-100"
+              style={{ position: 'absolute', left: 0, top: 0 }}
+            >
+              <Icon
+                name={props.stage!.open ? 'panelRightClose' : 'panelRightOpen'}
+                size={15}
+                color={props.stage!.open ? C.text : C.muted}
+              />
+            </View>
+          </View>
+        </Button>
+      </If>
       <If when={props.browser.close}>
         <Button
           onPress={props.browser.close}

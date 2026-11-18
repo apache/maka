@@ -19,6 +19,7 @@
 
 import { createTrajectoryRequests } from './trajectoryRequests';
 import {
+  mergeRestoredIntoHeldDraft,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
@@ -26,6 +27,11 @@ import {
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import { SessionInspector } from '../../../../products/maka/workbench/app/SessionInspector';
+import type {
+  WorkspacePullRequestTarget,
+  WorkspaceSourceItem,
+} from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
@@ -73,6 +79,7 @@ import {
   sendDelivery,
   type SendDelivery,
   retrySend,
+  restoreSend,
   dismissSend,
   abandonSend,
   type SendOperation,
@@ -275,6 +282,7 @@ export type ConversationHandle = Omit<
   'attachments' | 'modelDetails' | 'permissions' | 'projectMcp' | 'completion' | 'checklist'
 > & {
   attachments: AttachmentDraft;
+  sendExternalPrompt(text: string): boolean;
   goal: ReturnType<typeof createSessionGoal>;
   modelDetails(): ModelDetails;
   permissions: ReturnType<typeof createSessionPermissions>;
@@ -298,6 +306,8 @@ export type ConversationHandle = Omit<
   focusActivity(turnId: string | null): void;
   /** The title its header shows. */
   title(): string;
+  /** Latest user/assistant messages for the fullscreen floating mini-preview. */
+  recentMessages?(): readonly { id: string; role: 'user' | 'assistant'; text: string }[];
 };
 // What the user can do about each reason the Host declined to continue.
 const continuationRejected: Record<AgentContinuationRejection, MessageKey> = {
@@ -338,11 +348,24 @@ type ConversationProps = {
     first?: boolean;
   } | null;
   commands(): void;
+  openPreset?(
+    preset: NonNullable<AgentSession['appliedPreset']>,
+    backend: AgentSession['backend'] | null | undefined,
+  ): void;
   connectionLost(): boolean;
   visible(): boolean;
   foreground(): boolean;
   browser(): BrowserHeader;
   files?(): void;
+  changes?(): void;
+  stage?(): { open: boolean; toggle(): void } | undefined;
+  activeWorktree?(): string | null;
+  selectWorktree?(worktreePath: string | null): void;
+  sources?(): readonly WorkspaceSourceItem[];
+  childSessions?(): readonly AgentSession[];
+  openChangesWithWorktree?(worktreePath?: string | null): void;
+  openLaunchpad?(): void;
+  openPullRequest?(target: Omit<WorkspacePullRequestTarget, 'sessionId'>): void;
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
@@ -446,6 +469,7 @@ export function Conversation(props: ConversationProps) {
   );
   const toolProgress = (id: string) => toolProgressById().get(id) ?? null;
   const compacting = signal<AgentCompactionProgress | null>(null);
+  const latestRunId = signal<RunId | null>(null);
   const execution = signal<AgentExecution | null>(null);
   const continuing = signal(false);
   const confirmingContinuation = () => continuing() || props.continuationPending();
@@ -520,6 +544,7 @@ export function Conversation(props: ConversationProps) {
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
   const sendErrors = signal<Map<string, UiText>>(new Map());
   const checkingSends = signal<Set<string>>(new Set());
+  const restoringSends = signal<Set<string>>(new Set());
   const sendDeliveries = signal<Map<string, SendDelivery>>(new Map());
   let sendSequence = 0;
   const receiptsKnown = signal(false);
@@ -1130,8 +1155,7 @@ export function Conversation(props: ConversationProps) {
           (row?.role === 'compaction' && turn.foldedWork) ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
-          (row?.role === 'failure' &&
-            (platform.idiom !== 'terminal' || outcome === 'completed' || foldedWork))) &&
+          (row?.role === 'failure' && (outcome === 'completed' || foldedWork))) &&
         !summaries.has(turn.turnKey) &&
         (platform.idiom !== 'terminal' || outcome !== null || foldedWork)
       ) {
@@ -1905,6 +1929,7 @@ export function Conversation(props: ConversationProps) {
       });
       if (trigger === 'live') predictionTriggerTurn = completedTurn;
       metrics.set(observed.metrics ?? null);
+      latestRunId.set(observed.latestRunId ?? observed.run?.runId ?? null);
       if (observed.run) {
         run.set(observed.run.state);
         runId.set(observed.run.runId);
@@ -1913,7 +1938,7 @@ export function Conversation(props: ConversationProps) {
       } else if (runId() === null) {
         // Exact execution reads below distinguish terminal history from a Run
         // whose current activation is simply absent.
-        run.set(rows().length === 0 ? 'idle' : 'loading');
+        run.set(rows().length === 0 && !observed.latestRunId ? 'idle' : 'loading');
       }
       compacting.set(observed.compacting);
       messagePrediction.source(
@@ -2071,6 +2096,7 @@ export function Conversation(props: ConversationProps) {
             lastCompletedTurn.set(null);
             messagePrediction.source(null, 'live');
             run.set('admitted');
+            latestRunId.set(event.runId);
             runId.set(event.runId);
             runBackend.set(null);
             runTurn.set(event.turnId);
@@ -2100,6 +2126,7 @@ export function Conversation(props: ConversationProps) {
             predictionTriggerTurn = completedTurn;
             lastCompletedTurn.set(completedTurn);
             run.set('loading');
+            latestRunId.set(event.runId);
             runId.set(null);
             runBackend.set(null);
             compacting.set(null);
@@ -2702,7 +2729,7 @@ export function Conversation(props: ConversationProps) {
     const active = runId();
     if (active !== null) return active;
     if (!atHistoryTail() || (historyWindow()?.through ?? -1) < readState().through) return null;
-    return rows().findLast((row) => row.runId !== undefined)?.runId ?? null;
+    return latestRunId() ?? rows().findLast((row) => row.runId !== undefined)?.runId ?? null;
   });
   const acceptExecution = (value: AgentExecution) => {
     if (value.sessionId !== sessionId) throw new UiError('Host observed a different session.');
@@ -2720,6 +2747,7 @@ export function Conversation(props: ConversationProps) {
       }
     } else {
       // No live handle does not prove failure: a durable wait/blocker remains active.
+      latestRunId.set(value.runId);
       runId.set(value.runId);
       runTurn.set(value.turnId);
       switch (value.state.kind) {
@@ -2757,7 +2785,7 @@ export function Conversation(props: ConversationProps) {
       current = false;
     };
   });
-  const continuation = computed<ComposerContinuation | null>(() => {
+  const continuationCandidate = computed<ComposerContinuation['source'] | null>(() => {
     const source = execution();
     if (
       !ready() ||
@@ -2771,6 +2799,61 @@ export function Conversation(props: ConversationProps) {
       source.runId !== executionSource() ||
       !terminal(source) ||
       source.state.kind === 'completed'
+    )
+      return null;
+    return source;
+  });
+  const continuationReady = signal<{ runId: RunId; highWater: number } | null>(null);
+  effect(() => {
+    const candidate = continuationCandidate();
+    workspace();
+    executionRevision();
+    readState().through;
+    let current = true;
+    untracked(() => {
+      if (!candidate) {
+        continuationReady.set(null);
+        return;
+      }
+      if (
+        continuationReady()?.runId !== candidate.runId ||
+        continuationReady()?.highWater !== candidate.highWater
+      )
+        continuationReady.set(null);
+      void host
+        .query('agent', 'continuationAvailability', { sessionId, runId: candidate.runId })
+        .then((result) => {
+          if (
+            !alive ||
+            !current ||
+            continuationCandidate()?.runId !== candidate.runId ||
+            continuationCandidate()?.highWater !== candidate.highWater
+          )
+            return;
+          if (
+            result.kind === 'ready' &&
+            result.source.runId === candidate.runId &&
+            result.source.highWater === candidate.highWater
+          )
+            continuationReady.set({ runId: candidate.runId, highWater: candidate.highWater });
+          else continuationReady.set(null);
+        })
+        .catch(() => {
+          if (alive && current) continuationReady.set(null);
+        });
+    });
+    return () => {
+      current = false;
+    };
+  });
+  const continuation = computed<ComposerContinuation | null>(() => {
+    const source = continuationCandidate();
+    const verified = continuationReady();
+    if (
+      !source ||
+      !verified ||
+      verified.runId !== source.runId ||
+      verified.highWater !== source.highWater
     )
       return null;
     return { source };
@@ -3165,7 +3248,8 @@ export function Conversation(props: ConversationProps) {
       !original ||
       !retryable(original) ||
       activeSends().has(id) ||
-      checkingSends().has(id)
+      checkingSends().has(id) ||
+      restoringSends().has(id)
     )
       return;
     try {
@@ -3198,8 +3282,145 @@ export function Conversation(props: ConversationProps) {
       sendError(id, reason);
     }
   };
+  const editOriginal = async (id: string) => {
+    if (
+      !alive ||
+      !draftReady() ||
+      sending() ||
+      activeSends().has(id) ||
+      checkingSends().has(id) ||
+      restoringSends().has(id)
+    )
+      return;
+    const applyAtomicRestore = async (
+      targetId: string,
+      sourceDraft: { text: string; attachments: DraftAttachment[] },
+    ) => {
+      if (savingFailed()) {
+        sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
+        return false;
+      }
+      await flushDraft();
+      if (!alive || savingFailed()) {
+        if (alive)
+          sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
+        return false;
+      }
+      holding = true;
+      try {
+        const restored = await restoreSend(client, targetId, draftRevision);
+        if (!alive) return false;
+        draftRevision = restored.revision;
+        if (heldDraft === null) {
+          attachments.restore(restored.attachments);
+          draft.set(restored.text);
+        } else {
+          const merged = mergeRestoredIntoHeldDraft(heldDraft, sourceDraft);
+          attachments.restore(merged.attachments);
+          draft.set(merged.text);
+          heldDraft = merged;
+        }
+        return true;
+      } finally {
+        releaseHeld();
+      }
+    };
+
+    const freezing = freezeState();
+    if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
+      if (freezing.kind === 'reserving') return;
+      const frozen = freezing.frozen;
+      restoringSends.set(new Set(restoringSends()).add(id));
+      try {
+        let reservedOriginal: SendOperation | undefined;
+        if (frozen.revision !== undefined) {
+          const originals = await refreshSends();
+          if (!alive) return;
+          reservedOriginal = originals.find((item) => item.draft?.revision === frozen.revision);
+        }
+        if (reservedOriginal !== undefined) {
+          if (savingFailed()) {
+            sendError(id, new UiError('The draft could not be saved; it has not been sent.'));
+            return;
+          }
+          releaseHeld();
+          freezeState.set({ kind: 'idle' });
+          if (await applyAtomicRestore(reservedOriginal.id, reservedOriginal.correlation.draft)) {
+            await refreshSends();
+            if (alive) props.focusComposer();
+          }
+          return;
+        }
+        if (savingFailed()) {
+          const stored = await loadDraft(client);
+          if (!alive) return;
+          if (stored.revision !== draftRevision) {
+            throw new UiError('The draft could not be saved; it has not been sent.');
+          }
+          savingFailed.set(false);
+        }
+        const existingText = draft();
+        const nextText =
+          frozen.text === ''
+            ? existingText
+            : existingText.trim() === '' || existingText === frozen.text
+              ? frozen.text
+              : `${existingText}\n\n${frozen.text}`;
+        const seen = new Set(attachments.files().map((file) => file.id));
+        const mergedFiles = [
+          ...attachments.files(),
+          ...frozen.files.filter((file) => !seen.has(file.id)),
+        ];
+        const mergedSettled = [
+          ...new Set([...frozen.edit.settledUploads, ...attachments.snapshot().settledUploads]),
+        ];
+        holding = false;
+        heldDraft = null;
+        attachments.restore(mergedFiles);
+        draft.set(nextText);
+        pendingDraft = {
+          text: nextText,
+          attachments: mergedFiles,
+          settledUploads: mergedSettled,
+        };
+        startSave();
+        await flushDraft();
+        if (!alive || savingFailed()) return;
+        freezeState.set({ kind: 'idle' });
+        props.focusComposer();
+      } catch (reason) {
+        sendError(id, reason);
+      } finally {
+        if (alive) {
+          const next = new Set(restoringSends());
+          next.delete(id);
+          restoringSends.set(next);
+        }
+      }
+      return;
+    }
+
+    const original = unresolved().find((item) => item.id === id);
+    if (!original || !retryable(original)) return;
+    restoringSends.set(new Set(restoringSends()).add(id));
+    try {
+      if (await applyAtomicRestore(id, original.correlation.draft)) {
+        await refreshSends();
+        if (alive) props.focusComposer();
+      }
+    } catch (reason) {
+      sendError(id, reason);
+    } finally {
+      if (alive) {
+        const next = new Set(restoringSends());
+        next.delete(id);
+        restoringSends.set(next);
+      }
+    }
+  };
   const dismissOriginal = async (id: string) => {
-    if (!alive || activeSends().has(id) || checkingSends().has(id)) return;
+    if (!alive || activeSends().has(id) || checkingSends().has(id) || restoringSends().has(id))
+      return;
     const freezing = freezeState();
     if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
       if (freezing.kind === 'reserving') return;
@@ -3228,6 +3449,8 @@ export function Conversation(props: ConversationProps) {
       const canRetry = cancelled || original.abandoned || receiptFailure?.retryable === true;
       const failed = canRetry || receiptFailure !== null;
       const checking = checkingSends().has(original.id);
+      const restoring = restoringSends().has(original.id);
+      const busy = checking || restoring;
       const detail = sendErrors().get(original.id);
       if (
         acceptedQueued(original) &&
@@ -3253,19 +3476,21 @@ export function Conversation(props: ConversationProps) {
             : 'unknown',
         detail: checking
           ? tr('Checking send status…')
-          : receiptFailure
-            ? renderText(receiptFailure.detail)
-            : cancelled
-              ? tr('Stopped before delivery. Your message is kept.')
-              : detail
-                ? renderText(detail)
-                : original.abandoned
-                  ? tr('Message was not sent.')
-                  : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
-                    ? tr('Received · waiting for the next step')
-                    : tr('Delivery not confirmed. Check status before retrying.'),
-        retryable: canRetry && !checking,
-        busy: checking,
+          : restoring
+            ? tr('Saving message…')
+            : receiptFailure
+              ? renderText(receiptFailure.detail)
+              : cancelled
+                ? tr('Stopped before delivery. Your message is kept.')
+                : detail
+                  ? renderText(detail)
+                  : original.abandoned
+                    ? tr('Message was not sent.')
+                    : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
+                      ? tr('Received · waiting for the next step')
+                      : tr('Delivery not confirmed. Check status before retrying.'),
+        retryable: canRetry && !busy,
+        busy,
       });
     }
     for (const [id, frozen] of activeSends()) {
@@ -3409,6 +3634,52 @@ export function Conversation(props: ConversationProps) {
       return;
     void send(text, expectedBackend, false, delivery);
   };
+  const sendExternalPrompt = (text: string): boolean => {
+    if (!alive || !text.trim()) return false;
+    if (sendBlockedReason()) {
+      notice.set(
+        uiMessage(
+          'This message was not sent. Your draft is kept; check the status below before trying again.',
+        ),
+      );
+      return false;
+    }
+    const delivery: 'steer' | 'queue' = 'steer';
+    if (modelLoading(delivery)) return false;
+    let selected: ReturnType<typeof sendSelection>;
+    try {
+      selected = sendSelection(delivery, backend() ?? undefined);
+    } catch (reason) {
+      report(reason, 'Could not send the message.');
+      return false;
+    }
+    const savedComposerEdit: AttachmentEdit & { text: string } = {
+      text: draft(),
+      ...attachments.snapshot(),
+    };
+    const externalEdit: AttachmentEdit & { text: string } = {
+      text,
+      attachments: [],
+      settledUploads: [],
+    };
+    const frozen: FrozenSend = {
+      id: `draft-send-${++sendSequence}`,
+      text,
+      files: [],
+      edit: externalEdit,
+      selection: selected,
+    };
+    pendingDraft = externalEdit;
+    heldDraft = savedComposerEdit;
+    holding = true;
+    error.set('');
+    if (props.compact) {
+      if (compactStart() === null) compactStart.set(latestQuestionKey());
+      followCompact = true;
+    }
+    void freezeSend(frozen);
+    return true;
+  };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
   const messagePrediction = createMessagePrediction({
@@ -3493,10 +3764,29 @@ export function Conversation(props: ConversationProps) {
       return tr('Waiting for access to be restored');
     return '';
   });
+  const inspectorOpen = signal(false);
+  const inspectorSideBySide = signal(false);
   const ownHandle: ConversationHandle = {
     sessionId,
     prediction,
     title: () => title() || tr('Untitled conversation'),
+    recentMessages() {
+      const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
+      for (const row of [...rows(), ...live()]) {
+        if (
+          (row.role === 'user' || row.role === 'assistant') &&
+          row.field === 'body' &&
+          !row.origin &&
+          row.text.trim().length > 0
+        ) {
+          const prev = merged.at(-1);
+          const id = stableRowId(row);
+          if (prev && prev.id === id) prev.text = row.text;
+          else merged.push({ id, role: row.role, text: row.text });
+        }
+      }
+      return merged.slice(-6);
+    },
     queue: queueSession,
     interactions,
     executionWaitMessage,
@@ -3542,9 +3832,13 @@ export function Conversation(props: ConversationProps) {
       toolActivity().length === 0,
     connected,
     error: () => (connected() ? error() : ''),
+    dismissError: () => {
+      if (alive) error.set('');
+    },
     notice: () => (connected() ? notice() : ''),
     sends: sendStatuses,
     retrySend: retryOriginal,
+    editSend: editOriginal,
     checkSend,
     dismissSend: dismissOriginal,
     recovering: () => !receiptsKnown() || sending() || autoSending(),
@@ -3573,6 +3867,7 @@ export function Conversation(props: ConversationProps) {
       void send(event.text);
     },
     sendRendered,
+    sendExternalPrompt,
     run: runId,
     activeTurn: runTurn,
     activityTurn: () => {
@@ -4423,7 +4718,28 @@ export function Conversation(props: ConversationProps) {
         commands={props.commands}
         browser={props.browser()}
         files={props.files}
+        preset={
+          permissions.snapshot()?.appliedPreset && props.openPreset
+            ? {
+                name: permissions.snapshot()!.appliedPreset!.name,
+                open: () =>
+                  props.openPreset!(
+                    permissions.snapshot()!.appliedPreset!,
+                    permissions.snapshot()?.backend,
+                  ),
+              }
+            : undefined
+        }
         filesOpener={props.filesOpener}
+        inspector={
+          platform.idiom === 'terminal' || ownHandle.empty()
+            ? undefined
+            : {
+                open: inspectorOpen(),
+                toggle: () => inspectorOpen.set(!inspectorOpen()),
+              }
+        }
+        stage={platform.idiom === 'terminal' || ownHandle.empty() ? undefined : props.stage?.()}
         actions={
           bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
             <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
@@ -4515,13 +4831,18 @@ export function Conversation(props: ConversationProps) {
         </Button>
       </View>
       <View
-        onLayout={({ bounds }) =>
-          trajectorySideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 760)
-        }
+        onLayout={({ bounds }) => {
+          trajectorySideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 760);
+          inspectorSideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 860);
+        }}
         style={{
           display: ownHandle.empty() ? 'none' : 'flex',
           flex: 1,
-          flexDirection: selectedTrajectory() !== null && trajectorySideBySide() ? 'row' : 'column',
+          flexDirection:
+            (selectedTrajectory() !== null && trajectorySideBySide()) ||
+            (inspectorOpen() && inspectorSideBySide())
+              ? 'row'
+              : 'column',
           minHeight: 0,
           width: '100%',
         }}
@@ -4531,6 +4852,7 @@ export function Conversation(props: ConversationProps) {
             flex: 1,
             flexDirection: 'column',
             minHeight: 0,
+            minWidth: 0,
             width: '100%',
           }}
         >
@@ -4801,6 +5123,51 @@ export function Conversation(props: ConversationProps) {
             );
           }}
         </Each>
+        <If when={inspectorOpen() && !ownHandle.empty() && platform.idiom !== 'terminal'}>
+          <View
+            style={
+              inspectorSideBySide()
+                ? { width: 284, flexShrink: 0, minHeight: 0 }
+                : [
+                    { position: 'absolute', top: 0, bottom: 0, right: 0 },
+                    { pointerEvents: 'box-none' },
+                  ]
+            }
+          >
+            <View
+              style={
+                inspectorSideBySide()
+                  ? [
+                      { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+                      { pointerEvents: 'box-none' },
+                    ]
+                  : [{ flex: 1, minHeight: 0 }, { pointerEvents: 'box-none' }]
+              }
+            >
+              <SessionInspector
+                sessionId={sessionId}
+                workspacePath={workspace() || undefined}
+                floating={!inspectorSideBySide()}
+                activeWorktree={props.activeWorktree}
+                selectWorktree={props.selectWorktree}
+                sources={props.sources}
+                childSessions={() => props.childSessions?.() ?? []}
+                openChanges={
+                  props.openChangesWithWorktree ??
+                  (props.changes ? () => props.changes!() : undefined)
+                }
+                openFiles={props.files}
+                openLaunchpad={props.openLaunchpad}
+                openPullRequest={props.openPullRequest}
+                openChildSession={(childId) =>
+                  props.openSessionBeside
+                    ? props.openSessionBeside(childId)
+                    : props.openSessionHere?.(childId)
+                }
+              />
+            </View>
+          </View>
+        </If>
       </View>
     </View>
   );

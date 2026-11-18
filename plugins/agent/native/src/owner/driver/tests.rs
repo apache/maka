@@ -454,6 +454,8 @@ impl Rig {
                 "memoryEvidence",
                 "memorySource",
                 "changeMemory",
+                "reconcileMemories",
+                "pendingMemories",
                 "presets",
                 "preset",
                 "createPreset",
@@ -466,6 +468,7 @@ impl Rig {
                 "interaction",
                 "respond",
                 "create",
+                "continuationAvailability",
                 "continueRun",
                 "history",
                 "models",
@@ -478,6 +481,7 @@ impl Rig {
                 "compact",
                 "selectBackend",
                 "execution",
+                "stop",
                 "send",
                 "uploadAttachment",
                 "work",
@@ -512,6 +516,8 @@ impl Rig {
                 "search",
                 "fork",
                 "list",
+                "continuationAvailability",
+                "continueRun",
                 "execution",
                 "stop",
                 "goal",
@@ -570,7 +576,9 @@ impl Rig {
                             "assistantPreferences".into(),
                             "connections".into(),
                             "create".into(),
+                            "update".into(),
                             "updateAssistantPreferences".into(),
+                            "usage".into(),
                         ]
                         .into(),
                         recovery: false,
@@ -3196,17 +3204,17 @@ mod model_recovery {
 
     const CHILD_ENV: &str = "MAKA_NATIVE_MODEL_RECOVERY_CHILD";
     #[derive(serde::Serialize, serde::Deserialize)]
-    struct Boot {
-        deployment: Uuid,
-        agent: Uuid,
-        settings: Uuid,
-        gateway: Uuid,
+    pub(super) struct Boot {
+        pub(super) deployment: Uuid,
+        pub(super) agent: Uuid,
+        pub(super) settings: Uuid,
+        pub(super) gateway: Uuid,
         #[serde(default)]
-        web: Option<Uuid>,
-        source: Value,
-        base_url: String,
+        pub(super) web: Option<Uuid>,
+        pub(super) source: Value,
+        pub(super) base_url: String,
         #[serde(default)]
-        replay: bool,
+        pub(super) replay: bool,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Frozen {
@@ -3243,7 +3251,7 @@ mod model_recovery {
             RootStore::open(Arc::new(owner), &migrations).await?,
         ))
     }
-    async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
+    pub(super) async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
         bootstrap_with(base, base_url, |config| config["todo"] = json!(todo)).await
     }
     async fn bootstrap_with(
@@ -3528,7 +3536,7 @@ mod model_recovery {
         store.shutdown().await?;
         Ok(boot)
     }
-    async fn attach(rig: &mut Rig, boot: &Boot) -> TestResult<()> {
+    pub(super) async fn attach(rig: &mut Rig, boot: &Boot) -> TestResult<()> {
         let store = root(rig.directory.path(), false).await?;
         let loaded = store
             .load_application(boot.deployment)
@@ -5702,6 +5710,64 @@ mod replay_origin_regressions {
             "compaction origin regression failed: {result:?}"
         );
         assert!(cleanup.is_empty(), "compaction fixture did not settle");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn codex_compaction_checkpoint_satisfies_continuation_replay_boundary() {
+        let mut rig = Rig::new().expect("owned fixture");
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let current = model(&rig, "model-a", Some("4000")).await?;
+            let origin = ReplayOrigin::observed(
+                "model-a",
+                current.context.as_ref().and_then(|value| value.codex.as_ref()),
+            );
+            let checkpoint = Message::Assistant {
+                content: vec![AssistantPart::CodexCompaction {
+                    item: json!({"type":"compaction","id":"cp-1","encrypted_content":"opaque-4000"}),
+                }],
+                provider_options: None,
+            };
+            let mut checkpoint_only = builder(&rig).await?;
+            append_observed(&mut checkpoint_only, checkpoint.clone(), origin.clone()).await?;
+            assert!(!checkpoint_only.needs_continuation_cue());
+            let prompt = finish(&rig, checkpoint_only, &current, ModelOperation::Inference).await?;
+            maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;
+            prompt.close().await?;
+
+            let mut with_partial = builder(&rig).await?;
+            append_observed(&mut with_partial, checkpoint, origin).await?;
+            with_partial
+                .append(Message::Assistant {
+                    content: vec![AssistantPart::Text {
+                        text: "Half output".into(),
+                        provider_options: None,
+                    }],
+                    provider_options: None,
+                })
+                .await?;
+            assert!(with_partial.needs_continuation_cue());
+            crate::owner::driver_model::append_continuation_cue(Language::ZhCn, &mut with_partial)
+                .await?;
+            assert!(!with_partial.needs_continuation_cue());
+            let prompt = finish(&rig, with_partial, &current, ModelOperation::Inference).await?;
+            maka_agent_engine::preparation::validate_replay_boundary(&prompt).await?;
+            prompt.close().await?;
+
+            let driver = rig.driver.as_ref().ok_or("driver missing")?;
+            let r0 = driver.access.execution().run_id;
+            rig.append(vec![Fact::RunTerminated { terminal: Terminal::Cancelled, diagnostic: None }], vec![]).await?;
+            let view = driver.state.frontier(r0).await?;
+            let history = driver.state.session_history(view.spec.owner, session);
+            assert_eq!(history.continuation_source(r0, view.revision).await?.base, history.capture_before(r0).await?);
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+        assert!(cleanup.is_empty());
     }
 }
 

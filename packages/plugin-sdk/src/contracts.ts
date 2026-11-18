@@ -1973,7 +1973,7 @@ export const contracts: {
               },
               GoalControl: {
                 type: 'string',
-                enum: ['pause', 'resume', 'cancel', 'complete', 'set_budget'],
+                enum: ['pause', 'resume', 'cancel', 'complete', 'set_budget', 'dismiss'],
               },
               AgentGoalBudget: {
                 type: 'object',
@@ -2058,6 +2058,16 @@ export const contracts: {
               },
               edit: {
                 $ref: '#/$defs/MemoryEdit',
+              },
+              resolution: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/MemoryResolution',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
             },
             additionalProperties: false,
@@ -2378,12 +2388,146 @@ export const contracts: {
                   },
                 ],
               },
+              MemoryResolution: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'model'],
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
             },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'MemoryResult',
             oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'created',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revised',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unresolved',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'retryable',
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'evidence_added',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'suppressed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
               {
                 type: 'object',
                 properties: {
@@ -3953,6 +4097,515 @@ export const contracts: {
                     const: 'external_writers_not_fenced',
                   },
                 ],
+              },
+            },
+          },
+          resources: {},
+        },
+        codeDefinition: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeDefinitionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              position: {
+                $ref: '#/$defs/AgentCodePosition',
+              },
+              symbol: {
+                type: ['string', 'null'],
+                default: null,
+              },
+              hoverOnly: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'position'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeDefinitionResult',
+            type: 'object',
+            properties: {
+              backend: {
+                $ref: '#/$defs/AgentCodeBackend',
+              },
+              symbol: {
+                type: 'string',
+              },
+              originRange: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentCodeRange',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              locations: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentCodeLocation',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['backend', 'symbol', 'originRange', 'locations'],
+            $defs: {
+              AgentCodeBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'lsp',
+                      },
+                      server: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'server'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'indexed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCodeRange: {
+                type: 'object',
+                properties: {
+                  start: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                  end: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                },
+                additionalProperties: false,
+                required: ['start', 'end'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+              AgentCodeLocation: {
+                type: 'object',
+                properties: {
+                  path: {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  range: {
+                    $ref: '#/$defs/AgentCodeRange',
+                  },
+                  preview: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'range', 'preview'],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          resources: {},
+        },
+        codeHover: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeHoverRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              position: {
+                $ref: '#/$defs/AgentCodePosition',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'position'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentCodeHoverResult',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentCodeHoverResult',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentCodeHoverResult: {
+                type: 'object',
+                properties: {
+                  backend: {
+                    $ref: '#/$defs/AgentCodeBackend',
+                  },
+                  symbol: {
+                    type: 'string',
+                  },
+                  range: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentCodeRange',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  markdown: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['backend', 'symbol', 'range', 'markdown'],
+              },
+              AgentCodeBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'lsp',
+                      },
+                      server: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'server'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'indexed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCodeRange: {
+                type: 'object',
+                properties: {
+                  start: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                  end: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                },
+                additionalProperties: false,
+                required: ['start', 'end'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          resources: {},
+        },
+        codeReferences: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeReferencesRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              position: {
+                $ref: '#/$defs/AgentCodePosition',
+              },
+              symbol: {
+                type: ['string', 'null'],
+                default: null,
+              },
+              includeDeclaration: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'position'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCodeReferencesResult',
+            type: 'object',
+            properties: {
+              backend: {
+                $ref: '#/$defs/AgentCodeBackend',
+              },
+              symbol: {
+                type: 'string',
+              },
+              locations: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentCodeLocation',
+                },
+              },
+              truncated: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['backend', 'symbol', 'locations', 'truncated'],
+            $defs: {
+              AgentCodeBackend: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'lsp',
+                      },
+                      server: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'server'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'indexed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCodeLocation: {
+                type: 'object',
+                properties: {
+                  path: {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  range: {
+                    $ref: '#/$defs/AgentCodeRange',
+                  },
+                  preview: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'range', 'preview'],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              AgentCodeRange: {
+                type: 'object',
+                properties: {
+                  start: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                  end: {
+                    $ref: '#/$defs/AgentCodePosition',
+                  },
+                },
+                additionalProperties: false,
+                required: ['start', 'end'],
+              },
+              AgentCodePosition: {
+                description:
+                  'Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.',
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  column: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'column'],
               },
             },
           },
@@ -7990,6 +8643,82 @@ export const contracts: {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          resources: {},
+        },
+        deleteGitHubToken: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenKey',
+            type: 'object',
+            properties: {
+              host: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['host'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'updated',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'auth'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_token',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
               },
             },
           },
@@ -12465,6 +13194,336 @@ export const contracts: {
           },
           resources: {},
         },
+        gitCompare: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitCompareRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              spec: {
+                $ref: '#/$defs/AgentGitCompareSpec',
+              },
+              includePatch: {
+                type: 'boolean',
+                default: false,
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'spec'],
+            $defs: {
+              AgentGitCompareSpec: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'branch',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'commit',
+                      },
+                      oid: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'oid'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                      head: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base', 'head'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentGitCompare',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentGitCompare',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentGitCompare: {
+                type: 'object',
+                properties: {
+                  baseOid: {
+                    type: ['string', 'null'],
+                  },
+                  headOid: {
+                    type: 'string',
+                  },
+                  entries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitCompareEntry',
+                    },
+                  },
+                  patch: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/GitWorkspaceDiff',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['baseOid', 'headOid', 'entries', 'patch'],
+              },
+              AgentGitCompareEntry: {
+                type: 'object',
+                properties: {
+                  path: {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  kind: {
+                    $ref: '#/$defs/GitChangeKind',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'kind', 'digest'],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+              GitChangeKind: {
+                type: 'string',
+                enum: ['added', 'modified', 'deleted', 'type_changed', 'conflicted'],
+              },
+              GitWorkspaceDiff: {
+                type: 'object',
+                properties: {
+                  patch: {
+                    type: 'string',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                  skippedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['patch', 'truncated', 'skippedFiles'],
+              },
+            },
+          },
+          resources: {},
+        },
+        gitCompareDiff: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitCompareDiffRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              spec: {
+                $ref: '#/$defs/AgentGitCompareSpec',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'spec', 'path'],
+            $defs: {
+              AgentGitCompareSpec: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'branch',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'commit',
+                      },
+                      oid: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'oid'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      base: {
+                        type: 'string',
+                      },
+                      head: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'base', 'head'],
+                  },
+                ],
+              },
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_GitDiff',
+            anyOf: [
+              {
+                $ref: '#/$defs/GitDiff',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              GitDiff: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'text',
+                      },
+                      patch: {
+                        type: 'string',
+                      },
+                      before: {
+                        type: 'string',
+                      },
+                      after: {
+                        type: 'string',
+                      },
+                      digest: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'patch', 'before', 'after', 'digest'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'binary',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unchanged',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         gitDiff: {
           mode: 'query',
           input: {
@@ -12480,6 +13539,10 @@ export const contracts: {
               },
               path: {
                 $ref: '#/$defs/WorkspacePath',
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
               },
             },
             additionalProperties: false,
@@ -12525,9 +13588,18 @@ export const contracts: {
                       patch: {
                         type: 'string',
                       },
+                      before: {
+                        type: 'string',
+                      },
+                      after: {
+                        type: 'string',
+                      },
+                      digest: {
+                        type: 'string',
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'patch'],
+                    required: ['kind', 'patch', 'before', 'after', 'digest'],
                   },
                   {
                     type: 'object',
@@ -12568,16 +13640,184 @@ export const contracts: {
           },
           resources: {},
         },
-        gitStatus: {
+        gitRevisions: {
           mode: 'query',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentSessionRead',
+            title: 'AgentGitSessionRead',
             type: 'object',
             properties: {
               sessionId: {
                 type: 'string',
-                minLength: 1,
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentGitRevisions',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentGitRevisions',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentGitRevisions: {
+                type: 'object',
+                properties: {
+                  headBranch: {
+                    type: ['string', 'null'],
+                  },
+                  headOid: {
+                    type: ['string', 'null'],
+                  },
+                  defaultBase: {
+                    type: ['string', 'null'],
+                  },
+                  branches: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitBranchEntry',
+                    },
+                  },
+                  commits: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitCommitSummary',
+                    },
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitRemoteRepo',
+                    },
+                  },
+                  worktrees: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitWorktreeEntry',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'headBranch',
+                  'headOid',
+                  'defaultBase',
+                  'branches',
+                  'commits',
+                  'remotes',
+                  'worktrees',
+                ],
+              },
+              AgentGitBranchEntry: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  oid: {
+                    type: 'string',
+                  },
+                  remote: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'oid', 'remote'],
+              },
+              AgentGitCommitSummary: {
+                type: 'object',
+                properties: {
+                  oid: {
+                    type: 'string',
+                  },
+                  shortOid: {
+                    type: 'string',
+                  },
+                  summary: {
+                    type: 'string',
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  timestamp: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: ['oid', 'shortOid', 'summary', 'author', 'timestamp'],
+              },
+              AgentGitRemoteRepo: {
+                type: 'object',
+                properties: {
+                  remote: {
+                    type: 'string',
+                  },
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['remote', 'host', 'owner', 'repo'],
+              },
+              AgentGitWorktreeEntry: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  branch: {
+                    type: ['string', 'null'],
+                  },
+                  headOid: {
+                    type: ['string', 'null'],
+                  },
+                  isCurrent: {
+                    type: 'boolean',
+                  },
+                  isMain: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'name', 'branch', 'headOid', 'isCurrent', 'isMain'],
+              },
+            },
+          },
+          resources: {},
+        },
+        gitStatus: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
               },
             },
             additionalProperties: false,
@@ -12623,9 +13863,12 @@ export const contracts: {
                   kind: {
                     $ref: '#/$defs/GitChangeKind',
                   },
+                  digest: {
+                    type: 'string',
+                  },
                 },
                 additionalProperties: false,
-                required: ['area', 'path', 'kind'],
+                required: ['area', 'path', 'kind', 'digest'],
               },
               GitArea: {
                 type: 'string',
@@ -12646,6 +13889,1403 @@ export const contracts: {
                 enum: ['added', 'modified', 'deleted', 'type_changed', 'conflicted'],
               },
             },
+          },
+          resources: {},
+        },
+        gitWorkspaceDiff: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitWorkspaceDiffRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              area: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/GitArea',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              worktreePath: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+            $defs: {
+              GitArea: {
+                type: 'string',
+                enum: ['staged', 'worktree', 'untracked'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_GitWorkspaceDiff',
+            anyOf: [
+              {
+                $ref: '#/$defs/GitWorkspaceDiff',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              GitWorkspaceDiff: {
+                type: 'object',
+                properties: {
+                  patch: {
+                    type: 'string',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                  skippedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['patch', 'truncated', 'skippedFiles'],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubCommentPullRequest: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubIssueCommentInput',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              body: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'body'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubReplyCommentResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'replied',
+                  },
+                  comment: {
+                    $ref: '#/$defs/AgentGitHubReviewComment',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'comment'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubReviewComment: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  createdAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'body', 'createdAt', 'htmlUrl'],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubPullRequestDetail: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullDetailRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              includePatch: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullDetailResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  detail: {
+                    $ref: '#/$defs/AgentGitHubPullDetail',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'detail'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'auth', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_found',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  number: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'auth', 'number'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'error',
+                  },
+                  repo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubRepoRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'auth', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubPullDetail: {
+                type: 'object',
+                properties: {
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  number: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  draft: {
+                    type: 'boolean',
+                  },
+                  merged: {
+                    type: 'boolean',
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  headRef: {
+                    type: 'string',
+                  },
+                  headSha: {
+                    type: 'string',
+                  },
+                  baseRef: {
+                    type: 'string',
+                  },
+                  baseSha: {
+                    type: 'string',
+                  },
+                  additions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  changedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                  files: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubPullFile',
+                    },
+                  },
+                  threads: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewThread',
+                    },
+                  },
+                  reviews: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewSummary',
+                    },
+                  },
+                  issueComments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewComment',
+                    },
+                  },
+                  patch: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/GitWorkspaceDiff',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'repo',
+                  'auth',
+                  'number',
+                  'title',
+                  'body',
+                  'state',
+                  'draft',
+                  'merged',
+                  'author',
+                  'headRef',
+                  'headSha',
+                  'baseRef',
+                  'baseSha',
+                  'additions',
+                  'deletions',
+                  'changedFiles',
+                  'htmlUrl',
+                  'files',
+                  'threads',
+                  'reviews',
+                  'issueComments',
+                  'patch',
+                ],
+              },
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
+              },
+              AgentGitHubPullFile: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  previousPath: {
+                    type: ['string', 'null'],
+                  },
+                  status: {
+                    $ref: '#/$defs/AgentGitHubPullFileStatus',
+                  },
+                  additions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  deletions: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                  hasPatch: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'path',
+                  'previousPath',
+                  'status',
+                  'additions',
+                  'deletions',
+                  'digest',
+                  'hasPatch',
+                ],
+              },
+              AgentGitHubPullFileStatus: {
+                type: 'string',
+                enum: ['added', 'modified', 'removed', 'renamed', 'copied', 'changed'],
+              },
+              AgentGitHubReviewThread: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                  side: {
+                    $ref: '#/$defs/AgentGitHubDiffSide',
+                  },
+                  line: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  startLine: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  outdated: {
+                    type: 'boolean',
+                  },
+                  diffHunk: {
+                    type: 'string',
+                  },
+                  comments: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubReviewComment',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'path',
+                  'side',
+                  'line',
+                  'startLine',
+                  'outdated',
+                  'diffHunk',
+                  'comments',
+                ],
+              },
+              AgentGitHubDiffSide: {
+                type: 'string',
+                enum: ['LEFT', 'RIGHT'],
+              },
+              AgentGitHubReviewComment: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  createdAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'body', 'createdAt', 'htmlUrl'],
+              },
+              AgentGitHubReviewSummary: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  submittedAt: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'state', 'body', 'submittedAt'],
+              },
+              GitWorkspaceDiff: {
+                type: 'object',
+                properties: {
+                  patch: {
+                    type: 'string',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                  skippedFiles: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['patch', 'truncated', 'skippedFiles'],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubPullRequestFileDiff: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullFileDiffRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              path: {
+                type: 'string',
+              },
+              baseSha: {
+                type: ['string', 'null'],
+                default: null,
+              },
+              headSha: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'path'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullFileDiff',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'full',
+                  },
+                  patch: {
+                    type: 'string',
+                  },
+                  before: {
+                    type: 'string',
+                  },
+                  after: {
+                    type: 'string',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'patch', 'before', 'after', 'digest'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'patch_only',
+                  },
+                  patch: {
+                    type: 'string',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'patch', 'digest'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'binary',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'large',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_found',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {},
+        },
+        githubPullRequests: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullRequestsRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              state: {
+                $ref: '#/$defs/AgentGitHubPullStateFilter',
+                default: 'open',
+              },
+              headBranch: {
+                type: ['string', 'null'],
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubPullStateFilter: {
+                type: 'string',
+                enum: ['open', 'closed', 'all'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubPullRequestsResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  currentBranchPr: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  pulls: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubPullSummary',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'remotes', 'auth', 'currentBranchPr', 'pulls'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'no_remote',
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'remotes'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  repo: {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'remotes', 'auth', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'error',
+                  },
+                  repo: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubRepoRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  remotes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentGitHubRepoRef',
+                    },
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'repo', 'remotes', 'auth', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
+              },
+              AgentGitHubPullSummary: {
+                type: 'object',
+                properties: {
+                  number: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  draft: {
+                    type: 'boolean',
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  headRef: {
+                    type: 'string',
+                  },
+                  headSha: {
+                    type: 'string',
+                  },
+                  baseRef: {
+                    type: 'string',
+                  },
+                  baseSha: {
+                    type: 'string',
+                  },
+                  updatedAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'number',
+                  'title',
+                  'state',
+                  'draft',
+                  'author',
+                  'headRef',
+                  'headSha',
+                  'baseRef',
+                  'baseSha',
+                  'updatedAt',
+                  'htmlUrl',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubReplyComment: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubReplyCommentInput',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              commentId: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              body: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'commentId', 'body'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubReplyCommentResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'replied',
+                  },
+                  comment: {
+                    $ref: '#/$defs/AgentGitHubReviewComment',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'comment'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
+            $defs: {
+              AgentGitHubReviewComment: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  author: {
+                    type: 'string',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  createdAt: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'author', 'body', 'createdAt', 'htmlUrl'],
+              },
+            },
+          },
+          resources: {},
+        },
+        githubSubmitReview: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubSubmitReviewInput',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              repo: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentGitHubRepoRef',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
+              number: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              expectedHeadSha: {
+                type: 'string',
+              },
+              event: {
+                $ref: '#/$defs/AgentGitHubReviewEvent',
+              },
+              body: {
+                type: 'string',
+                default: '',
+              },
+              comments: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentGitHubDraftReviewComment',
+                },
+                default: [],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'number', 'expectedHeadSha', 'event'],
+            $defs: {
+              AgentGitHubRepoRef: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  owner: {
+                    type: 'string',
+                  },
+                  repo: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'owner', 'repo'],
+              },
+              AgentGitHubReviewEvent: {
+                type: 'string',
+                enum: ['comment', 'approve', 'request_changes'],
+              },
+              AgentGitHubDraftReviewComment: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  side: {
+                    $ref: '#/$defs/AgentGitHubDiffSide',
+                  },
+                  line: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  startLine: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                    default: null,
+                  },
+                  startSide: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubDiffSide',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    default: null,
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'side', 'line', 'body'],
+              },
+              AgentGitHubDiffSide: {
+                type: 'string',
+                enum: ['LEFT', 'RIGHT'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubSubmitReviewResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'submitted',
+                  },
+                  reviewId: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  state: {
+                    type: 'string',
+                  },
+                  htmlUrl: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reviewId', 'state', 'htmlUrl'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'stale_head',
+                  },
+                  actualHeadSha: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'actualHeadSha'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unauthorized',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
           },
           resources: {},
         },
@@ -12798,6 +15438,9 @@ export const contracts: {
                   pending: {
                     type: 'boolean',
                   },
+                  dismissed: {
+                    type: 'boolean',
+                  },
                   report: {
                     anyOf: [
                       {
@@ -12823,6 +15466,7 @@ export const contracts: {
                   'elapsedSeconds',
                   'createdAt',
                   'pending',
+                  'dismissed',
                   'note',
                 ],
               },
@@ -26468,7 +29112,7 @@ export const contracts: {
               },
               MemoryGeneration: {
                 type: 'string',
-                enum: ['user_input'],
+                enum: ['user_input', 'extraction'],
               },
             },
           },
@@ -27938,6 +30582,16 @@ export const contracts: {
                   },
                 ],
               },
+              latestRunId: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/RunId',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               through: {
                 type: 'integer',
                 format: 'uint64',
@@ -28970,6 +31624,213 @@ export const contracts: {
                   'client_capability',
                   'computer_app',
                   'system_permission',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        pendingMemories: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoriesRead',
+            type: 'object',
+            properties: {
+              scope: {
+                $ref: '#/$defs/MemoryScope',
+              },
+              after: {
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
+              limit: {
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['scope', 'limit'],
+            $defs: {
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryPage',
+            type: 'object',
+            properties: {
+              records: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/MemoryRecord',
+                },
+              },
+              next: {
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
+            },
+            additionalProperties: false,
+            required: ['records'],
+            $defs: {
+              MemoryRecord: {
+                type: 'object',
+                properties: {
+                  assertion: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  mode: {
+                    $ref: '#/$defs/MemoryMode',
+                  },
+                  state: {
+                    $ref: '#/$defs/MemoryState',
+                  },
+                  body: {
+                    type: 'string',
+                  },
+                  metadata: {
+                    $ref: '#/$defs/MemoryMetadata',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  modifiedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'assertion',
+                  'id',
+                  'revision',
+                  'mode',
+                  'state',
+                  'body',
+                  'metadata',
+                  'createdAt',
+                  'modifiedAt',
+                ],
+              },
+              MemoryMode: {
+                type: 'string',
+                enum: ['auto_recall', 'user_recall', 'user_always'],
+              },
+              MemoryState: {
+                type: 'string',
+                enum: ['active', 'unresolved', 'suppressed'],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
                 ],
               },
             },
@@ -31986,6 +34847,632 @@ export const contracts: {
           },
           resources: {},
         },
+        reconcileMemories: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'ReconcileMemories',
+            type: 'object',
+            properties: {
+              scope: {
+                $ref: '#/$defs/MemoryScope',
+              },
+              writes: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/MemoryWrite',
+                },
+              },
+              resolution: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/MemoryResolution',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['scope', 'writes'],
+            $defs: {
+              MemoryScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'personal',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              MemoryWrite: {
+                type: 'object',
+                properties: {
+                  edit: {
+                    $ref: '#/$defs/MemoryEdit',
+                  },
+                  evidence: {
+                    description:
+                      'A verified conversation source grants automatic extraction authority only.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/MemoryEvidenceReference',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['edit'],
+              },
+              MemoryEdit: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'add_evidence',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      assertion: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      reference: {
+                        $ref: '#/$defs/MemoryEvidenceReference',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'assertion', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'create',
+                      },
+                      body: {
+                        type: 'string',
+                      },
+                      metadata: {
+                        $ref: '#/$defs/MemoryMetadata',
+                        default: {
+                          kind: 'unspecified',
+                          statement: 'unspecified',
+                          temporal: {
+                            kind: 'unspecified',
+                          },
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'body'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'correct',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      body: {
+                        type: 'string',
+                      },
+                      metadata: {
+                        $ref: '#/$defs/MemoryMetadata',
+                        default: {
+                          kind: 'unspecified',
+                          statement: 'unspecified',
+                          temporal: {
+                            kind: 'unspecified',
+                          },
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'body'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'set_always',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      always: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'always'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delete',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'restore',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      expectedRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      body: {
+                        type: 'string',
+                      },
+                      metadata: {
+                        $ref: '#/$defs/MemoryMetadata',
+                        default: {
+                          kind: 'unspecified',
+                          statement: 'unspecified',
+                          temporal: {
+                            kind: 'unspecified',
+                          },
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'expectedRevision', 'body'],
+                  },
+                ],
+              },
+              MemoryEvidenceReference: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  factId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  start: {
+                    description: 'UTF-8 byte offsets into the immutable message text.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  end: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  quote: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'sessionId',
+                  'sequence',
+                  'itemIndex',
+                  'factId',
+                  'fingerprint',
+                  'start',
+                  'end',
+                  'quote',
+                ],
+              },
+              MemoryMetadata: {
+                type: 'object',
+                properties: {
+                  kind: {
+                    $ref: '#/$defs/MemoryKind',
+                  },
+                  statement: {
+                    $ref: '#/$defs/MemoryStatement',
+                  },
+                  temporal: {
+                    $ref: '#/$defs/MemoryTemporal',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'statement', 'temporal'],
+              },
+              MemoryKind: {
+                type: 'string',
+                enum: ['unspecified', 'fact', 'preference', 'instruction'],
+              },
+              MemoryStatement: {
+                type: 'string',
+                enum: ['unspecified', 'assertion', 'preference', 'intention'],
+              },
+              MemoryTemporal: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unspecified',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'timeless',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Half-open validity interval in Unix milliseconds; no end means unbounded.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interval',
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                      end: {
+                        type: ['integer', 'null'],
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'start'],
+                  },
+                ],
+              },
+              MemoryResolution: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'model'],
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'MemoryBatchResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
+                  results: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/MemoryResult',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'results'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'retryable',
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              MemoryResult: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'created',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'revised',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unresolved',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'retryable',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reason'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'evidence_added',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'suppressed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'saved',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'deleted',
+                      },
+                      id: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
+                      actual: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'actual'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'not_found',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'invalid_state',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         requestSystemPermission: {
           mode: 'mutation',
           input: {
@@ -34170,6 +37657,90 @@ export const contracts: {
             },
           },
           resources: {},
+        },
+        saveGitHubToken: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenKey',
+            type: 'object',
+            properties: {
+              host: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['host'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentGitHubTokenResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'updated',
+                  },
+                  auth: {
+                    $ref: '#/$defs/AgentGitHubAuthStatus',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'auth'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalid_token',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              AgentGitHubAuthStatus: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  authenticated: {
+                    type: 'boolean',
+                  },
+                  tokenSource: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGitHubTokenSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['host', 'authenticated', 'tokenSource'],
+              },
+              AgentGitHubTokenSource: {
+                type: 'string',
+                enum: ['manual', 'env', 'hosts_file', 'netrc', 'gh_cli'],
+              },
+            },
+          },
+          resources: {
+            secret: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
         },
         schedule: {
           mode: 'mutation',
@@ -49243,6 +52814,9 @@ export const contracts: {
                   pending: {
                     type: 'boolean',
                   },
+                  dismissed: {
+                    type: 'boolean',
+                  },
                   report: {
                     anyOf: [
                       {
@@ -49268,6 +52842,7 @@ export const contracts: {
                   'elapsedSeconds',
                   'createdAt',
                   'pending',
+                  'dismissed',
                   'note',
                 ],
               },
@@ -61956,6 +65531,12 @@ export const contracts: {
               SettingsConnectionEditingFacts: {
                 type: 'object',
                 properties: {
+                  discoveredModelIds: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
                   enabledModelIds: {
                     type: 'array',
                     items: {
@@ -61974,7 +65555,12 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['enabledModelIds', 'modelOverrides', 'requestBodyOverlay'],
+                required: [
+                  'discoveredModelIds',
+                  'enabledModelIds',
+                  'modelOverrides',
+                  'requestBodyOverlay',
+                ],
               },
               ModelOverride: {
                 type: 'object',
@@ -68238,7 +71824,7 @@ export const contracts: {
                 oneOf: [
                   {
                     description:
-                      'One auxiliary request owned by an admitted native application mutation.',
+                      'An auxiliary attempt owned by an admitted native application mutation.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -68257,6 +71843,13 @@ export const contracts: {
                       },
                       fingerprint: {
                         type: 'string',
+                      },
+                      attempt: {
+                        description:
+                          'Absent for the initial attempt, preserving existing source identities.',
+                        type: ['integer', 'null'],
+                        format: 'uint32',
+                        minimum: 1,
                       },
                     },
                     required: ['kind', 'source', 'namespace', 'operation', 'fingerprint'],

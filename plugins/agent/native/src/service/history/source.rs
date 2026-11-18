@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use futures_util::future::BoxFuture;
 use maka_agent_facts::{
     executor::{Selection, TurnUsage},
     history_snapshot::SnapshotId,
@@ -387,7 +388,37 @@ pub(super) enum Shape {
     clippy::too_many_arguments,
     reason = "Window scanning binds source tree, cursor direction, view shape, turn scope, cache and cancellation"
 )]
-pub(super) async fn window(
+pub(super) fn window<'a>(
+    tree: &'a SourceTree,
+    anchor: Option<wire::HistoryRowAddress>,
+    reverse: bool,
+    include_thinking: bool,
+    limit: usize,
+    cache: &'a mut Cache,
+    turn: Option<RunRows>,
+    shape: Shape,
+    stop: &'a tokio_util::sync::CancellationToken,
+) -> BoxFuture<'a, Result<Vec<Selected>, String>> {
+    // Group backfill polls a second scan while the first is suspended. Keep
+    // each scan's state out of its caller's future.
+    Box::pin(scan_window(
+        tree,
+        anchor,
+        reverse,
+        include_thinking,
+        limit,
+        cache,
+        turn,
+        shape,
+        stop,
+    ))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Window scanning binds source tree, cursor direction, view shape, turn scope, cache and cancellation"
+)]
+async fn scan_window(
     tree: &SourceTree,
     anchor: Option<wire::HistoryRowAddress>,
     reverse: bool,
@@ -597,7 +628,7 @@ async fn group(
 ) -> Result<Option<Selected>, String> {
     if extend {
         let from = members[0].row.chunk.position.clone();
-        let mut more = Box::pin(window(
+        let mut more = window(
             tree,
             Some(from.clone()),
             !reverse,
@@ -607,7 +638,7 @@ async fn group(
             None,
             Shape::Steps,
             stop,
-        ))
+        )
         .await?;
         if more
             .first()
