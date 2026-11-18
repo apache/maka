@@ -1,4 +1,10 @@
 {
+  "@pierre/trees@1.0.0": [
+    {
+      "file": "scripts/rust/licenses/pierre-vscode-icons.txt",
+      "source": "https://registry.npmjs.org/@pierre/vscode-icons/-/vscode-icons-0.0.9.tgz :: package/LICENSE.md"
+    }
+  ],
   "crc32c@0.6.8": [
     {
       "file": "scripts/rust/licenses/declared-mit.txt",

@@ -113,6 +113,7 @@ the typed style methods.
 | `id` | `string` | What identifies it in `expanded`, `selected` and the events: unique in the tree (an id given twice is logged, and only its first item expands or is selected). |
 | `label` | `string` | What its row shows unless `renderItem` draws it, what screen readers say and what typeahead matches. |
 | `children` | `TreeItem[]` | The items under it, in order. With any, it is a folder: it expands and collapses. |
+| `expandable` | `boolean` | Treat an empty item as a folder, for example when loading children on expansion. |
 | `disabled` | `boolean` | The user cannot select, expand or collapse it: presses and keys pass it by, `disabled:` styles apply. Its children stay as `expanded` says. |
 
 `renderItem` gets a `TreeEntry` for each row in view: the item's `id`, `label` and `disabled`, its `depth` (0 at the
@@ -130,6 +131,7 @@ chevron turns with a transition.
 | `selected` | `.selected(..)` | `string \| null` | none | The selected item's id (controlled), `null` for none. |
 | `defaultSelected` | `.default_selected(..)` | `string` | none | The selected item at first, while `selected` is not set. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | A read-only tree: no presses or keys, no stop of the keyboard focus, `disabled:` on every row; it shows what `expanded` and `selected` say. |
+| `singleClickAction` | `.single_click_action(..)` | `boolean` | `false` | Activate leaves on a single click or tap. |
 | `reveal` | `.reveal(..)` | `boolean` | `false` | Expanding and collapsing move the rows after the item to their new places with a spring, run natively. Off with reduced motion. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call the tree ("Files"). |
 | `renderItem` | `.render_item(..)` | `(entry: TreeEntry) => JSX.Element` | none | A row's content, for the rows in view; without it a row shows the item's label. |

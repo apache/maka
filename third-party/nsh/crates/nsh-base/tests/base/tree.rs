@@ -53,6 +53,7 @@ struct HarnessProps {
     items: Vec<TreeItem>,
     /// The app sets `expanded` and `selected`.
     controlled: bool,
+    single_click_action: bool,
     /// The app follows the events (when it controls).
     follow: bool,
     disabled: bool,
@@ -66,6 +67,7 @@ fn props() -> HarnessProps {
     HarnessProps {
         items: files(),
         controlled: false,
+        single_click_action: false,
         follow: true,
         disabled: false,
         custom: false,
@@ -116,6 +118,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     let follow = props.follow;
     let mut el = tree()
         .items(move || items.get())
+        .single_click_action(props.single_click_action)
         .item_class("focus:opacity-50")
         .accessibility_label("Files")
         .disabled(disabled)
@@ -310,6 +313,25 @@ fn single_press_pause(app: &mut Headless) {
 
 fn rows(app: &Headless) -> usize {
     app.screen().count("role:treeitem").unwrap()
+}
+
+#[test]
+fn a_single_press_opens_a_file_and_expands_an_unread_folder() {
+    let mut items = files();
+    items.push(TreeItem::new("unread", "unread").expandable(true));
+    let mut app = start(HarnessProps {
+        items,
+        single_click_action: true,
+        ..props()
+    });
+    app.press("role:treeitem[unread]").unwrap();
+    see(&mut app, "expanded:src,unread");
+    app.press("role:treeitem[lib.rs]").unwrap();
+    see(&mut app, "selected:src/lib.rs");
+    assert_eq!(
+        log(&app),
+        "selected=unread expanded=src,unread expand=unread selected=src/lib.rs action=src/lib.rs"
+    );
 }
 
 #[test]
