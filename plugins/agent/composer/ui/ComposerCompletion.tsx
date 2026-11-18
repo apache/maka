@@ -989,6 +989,7 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
   // The room on the side the menu went: held to it, the list scrolls instead of
   // the menu sliding over the line being typed.
   const room = signal<number | null>(null);
+  const noteHeight = signal(0);
   return (
     <If when={state.opened() !== null && state.anchor() != null}>
       <Overlay
@@ -1033,20 +1034,25 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
           </View>
           <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
         </If>
-        <If when={state.loading()}>
-          <Text style={noteStyle()}>
-            {state.opened()?.source === 'references'
-              ? tr('Loading…')
-              : state.opened()?.source === 'files'
-                ? tr('Searching files…')
-                : tr('Loading skills…')}
-          </Text>
-        </If>
-        <If when={state.error()}>
-          <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
-            {state.error()}
-          </Text>
-        </If>
+        <View
+          style={{ flexShrink: 0 }}
+          onLayout={({ bounds }) => noteHeight.set(bounds.size.height)}
+        >
+          <If when={state.loading()}>
+            <Text style={noteStyle()}>
+              {state.opened()?.source === 'references'
+                ? tr('Loading…')
+                : state.opened()?.source === 'files'
+                  ? tr('Searching files…')
+                  : tr('Loading skills…')}
+            </Text>
+          </If>
+          <If when={state.error()}>
+            <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
+              {state.error()}
+            </Text>
+          </If>
+        </View>
         <If when={!state.queryComposing()}>
           <List
             each={state.rows()}
@@ -1058,9 +1064,10 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
                 state.rows(),
                 Math.min(
                   windowSize().height / 2,
-                  // The menu's padding and border, and the search row above the list.
+                  // The menu frame, status notes and search row sit above the list.
                   (room() ?? Infinity) -
                     10 -
+                    noteHeight() -
                     (state.opened()?.explicit && state.opened()?.source !== 'add'
                       ? ROW + DIVIDER
                       : 0),
@@ -1158,15 +1165,6 @@ const HEADING = 28;
 const DIVIDER = 9;
 const opensSection = (rows: readonly ComposerCompletionRow[], index: number) =>
   !!rows[index]?.heading && rows[index]?.heading !== rows[index - 1]?.heading;
-const listHeight = (rows: readonly ComposerCompletionRow[]) =>
-  rows.reduce(
-    (height, row, index) =>
-      height +
-      ROW +
-      (opensSection(rows, index) ? HEADING : 0) +
-      (row.divider && index > 0 ? DIVIDER : 0),
-    0,
-  );
 /** The list's height within `room`: all of it when it fits, else as many whole
  * rows as fit, so the menu's edge falls between rows rather than through one. */
 const shownListHeight = (rows: readonly ComposerCompletionRow[], room: number) => {
