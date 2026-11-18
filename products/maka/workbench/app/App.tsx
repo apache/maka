@@ -496,6 +496,12 @@ function App(
         <Workbench
           expanded={sidebarExpanded}
           previewShown={previewShown}
+          previewFullscreen={() => plugins.panel() === null && (preview()?.fullscreen?.() ?? false)}
+          togglePreviewFullscreen={() => {
+            const current = preview();
+            if (current?.setFullscreen) current.setFullscreen(!(current.fullscreen?.() ?? false));
+          }}
+          floatingComposer={() => (session()?.floatingComposer?.() as JSX.Element | null) ?? null}
           previewSuppressed={() =>
             plugins.panel() === null && (preview()?.modalSuppressed() ?? false)
           }

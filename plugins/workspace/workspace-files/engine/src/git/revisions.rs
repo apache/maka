@@ -19,8 +19,8 @@
 
 use super::{
     GitBranchEntry, GitChangeKind, GitCommitSummary, GitCompare, GitCompareEntry, GitCompareSpec,
-    GitDiff, GitRemoteRepo, GitRevisions, GitWorkspaceDiff, WorkspacePath, diff, failure,
-    interrupted, repository,
+    GitDiff, GitRemoteRepo, GitRevisions, GitWorkspaceDiff, GitWorktreeEntry, WorkspacePath, diff,
+    failure, interrupted, repository,
 };
 use gix::{bstr::ByteSlice, hash::ObjectId, index::entry::Mode};
 use std::{
@@ -117,6 +117,7 @@ pub(super) fn read_revisions(repo: &repository::Repository) -> io::Result<GitRev
     let default_base = detect_default_base(repo, head_branch.as_deref(), &branches);
     let commits = read_recent_commits(repo)?;
     let remotes = read_remotes(repo)?;
+    let worktrees = read_worktrees(repo);
 
     Ok(GitRevisions {
         head_branch,
@@ -125,6 +126,7 @@ pub(super) fn read_revisions(repo: &repository::Repository) -> io::Result<GitRev
         branches,
         commits,
         remotes,
+        worktrees,
     })
 }
 
@@ -547,6 +549,173 @@ pub(super) fn compare_diff(
     let before = lookup_tree_image(repo, resolved.base_tree, name)?;
     let after = lookup_tree_image(repo, resolved.head_tree, name)?;
     diff::diff_images(repo, name, before, after)
+}
+
+const MAX_WORKTREES: usize = 64;
+
+fn read_worktrees(repo: &repository::Repository) -> Vec<GitWorktreeEntry> {
+    let Ok(common_dir) = dunce::canonicalize(repo.repo.common_dir()) else {
+        return Vec::new();
+    };
+    let current_root = repo.root.clone();
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(main_parent) = common_dir.parent()
+        && let Ok(main_root) = dunce::canonicalize(main_parent)
+        && main_root.is_dir()
+        && seen.insert(main_root.clone())
+    {
+        let (branch, head_oid) = parse_head_file(repo, &common_dir.join("HEAD"));
+        let name = main_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("main")
+            .to_owned();
+        out.push(GitWorktreeEntry {
+            is_current: main_root == current_root,
+            is_main: true,
+            path: main_root.to_string_lossy().into_owned(),
+            name,
+            branch,
+            head_oid,
+        });
+    }
+
+    let wt_dir = common_dir.join("worktrees");
+    if let Ok(read_dir) = std::fs::read_dir(&wt_dir) {
+        let mut entries: Vec<_> = read_dir.filter_map(Result::ok).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            if out.len() >= MAX_WORKTREES {
+                break;
+            }
+            let entry_path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&entry_path) else {
+                continue;
+            };
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                continue;
+            }
+            let Ok(Some(gitdir_bytes)) = repository::optional(&entry_path.join("gitdir")) else {
+                continue;
+            };
+            let Ok(gitdir_str) = std::str::from_utf8(&gitdir_bytes) else {
+                continue;
+            };
+            let gitdir_trimmed = gitdir_str.trim();
+            if gitdir_trimmed.is_empty() {
+                continue;
+            }
+            let gitdir_path = if std::path::Path::new(gitdir_trimmed).is_absolute() {
+                std::path::PathBuf::from(gitdir_trimmed)
+            } else {
+                entry_path.join(gitdir_trimmed)
+            };
+            let Some(wt_parent) = gitdir_path.parent() else {
+                continue;
+            };
+            let Ok(wt_root) = dunce::canonicalize(wt_parent) else {
+                continue;
+            };
+            if !wt_root.is_dir() || !seen.insert(wt_root.clone()) {
+                continue;
+            }
+            let (branch, head_oid) = parse_head_file(repo, &entry_path.join("HEAD"));
+            let fallback_name = entry.file_name();
+            let name = wt_root
+                .file_name()
+                .and_then(|s| s.to_str())
+                .or_else(|| fallback_name.to_str())
+                .unwrap_or("worktree")
+                .to_owned();
+            out.push(GitWorktreeEntry {
+                is_current: wt_root == current_root,
+                is_main: false,
+                path: wt_root.to_string_lossy().into_owned(),
+                name,
+                branch,
+                head_oid,
+            });
+        }
+    }
+
+    if !out.iter().any(|w| w.is_current) {
+        let name = current_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("workspace")
+            .to_owned();
+        out.insert(
+            0,
+            GitWorktreeEntry {
+                path: current_root.to_string_lossy().into_owned(),
+                name,
+                branch: repo.repo.head_name().ok().flatten().and_then(|n| {
+                    n.as_bstr()
+                        .strip_prefix(b"refs/heads/")
+                        .and_then(|b| std::str::from_utf8(b).ok())
+                        .map(str::to_owned)
+                }),
+                head_oid: repo.head.clone(),
+                is_current: true,
+                is_main: false,
+            },
+        );
+    }
+    out
+}
+
+fn parse_head_file(
+    repo: &repository::Repository,
+    head_path: &std::path::Path,
+) -> (Option<String>, Option<String>) {
+    let Ok(Some(bytes)) = repository::optional(head_path) else {
+        return (None, None);
+    };
+    let Ok(raw) = std::str::from_utf8(&bytes) else {
+        return (None, None);
+    };
+    let trimmed = raw.trim();
+    if let Some(ref_name) = trimmed.strip_prefix("ref:").map(str::trim) {
+        let branch = ref_name.strip_prefix("refs/heads/").map(str::to_owned);
+        let oid = repo
+            .repo
+            .try_find_reference(ref_name)
+            .ok()
+            .flatten()
+            .and_then(|mut r| r.peel_to_id().ok().map(|id| id.detach().to_string()));
+        (branch, oid)
+    } else if ObjectId::from_hex(trimmed.as_bytes()).is_ok() {
+        (None, Some(trimmed.to_owned()))
+    } else {
+        (None, None)
+    }
+}
+
+pub(super) fn same_common_git_dir(first: &std::path::Path, second: &std::path::Path) -> bool {
+    let open_common = |dir: &std::path::Path| -> Option<std::path::PathBuf> {
+        let canonical = dunce::canonicalize(dir).ok()?;
+        let dot_git = std::fs::symlink_metadata(canonical.join(".git")).ok()?;
+        if dot_git.file_type().is_symlink() {
+            return None;
+        }
+        let repo = gix::open::Options::isolated()
+            .strict_config(true)
+            .filter_config_section(|_| false)
+            .open(&canonical)
+            .ok()?
+            .to_thread_local();
+        let workdir = repo.workdir().and_then(|w| dunce::canonicalize(w).ok())?;
+        if workdir != canonical {
+            return None;
+        }
+        dunce::canonicalize(repo.common_dir()).ok()
+    };
+    match (open_common(first), open_common(second)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 pub(super) fn merge_base_file_diff(

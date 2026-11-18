@@ -692,6 +692,17 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "githubCommentPullRequest" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_comment_pull_request(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
                 "saveGitHubToken" => {
                     context.operation().ok_or("agent_mutation_required")?;
                     if context.scope().identity.agent().is_some() {

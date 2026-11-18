@@ -51,6 +51,7 @@ export type CurrentDiffSource =
 
 export type CurrentDiffTarget = {
   sessionId: string;
+  worktreePath?: string;
   area?: GitArea;
   source?: CurrentDiffSource;
   sourceKey?: string;
@@ -180,11 +181,13 @@ export function createCurrentDiff(
         source.kind === 'compare'
           ? await host.query('agent', 'gitCompareDiff', {
               sessionId: target.sessionId,
+              ...(target.worktreePath ? { worktreePath: target.worktreePath } : {}),
               spec: source.spec,
               path: target.path,
             })
           : await host.query('agent', 'gitDiff', {
               sessionId: target.sessionId,
+              ...(target.worktreePath ? { worktreePath: target.worktreePath } : {}),
               area: source.area,
               path: target.path,
             });

@@ -49,12 +49,14 @@ import {
   controlHoverStyle,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
+import { ChangesStudio } from '../../../../products/maka/workbench/app/ChangesStudio';
+import { createReviewStore } from '../../../../products/maka/workbench/app/reviewState';
 import { ResourcePane } from './ResourcePane';
 import { createResources } from './resources';
 import { SearchCapture } from './SearchCapture';
-import { WorkspaceChanges } from './WorkspaceChanges';
 
 function ChangesPanel(props: UiViewProps) {
+  const localReviewStore = createReviewStore();
   return (
     <If
       when={props.sessionId !== null}
@@ -66,9 +68,12 @@ function ChangesPanel(props: UiViewProps) {
     >
       <Each of={props.sessionId === null ? [] : [props.sessionId]} key={(id) => id}>
         {(sessionId) => (
-          <WorkspaceChanges
+          <ChangesStudio
             sessionId={sessionId()}
-            openDiff={(target) => props.context.openPanel('change-diff', target)}
+            reviewStore={localReviewStore}
+            canPrompt={() => false}
+            deliverPrompt={() => false}
+            openFile={() => {}}
           />
         )}
       </Each>
@@ -123,6 +128,8 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
   });
   const handle: WorkspaceViewHandle = {
     shown: resources.shown,
+    fullscreen: resources.fullscreen,
+    setFullscreen: resources.setFullscreen,
     hide: resources.hide,
     close() {
       const sessionId = resources.sessionId();
@@ -135,6 +142,12 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
     modalSuppressed: () => resources.imageViewer() !== null,
     openFiles: resources.openFiles,
     openChanges: resources.openChanges,
+    toggleStage: resources.toggleStage,
+    openLaunchpad: resources.openLaunchpad,
+    openPullRequest: resources.openPullRequest,
+    activeWorktree: resources.activeWorktree,
+    selectWorktree: resources.selectWorktree,
+    sources: resources.sources,
     openImage: resources.openImage,
     openAgentTerminal: resources.openAgentTerminal,
     openLink: resources.openLink,

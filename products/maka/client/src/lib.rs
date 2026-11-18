@@ -74,6 +74,7 @@ const CONTROL_METHODS: &[&str] = &[
     "schedule",
     "githubSubmitReview",
     "githubReplyComment",
+    "githubCommentPullRequest",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
@@ -1134,7 +1135,10 @@ impl Client {
             .filter(|operation| {
                 !matches!(
                     operation.method.as_str(),
-                    "predictNextMessage" | "githubSubmitReview" | "githubReplyComment"
+                    "predictNextMessage"
+                        | "githubSubmitReview"
+                        | "githubReplyComment"
+                        | "githubCommentPullRequest"
                 )
             })
             .collect())

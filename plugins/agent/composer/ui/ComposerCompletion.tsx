@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, inputAction, List, Overlay, signal, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, List, Overlay, platform, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { Bounds, CaretEvent, InputRef, ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
@@ -833,7 +833,12 @@ export function createComposerCompletion(options: Options) {
       });
       close();
     },
-    anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node.anchor)),
+    anchor: () =>
+      opened()?.explicit
+        ? addAnchor
+        : platform.idiom === 'terminal'
+          ? (caret() ?? editor()?.node.anchor)
+          : caret(),
     addButton(node: ViewRef) {
       addAnchor = node;
     },
@@ -848,6 +853,7 @@ export function createComposerCompletion(options: Options) {
     change(target: Owner, text: string) {
       if (owner() !== target) return;
       textVersion += 1;
+      if (platform.idiom !== 'terminal' && opened() === null) caret.set(null);
       target.changeDraft(text);
     },
     caret(target: Owner, event: CaretEvent) {
@@ -988,7 +994,7 @@ export type ComposerCompletionView = Pick<
 export function ComposerCompletion(props: { state: ComposerCompletionView }) {
   const state = props.state;
   return (
-    <If when={state.opened() !== null}>
+    <If when={state.opened() !== null && state.anchor() != null}>
       <Overlay
         anchor={state.anchor()}
         placement="top"

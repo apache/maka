@@ -19,7 +19,11 @@
 
 import { cleanup, computed, effect, signal, untracked, type ViewRef } from 'nsh';
 import type { ResourceUpdate } from '../../../../packages/plugin-sdk/src/index.js';
-import type { WorkspaceFocusTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
+import type {
+  WorkspaceFocusTarget,
+  WorkspacePullRequestTarget,
+  WorkspaceSourceItem,
+} from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import {
   createCurrentDiff,
   currentDiffTargetKey,
@@ -62,7 +66,9 @@ import {
   type WorkspaceFileTarget,
 } from '../../../../products/maka/workbench/app/workspaceFileState';
 
-export type ResourceSection = 'files' | 'changes' | 'terminals' | 'agent-terminals';
+export type ResourceSection = 'launchpad' | 'files' | 'changes' | 'terminals' | 'agent-terminals';
+
+export type StageSectionTab = 'launchpad' | 'files' | 'changes' | 'terminals';
 
 export type ResourceTab = {
   instance: number;
@@ -74,14 +80,20 @@ export type ResourceTab = {
   | { kind: 'diff'; model: CurrentDiffModel }
   | { kind: 'image'; image: ImagePreview }
   | { kind: 'terminal'; model: TerminalModel }
+  | {
+      kind: 'pr';
+      repo?: { host: string; owner: string; repo: string };
+      number: number;
+    }
 );
 
 type ImageViewerState = { tab: ResourceTab; image: ViewerImage; close(): void };
 
 type NavStep =
-  | { kind: 'section'; section: 'files' | 'changes' }
+  | { kind: 'section'; section: 'launchpad' | 'files' | 'changes' }
   | { kind: 'file'; target: WorkspaceFileTarget }
-  | { kind: 'diff'; target: CurrentDiffTarget };
+  | { kind: 'diff'; target: CurrentDiffTarget }
+  | { kind: 'pr'; target: WorkspacePullRequestTarget };
 
 // Window presentation state only. All resource authority remains in the
 // original Host selector; no session, draft or backend data is duplicated here.
@@ -97,8 +109,10 @@ export function createResources(
   },
 ) {
   const shown = signal(false);
+  const fullscreen = signal(false);
+  const openSections = signal<StageSectionTab[]>([]);
   const tabs = signal<ResourceTab[]>([]);
-  const active = signal<number | ResourceSection>('files');
+  const active = signal<number | ResourceSection>('launchpad');
   const focusRequest = signal(false);
   const instance = signal(0);
   const imageViewer = signal<ImageViewerState | null>(null);
@@ -117,7 +131,13 @@ export function createResources(
   let opener: (() => boolean) | undefined;
 
   const dispose = (tab: ResourceTab) => {
-    if (tab.kind !== 'image') tab.model.dispose();
+    if (tab.kind !== 'image' && tab.kind !== 'pr') tab.model.dispose();
+  };
+
+  const ensureSectionTab = (section: StageSectionTab) => {
+    if (!openSections().includes(section)) {
+      openSections.set([...openSections(), section]);
+    }
   };
 
   const resetHistory = () => {
@@ -133,6 +153,7 @@ export function createResources(
       last &&
       last.kind === step.kind &&
       ((last.kind === 'section' && step.kind === 'section' && last.section === step.section) ||
+        (last.kind === 'pr' && step.kind === 'pr' && last.target.number === step.target.number) ||
         (last.kind === 'file' &&
           step.kind === 'file' &&
           last.target.path.bytesBase64 === step.target.path.bytesBase64 &&
@@ -153,11 +174,13 @@ export function createResources(
     pendingPreview = null;
     if (selected !== session()) {
       imageViewer.set(null);
+      fullscreen.set(false);
+      openSections.set([]);
       tabs().forEach(dispose);
       tabs.set([]);
       resetHistory();
       shown.set(false);
-      active.set('files');
+      active.set('launchpad');
       focusRequest.set(false);
       instance.set(instance() + 1);
       session.set(selected);
@@ -201,8 +224,47 @@ export function createResources(
       recordStep({ kind: 'file', target: chosen.model.target });
     } else if (chosen?.kind === 'diff') {
       recordStep({ kind: 'diff', target: chosen.model.target });
+    } else if (chosen?.kind === 'pr') {
+      recordStep({
+        kind: 'pr',
+        target: {
+          sessionId: chosen.sessionId,
+          ...(chosen.repo ? { repo: chosen.repo } : {}),
+          number: chosen.number,
+          title: chosen.title,
+        },
+      });
     }
     reveal();
+  };
+
+  const openPullRequest = (target: WorkspacePullRequestTarget) => {
+    if (!admits(target.sessionId)) return;
+    const repoKey = target.repo
+      ? `${target.repo.host.toLowerCase()}/${target.repo.owner}/${target.repo.repo}`
+      : 'default';
+    const identity = `pr:${repoKey}#${target.number}`;
+    const initialTitle = target.title
+      ? `#${target.number} ${target.title}`
+      : `PR #${target.number}`;
+    open(target.sessionId, identity, (instance) => ({
+      kind: 'pr',
+      instance,
+      identity,
+      sessionId: target.sessionId,
+      title: initialTitle,
+      ...(target.repo ? { repo: target.repo } : {}),
+      number: target.number,
+    }));
+    recordStep({ kind: 'pr', target });
+    opener = headerOpener(target.sessionId);
+  };
+
+  const updateTabTitle = (instanceId: number, nextTitle: string) => {
+    const current = tabs();
+    const found = current.find((t) => t.instance === instanceId);
+    if (!found || found.title === nextTitle) return;
+    tabs.set(current.map((t) => (t.instance === instanceId ? { ...t, title: nextTitle } : t)));
   };
 
   const open = (sessionId: string, identity: string, build: (instance: number) => ResourceTab) => {
@@ -347,8 +409,11 @@ export function createResources(
     if (!admits(target.sessionId)) return;
     adopt(target.sessionId);
     imageViewer.set(null);
+    const stageSection: StageSectionTab =
+      target.kind === 'agent-terminals' ? 'terminals' : target.kind;
+    ensureSectionTab(stageSection);
     active.set(target.kind);
-    if (target.kind === 'files' || target.kind === 'changes') {
+    if (target.kind === 'launchpad' || target.kind === 'files' || target.kind === 'changes') {
       recordStep({ kind: 'section', section: target.kind });
     }
     reveal();
@@ -363,6 +428,8 @@ export function createResources(
         openFile(step.target);
       } else if (step.kind === 'diff') {
         openDiff(step.target);
+      } else if (step.kind === 'pr') {
+        openPullRequest(step.target);
       }
     } finally {
       navigatingHistory = false;
@@ -392,6 +459,22 @@ export function createResources(
     applyNavStep(sid, step);
   };
 
+  const hide = () => {
+    pendingPreview = null;
+    imageViewer.set(null);
+    fullscreen.set(false);
+    shown.set(false);
+    focusRequest.set(false);
+  };
+
+  const pickFallbackActive = () => {
+    const nonTerm = tabs().filter((t) => t.kind !== 'terminal');
+    if (nonTerm.length > 0) return nonTerm.at(-1)!.instance;
+    const secs = openSections();
+    if (secs.length > 0) return secs.at(-1)!;
+    return null;
+  };
+
   const closeTab = (target: { sessionId: string; instance: number }) => {
     if (!admits(target.sessionId)) return;
     const tab = tabs().find((tab) => tab.instance === target.instance);
@@ -400,30 +483,76 @@ export function createResources(
     dispose(tab);
     tabs.set(tabs().filter((candidate) => candidate !== tab));
     if (active() === tab.instance) {
-      active.set(
-        tab.kind === 'terminal'
-          ? tab.model.agentOwned()
-            ? 'agent-terminals'
-            : 'terminals'
-          : tab.kind === 'diff'
-            ? 'changes'
-            : 'files',
-      );
-      focusRequest.set(true);
+      if (tab.kind === 'terminal') {
+        ensureSectionTab('terminals');
+        active.set(tab.model.agentOwned() ? 'agent-terminals' : 'terminals');
+        focusRequest.set(true);
+        return;
+      }
+      const fallback = pickFallbackActive();
+      if (fallback !== null) {
+        active.set(fallback);
+        focusRequest.set(true);
+      } else {
+        hide();
+        opener?.();
+      }
     }
   };
 
-  const hide = () => {
-    pendingPreview = null;
-    imageViewer.set(null);
-    shown.set(false);
-    focusRequest.set(false);
+  const closeSection = (target: { sessionId: string; section: StageSectionTab }) => {
+    if (!admits(target.sessionId)) return;
+    const nextSecs = openSections().filter((s) => s !== target.section);
+    openSections.set(nextSecs);
+    if (target.section === 'terminals') {
+      const termTabs = tabs().filter((t) => t.kind === 'terminal');
+      for (const t of termTabs) dispose(t);
+      tabs.set(tabs().filter((t) => t.kind !== 'terminal'));
+    }
+    const cur = active();
+    const wasActive =
+      cur === target.section ||
+      (target.section === 'terminals' && (cur === 'agent-terminals' || activeTerminal() !== null));
+    if (wasActive) {
+      const fallback = pickFallbackActive();
+      if (fallback !== null) {
+        active.set(fallback);
+        focusRequest.set(true);
+      } else {
+        hide();
+        opener?.();
+      }
+    }
   };
 
   const close = (target: { sessionId: string; instance: number }) => {
     if (!admits(target.sessionId) || target.instance !== instance()) return;
     hide();
     opener?.();
+  };
+
+  const openLaunchpad = (target: { sessionId: string }) => {
+    if (admits(target.sessionId)) {
+      inventory({ sessionId: target.sessionId, kind: 'launchpad' });
+      opener = headerOpener(target.sessionId);
+      focusRequest.set(true);
+    }
+  };
+
+  const toggleStage = (target: { sessionId: string }) => {
+    if (!admits(target.sessionId)) return;
+    if (shown() && session() === target.sessionId) {
+      hide();
+      opener?.();
+      return;
+    }
+    adopt(target.sessionId);
+    if (openSections().length === 0 && tabs().filter((t) => t.kind !== 'terminal').length === 0) {
+      ensureSectionTab('launchpad');
+      active.set('launchpad');
+    }
+    opener = headerOpener(target.sessionId);
+    reveal();
   };
 
   const openFiles = (target: { sessionId: string }) => {
@@ -434,9 +563,12 @@ export function createResources(
     }
   };
 
-  const openChanges = (target: { sessionId: string }) => {
+  const openChanges = (target: { sessionId: string; worktreePath?: string | null }) => {
     if (admits(target.sessionId)) {
-      inventory({ ...target, kind: 'changes' });
+      if (target.worktreePath !== undefined) {
+        reviewStore.setActiveWorktree(target.sessionId, target.worktreePath);
+      }
+      inventory({ sessionId: target.sessionId, kind: 'changes' });
       opener = headerOpener(target.sessionId);
       focusRequest.set(true);
     }
@@ -722,6 +854,7 @@ export function createResources(
       } else {
         lastTerminal.set(entry.sessionId, entry.result.ref);
       }
+      ensureSectionTab('terminals');
       open(entry.sessionId, identity, (instance) => ({
         kind: 'terminal',
         instance,
@@ -819,6 +952,12 @@ export function createResources(
   });
   return {
     shown,
+    fullscreen,
+    setFullscreen: (value: boolean) => {
+      if (shown()) fullscreen.set(value);
+      else fullscreen.set(false);
+    },
+    openSections,
     tabs,
     active,
     files,
@@ -839,6 +978,27 @@ export function createResources(
       return id ? options.directory(id) : undefined;
     },
     inventory,
+    toggleStage,
+    openLaunchpad,
+    openPullRequest,
+    updateTabTitle,
+    activeWorktree: (sid: string) => reviewStore.activeWorktree(sid),
+    selectWorktree(target: { sessionId: string; worktreePath: string | null }) {
+      reviewStore.setActiveWorktree(target.sessionId, target.worktreePath);
+    },
+    sources(sid: string): readonly WorkspaceSourceItem[] {
+      if (session() !== sid) return [];
+      return tabs()
+        .filter((t): t is Exclude<ResourceTab, { kind: 'terminal' }> => t.kind !== 'terminal')
+        .map((t) => ({
+          id: String(t.instance),
+          title:
+            t.kind === 'pr' ? t.title : t.title.split(/[\\/]/).filter(Boolean).at(-1) || t.title,
+          detail: t.title,
+          kind: t.kind,
+          select: () => select({ sessionId: sid, instance: t.instance }),
+        }));
+    },
     openFiles,
     openChanges,
     openFile,
@@ -849,6 +1009,7 @@ export function createResources(
     imageViewer,
     select,
     closeTab,
+    closeSection,
     hide,
     close,
     instance,
