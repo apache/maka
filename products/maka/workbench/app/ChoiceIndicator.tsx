@@ -19,7 +19,7 @@
 
 import { Canvas, Text } from 'nsh';
 import { platform } from 'nsh';
-import { C } from './ui';
+import { C, isDark } from './ui';
 
 // Decoration only: the enclosing control keeps its original native action.
 export function ChoiceIndicator(props: {
@@ -75,7 +75,10 @@ export function ChoiceIndicator(props: {
           cx.fill();
           cx.beginPath();
           cx.arc(props.checked ? 24 : 8, 8, 5, 0, Math.PI * 2);
-          cx.fillStyle = props.checked && !props.disabled ? C.background : C.secondary;
+          // A light switch's knob stays white when off, as the system's does; a dark
+          // one keeps a light knob on its dark track.
+          cx.fillStyle =
+            props.checked && !props.disabled ? C.background : isDark() ? C.secondary : C.background;
           cx.fill();
         } else if (props.kind === 'radio') {
           cx.arc(8, 8, 6, 0, Math.PI * 2);
