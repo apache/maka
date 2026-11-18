@@ -121,22 +121,12 @@ pub(crate) async fn discover_prepared(
     if cancellation.is_cancelled() {
         return encode(SetupResult::Failed);
     }
-    // Preserve existing choices; first-time setup exposes the discovered models.
-    let mut enabled: Vec<String> = row
-        .enabled_model_ids
-        .iter()
-        .filter(|id| models.iter().any(|model| &model.id == *id))
-        .cloned()
-        .collect();
-    if enabled.is_empty() {
-        enabled = models.iter().map(|model| model.id.clone()).collect();
-    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "settings_clock_unavailable")?
         .as_secs();
     match ticket
-        .complete(models, enabled, now)
+        .complete(models, now)
         .await
         .map_err(|_| "settings_effect_unknown")?
     {

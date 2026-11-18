@@ -137,7 +137,12 @@ function Fixture() {
             provider,
             configuration: definition.descriptor.configurationDefaults,
           },
-          editing: { enabledModelIds: modelIds, modelOverrides: {}, requestBodyOverlay: null },
+          editing: {
+            discoveredModelIds: modelIds,
+            enabledModelIds: modelIds,
+            modelOverrides: {},
+            requestBodyOverlay: null,
+          },
         };
       if (method === 'credentialStatus')
         return {

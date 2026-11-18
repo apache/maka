@@ -6686,6 +6686,7 @@ export interface ConnectionCredentialTarget {
   };
 }
 export interface SettingsConnectionEditingFacts {
+  discoveredModelIds: string[];
   enabledModelIds: string[];
   modelOverrides: {
     [k: string]: ModelOverride | undefined;

@@ -110,7 +110,7 @@ async fn native_effects_share_network_policy_snapshot_without_superseding_cosmet
         }
     );
     assert_eq!(
-        save.complete(vec![ModelInfo::new("new-model")], vec![], 123)
+        save.complete(vec![ModelInfo::new("new-model")], 123)
             .await
             .unwrap(),
         OnboardingSaveResult::Rejected {
@@ -214,7 +214,7 @@ async fn native_effects_share_network_policy_snapshot_without_superseding_cosmet
         }
     );
     assert_eq!(
-        save.complete(vec![ModelInfo::new("new-model")], vec![], 124)
+        save.complete(vec![ModelInfo::new("new-model")], 124)
             .await
             .unwrap(),
         OnboardingSaveResult::Rejected {
