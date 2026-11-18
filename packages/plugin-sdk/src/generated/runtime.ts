@@ -2427,7 +2427,7 @@ export type AgentGoalChange =
        */
       approval?: AgentGoalApproval | null;
     };
-export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete' | 'set_budget';
+export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete' | 'set_budget' | 'dismiss';
 export type AgentGoalResult =
   | {
       kind: 'committed';
@@ -7224,6 +7224,7 @@ export interface AgentGoalDetail {
   retryAt?: number | null;
   createdAt: number;
   pending: boolean;
+  dismissed: boolean;
   report?: GoalReport | null;
   note: string;
 }

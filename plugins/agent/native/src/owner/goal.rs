@@ -115,6 +115,7 @@ fn detail(saved: Saved<BackgroundGrant>) -> GoalDetail {
         retry_at: goal.retry_at,
         consumed: goal.consumed,
         pending: goal.pending.is_some(),
+        dismissed: goal.dismissed,
         report: goal.report,
         note: goal.note,
     }
@@ -472,7 +473,7 @@ impl GoalMutation {
                     saved.goal.arm.language = saved.goal.arm.grant.language();
                 }
                 if let Some(budget) = budget {
-                    if budget.token_budget == Some(0) {
+                    if budget.token_budget == Some(0) || saved.goal.status.terminal() {
                         return Ok(rejected("goal_budget_invalid".into()));
                     }
                     saved.goal.arm.token_budget = budget.token_budget;

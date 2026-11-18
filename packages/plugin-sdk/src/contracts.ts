@@ -1762,7 +1762,7 @@ export const contracts: {
               },
               GoalControl: {
                 type: 'string',
-                enum: ['pause', 'resume', 'cancel', 'complete', 'set_budget'],
+                enum: ['pause', 'resume', 'cancel', 'complete', 'set_budget', 'dismiss'],
               },
               AgentGoalBudget: {
                 type: 'object',
@@ -15227,6 +15227,9 @@ export const contracts: {
                   pending: {
                     type: 'boolean',
                   },
+                  dismissed: {
+                    type: 'boolean',
+                  },
                   report: {
                     anyOf: [
                       {
@@ -15252,6 +15255,7 @@ export const contracts: {
                   'elapsedSeconds',
                   'createdAt',
                   'pending',
+                  'dismissed',
                   'note',
                 ],
               },
@@ -51448,6 +51452,9 @@ export const contracts: {
                   pending: {
                     type: 'boolean',
                   },
+                  dismissed: {
+                    type: 'boolean',
+                  },
                   report: {
                     anyOf: [
                       {
@@ -51473,6 +51480,7 @@ export const contracts: {
                   'elapsedSeconds',
                   'createdAt',
                   'pending',
+                  'dismissed',
                   'note',
                 ],
               },

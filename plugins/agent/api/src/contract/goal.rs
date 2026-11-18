@@ -50,6 +50,7 @@ pub struct GoalDetail {
     pub retry_at: Option<u64>,
     pub created_at: u64,
     pub pending: bool,
+    pub dismissed: bool,
     pub report: Option<maka_goal::goal::Report>,
     pub note: String,
 }

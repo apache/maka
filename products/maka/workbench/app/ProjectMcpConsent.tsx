@@ -28,7 +28,20 @@ export function ProjectMcp(props: { owner: Owner }) {
   return (
     <View>
       <If when={owner.error()}>
-        <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{owner.error()}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={[{ color: C.danger, flex: 1 }, { userSelect: 'text' }]}>
+            {owner.error()}
+          </Text>
+          <If when={!owner.proposal() && !owner.pending()}>
+            <Button
+              accessibilityLabel={tr('Dismiss error')}
+              onPress={owner.dismiss}
+              style={controlStyle}
+            >
+              <Text style={{ color: C.muted }}>{tr('Close')}</Text>
+            </Button>
+          </If>
+        </View>
       </If>
       <If when={owner.notice()}>
         <Text style={{ color: C.muted }}>{owner.notice()}</Text>
