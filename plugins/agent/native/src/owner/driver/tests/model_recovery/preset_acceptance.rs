@@ -307,6 +307,20 @@ async fn tool_round(
     name: &str,
     input: Value,
 ) -> TestResult<String> {
+    approved_round(rig, provider, session, code, name, input, "run").await
+}
+
+/// When the Session may request permissions, a Web call and a Shell call with
+/// additional permissions must raise a request, which this approves at `scope`.
+async fn approved_round(
+    rig: &Rig,
+    provider: &mut Provider,
+    session: &str,
+    code: bool,
+    name: &str,
+    input: Value,
+    scope: &str,
+) -> TestResult<String> {
     let client = rig.client.as_ref().unwrap();
     let sent = call(
         client,
@@ -336,7 +350,9 @@ async fn tool_round(
         "{request}"
     );
     let owner = rig.captured.lock().unwrap().clone().unwrap();
-    let approve_web = matches!(name, "WebFetch" | "WebSearch")
+    let tool = name;
+    let approve = (matches!(name, "WebFetch" | "WebSearch")
+        || (name == "Shell" && input.get("additional_permissions").is_some()))
         && owner
             .mutable_session(session)
             .await?
@@ -354,7 +370,7 @@ async fn tool_round(
     reply
         .send(tool_response(name, input))
         .map_err(|_| "model response lost")?;
-    if approve_web {
+    if approve {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let pending = call(client,"agent","pendingInteractions",json!({"sessionId":session})).await?;
@@ -362,13 +378,13 @@ async fn tool_round(
                     assert_eq!(entry["kind"],"permissions","{entry}");
                     let record = call(client,"agent","interaction",json!({"sessionId":session,"requestId":entry["requestId"]})).await?;
                     let approved = call(client,"agent","respond",json!({"sessionId":session,"requestId":entry["requestId"],
-                        "answer":{"kind":"permissions","decision":{"decision":"allow","permissions":record["request"]["request"]["permissions"],"scope":"run"}}})).await?;
+                        "answer":{"kind":"permissions","decision":{"decision":"allow","permissions":record["request"]["request"]["permissions"],"scope":scope}}})).await?;
                     assert_eq!(approved["kind"],"recorded","{approved}; {record}");
                     return Ok::<_,Box<dyn Error + Send + Sync>>(());
                 }
                 tokio::task::yield_now().await;
             }
-        }).await??;
+        }).await.map_err(|_| format!("{tool} raised no permission request"))??;
     }
     let (request, reply) = match provider.next().await {
         Ok(request) => request,
@@ -592,6 +608,120 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
     })).catch_unwind().await;
     let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
     server.abort();
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    Ok(())
+}
+
+/// Network grants stay with the tool family that asked: a Web grant names
+/// origins the Host fetches, a Shell grant opens sockets for the child process.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_test_writer()
+        .try_init();
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let app = axum::Router::new().route(
+        "/page",
+        axum::routing::get(move || {
+            let calls = counted.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                "network-grant-marker"
+            }
+        }),
+    );
+    // Two origins, so a Web call can need a destination no earlier grant names.
+    let mut addresses = Vec::new();
+    let mut servers = Vec::new();
+    for _ in 0..2 {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        addresses.push(format!("http://{}", listener.local_addr()?));
+        let app = app.clone();
+        servers.push(tokio::spawn(
+            async move { axum::serve(listener, app).await },
+        ));
+    }
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+            config["tools"] = json!([
+                {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"ProcessInput","description":"Write to a background process","target":{"kind":"import","name":"processes"},"method":"writeStdin","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
+            ]);
+        }).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let revision = owner.mutable_session(id).await?.revision;
+        let changed = call(client, "agent", "metadata", json!({
+            "sessionId":id,"expectedRevision":revision,"title":"Network grants","labels":[],
+            "permissions":{"settings":{"access":"workspace_write","requestPermissions":true},"revokeGrants":true}
+        })).await?;
+        assert_eq!(changed["kind"], "committed", "{changed}");
+        let (first, second) = (&addresses[0], &addresses[1]);
+        let network = json!({"filesystem":[],"network":"allowed"});
+
+        // Process controls share the ceiling the launch was checked against, so
+        // a PTY started under a once grant still takes input.
+        let launched = approved_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":"read line; echo got-$line","login":false,"pty":true,"run_in_background":true,
+            "additional_permissions":network,"justification":"Start a networked terminal"
+        }), "once").await?;
+        let text = launched.replace('\\', "");
+        let start = text.find("\"ref\":\"").ok_or_else(|| format!("process ref missing: {launched}"))? + 7;
+        let reference = &text[start..start + text[start..].find('"').unwrap()];
+        let input = tool_round(&rig, &mut provider, id, false, "ProcessInput", json!({"ref":reference,"input":"ready\n"})).await?;
+        assert!(input.contains(r#"\"kind\":\"completed\""#), "{input}");
+
+        // A Web grant does not reach Shell. The proxy a leaked Web grant installs
+        // would carry this request, so it runs without `--noproxy`.
+        let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{first}/page")}), "session").await?;
+        assert!(web.contains("network-grant-marker"), "{web}");
+        let before = calls.load(Ordering::SeqCst);
+        let shell = tool_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":format!("curl -sS {first}/page; echo curl-exit=$?"),"login":false
+        })).await?;
+        // curl started and could not connect (exit 7): the sandbox stopped it.
+        assert!(shell.contains("curl-exit=7"), "{shell}");
+        assert_eq!(calls.load(Ordering::SeqCst), before, "{shell}");
+
+        // A Shell grant does not cover a Web destination. `--noproxy` keeps a
+        // proxy configured on the test machine off loopback.
+        let shell = approved_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":format!("curl --noproxy '*' -sS {first}/page; echo curl-exit=$?"),"login":false,
+            "additional_permissions":network,"justification":"Read the fixture page"
+        }), "session").await?;
+        assert!(shell.contains("network-grant-marker") && shell.contains("curl-exit=0"), "{shell}");
+        assert_eq!(calls.load(Ordering::SeqCst), before + 1, "{shell}");
+        // Grants are a projection rebuilt from the stored requests, which keep the
+        // source: the Shell grant still serves Shell and still does not serve Web.
+        owner.durable.interactions().rebuild(id).await?;
+        let shell = tool_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":format!("curl --noproxy '*' -sS {first}/page; echo curl-exit=$?"),"login":false
+        })).await?;
+        assert!(shell.contains("curl-exit=0"), "{shell}");
+        assert_eq!(calls.load(Ordering::SeqCst), before + 2, "{shell}");
+        let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{second}/page")}), "session").await?;
+        assert!(web.contains("network-grant-marker"), "{web}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    for server in servers {
+        server.abort();
+    }
     assert!(cleanup.is_empty(), "{cleanup:?}");
     match outcome {
         Ok(result) => result??,

@@ -184,14 +184,16 @@ impl InteractionsStore {
             })
         })
     }
+    /// Each grant holds only the part that covers a request from `source`.
     pub async fn permission_grants(
         &self,
         execution: &ExecutionIdentity,
         target: Option<&AuthorizationObligation>,
         basis: &PermissionBasis,
+        source: PermissionSource,
     ) -> Result<Vec<PermissionGrant>, StoreError> {
         self.data
-            .query(Grants(execution.clone(), target.cloned(), *basis))
+            .query(Grants(execution.clone(), target.cloned(), *basis, source))
             .await
     }
     pub async fn external_approval(
@@ -347,11 +349,12 @@ struct Grants(
     ExecutionIdentity,
     Option<AuthorizationObligation>,
     PermissionBasis,
+    PermissionSource,
 );
 impl Query for Grants {
     type Output = Vec<PermissionGrant>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::grants(c, &self.0, self.1.as_ref(), self.2)
+        sql::grants(c, &self.0, self.1.as_ref(), self.2, self.3)
     }
 }
 struct ExternalApproval(

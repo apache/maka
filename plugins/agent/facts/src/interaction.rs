@@ -507,6 +507,43 @@ pub struct PermissionRequest {
     pub reason: String,
     pub command: Option<PermissionCommand>,
     pub permissions: grant::Permissions,
+    /// Network access granted for this request covers only later requests from
+    /// the same source; filesystem access covers all of them. Requests stored
+    /// before sources were recorded decode as Web, the only source that could
+    /// be granted network access then.
+    #[serde(default = "PermissionSource::web")]
+    pub source: PermissionSource,
+}
+
+/// The tool family whose authority raised a permission request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionSource {
+    Processes,
+    Web,
+    Files,
+}
+
+impl PermissionSource {
+    fn web() -> Self {
+        Self::Web
+    }
+
+    /// The part of a grant from this source that covers a request from
+    /// `requester`. Network access stays with its source because a Web grant
+    /// lets the Host fetch named origins, while a process grant opens sockets
+    /// for a child process that holds local credentials.
+    pub fn share(
+        self,
+        requester: Self,
+        mut permissions: grant::Permissions,
+    ) -> Option<grant::Permissions> {
+        if self != requester {
+            permissions.network = maka_sandbox::Network::Denied;
+        }
+        (!permissions.filesystem.is_empty() || permissions.network != maka_sandbox::Network::Denied)
+            .then_some(permissions)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -533,5 +570,21 @@ impl PermissionRequest {
             .validate()
             .map_err(|_| "Invalid additional permissions")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_stored_before_sources_decode_as_web() {
+        let request: PermissionRequest = serde_json::from_value(serde_json::json!({
+            "reason": "Allow Web access to https://example.com",
+            "command": null,
+            "permissions": {"filesystem": [], "network": "allowed"}
+        }))
+        .unwrap();
+        assert_eq!(request.source, PermissionSource::Web);
     }
 }

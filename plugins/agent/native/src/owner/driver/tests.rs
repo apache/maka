@@ -3514,9 +3514,10 @@ mod model_recovery {
                 node(
                     Uuid::new_v4(),
                     processes.application_ref(),
+                    // Grants may add network; each command's base sandbox still denies it.
                     json!({
                         "filesystem": {"default":"write","rules":[],"denyGlobs":[]},
-                        "network":"denied",
+                        "network":"allowed",
                         "sessionOwner":InstanceId(vec![boot.agent]),
                     }),
                     BTreeMap::new(),
