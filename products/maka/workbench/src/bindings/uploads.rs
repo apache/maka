@@ -20,6 +20,7 @@
 //! Native intake snapshots files and images; upload observations contain only metadata.
 
 use super::{EDITOR, Owner, Scope, ScopedHost, execute};
+use image::{ImageFormat, codecs::png::PngEncoder};
 use maka_agent_facts::attachment::sniff_mime;
 use maka_app_client::Client;
 use maka_capabilities::call::ReadResource;
@@ -509,11 +510,26 @@ impl SelectedFile {
                 read_selected(&path).map_err(|error| error.to_string())
             }
             Self::Bytes(file) => {
-                let mut writer = FileSnapshotWriter::new(&file.name)
+                let mut name = clean_name(&file.name);
+                let bitmap = file.mime == "image/bmp";
+                if bitmap {
+                    let stem = name
+                        .rsplit_once('.')
+                        .map_or(name.as_str(), |(stem, _)| stem);
+                    name = format!("{stem}.png");
+                }
+                let mut writer = FileSnapshotWriter::new(&name)
                     .map_err(|error| format!("Capture pasted file: {error}"))?;
-                writer
-                    .write_all(&file.data)
-                    .map_err(|error| format!("Capture pasted file: {error}"))?;
+                if bitmap {
+                    image::load_from_memory_with_format(&file.data, ImageFormat::Bmp)
+                        .map_err(|error| format!("Decode pasted bitmap: {error}"))?
+                        .write_with_encoder(PngEncoder::new(&mut writer))
+                        .map_err(|error| format!("Encode pasted bitmap: {error}"))?;
+                } else {
+                    writer
+                        .write_all(&file.data)
+                        .map_err(|error| format!("Capture pasted file: {error}"))?;
+                }
                 writer
                     .finish()
                     .map_err(|error| format!("Capture pasted file: {error}"))
@@ -829,6 +845,39 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].metadata()["name"], "截图.png");
         assert_eq!(files[0].contents(), bytes);
+    }
+
+    #[test]
+    fn pasted_windows_bitmap_stages_as_previewable_png() {
+        // One red pixel, with the file header that Windows paste adds to CF_DIB.
+        let bmp = [
+            0x42, 0x4d, 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, // BMP header
+            40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0, // DIB header
+            0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255,
+            0, // BGR pixel and row padding
+        ];
+        let mut file = RichEditorFile::default();
+        file.name = "image.bmp".into();
+        file.mime = "image/bmp".into();
+        file.data = bmp.to_vec();
+        let Selection::Files(files) = stage_selection(IntakeInput::Paste {
+            uris: vec![],
+            files: vec![file],
+        })
+        .unwrap() else {
+            panic!("a pasted bitmap must produce a file snapshot");
+        };
+        let [snapshot] = files.as_slice() else {
+            panic!("expected one pasted image");
+        };
+        assert!(super::has_preview(snapshot));
+        assert_eq!(snapshot.metadata()["name"], "image.png");
+        let image =
+            image::load_from_memory_with_format(snapshot.contents(), image::ImageFormat::Png)
+                .unwrap()
+                .into_rgb8();
+        assert_eq!(image.dimensions(), (1, 1));
+        assert_eq!(image.into_raw(), [255, 0, 0]);
     }
 
     #[test]
