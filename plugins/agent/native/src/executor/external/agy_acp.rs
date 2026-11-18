@@ -33,7 +33,9 @@ const HOST_SERVER: &str = "maka";
     clippy::too_many_arguments,
     reason = "one invocation owns the original process, protocol and Host bridge"
 )]
+#[cfg(unix)]
 pub(super) async fn execute(
+    fronts: &agy_front::Fronts,
     config: &NativeCommand,
     cwd: &str,
     request: &Value,
@@ -43,34 +45,79 @@ pub(super) async fn execute(
     cancellation: CancellationToken,
     owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
-    let mut command = runtime::command(config, cwd).await?;
-    let agent_directory = agy::host_agent_directory().await?;
-    command
-        .args([
-            "acp",
-            "--process-per-session",
-            "--dangerously-skip-permissions",
-            "--agent",
-            agy::HOST_AGENT,
-            "--add-dir",
-        ])
-        .arg(agent_directory);
-    runtime::task_pipe(
-        owner,
-        journal.observation(),
-        command,
-        runtime::Transport::JsonLines,
-        Some(bridge.clone()),
+    let observation = journal.observation();
+    let mut ticket = observation
+        .resources
+        .reserve()
+        .map_err(|_| Error::ObservationRetired)?;
+    ticket.start();
+    let descriptor = owner.descriptor();
+    let mut owner = Some(owner);
+    let lease = match fronts.open(config, cwd, &mut owner).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            if let Some(owner) = owner {
+                let seal = owner.into_no_launch_seal();
+                match seal.record().await {
+                    Ok(()) => ticket.complete(Ok(())),
+                    Err(failure) => ticket.unconfirmed(failure.to_string(), seal),
+                }
+            } else {
+                ticket.unconfirmed(error.to_string(), descriptor);
+            }
+            return Err(error);
+        }
+    };
+    let mut io = Pipe::session(
+        lease.socket,
+        observation.clone(),
         cancellation,
-        Protocol {
-            cwd,
-            request,
-            journal,
-            output,
-            bridge,
-        },
-    )
-    .await
+        bridge.failed.clone(),
+    );
+    let protocol = Protocol {
+        cwd,
+        request,
+        journal,
+        output,
+        bridge: bridge.clone(),
+    };
+    let stop = io.stop.clone();
+    let outcome = {
+        let result = protocol.converse(&mut io);
+        tokio::pin!(result);
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => { bridge.close_admission(); result.await }
+            outcome = &mut result => outcome,
+        }
+    };
+    bridge.close_admission();
+    drop(io); // EOF asks the supervisor to close just this session.
+    let (closed, bridge_closed) = tokio::join!(
+        agy_front::wait_for_close(&descriptor, lease.exited),
+        bridge.close()
+    );
+    bridge.clone().original_root_cleanup_signal().await;
+    if let Err(error) = closed {
+        ticket.unconfirmed(error.to_string(), descriptor);
+        return Err(Error::CleanupUnconfirmed);
+    }
+    ticket.complete(Ok(()));
+    observation
+        .binding
+        .cleanup(OperationCleanup::Confirmed)
+        .await?;
+    bridge_closed?;
+    if matches!(outcome, Err(Error::CleanupUnconfirmed))
+        && observation.binding.stop_requested().await?
+    {
+        let cancelled = Outcome::Cancelled {
+            reason: Some("native_stopped".into()),
+        };
+        observation.closed(cancelled.clone()).await?;
+        return Ok(cancelled);
+    }
+    outcome
 }
 
 struct Protocol<'a> {
@@ -79,17 +126,6 @@ struct Protocol<'a> {
     journal: &'a mut journal::ProtocolSession,
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
-}
-
-impl runtime::PipeProtocol for Protocol<'_> {
-    type Output = Outcome;
-
-    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Outcome, Error>>
-    where
-        Self: 'io,
-    {
-        Box::pin(self.converse(io))
-    }
 }
 
 impl Protocol<'_> {
@@ -133,38 +169,11 @@ impl Protocol<'_> {
         io.turn_finished();
         self.bridge.close_admission();
 
-        // End the dedicated ACP session so agy can release its worker and persist native history.
-        if !io.stop.is_cancelled() {
-            let close = io.request("session/close", json!({"sessionId":session}));
-            if !matches!(
-                tokio::time::timeout(Duration::from_secs(2), close).await,
-                Ok(Ok(_))
-            ) {
-                tracing::debug!("agy ACP session did not acknowledge close before process cleanup");
-            }
-        }
         Ok(outcome)
     }
 
     async fn prepare(&mut self, io: &mut Pipe) -> Result<(String, Value), Error> {
-        let initialized = io
-            .request(
-                "initialize",
-                json!({
-                    "protocolVersion":1,
-                    "clientCapabilities":{},
-                    "clientInfo":{"name":"maka","title":"Maka","version":env!("CARGO_PKG_VERSION")}
-                }),
-            )
-            .await?;
-        if initialized["protocolVersion"] != 1
-            || initialized.pointer("/agentCapabilities/mcpCapabilities/http")
-                != Some(&Value::Bool(true))
-        {
-            return Err(Error::Invalid(
-                "agy must support ACP 1 with HTTP MCP".into(),
-            ));
-        }
+        io.request("initialize", initialize_params()).await?;
         let mut params = json!({
             "cwd":self.cwd,
             "mcpServers":[{
@@ -220,6 +229,12 @@ impl Protocol<'_> {
             json!({"sessionId":session, "prompt":blocks}),
         ))
     }
+}
+
+pub(super) fn initialize_params() -> Value {
+    json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{
+        "name":"maka","title":"Maka","version":env!("CARGO_PKG_VERSION")
+    }})
 }
 
 fn unconfirmed(error: Error) -> Error {

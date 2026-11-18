@@ -18,6 +18,7 @@
  */
 
 import net from 'node:net';
+import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -35,6 +36,37 @@ if (!antigravity && args.join(' ') !== 'app-server --listen stdio://')
 if (antigravity) {
   const profile = await readFile(join(managedAgent, '.agents', 'agents', 'maka.md'), 'utf8');
   if (!profile.startsWith('---\nname: maka\n')) throw Error('Missing Maka agent definition');
+}
+// Model agy's shared front: the provider owns a worker and cwd for each session.
+if (antigravity && !process.env.FAKE_ACP_WORKER) {
+  const sessions = new Map();
+  const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\n');
+  for await (const line of createInterface({ input: process.stdin })) {
+    const frame = JSON.parse(line);
+    if (frame.method === 'initialize') {
+      send({
+        jsonrpc: '2.0',
+        id: frame.id,
+        result: { protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true } } },
+      });
+      continue;
+    }
+    let id = frame.params.sessionId;
+    if (['session/new', 'session/resume'].includes(frame.method)) {
+      id ??= randomUUID();
+      frame.params.sessionId = id;
+      const worker = spawn(process.execPath, [process.argv[1], ...args], {
+        cwd: frame.params.cwd,
+        env: { ...process.env, FAKE_ACP_WORKER: '1' },
+        stdio: ['pipe', 'pipe', 'inherit'],
+      });
+      sessions.set(id, worker);
+      worker.stdout.pipe(process.stdout, { end: false });
+      worker.on('exit', () => sessions.delete(id));
+    }
+    sessions.get(id).stdin.write(JSON.stringify(frame) + '\n');
+  }
+  process.exit(0);
 }
 const address = new URL(process.env.FAKE_CONTROL);
 if (address.hostname !== '127.0.0.1') throw Error('Controller must be owned loopback');
@@ -91,6 +123,8 @@ const fail = async (error) => {
 socket.on('error', () => process.exit(1));
 socket.on('close', () => process.exit(finished ? 0 : 1));
 await record('hello', {
+  acp: antigravity,
+  front: process.ppid,
   cwd: process.cwd(),
   home: process.env.HOME,
   tmp: process.env.TMPDIR,
@@ -306,7 +340,7 @@ async function acp(id, method, params) {
       http_headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
     };
     await hostEffect();
-    return reply(id, { sessionId: thread });
+    return reply(id, method === 'session/resume' ? {} : { sessionId: thread });
   }
   if (method === 'session/prompt' && params.sessionId === thread) {
     const text = params.prompt[0].text;
@@ -314,6 +348,7 @@ async function acp(id, method, params) {
     if (start === -1) return reply(id, { stopReason: 'end_turn' });
     if (job) throw Error('Duplicate ACP task prompt');
     job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
+    turn = id;
     const checkpoint = `ACP checkpoint ${job.label}`;
     if (job.label !== 'ACP-followup') {
       await event('session/update', {
@@ -324,7 +359,7 @@ async function acp(id, method, params) {
         },
       });
     }
-    await record('ready', { thread, checkpoint, promptId: id });
+    await record('ready', { thread, checkpoint, promptId: id, front: process.ppid });
     if (job.label === 'ACP-room') {
       const [header] = text.split('\n');
       if (header === text || !header.endsWith(']'))
@@ -398,7 +433,10 @@ async function acp(id, method, params) {
       return reply(id, { stopReason: 'end_turn' });
     return;
   }
+  if (method === 'session/cancel' && params.sessionId === thread)
+    return reply(turn, { stopReason: 'cancelled' });
   if (method === 'session/close' && params.sessionId === thread) {
+    if (job?.label === 'ACP-stuck-close') return record('close_pending');
     await reply(id, {});
     finished = true;
     socket.end(() => process.exit(0));
@@ -489,7 +527,7 @@ createInterface({ input: socket }).on('line', (line) => {
       }
       if (command.action === 'challenge' && job && !finished)
         return record('challenge', { nonce: command.nonce, thread, turn });
-      if (command.action === 'complete' && job?.label === 'ACP-schedule')
+      if (command.action === 'complete' && ['ACP-schedule', 'ACP-peer'].includes(job?.label))
         return reply(command.promptId, { stopReason: 'end_turn' });
       if (command.action === 'complete' && ['B', 'D'].includes(job?.label))
         return terminal('completed');
