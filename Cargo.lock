@@ -8398,6 +8398,7 @@ dependencies = [
  "maka-plugin-core",
  "maka-presentation",
  "maka-process",
+ "maka-processes-native",
  "maka-providers",
  "maka-sandbox",
  "maka-scheduler",
@@ -8482,6 +8483,7 @@ dependencies = [
 name = "maka-app-client"
 version = "0.2.0"
 dependencies = [
+ "maka-agent-facts",
  "maka-capabilities",
  "maka-host-runtime",
  "maka-plugin-core",

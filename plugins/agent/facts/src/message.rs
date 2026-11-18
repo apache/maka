@@ -56,6 +56,10 @@ pub enum MessageOrigin {
     BotWorker {
         session_id: String,
     },
+    /// A scheduled investigation submitted findings for the Bot to review.
+    DiscoveryReport {
+        session_id: String,
+    },
 }
 impl MessageOrigin {
     pub fn prompt_header(&self, language: crate::language::Language) -> String {
@@ -150,7 +154,9 @@ impl MessageOrigin {
                 };
                 header.push_str(&guidance);
             }
-            Self::SessionCompletion { .. } | Self::BotWorker { .. } => {}
+            Self::SessionCompletion { .. }
+            | Self::BotWorker { .. }
+            | Self::DiscoveryReport { .. } => {}
         }
         header
     }
@@ -212,7 +218,9 @@ impl MessageOrigin {
                 }
                 Ok(())
             }
-            Self::BotWorker { session_id } => crate::interaction::entity_id(session_id),
+            Self::BotWorker { session_id } | Self::DiscoveryReport { session_id } => {
+                crate::interaction::entity_id(session_id)
+            }
         }
     }
 }

@@ -19,6 +19,8 @@
 
 import { signal, Text, View, windowSize, type JSX } from 'nsh';
 import { Button, Input } from 'nsh/base';
+import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { DraftQuotes } from '../../../../plugins/agent/composer/ui/DraftQuotes';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -58,14 +60,17 @@ export function StageFloatingComposer(props: {
   const canSend = () => {
     const session = props.session();
     if (!session || !session.editable()) return false;
-    return draft().trim().length > 0 || session.attachments.files().length > 0;
+    return hasComposerContent(
+      session.draft().trim(),
+      session.attachments.files(),
+      session.quotes(),
+    );
   };
 
   const send = () => {
     const session = props.session();
-    if (!session) return;
+    if (!session || !canSend()) return;
     const text = session.draft();
-    if (text.trim() === '' && session.attachments.files().length === 0) return;
     if (text.startsWith('/')) {
       props.exitFullscreen();
       return;
@@ -201,6 +206,12 @@ export function StageFloatingComposer(props: {
           }}
         >
           {props.transcript()}
+        </View>
+      </If>
+
+      <If when={!minimized() && (props.session()?.quotes().length ?? 0) > 0}>
+        <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>
+          <DraftQuotes owner={props.session()!} />
         </View>
       </If>
 

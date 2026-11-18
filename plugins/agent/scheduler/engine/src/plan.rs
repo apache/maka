@@ -39,6 +39,13 @@ pub enum Misfire {
     Latest,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseSource {
+    User,
+    Bot,
+}
+
 /// Persist before submitting to Host. A retry uses these frozen bytes and ID,
 /// never the task's potentially edited title, effect or instruction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +75,8 @@ pub struct TaskPlan<E, A> {
     condition_matched: bool,
     #[serde(default)]
     pub authorization: Option<A>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_source: Option<PauseSource>,
 }
 impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
     pub fn validate(&self) -> Result<(), Error> {
@@ -155,6 +164,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             pending: None,
             condition_matched: false,
             authorization: None,
+            pause_source: None,
         })
     }
     /// Reopening or enabling skips missed triggers unless catch-up was selected.
@@ -170,7 +180,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             self.task.next_fire_at = None;
         } else if self.task.next_fire_at.is_some_and(|at| at < now) {
             match self.misfire {
-                Misfire::Skip => self.advance(now)?,
+                Misfire::Skip => self.advance(now, None)?,
                 Misfire::Latest => self.catch_up(now)?,
             }
         }
@@ -230,7 +240,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             return Ok(());
         }
         if self.task.expires_at.is_some_and(|expires| now >= expires) {
-            return self.advance(now);
+            return self.advance(now, None);
         }
         match result {
             Ok(matched) => {
@@ -245,7 +255,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             Err(error) => self.task.last_error = Some(error),
         }
         self.task.updated_at = self.task.updated_at.max(now);
-        self.advance(now)
+        self.advance(now, None)
     }
 
     pub fn settle(&mut self, run: Run) -> Result<(), Error> {
@@ -274,17 +284,17 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         self.task.last_error = (run.outcome != Outcome::Ok).then(|| run.message.clone());
         self.task.runs.insert(0, run);
         self.pending = None;
-        self.advance(self.task.updated_at)?;
+        self.advance(self.task.updated_at, self.task.last_fire_at)?;
         if paused && self.task.status == Status::Active {
             self.task.status = Status::Paused;
         }
         Ok(())
     }
-    fn advance(&mut self, after: i64) -> Result<(), Error> {
-        let next = self
-            .task
-            .schedule
-            .next_after(after, &TimeZone::get(&self.timezone)?)?;
+    fn advance(&mut self, after: i64, settled_at: Option<i64>) -> Result<(), Error> {
+        let next =
+            self.task
+                .schedule
+                .next_due(after, &TimeZone::get(&self.timezone)?, settled_at)?;
         let expired = self
             .task
             .expires_at

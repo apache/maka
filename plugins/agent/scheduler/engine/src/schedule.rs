@@ -29,6 +29,21 @@ pub enum Recurrence {
     Monthly,
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum IntervalCadence {
+    #[default]
+    Fixed,
+    AfterCompletion,
+}
+impl IntervalCadence {
+    fn is_fixed(&self) -> bool {
+        *self == Self::Fixed
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
@@ -49,6 +64,8 @@ pub enum Schedule {
     Interval {
         every_seconds: u32,
         start_at: i64,
+        #[serde(default, skip_serializing_if = "IntervalCadence::is_fixed")]
+        cadence: IntervalCadence,
     },
     Calendar {
         recurrence: Recurrence,
@@ -78,6 +95,7 @@ impl Schedule {
             | Self::Interval {
                 every_seconds,
                 start_at,
+                ..
             } => {
                 if *every_seconds == 0 {
                     return Err(invalid("interval must be positive"));
@@ -101,8 +119,32 @@ impl Schedule {
     /// The plan's owner supplies its persisted timezone, never a mutable ambient
     /// timezone on each tick. Missed-fire policy is separate from this calculation.
     pub fn next_after(&self, after: i64, zone: &TimeZone) -> Result<Option<i64>, Error> {
+        self.next_due(after, zone, None)
+    }
+
+    pub(crate) fn next_due(
+        &self,
+        after: i64,
+        zone: &TimeZone,
+        settled_at: Option<i64>,
+    ) -> Result<Option<i64>, Error> {
         self.validate()?;
         timestamp(after)?;
+        if let Self::Interval {
+            every_seconds,
+            start_at,
+            cadence: IntervalCadence::AfterCompletion,
+        } = self
+        {
+            let delay = i64::from(*every_seconds) * 1_000;
+            let next = match settled_at {
+                Some(at) => at.checked_add(delay).map(|at| at.max(after)),
+                None if *start_at > after => Some(*start_at),
+                None => after.checked_add(delay),
+            };
+            return Ok(next.filter(|next| timestamp(*next).is_ok()));
+        }
+
         let next = match self {
             Self::Once { run_at } => Some(*run_at),
             Self::Script {
@@ -113,6 +155,7 @@ impl Schedule {
             | Self::Interval {
                 every_seconds,
                 start_at,
+                ..
             } => {
                 let step = i64::from(*every_seconds) * 1000;
                 if *start_at > after {
@@ -147,6 +190,11 @@ impl Schedule {
         timestamp(at)?;
         let latest = match self {
             Self::Once { run_at } => Some(*run_at),
+            // Completion-based intervals have just the deadline stored by the plan.
+            Self::Interval {
+                cadence: IntervalCadence::AfterCompletion,
+                ..
+            } => None,
             Self::Script {
                 every_seconds,
                 start_at,
@@ -155,6 +203,7 @@ impl Schedule {
             | Self::Interval {
                 every_seconds,
                 start_at,
+                ..
             } if *start_at <= at => {
                 let step = i64::from(*every_seconds) * 1000;
                 Some(at - (at - start_at) % step)
@@ -351,6 +400,7 @@ mod tests {
         let interval = Schedule::Interval {
             every_seconds: 10,
             start_at: 1000,
+            cadence: IntervalCadence::Fixed,
         };
         assert_eq!(interval.next_after(35_999, &ny).unwrap(), Some(41_000));
         assert_eq!(

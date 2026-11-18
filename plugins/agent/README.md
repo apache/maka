@@ -46,6 +46,14 @@ Workbench clients consume granular RPC methods on [`maka-agent-api`](api/src/con
 
 User-controlled memory endpoints (`memories`, `memory`, `memoryHistory`, `changeMemory`, `memorySource`, and `memoryEvidence` in [`api/src/contract/memory.rs`](api/src/contract/memory.rs)) manage personal and project-scoped memory records on the State Root. Edits use revision CAS; suppressing a record hides matching content from ordinary reads and history while retaining the underlying audit record. Model reads require live execution authority plus both `memory.enabled` and `memory.agentReadEnabled` in settings preferences (disabling model reads leaves user management available). Assertions can bind verified conversation spans via `changeMemory.add_evidence`, and `create.incognito` marks an immutable memory-privacy boundary inherited by derived sessions.
 
+## Proactive discovery
+
+The current Bot can propose a discovery plan when Bot and scheduling are enabled. A user approves the workspace, model, and selected tool groups. New plans default to read-only. The Host pins approval to the concrete tool list, then intersects it with current permissions and file exclusions for each fresh worker. An automatic one-time follow-up inherits the original authority. A broader scope needs user approval.
+
+One investigation occupies the shared slot through cleanup and report handoff. The worker calls `DiscoveryComplete` to settle quietly or hand findings to the Bot. The Bot decides whether to notify the user. The scheduler keeps plans, receipts, and shared investigation memory in its existing store. Recovery follows the original Run and receipt. Quoted user feedback can refer directly to the investigation record.
+
+See the [product guide](../../products/maka/README.md#proactive-discovery), [schedule contract](api/src/contract/scheduler.rs), and [Host tests](native/src/owner/driver/tests/model_recovery/discovery.rs).
+
 ## Subagent presets
 
 Reusable subagent roles (`presets`, `preset`, `createPreset`, `updatePreset`, `deletePreset` in [`api/src/preset.rs`](api/src/preset.rs), exposed to agents as `SubagentPreset*` tools) store a name, selection description, system instruction, model target, and thinking level inside the Host's Agent scope. Mutations require `expectedRevision` and commit through the Host operation journal. Pass a preset ID to `SessionCreate.presetId` to spawn a worker prebound to that role.

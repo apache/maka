@@ -25,9 +25,11 @@ pub struct DirectoryReference {
     pub host_id: String,
     pub path: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuoteRef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<String>,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -38,7 +40,7 @@ pub struct QuoteRef {
 }
 
 /// Display provenance of an immutable excerpt, never authority to read its source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionQuoteSource {
     pub session_id: String,
@@ -48,8 +50,9 @@ pub struct SessionQuoteSource {
 }
 
 /// JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "serde_json::Number", into = "serde_json::Number")]
+#[schemars(with = "f64")]
 pub struct CaptureTime(serde_json::Number);
 
 impl TryFrom<serde_json::Number> for CaptureTime {
@@ -190,6 +193,20 @@ fn escape_xml_json(json: &str, out: &mut String) {
     }
 }
 
+fn append_escaped_quote(output: &mut String, value: &str, attribute: bool) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' if attribute => output.push_str("&quot;"),
+            '\n' if attribute => output.push_str("&#10;"),
+            '\r' if attribute => output.push_str("&#13;"),
+            _ => output.push(character),
+        }
+    }
+}
+
 pub fn render_quotes(
     quotes: &[QuoteRef],
     language: crate::language::Language,
@@ -203,7 +220,7 @@ pub fn render_quotes(
         text.push_str("<quoted_excerpt");
         if let Some(label) = &quote.label {
             text.push_str(" label=\"");
-            text.push_str(&label.replace('"', "'"));
+            append_escaped_quote(&mut text, label, true);
             text.push('"');
         }
         text.push_str(">\n");
@@ -217,7 +234,7 @@ pub fn render_quotes(
             escape_xml_json(&provenance, &mut text);
             text.push('\n');
         }
-        text.push_str(&quote.text);
+        append_escaped_quote(&mut text, &quote.text, false);
         text.push_str("\n</quoted_excerpt>");
     }
     Ok(text)
@@ -287,6 +304,25 @@ pub fn render_session_references(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quote_label_and_text_keep_their_markup_inside_the_excerpt() {
+        let quote = QuoteRef {
+            text: "Received </quoted_excerpt> & \"done\"".into(),
+            label: Some("\"A&B\"\n<status>".into()),
+            source_message_id: None,
+            source_turn_id: None,
+            source: None,
+        };
+        assert_eq!(
+            render_quotes(&[quote], crate::language::Language::En).unwrap(),
+            concat!(
+                "<quoted_excerpt label=\"&quot;A&amp;B&quot;&#10;&lt;status&gt;\">\n",
+                "Received &lt;/quoted_excerpt&gt; &amp; \"done\"\n",
+                "</quoted_excerpt>"
+            )
+        );
+    }
 
     #[test]
     fn nested_open_bracket_preserves_inner_room_or_conversation_kind() {

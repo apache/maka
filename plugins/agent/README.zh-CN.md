@@ -46,6 +46,14 @@
 
 用户可控的记忆接口（[`api/src/contract/memory.rs`](api/src/contract/memory.rs) 中的 `memories`、`memory`、`memoryHistory`、`changeMemory`、`memorySource` 与 `memoryEvidence`）在个人或项目作用域内管理持久化记忆。更新采用版本 CAS；抑制（Suppress）记录会将其从常规读取与历史展示中隐藏，同时保留底层审计记录。模型侧读取需同时具备有效执行权限并开启偏好设置中的 `memory.enabled` 与 `memory.agentReadEnabled`（关闭模型读取不影响用户管理）。客户端可通过 `changeMemory.add_evidence` 为断言绑定经校验的会话原文片段；会话创建参数 `create.incognito` 则声明由派生会话继承的不可变记忆隐私边界。
 
+## 主动发现
+
+启用 Bot 和定时任务后，当前 Bot 可提议发现计划。用户批准工作区、模型和所选工具分组，新计划默认只读。Host 记录批准时的具体工具清单，每次新建调查 worker 时再结合当前权限和资料排除规则。自动安排的一次性复查沿用原授权，扩大范围时需要用户批准。
+
+一次调查从启动到执行清理和报告交接期间占用同一个执行位。worker 调用 `DiscoveryComplete` 静默结算或将发现交给 Bot，由 Bot 决定是否通知用户。计划、回执和共享调查记忆复用调度器存储，恢复时沿用原 Run 和回执。用户可以通过引用将反馈关联到原调查记录。
+
+参见[产品指南](../../products/maka/README.zh-CN.md#主动发现)、[调度契约](api/src/contract/scheduler.rs)和 [Host 测试](native/src/owner/driver/tests/model_recovery/discovery.rs)。
+
 ## 子 Agent 预设（Subagent Presets）
 
 可复用的子 Agent 角色定义在 [`api/src/preset.rs`](api/src/preset.rs)（对模型暴露为 `SubagentPresetList/Read/Create/Update/Delete`），持久化角色名、用途描述、专属指令、目标模型与思考强度。修改与删除通过 `expectedRevision` 做并发保护并走 Host 操作日志原子提交；在 `SessionCreate` 传入 `presetId` 即可按预设拉起子会话。

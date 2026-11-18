@@ -67,6 +67,9 @@ impl Owner {
         if session.archived {
             return Err("agent_session_unavailable".into());
         }
+        if !input.quotes.is_empty() {
+            return Err("agent_room_quotes_unsupported".into());
+        }
         if input.message.trim().is_empty() && input.attachments.is_empty() {
             return Err("agent_message_invalid".into());
         }
@@ -122,6 +125,7 @@ impl Owner {
                     replied.id
                 )),
                 source_turn_id: None,
+                source_message_id: Some(replied.id.clone()),
                 source: None,
             }]);
         }
@@ -170,6 +174,7 @@ impl Owner {
                             session_id: target.clone(),
                             message: input.message.clone(),
                             attachments: Vec::new(),
+                            quotes: Vec::new(),
                             backend: input.backend.clone(),
                             delivery: input.delivery,
                             expected_run_id: input.expected_run_id,

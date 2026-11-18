@@ -21,7 +21,7 @@ use super::TaskPlan;
 use crate::{
     Error,
     command::Update,
-    schedule::Schedule,
+    schedule::{IntervalCadence, Schedule},
     task::{Create, Creator, Outcome, Run, Status, TaskEffect},
 };
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,7 @@ fn plan(effect: Delivery) -> TaskPlan<Delivery, u64> {
             schedule: Schedule::Interval {
                 every_seconds: 1,
                 start_at: 2_000,
+                cadence: IntervalCadence::Fixed,
             },
             effect,
             max_fires: Some(2),
@@ -181,4 +182,51 @@ fn resume_keeps_the_original_pending_fire_for_reconciliation() {
     let fire = original.claim(2_000).unwrap().unwrap().clone();
     let mut resumed = original.pause(2_100).resume(3_500).unwrap();
     assert_eq!(resumed.claim(3_500).unwrap(), Some(&fire));
+}
+
+#[test]
+fn completion_interval_counts_from_settlement_and_survives_edit_and_reopen() {
+    let mut plan = plan(Delivery::Work("work".into()));
+    plan.task.expires_at = None;
+    plan.misfire = super::Misfire::Latest;
+    let mut plan = plan
+        .update(
+            Update {
+                schedule: Some(Schedule::Interval {
+                    every_seconds: 1,
+                    start_at: 2_000,
+                    cadence: IntervalCadence::AfterCompletion,
+                }),
+                ..Default::default()
+            },
+            1_500,
+        )
+        .unwrap();
+
+    let fire = plan.claim(2_000).unwrap().unwrap().clone();
+    assert_eq!(plan.claim(5_000).unwrap(), Some(&fire));
+    plan.settle(outcome(fire.id, 5_250)).unwrap();
+    assert_eq!(plan.task.next_fire_at, Some(6_250));
+    assert!(plan.claim(6_249).unwrap().is_none());
+
+    let edited = plan
+        .pause(5_500)
+        .update(
+            Update {
+                schedule: Some(Schedule::Interval {
+                    every_seconds: 2,
+                    start_at: 7_600,
+                    cadence: IntervalCadence::AfterCompletion,
+                }),
+                ..Default::default()
+            },
+            5_600,
+        )
+        .unwrap();
+    let mut reopened: TaskPlan<Delivery, u64> =
+        serde_json::from_value(serde_json::to_value(edited).unwrap()).unwrap();
+    reopened = reopened.resume(7_000).unwrap();
+    assert!(reopened.claim(7_249).unwrap().is_none());
+    reopened.recover(9_000).unwrap();
+    assert_eq!(reopened.claim(9_000).unwrap().unwrap().scheduled_at, 7_250);
 }

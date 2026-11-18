@@ -64,7 +64,7 @@ impl Query for LivePositions {
                 r#"(d.run<>?8 OR (
                     d.role='"compaction"'
                     OR (d.role='"user"' AND coalesce(json_extract(d.origin_json,'$.kind'),'')
-                        NOT IN ('session','session_completion','automation','bot_worker'))
+                        NOT IN ('session','session_completion','automation','bot_worker','discovery_report'))
                     OR (d.role='"assistant"' AND d.internal=0 AND h.attempt=?9)
                 ))"#,
                 Some(run),
@@ -290,7 +290,7 @@ impl Query for CompletedWorkAt {
                 r#"WITH visible AS (
                      SELECT d.sequence, d.role, d.internal, d.body,
                             coalesce(json_extract(d.origin_json,'$.kind'),'') IN
-                              ('session','session_completion','automation','bot_worker') AS activity,
+                              ('session','session_completion','automation','bot_worker','discovery_report') AS activity,
                             h.tool_use_id, h.tool_start, h.attempt
                      FROM agent_recall_messages d INDEXED BY agent_recall_turn
                      JOIN agent_session_history h

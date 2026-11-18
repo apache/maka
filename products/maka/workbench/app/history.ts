@@ -32,6 +32,8 @@ import type {
   HistoryPosition,
   HistoryTurnTiming,
   MessageOrigin,
+  HistoryQuote,
+  QuoteRef,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
 export type ConversationHistoryPage = Extract<AgentHistoryPage, { kind: 'ready' }>;
@@ -113,6 +115,7 @@ export type Row = {
   tool?: HistoryTool | null;
   attachments?: AgentHistoryAttachment[];
   hasReferences?: boolean;
+  quotes?: (HistoryQuote | QuoteRef)[];
   /** The Host's attribution of a message it generated; absent when the user wrote it. */
   origin?: MessageOrigin;
   turnId?: string;
@@ -177,8 +180,9 @@ export function historyFollowTail(
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   if (origin?.kind === 'room') return origin.sessionId;
-  // A Bot Turn started because a worker finished names that worker.
-  return origin?.kind === 'bot_worker' || origin?.kind === 'session_completion'
+  return origin?.kind === 'bot_worker' ||
+    origin?.kind === 'discovery_report' ||
+    origin?.kind === 'session_completion'
     ? origin.sessionId
     : null;
 }
@@ -294,6 +298,10 @@ export function historyMetadata(
       'offset' in chunk && chunk.offset === 0
         ? (chunk.attachments ?? [])
         : (previous?.attachments ?? chunk.attachments),
+    quotes:
+      'offset' in chunk && chunk.offset === 0
+        ? (chunk.quotes ?? [])
+        : (previous?.quotes ?? chunk.quotes),
     hasReferences:
       'offset' in chunk && chunk.offset === 0
         ? (chunk.hasReferences ?? false)

@@ -87,7 +87,9 @@ function AutomationEditor(props: {
       ? 'new'
       : effect?.kind === 'executor_session'
         ? 'followup'
-        : (effect?.delivery ?? 'steering'),
+        : effect?.kind === 'session'
+          ? (effect.delivery ?? 'steering')
+          : 'steering',
   );
   const title = signal(task?.title ?? '');
   const text = signal(task?.intent.body ?? '');
@@ -157,6 +159,9 @@ function AutomationEditor(props: {
                 kind: 'interval',
                 everySeconds,
                 startAt: schedule?.kind === 'interval' ? schedule.startAt : Date.now(),
+                ...(schedule?.kind === 'interval' && schedule.cadence
+                  ? { cadence: schedule.cadence }
+                  : {}),
               };
         break;
       case 'once':

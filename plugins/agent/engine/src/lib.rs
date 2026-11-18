@@ -74,6 +74,8 @@ pub enum RunError {
     InvalidInput(String),
     #[error("model is unavailable")]
     ModelUnavailable,
+    #[error("model authentication is required")]
+    AuthenticationRequired,
     #[error("execution isolation is unavailable: {0}")]
     IsolationUnavailable(String),
     #[error("context compaction failed: {0}")]

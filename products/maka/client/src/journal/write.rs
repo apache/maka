@@ -311,18 +311,33 @@ async fn save_draft(
         return Err("invalid draft attachments".into());
     }
     let encoded_key = serde_json::to_string(key).map_err(error)?;
-    // A save queued before a send receipt may still follow its consumption
-    // at this same revision, as text edits already can. Keep its verified
-    // metadata available for that CAS; consumed load still returns [].
-    let previous: Option<String> =
-        sqlx::query_scalar("SELECT attachments FROM drafts WHERE owner=?")
+    let previous: Option<(String, String)> =
+        sqlx::query_as("SELECT attachments, quotes FROM drafts WHERE owner=?")
             .bind(&encoded_key)
             .fetch_optional(&mut *connection)
             .await
             .map_err(error)?;
+    let previous_quotes = previous.as_ref().map(|(_, quotes)| quotes.as_str());
+    let quotes = match (edit.quotes, expected) {
+        (Some(quotes), _) => {
+            if quotes.len() > 16 || quotes.iter().any(|quote| quote.text.trim().is_empty()) {
+                return Err("invalid draft quotes".into());
+            }
+            quotes
+        }
+        (None, Some(_)) => previous_quotes
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(error)?
+            .unwrap_or_default(),
+        (None, None) => Vec::new(),
+    };
+    // A save queued before a send receipt may still follow its consumption
+    // at this same revision, as text edits already can. Keep its verified
+    // metadata available for that CAS; consumed load still returns [].
     let mut admitted: Vec<DraftAttachment> = previous
-        .as_deref()
-        .map(serde_json::from_str)
+        .as_ref()
+        .map(|(attachments, _)| serde_json::from_str(attachments))
         .transpose()
         .map_err(error)?
         .unwrap_or_default();
@@ -350,24 +365,25 @@ async fn save_draft(
     {
         return Err("draft attachment differs from its original upload receipt".into());
     }
+    let encoded_quotes = serde_json::to_string(&quotes).map_err(error)?;
     let row = if let Some(revision) = expected {
-            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to")
-                .bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_key).bind(revision as i64)
+            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,quotes=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_quotes).bind(&encoded_key).bind(revision as i64)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         } else {
-            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to) VALUES (?,1,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to")
-                .bind(encoded_key).bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to)
+            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to,quotes) VALUES (?,1,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(&encoded_key).bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_quotes)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         }.ok_or("draft revision conflicts with a newer saved value")?;
-    let draft = Draft {
+    Ok(Draft {
+        quotes,
         revision: row.try_get::<i64, _>("revision").map_err(error)? as u64,
         text: row.try_get("text").map_err(error)?,
         attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)
             .map_err(error)?,
         mentions: serde_json::from_str(row.try_get("mentions").map_err(error)?).map_err(error)?,
         reply_to: row.try_get("reply_to").map_err(error)?,
-    };
-    Ok(draft)
+    })
 }
 
 async fn reserve(connection: &mut SqliteConnection, reservation: Reservation) -> Result<()> {
@@ -397,7 +413,7 @@ async fn reserve_send(
     let owner = serde_json::to_string(&draft.key).map_err(error)?;
     reserve(connection, reservation).await?;
     let consumed = sqlx::query(
-        "UPDATE drafts SET consumed=1,text='',attachments='[]',mentions='[]',reply_to=NULL WHERE owner=? AND revision=? AND consumed=0",
+        "UPDATE drafts SET consumed=1,text='',attachments='[]',mentions='[]',reply_to=NULL,quotes='[]' WHERE owner=? AND revision=? AND consumed=0",
     )
     .bind(&owner)
     .bind(draft.revision as i64)
@@ -474,7 +490,7 @@ async fn restore_send(
         serde_json::from_value(previous.correlation).map_err(error)?;
 
     let current = sqlx::query(
-        "SELECT revision,consumed,text,attachments,mentions,reply_to FROM drafts WHERE owner=?",
+        "SELECT revision,consumed,text,attachments,mentions,reply_to,quotes FROM drafts WHERE owner=?",
     )
     .bind(&owner)
     .fetch_optional(&mut *connection)
@@ -488,21 +504,25 @@ async fn restore_send(
     if actual_revision != expected {
         return Err("draft revision conflicts with a newer saved value".into());
     }
-    let (existing_text, mut next_attachments, mut next_mentions, existing_reply_to) = match current
-    {
-        Some(row) if row.try_get::<i64, _>("consumed").map_err(error)? == 0 => (
-            row.try_get::<String, _>("text").map_err(error)?,
-            serde_json::from_str::<Vec<DraftAttachment>>(
-                row.try_get("attachments").map_err(error)?,
-            )
-            .map_err(error)?,
-            serde_json::from_str::<Vec<String>>(row.try_get("mentions").map_err(error)?)
+    let (existing_text, mut next_attachments, mut next_mentions, existing_reply_to, mut quotes) =
+        match current {
+            Some(row) if row.try_get::<i64, _>("consumed").map_err(error)? == 0 => (
+                row.try_get::<String, _>("text").map_err(error)?,
+                serde_json::from_str::<Vec<DraftAttachment>>(
+                    row.try_get("attachments").map_err(error)?,
+                )
                 .map_err(error)?,
-            row.try_get::<Option<String>, _>("reply_to")
+                serde_json::from_str::<Vec<String>>(row.try_get("mentions").map_err(error)?)
+                    .map_err(error)?,
+                row.try_get::<Option<String>, _>("reply_to")
+                    .map_err(error)?,
+                serde_json::from_str::<Vec<maka_agent_facts::input::QuoteRef>>(
+                    row.try_get("quotes").map_err(error)?,
+                )
                 .map_err(error)?,
-        ),
-        _ => (String::new(), Vec::new(), Vec::new(), None),
-    };
+            ),
+            _ => (String::new(), Vec::new(), Vec::new(), None, Vec::new()),
+        };
 
     let restored_text = snapshot.draft.text;
     let next_text = if restored_text.is_empty() {
@@ -525,18 +545,28 @@ async fn restore_send(
             next_mentions.push(mention);
         }
     }
+    for quote in snapshot.draft.quotes {
+        if !quotes.contains(&quote) {
+            quotes.push(quote);
+        }
+    }
+    if quotes.len() > 16 {
+        return Err("restored draft exceeds the quote limit".into());
+    }
+    let encoded_quotes = serde_json::to_string(&quotes).map_err(error)?;
     let next_reply_to = existing_reply_to.or(snapshot.draft.reply_to);
     let encoded_attachments = serde_json::to_string(&next_attachments).map_err(error)?;
     let encoded_mentions = serde_json::to_string(&next_mentions).map_err(error)?;
 
     let saved = if let Some(revision) = expected {
         sqlx::query(
-            "UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to",
+            "UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,quotes=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to",
         )
         .bind(&next_text)
         .bind(&encoded_attachments)
         .bind(&encoded_mentions)
         .bind(&next_reply_to)
+        .bind(&encoded_quotes)
         .bind(&owner)
         .bind(revision as i64)
         .fetch_optional(&mut *connection)
@@ -544,13 +574,14 @@ async fn restore_send(
         .map_err(error)?
     } else {
         sqlx::query(
-            "INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to) VALUES (?,1,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to",
+            "INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to,quotes) VALUES (?,1,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to",
         )
         .bind(&owner)
         .bind(&next_text)
         .bind(&encoded_attachments)
         .bind(&encoded_mentions)
         .bind(&next_reply_to)
+        .bind(&encoded_quotes)
         .fetch_optional(&mut *connection)
         .await
         .map_err(error)?
@@ -560,6 +591,7 @@ async fn restore_send(
     dismiss_send(connection, original).await?;
 
     Ok(Draft {
+        quotes,
         revision: saved.try_get::<i64, _>("revision").map_err(error)? as u64,
         text: saved.try_get("text").map_err(error)?,
         attachments: serde_json::from_str(saved.try_get("attachments").map_err(error)?)
