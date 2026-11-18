@@ -105,6 +105,8 @@ struct Record {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Head {
     through: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    discovery_link: Option<BotDiscoveryLink>,
 }
 /// One `SendUser` call. Calls are never evicted, so a reused `messageId` is always
 /// recognized.
@@ -146,6 +148,7 @@ fn message_key(session: &str, sequence: u64) -> String {
     format!("{}{sequence:020}", messages_prefix(session))
 }
 
+mod publication;
 #[cfg(test)]
 mod receipts;
 mod wake;
@@ -375,17 +378,12 @@ impl Bot {
                 .read::<Head>(&head_key(session))
                 .await
                 .map_err(storage)?;
-            let through = head.unwrap_or_default().through;
+            let mut head = head.unwrap_or_default();
+            let through = head.through;
             let count = texts.len() as u64;
+            head.through += count;
             let mut mutations = vec![
-                Self::mutation(
-                    head_key(session),
-                    revision,
-                    &Head {
-                        through: through + count,
-                    },
-                )
-                .map_err(storage)?,
+                Self::mutation(head_key(session), revision, &head).map_err(storage)?,
                 Self::mutation(
                     call_key(session, message_id),
                     None,
@@ -441,7 +439,10 @@ impl Bot {
                 .batch(vec![Self::mutation(
                     key.clone(),
                     revision,
-                    &Head { through },
+                    &Head {
+                        through,
+                        ..Head::default()
+                    },
                 )?])
                 .await
             {
@@ -459,15 +460,14 @@ impl Bot {
         session: &str,
         after: u64,
         limit: usize,
-    ) -> Result<(u64, Vec<BotMessage>, bool), StoreError> {
-        let through = self
+    ) -> Result<(Head, Vec<BotMessage>, bool), StoreError> {
+        let head = self
             .read::<Head>(&head_key(session))
             .await?
             .1
-            .unwrap_or_default()
-            .through;
+            .unwrap_or_default();
         if limit == 0 {
-            return Ok((through, vec![], false));
+            return Ok((head, vec![], false));
         }
         let prefix = messages_prefix(session);
         let mut cursor = (after > 0).then(|| message_key(session, after));
@@ -498,7 +498,7 @@ impl Bot {
         }
         let more = messages.len() > limit;
         messages.truncate(limit);
-        Ok((through, messages, more))
+        Ok((head, messages, more))
     }
 }
 
@@ -977,14 +977,15 @@ impl Owner {
             Some(session) => self.bot.is_or_was(session).await?,
             None => false,
         };
-        let (through, messages, more) = match target.as_ref().filter(|_| is_bot) {
+        let (head, messages, more) = match target.as_ref().filter(|_| is_bot) {
             Some(session) => self
                 .bot
                 .page(session, input.after, (input.limit as usize).min(PAGE))
                 .await
                 .map_err(|error| error.to_string())?,
-            None => (0, vec![], false),
+            None => (Head::default(), vec![], false),
         };
+        let through = head.through;
         let next_after = more
             .then(|| messages.last().map(|message| message.sequence))
             .flatten();
@@ -1019,6 +1020,7 @@ impl Owner {
             read_through,
             preview,
             through,
+            discovery_link: head.discovery_link,
             messages,
             next_after,
         })

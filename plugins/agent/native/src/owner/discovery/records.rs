@@ -127,6 +127,17 @@ struct Entry {
 }
 
 impl Entry {
+    fn into_publication(self) -> Result<DiscoveryPublication, ToolError> {
+        if !matches!(self.content, Content::Investigation { .. }) {
+            return Err(ToolError::Failed("reference_original_investigation".into()));
+        }
+        Ok(DiscoveryPublication {
+            record_id: self.id,
+            worker_session_id: self.source.session_id,
+            worker_turn_id: self.source.turn_id,
+        })
+    }
+
     fn preview(&self) -> Value {
         let (kind, text) = self.content.summary();
         serde_json::json!({
@@ -173,7 +184,8 @@ enum Input {
         record: String,
         reason: String,
     },
-    /// Bot only: link an already recorded SendUser call, never an intended send.
+    /// Bot only: link all messages in a recorded SendUser call to their original
+    /// investigation. A published call can only be linked to one investigation.
     Notified {
         record: String,
         reason: String,
@@ -497,14 +509,7 @@ impl Owner {
             .await?;
         let entry: Entry =
             serde_json::from_value(entry).map_err(|e| ToolError::Failed(e.to_string()))?;
-        if !matches!(entry.content, Content::Investigation { .. }) {
-            return Err(ToolError::Failed("reference_original_investigation".into()));
-        }
-        Ok(DiscoveryPublication {
-            record_id: entry.id,
-            worker_session_id: entry.source.session_id,
-            worker_turn_id: entry.source.turn_id,
-        })
+        entry.into_publication()
     }
     pub(in crate::owner) async fn record_discovery_decision(
         &self,
@@ -605,7 +610,12 @@ impl Owner {
         let operation = match &input {
             Input::Notified {
                 record, message_id, ..
-            } => digest((&scope, "notified", record, message_id)),
+            } => {
+                if !bot {
+                    return Err(fail("decision_requires_bot".into()));
+                }
+                digest((&scope, "notified", record, message_id))
+            }
             _ => digest((&scope, &context.execution, &context.operation_id)),
         }
         .map_err(fail)?;
@@ -625,6 +635,7 @@ impl Owner {
                 Err(fail("discovery_call_conflict".into()))
             };
         }
+        let mut notification = None;
         let (result, mut writes) = match input {
             Input::Checkpoint { note: checkpoint } => {
                 note(&checkpoint).map_err(fail)?;
@@ -668,18 +679,7 @@ impl Owner {
                         reason,
                         message_id,
                     } => {
-                        if !bot {
-                            return Err(fail("decision_requires_bot".into()));
-                        }
                         text(&reason).map_err(fail)?;
-                        if !self
-                            .bot
-                            .has_message(&context.execution.session_id, &message_id)
-                            .await
-                            .map_err(fail)?
-                        {
-                            return Err(fail("notification_not_recorded".into()));
-                        }
                         Content::Notified {
                             record,
                             reason,
@@ -792,8 +792,9 @@ impl Owner {
                     .memory_entry(&scope, related)
                     .await
                     .map_err(fail)?;
-                if !matches!(original.content, Content::Investigation { .. }) {
-                    return Err(fail("reference_original_investigation".into()));
+                let publication = original.into_publication()?;
+                if let Content::Notified { message_id, .. } = &content {
+                    notification = Some((message_id.clone(), publication));
                 }
                 let (entry, writes) = self
                     .scheduler
@@ -819,11 +820,21 @@ impl Owner {
             )
             .map_err(fail)?,
         );
-        self.scheduler
-            .storage
-            .batch(writes)
-            .await
-            .map_err(result_write_error)?;
+        if let Some((message, publication)) = notification {
+            self.commit_discovery_notification(
+                context.execution.session_id,
+                message,
+                publication,
+                writes,
+            )
+            .await?;
+        } else {
+            self.scheduler
+                .storage
+                .batch(writes)
+                .await
+                .map_err(result_write_error)?;
+        }
         Ok(result)
     }
 }

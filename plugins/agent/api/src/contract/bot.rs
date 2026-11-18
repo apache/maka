@@ -120,6 +120,17 @@ pub struct DiscoveryPublication {
     pub worker_turn_id: String,
 }
 
+/// Most recent discovery association added after a Bot message was published.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentBotDiscoveryLink")]
+pub struct BotDiscoveryLink {
+    pub revision: u64,
+    pub message_id: String,
+    pub turn_id: Option<String>,
+    pub discovery: DiscoveryPublication,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentBotOutbox")]
@@ -131,6 +142,9 @@ pub struct BotOutbox {
     pub is_bot: bool,
     /// Highest sequence recorded so far; 0 when empty.
     pub through: u64,
+    /// Updates existing messages without advancing the unread cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_link: Option<BotDiscoveryLink>,
     #[schemars(length(max = 100))]
     pub messages: Vec<BotMessage>,
     /// Durable, monotonic acknowledgement of messages actually shown to the user.

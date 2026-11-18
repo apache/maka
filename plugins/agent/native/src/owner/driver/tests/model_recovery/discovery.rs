@@ -551,6 +551,96 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     f.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_late_notification_keeps_the_original_outbox_and_quoted_feedback_together() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Late notification").await;
+    let mut records = vec![];
+    for subject in ["First finding", "Second finding"] {
+        f.change(&task, "trigger_now").await;
+        let (mut worker, _) = next(&listener).await;
+        tool(
+            &mut worker,
+            "DiscoveryComplete",
+            json!({"kind":"report","text":subject}),
+        )
+        .await;
+        let (mut bot, _) = next(&listener).await;
+        let (mut bot, page) = memory(&listener, &mut bot, json!({"action":"list"})).await;
+        records.push(page["records"][0]["id"].as_str().unwrap().to_owned());
+        quiet(&f, &listener, &mut bot).await;
+        f.settled(&task, records.len()).await;
+    }
+    assert_ne!(records[0], records[1]);
+    f.send("Publish the first finding.", json!([])).await;
+    let (mut bot, _) = next(&listener).await;
+    tool(
+        &mut bot,
+        "SendUser",
+        json!({"messageId":"two-parts","messages":[{"text":"Finding"},{"text":"Details"}]}),
+    )
+    .await;
+    let (mut bot, _) = next(&listener).await;
+    let notified = |record: &str| json!({"action":"notified","record":record,"reason":"verified","message_id":"two-parts"});
+    let (mut bot, linked) = memory(&listener, &mut bot, notified(&records[0])).await;
+    assert_eq!(linked["recorded"], true, "{linked}");
+    let (mut bot, rejected) = memory(&listener, &mut bot, notified(&records[1])).await;
+    assert!(
+        rejected
+            .to_string()
+            .contains("notification_linked_to_another_discovery"),
+        "{rejected}"
+    );
+    let (mut bot, other) = memory(
+        &listener,
+        &mut bot,
+        json!({"action":"list","related":records[1]}),
+    )
+    .await;
+    assert!(
+        other["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["kind"] != "notified")
+    );
+    quiet(&f, &listener, &mut bot).await;
+    f.reopen().await;
+    let outbox = f.query("botOutbox", json!({})).await;
+    assert_eq!(outbox["through"], 2);
+    assert_eq!(outbox["discoveryLink"]["revision"], 1);
+    let messages = outbox["messages"].as_array().unwrap();
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["discovery"]["recordId"] == records[0])
+    );
+    let second = &messages[1];
+    let quote = json!({"text":"Details","sourceMessageId":format!("bot/{}", second["sequence"]),
+        "sourceTurnId":second["turnId"],"source":{"sessionId":f.bot,"sessionName":"Bot",
+        "capturedAt":maka_agent_authority::now(),"truncated":false}});
+    f.send("Please stop.", json!([quote])).await;
+    let (mut bot, _) = next(&listener).await;
+    let (mut bot, retried) = memory(&listener, &mut bot, notified(&records[0])).await;
+    assert_eq!(retried, linked);
+    let (mut bot, feedback) = memory(
+        &listener,
+        &mut bot,
+        json!({"action":"feedback","note":"Stop this finding"}),
+    )
+    .await;
+    let (mut bot, entry) = memory(
+        &listener,
+        &mut bot,
+        json!({"action":"get","record":feedback["record"]}),
+    )
+    .await;
+    assert_eq!(entry["content"]["record"], records[0], "{entry}");
+    quiet(&f, &listener, &mut bot).await;
+    f.close().await;
+}
+
 fn assert_requires_reapproval(detail: &Value, message: &str) {
     assert_eq!(detail["task"]["status"], "paused", "{detail}");
     assert_eq!(detail["approved"], false, "{detail}");

@@ -2620,6 +2620,10 @@ export interface ServiceMethods {
          */
         through: number;
         /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentBotOutboxOutput_AgentBotDiscoveryLink | null;
+        /**
          * @maxItems 100
          */
         messages: AgentBotOutboxOutput_AgentBotMessage[];
@@ -3452,6 +3456,10 @@ export interface ServiceMethods {
          */
         through: number;
         /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentMarkBotReadOutput_AgentBotDiscoveryLink | null;
+        /**
          * @maxItems 100
          */
         messages: AgentMarkBotReadOutput_AgentBotMessage[];
@@ -4246,6 +4254,10 @@ export interface ServiceMethods {
          * Highest sequence recorded so far; 0 when empty.
          */
         through: number;
+        /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentWatchBotOutboxOutput_AgentBotDiscoveryLink | null;
         /**
          * @maxItems 100
          */
@@ -5097,6 +5109,20 @@ export interface ServiceMethods {
   };
 }
 /**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentBotOutboxOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentBotOutboxOutput_AgentDiscoveryPublication;
+}
+export interface AgentBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
+}
+/**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentBotOutboxOutput_AgentBotMessage {
@@ -5126,11 +5152,6 @@ export interface AgentBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
-}
-export interface AgentBotOutboxOutput_AgentDiscoveryPublication {
-  recordId: string;
-  workerSessionId: string;
-  workerTurnId: string;
 }
 export interface AgentChangeMemoryInput_MemoryEvidenceReference {
   sessionId: string;
@@ -5840,6 +5861,20 @@ export interface AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspe
   operationId: string;
 }
 /**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentMarkBotReadOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentMarkBotReadOutput_AgentDiscoveryPublication;
+}
+export interface AgentMarkBotReadOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
+}
+/**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentMarkBotReadOutput_AgentBotMessage {
@@ -5869,11 +5904,6 @@ export interface AgentMarkBotReadOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
-}
-export interface AgentMarkBotReadOutput_AgentDiscoveryPublication {
-  recordId: string;
-  workerSessionId: string;
-  workerTurnId: string;
 }
 export interface AgentMemoriesOutput_MemoryRecord {
   assertion: number;
@@ -6637,6 +6667,20 @@ export interface AgentUpdatePresetOutput_ModelSelection {
   [k: string]: unknown | undefined;
 }
 /**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentWatchBotOutboxOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentWatchBotOutboxOutput_AgentDiscoveryPublication;
+}
+export interface AgentWatchBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
+}
+/**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentWatchBotOutboxOutput_AgentBotMessage {
@@ -6666,11 +6710,6 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
-}
-export interface AgentWatchBotOutboxOutput_AgentDiscoveryPublication {
-  recordId: string;
-  workerSessionId: string;
-  workerTurnId: string;
 }
 export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
   enabled: boolean;

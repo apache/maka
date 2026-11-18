@@ -607,6 +607,17 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              discoveryLink: {
+                description: 'Updates existing messages without advancing the unread cursor.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentBotDiscoveryLink',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               messages: {
                 type: 'array',
                 items: {
@@ -637,6 +648,45 @@ export const contracts: {
             additionalProperties: false,
             required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
+              AgentBotDiscoveryLink: {
+                description:
+                  'Most recent discovery association added after a Bot message was published.',
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: ['string', 'null'],
+                  },
+                  discovery: {
+                    $ref: '#/$defs/AgentDiscoveryPublication',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'messageId', 'discovery'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
+              },
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
@@ -685,22 +735,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['sequence', 'messageId', 'index', 'text', 'at'],
-              },
-              AgentDiscoveryPublication: {
-                type: 'object',
-                properties: {
-                  recordId: {
-                    type: 'string',
-                  },
-                  workerSessionId: {
-                    type: 'string',
-                  },
-                  workerTurnId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['recordId', 'workerSessionId', 'workerTurnId'],
               },
             },
           },
@@ -27119,6 +27153,17 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              discoveryLink: {
+                description: 'Updates existing messages without advancing the unread cursor.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentBotDiscoveryLink',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               messages: {
                 type: 'array',
                 items: {
@@ -27149,6 +27194,45 @@ export const contracts: {
             additionalProperties: false,
             required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
+              AgentBotDiscoveryLink: {
+                description:
+                  'Most recent discovery association added after a Bot message was published.',
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: ['string', 'null'],
+                  },
+                  discovery: {
+                    $ref: '#/$defs/AgentDiscoveryPublication',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'messageId', 'discovery'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
+              },
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
@@ -27197,22 +27281,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['sequence', 'messageId', 'index', 'text', 'at'],
-              },
-              AgentDiscoveryPublication: {
-                type: 'object',
-                properties: {
-                  recordId: {
-                    type: 'string',
-                  },
-                  workerSessionId: {
-                    type: 'string',
-                  },
-                  workerTurnId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['recordId', 'workerSessionId', 'workerTurnId'],
               },
             },
           },
@@ -51924,6 +51992,17 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              discoveryLink: {
+                description: 'Updates existing messages without advancing the unread cursor.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentBotDiscoveryLink',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               messages: {
                 type: 'array',
                 items: {
@@ -51954,6 +52033,45 @@ export const contracts: {
             additionalProperties: false,
             required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
+              AgentBotDiscoveryLink: {
+                description:
+                  'Most recent discovery association added after a Bot message was published.',
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: ['string', 'null'],
+                  },
+                  discovery: {
+                    $ref: '#/$defs/AgentDiscoveryPublication',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'messageId', 'discovery'],
+              },
+              AgentDiscoveryPublication: {
+                type: 'object',
+                properties: {
+                  recordId: {
+                    type: 'string',
+                  },
+                  workerSessionId: {
+                    type: 'string',
+                  },
+                  workerTurnId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['recordId', 'workerSessionId', 'workerTurnId'],
+              },
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
                 type: 'object',
@@ -52002,22 +52120,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['sequence', 'messageId', 'index', 'text', 'at'],
-              },
-              AgentDiscoveryPublication: {
-                type: 'object',
-                properties: {
-                  recordId: {
-                    type: 'string',
-                  },
-                  workerSessionId: {
-                    type: 'string',
-                  },
-                  workerTurnId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['recordId', 'workerSessionId', 'workerTurnId'],
               },
             },
           },

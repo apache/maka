@@ -30,6 +30,7 @@ type Query = (
   /** Whether the asked Session is, or once was, a Bot Session. */
   isBot: boolean;
   through: number;
+  discoveryLink?: ServiceMethods['agent']['botOutbox']['output']['discoveryLink'];
   nextAfter?: number | null;
   messages: BotTranscriptMessage[];
 }>;
@@ -92,28 +93,55 @@ export function createBotTranscriptCore(
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
   let cursor = 0;
+  let linkRevision = 0;
   let latest: BotTranscriptMessage | null = null;
 
-  const catchUp = async (through: number) => {
-    while (alive && cursor < through) {
-      const page = await host.query('agent', 'botOutbox', { after: cursor, sessionId });
-      if (!alive || !page.isBot || page.messages.length === 0) return;
-      const next = new Map(byTurn);
+  const catchUp = async (through: number, rebuild = false) => {
+    let after = rebuild ? 0 : cursor;
+    let turns = rebuild ? new Map<string, BotTranscriptMessage[]>() : byTurn;
+    let last = rebuild ? null : latest;
+    while (alive && after < through) {
+      const page = await host.query('agent', 'botOutbox', { after, sessionId });
+      if (!alive || !page.isBot || page.messages.length === 0) return false;
+      const next = new Map(turns);
       for (const message of page.messages) {
-        cursor = message.sequence;
+        after = message.sequence;
         if (!message.turnId) continue;
-        latest = message;
+        last = message;
         next.set(message.turnId, [...(next.get(message.turnId) ?? []), message]);
       }
-      byTurn = next;
-      changed();
-      if (page.nextAfter === null || page.nextAfter === undefined) return;
+      turns = next;
+      if (!rebuild || after >= through || page.nextAfter == null) {
+        cursor = after;
+        byTurn = turns;
+        latest = last;
+        changed();
+      }
+      if (page.nextAfter == null) break;
     }
+    return true;
   };
   // Only the watch loop reads, one page run at a time, so the cursor never races.
   const sync = async (): Promise<void> => {
     const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
     if (!alive || !head.isBot) return;
+    const link = head.discoveryLink;
+    if (link && link.revision !== linkRevision) {
+      if (cursor && link.revision !== linkRevision + 1) {
+        // After missed link edits, keep the old transcript visible until all replacement pages arrive.
+        if (await catchUp(head.through, true)) linkRevision = link.revision;
+        return;
+      }
+      const turn = link.turnId && byTurn.get(link.turnId);
+      if (link.turnId && turn) {
+        const update = (m: BotTranscriptMessage) =>
+          m.messageId === link.messageId ? { ...m, discovery: link.discovery } : m;
+        byTurn = new Map(byTurn).set(link.turnId, turn.map(update));
+        if (latest) latest = update(latest);
+        changed();
+      }
+      linkRevision = link.revision;
+    }
     await catchUp(head.through);
   };
 
