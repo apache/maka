@@ -385,6 +385,11 @@ export const workspaceMessages = {
   'Refresh browser': ['Refresh browser', '刷新浏览器', '重新整理瀏覽器'],
   'Refresh current changes': ['Refresh current changes', '刷新当前更改', '重新整理目前變更'],
   'Refresh current diff': ['Refresh current diff', '刷新当前差异', '重新整理目前差異'],
+  'This file has multiple hard links. Saving would break the link between them.': [
+    'This file has multiple hard links. Saving would break the link between them.',
+    '多个硬链接指向这个文件。保存会让当前路径和其他路径指向不同的文件。',
+    '多個硬連結指向這個檔案。儲存會讓目前路徑和其他路徑指向不同的檔案。',
+  ],
   'File changed on disk.': ['File changed on disk.', '文件已被外部修改。', '檔案已被外部修改。'],
   'Could not save the file.': ['Could not save the file.', '无法保存文件。', '無法儲存檔案。'],
   'Show Markdown source': ['Show Markdown source', '查看源码', '檢視原始碼'],

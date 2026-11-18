@@ -122,7 +122,6 @@ pub struct SaveFile {
     pub session_id: String,
     pub path: WorkspacePath,
     pub expected_version: String,
-    pub text: String,
 }
 
 #[derive(Serialize, JsonSchema)]

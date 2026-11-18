@@ -22,6 +22,7 @@ use super::*;
 use cap_fs_ext::MetadataExt;
 use cap_std::fs::Metadata;
 use maka_agent_facts::artifact::content_digest;
+use sha2::{Digest, Sha256};
 use std::io::Read;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -54,8 +55,6 @@ pub enum FileCapture {
     Binary { bytes: u64 },
     Unsupported { file_kind: FileKind },
 }
-
-pub const MAX_EDIT_BYTES: usize = 2 * 1024 * 1024;
 
 impl Directory {
     /// Read relative to a captured workspace directory, preserving opaque path bytes.
@@ -251,22 +250,31 @@ impl Directory {
         let dir = &target.directory;
         let mut opts = crate::workspace::options();
         let meta = match dir.symlink_metadata(&name) {
-            Ok(meta) if meta.is_file() && meta.nlink() == 1 => meta,
+            Ok(meta) if meta.is_file() => meta,
             Ok(_) => return Ok(None),
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err),
         };
+        if meta.nlink() != 1 {
+            return Err(error("files_hard_link"));
+        }
         let original = dir.open_with(&name, opts.read(true).write(true))?;
         if !same_version(&meta, &original.metadata()?)? {
             return Ok(None);
         }
-        // A replaced file may be arbitrarily large. The editable capture was bounded.
-        if meta.len() > MAX_EDIT_BYTES as u64 || text.len() > MAX_EDIT_BYTES {
-            return Err(error("files_edit_size"));
+        let mut digest = Sha256::new();
+        let mut reader = (&original).take(meta.len());
+        let mut buffer = [0; 8192];
+        while reader.limit() != 0 {
+            interrupted(cancel)?;
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                return Ok(None);
+            }
+            digest.update(&buffer[..count]);
         }
-        let mut bytes = Vec::with_capacity(meta.len() as usize);
-        (&original).take(meta.len() + 1).read_to_end(&mut bytes)?;
-        if self.file_version(&parent, path, &meta, &content_digest(&bytes))? != expected {
+        let digest = crate::publication::finish_digest(digest);
+        if self.file_version(&parent, path, &meta, &digest)? != expected {
             return Ok(None);
         }
         let temporary = format!(".maka-edit-{}", uuid::Uuid::new_v4());
@@ -297,11 +305,11 @@ impl Directory {
                 Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
                 Err(err) => return Err(err),
             };
-            if current.nlink() != 1
-                || !same_version(&meta, &current)?
-                || current.permissions() != meta.permissions()
-            {
+            if !same_version(&meta, &current)? || current.permissions() != meta.permissions() {
                 return Ok(None);
+            }
+            if current.nlink() != 1 {
+                return Err(error("files_hard_link"));
             }
             if !same_version(&staged_meta, &dir.symlink_metadata(&temporary)?)? {
                 return Ok(None);

@@ -37559,12 +37559,9 @@ export const contracts: {
               expectedVersion: {
                 type: 'string',
               },
-              text: {
-                type: 'string',
-              },
             },
             additionalProperties: false,
-            required: ['sessionId', 'path', 'expectedVersion', 'text'],
+            required: ['sessionId', 'path', 'expectedVersion'],
             $defs: {
               WorkspacePath: {
                 type: 'object',
@@ -37609,7 +37606,15 @@ export const contracts: {
               },
             ],
           },
-          resources: {},
+          resources: {
+            content: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
         },
         saveGitHubToken: {
           mode: 'mutation',

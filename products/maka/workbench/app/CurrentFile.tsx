@@ -27,7 +27,6 @@ import {
   type InputRef,
   inputAction,
   keymap,
-  List,
   Overlay,
   platform,
   Scroll,
@@ -96,7 +95,8 @@ import {
 } from './ui';
 import type { WorkspaceFileAnchor, WorkspaceFileTarget } from './workspaceFileState';
 
-const MAX_EDITOR_TEXT_BYTES = 2 * 1024 * 1024;
+// Rich Markdown mounts every paragraph. Larger documents open in the virtualized source editor.
+const AUTO_FORMAT_MARKDOWN_BYTES = 2 * 1024 * 1024;
 
 type TextFile = Extract<FileView, { kind: 'text' }>;
 type FileBuffer = { view: TextFile; version: string; original: string; text: string };
@@ -119,7 +119,6 @@ export type CurrentFileModel = {
   edit(text: string): void;
   save(): Promise<boolean>;
   discard(): void;
-  position: { x: number; y: number };
   stale(): boolean;
   activate(): void;
   suspend(): void;
@@ -229,13 +228,6 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
         await close(request);
         if (!ownsRead(request, watch)) return;
         const previous = captured(state());
-        if (
-          !previous ||
-          !('version' in previous) ||
-          !('version' in result) ||
-          previous.version !== result.version
-        )
-          model.position = { x: 0, y: 0 };
         const b = buffer();
         if (!dirty() && !saving()) {
           if (
@@ -323,12 +315,10 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
   };
   const write = async (b: FileBuffer) => {
     try {
-      const { reply } = await host.control('saveFile', {
-        sessionId: target.sessionId,
-        path: target.path,
-        expectedVersion: b.version,
-        text: b.text,
-      });
+      const { reply } = await host.saveFile(
+        { sessionId: target.sessionId, path: target.path, expectedVersion: b.version },
+        b.text,
+      );
       const result = settingsValue(reply) as Output<'agent', 'saveFile'>;
       if (result.kind === 'conflict') {
         saveError.set(message('File changed on disk.'));
@@ -394,7 +384,6 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
       model.refresh();
     },
     stale,
-    position: { x: 0, y: 0 },
     activate() {
       if (!alive || active) return;
       active = true;
@@ -576,33 +565,20 @@ export function CurrentFile(props: {
       </If>
       <Each
         of={readable() && view() ? [view()!] : []}
-        key={(value) =>
-          value.kind === 'text' && value.bytes <= MAX_EDITOR_TEXT_BYTES ? 'editor' : value
-        }
+        key={(value) => (value.kind === 'text' ? 'editor' : value)}
       >
         {(value) => {
           const snapshot = value();
-          if (snapshot.kind === 'text') {
-            if (snapshot.bytes <= MAX_EDITOR_TEXT_BYTES) {
-              return (
-                <SourceEditorView
-                  model={model}
-                  view={() => value() as Extract<FileView, { kind: 'text' }>}
-                  copyAction={copyAction}
-                  copied={copied}
-                  navigation={props.navigation}
-                />
-              );
-            }
+          if (snapshot.kind === 'text')
             return (
-              <LargeFileRows
+              <SourceEditorView
                 model={model}
-                view={snapshot}
+                view={() => value() as TextFile}
                 copyAction={copyAction}
                 copied={copied}
+                navigation={props.navigation}
               />
             );
-          }
           if (snapshot.kind === 'image')
             return (
               <FileImage model={model} view={snapshot} openImageViewer={props.openImageViewer} />
@@ -699,7 +675,9 @@ function SourceEditorView(props: {
   const model = props.model;
   const fileMenu = signal(false);
   const markdown = /\.(?:md|markdown|mdown|mkd)$/i.test(model.target.title);
-  const formatted = signal(markdown && !model.anchor());
+  const formatted = signal(
+    markdown && !model.anchor() && props.view().bytes <= AUTO_FORMAT_MARKDOWN_BYTES,
+  );
   const softWrap = signal(false);
   const finding = signal(false);
   const findQuery = signal('');
@@ -1449,119 +1427,6 @@ function CapturedFileStatus(props: { model: CurrentFileModel; selectable?: boole
         </If>
       </View>
     </If>
-  );
-}
-
-function LargeFileRows(props: {
-  model: CurrentFileModel;
-  view: Extract<FileView, { kind: 'text' }>;
-  copyAction: () => (() => void) | undefined;
-  copied: () => { failed: boolean; message: UiText } | null;
-}) {
-  const initialOffset = { ...props.model.position };
-  let mounted = true;
-  cleanup(() => {
-    mounted = false;
-  });
-  return (
-    <View style={{ flex: 1, minHeight: 0, gap: 6 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="file" size={14} color={C.muted} />
-        <Text
-          style={[
-            { ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' },
-            { numberOfLines: 1 },
-          ]}
-        >
-          {props.model.target.title}
-        </Text>
-        <Button
-          accessibilityLabel={tr('Copy captured file')}
-          onPress={props.copyAction()}
-          style={{
-            ...controlStyle,
-            width: 28,
-            minHeight: 28,
-            paddingHorizontal: 6,
-            alignItems: 'center',
-          }}
-          hoverStyle={quietHoverStyle()}
-          focusStyle={quietFocusStyle()}
-        >
-          <Icon
-            name={props.copied() && !props.copied()!.failed ? 'check' : 'copy'}
-            size={14}
-            color={C.secondary}
-          />
-        </Button>
-        <Button
-          accessibilityLabel={tr('Refresh current file')}
-          onPress={inputAction(props.model.refresh, null)}
-          style={{
-            ...controlStyle,
-            width: 28,
-            minHeight: 28,
-            paddingHorizontal: 6,
-            alignItems: 'center',
-          }}
-          hoverStyle={quietHoverStyle()}
-          focusStyle={quietFocusStyle()}
-        >
-          <Icon name="refresh" size={14} color={C.secondary} />
-        </Button>
-      </View>
-      <View selectable style={{ flex: 1, minHeight: 0 }}>
-        <List
-          each={props.view.rows}
-          keyExtractor={(row) => String(row.offset)}
-          estimatedItemSize={codeTextStyle.lineHeight}
-          contentOffset={initialOffset}
-          onScroll={(event) => {
-            if (mounted) props.model.position = { x: event.offset.x, y: event.offset.y };
-          }}
-          accessibilityLabel={tr('Captured file text')}
-          style={{ flex: 1, minHeight: 0, backgroundColor: C.card }}
-          header={<CapturedFileStatus model={props.model} selectable={false} />}
-        >
-          {(row) => (
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'flex-start',
-                minHeight: codeTextStyle.lineHeight,
-                gap: 8,
-              }}
-            >
-              <Text
-                style={[
-                  {
-                    ...codeTextStyle,
-                    width: Math.max(24, String(props.view.rows.length).length * 8),
-                    color: C.muted,
-                  },
-                  { userSelect: 'none' },
-                ]}
-              >
-                {row().line}
-              </Text>
-              <Text
-                style={[
-                  {
-                    ...codeTextStyle,
-                    flex: 1,
-                    minWidth: 0,
-                    color: C.text,
-                  },
-                  { userSelect: 'text' },
-                ]}
-              >
-                {row().text.replace(/\r?\n$/, '')}
-              </Text>
-            </View>
-          )}
-        </List>
-      </View>
-    </View>
   );
 }
 

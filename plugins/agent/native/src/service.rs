@@ -213,7 +213,7 @@ impl Handler for Agent {
                             .await?
                             .complete(&context),
                         "saveFile" => Ok(HandlerValue::Json(encode(
-                            owner.save_file(decode(input)?, context.scope()).await?,
+                            owner.save_file(decode(input)?, &context).await?,
                         )?)),
                         "snapshotPatch" => owner
                             .snapshot_patch(decode(input)?, operation, context.scope())

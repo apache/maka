@@ -3832,7 +3832,6 @@ export interface ServiceMethods {
         sessionId: string;
         path: Runtime.WorkspacePath;
         expectedVersion: string;
-        text: string;
       };
       output:
         | {
