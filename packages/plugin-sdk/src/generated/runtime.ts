@@ -2723,32 +2723,41 @@ export type AgentScheduleResult =
       kind: 'rejected';
       reason: string;
     };
-export type PresetRevision = number;
-/**
- * A complete logical Turn boundary within the source session.
- */
-export type AgentForkPosition =
+export type MemoryKind = 'unspecified' | 'fact' | 'preference' | 'instruction';
+export type MemoryStatement = 'unspecified' | 'assertion' | 'preference' | 'intention';
+export type MemoryTemporal =
   | {
-      kind: 'start';
+      kind: 'unspecified';
     }
   | {
-      kind: 'end';
+      kind: 'timeless';
     }
   | {
-      kind: 'through_turn';
-      turnId: string;
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type MemoryScope =
+  | {
+      kind: 'personal';
     }
   | {
-      kind: 'before_turn';
-      turnId: string;
+      kind: 'project';
+      sessionId: string;
+    };
+export type RecallFactSource =
+  | {
+      kind: 'user_operation';
+      operationId: string;
+      [k: string]: unknown | undefined;
     }
   | {
-      kind: 'through_source_turn';
-      position: HistoryRowAddress;
-    }
-  | {
-      kind: 'before_source_turn';
-      position: HistoryRowAddress;
+      kind: 'conversation';
+      sessionId: string;
+      row: HistoryRowAddress;
+      start: number;
+      end: number;
+      [k: string]: unknown | undefined;
     };
 /**
  * An original row within the actual read capability supplied by the caller.
@@ -2777,6 +2786,33 @@ export type HistoryRowAddress =
       partOrdinal: number;
     };
 export type FactId = string;
+export type PresetRevision = number;
+/**
+ * A complete logical Turn boundary within the source session.
+ */
+export type AgentForkPosition =
+  | {
+      kind: 'start';
+    }
+  | {
+      kind: 'end';
+    }
+  | {
+      kind: 'through_turn';
+      turnId: string;
+    }
+  | {
+      kind: 'before_turn';
+      turnId: string;
+    }
+  | {
+      kind: 'through_source_turn';
+      position: HistoryRowAddress;
+    }
+  | {
+      kind: 'before_source_turn';
+      position: HistoryRowAddress;
+    };
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentImportsRead =
   | {
@@ -7646,9 +7682,16 @@ export interface Create {
 }
 export interface RecallQuery {
   /**
+   * Supply 1 to 32 search terms of at most 256 UTF-8 bytes each.
+   *
    * @minItems 1
+   * @maxItems 32
    */
   terms: [string, ...string[]];
+  /**
+   * Resume current memory facts after the last returned key.
+   */
+  facts_after?: number | null;
   /**
    * An explicit caller-selected result budget; omission retains all matching results.
    */
@@ -7658,10 +7701,28 @@ export interface RecallQuery {
   until?: number | null;
 }
 export interface AgentRecallPage {
+  facts: RecallFact[];
+  nextFactsAfter?: number | null;
   titles: AgentSession[];
   passages: AgentRecallPassage[];
   complete: boolean;
   gaps: string[];
+}
+export interface RecallFact {
+  metadata: MemoryMetadata;
+  id: string;
+  revision: number;
+  assertion: number;
+  scope: MemoryScope;
+  body: string;
+  sources: RecallFactSource[];
+  sourcesComplete: boolean;
+  [k: string]: unknown | undefined;
+}
+export interface MemoryMetadata {
+  kind: MemoryKind;
+  statement: MemoryStatement;
+  temporal: MemoryTemporal;
 }
 export interface AgentSession {
   incognito?: boolean;

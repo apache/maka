@@ -40,6 +40,7 @@ uuid.workspace = true
 rusqlite = { workspace = true, features = ["functions", "blob", "hooks"] }
 async-channel = "2.5.0"
 url = "2"
+unicode-normalization = "0.1.26"
 futures-util.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

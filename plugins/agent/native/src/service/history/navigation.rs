@@ -36,6 +36,7 @@ pub(crate) async fn search(
         case_sensitive: input.case_sensitive,
         whole_word: input.whole_word,
         include_internal: input.include_internal,
+        mask_evidence: scope.identity.agent().is_some(),
     };
     let mut cache = source::Cache::default();
     let page = loop {
@@ -100,10 +101,16 @@ pub(crate) async fn landmarks(
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
         .await
         .map_err(|error| error.to_string())?;
-    let landmarks = tree
+    let mut landmarks = tree
         .landmarks(64, scope.cancellation.clone())
         .await
         .map_err(|error| error.to_string())?;
+    if scope.identity.agent().is_some() {
+        landmarks = history
+            .mask_landmark_labels(landmarks)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistoryLandmarks {
         through: cut.through_sequence,

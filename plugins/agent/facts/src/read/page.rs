@@ -518,6 +518,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn continuation_keeps_its_targets_history_policy() {
+        for (path, restricted) in [
+            ("notes.txt", false),
+            ("session:sample", true),
+            ("attachment:photo", true),
+        ] {
+            let request = ReadInput {
+                path: path.into(),
+                offset: None,
+                limit: None,
+            }
+            .resolve()
+            .unwrap();
+            let next = request.page(&"a".repeat(16_000)).unwrap().next.unwrap();
+            assert_eq!(crate::read::reads_history_resource(&next.path), restricted);
+        }
+    }
+
+    #[test]
     fn bounded_pages_preserve_line_ranges_unicode_and_reject_changed_content() {
         let text = (0..1_200)
             .map(|i| format!("line-{i:04}: 😀 café {}", "x".repeat(16)))

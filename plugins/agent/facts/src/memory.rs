@@ -266,3 +266,54 @@ pub enum MemoryBatchResult {
     Committed { results: Vec<MemoryResult> },
     Retryable { reason: String },
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum MemoryScope {
+    Personal,
+    Project { session_id: String },
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallFact {
+    pub metadata: MemoryMetadata,
+    pub id: MemoryId,
+    pub revision: MemoryRevision,
+    pub assertion: MemoryRevision,
+    pub scope: MemoryScope,
+    pub body: String,
+    pub sources: Vec<RecallFactSource>,
+    pub sources_complete: bool,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecallFactSource {
+    UserOperation {
+        operation_id: uuid::Uuid,
+    },
+    Conversation {
+        session_id: String,
+        row: crate::history::HistoryRowAddress,
+        start: u32,
+        end: u32,
+    },
+}
+
+/// Archived output from these tools requires a fresh, authorized read.
+pub fn is_recall_output(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "Recall" | "RecallMore" | "RecallMaterial" | "SessionRead"
+    )
+}

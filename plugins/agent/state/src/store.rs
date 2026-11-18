@@ -782,7 +782,23 @@ impl Store {
         offset: u64,
         limit: u32,
     ) -> Result<Option<RunObservation>, StoreError> {
-        self.data.query(ReadWork { run, offset, limit }).await
+        self.work_for_reader(run, offset, limit, false).await
+    }
+    pub async fn work_for_reader(
+        &self,
+        run: RunId,
+        offset: u64,
+        limit: u32,
+        model_read: bool,
+    ) -> Result<Option<RunObservation>, StoreError> {
+        self.data
+            .query(ReadWork {
+                run,
+                offset,
+                limit,
+                model_read,
+            })
+            .await
     }
     pub async fn admit(&self, admission: Admission) -> Result<Commit, StoreError> {
         self.data.write(Admit(admission)).await
@@ -1423,6 +1439,7 @@ impl Query for ReadLatest {
     }
 }
 struct ReadWork {
+    model_read: bool,
     run: RunId,
     offset: u64,
     limit: u32,
@@ -1430,7 +1447,7 @@ struct ReadWork {
 impl Query for ReadWork {
     type Output = Option<RunObservation>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::work(c, self.run, self.offset, self.limit)
+        sql::work(c, self.run, self.offset, self.limit, self.model_read)
     }
 }
 

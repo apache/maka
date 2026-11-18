@@ -33,6 +33,19 @@ async fn memory_management_cas_sources_deletion_and_restart() {
     assert!(matches!(result, Ok(Ok(Ok(())))), "{result:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
+pub(super) async fn recall_page(client: &HostClient, input: Value) -> TestResult<Value> {
+    let mut stream = client
+        .call("agent", "recall".into(), input, Attachments::new())
+        .await?;
+    stream.start().await?;
+    assert!(matches!(stream.receive().await?, Reply::Subscribed));
+    let Reply::Finished { result, cleanup } = stream.pull().await? else {
+        return Err("missing Recall page".into());
+    };
+    cleanup?;
+    stream.close().await?;
+    Ok(result?)
+}
 async fn exact_matching_acceptance(client: &HostClient) -> TestResult<()> {
     let scope = json!({"kind":"personal"});
     let create = json!({"scope":scope,"edit":{"kind":"create","body":"Exact matching acceptance"}});
@@ -52,8 +65,17 @@ async fn exact_matching_acceptance(client: &HostClient) -> TestResult<()> {
     assert_eq!(duplicate["kind"], "evidence_added");
     assert_eq!(duplicate["id"], first["id"]);
     assert_eq!(duplicate["revision"], 2);
+    let recalled = recall_page(client, json!({"terms":["Exac"]})).await?;
+    assert_eq!(recalled["facts"][0]["id"], first["id"], "{recalled}");
+    assert_eq!(recalled["facts"][0]["sources"][0]["kind"], "user_operation");
     let deleted = call(client, "agent", "changeMemory", json!({"scope":scope,"edit":{"kind":"delete","id":first["id"],"expectedRevision":duplicate["revision"]}})).await?;
     assert_eq!(deleted["kind"], "deleted");
+    let recalled = recall_page(client, json!({"terms":["Exac"]})).await?;
+    assert!(
+        recalled["facts"].as_array().unwrap().is_empty(),
+        "{recalled}"
+    );
+    assert_eq!(recalled["complete"], true, "{recalled}");
     let blocked = call(client, "agent", "changeMemory", create).await?;
     assert_eq!(blocked, json!({"kind":"suppressed"}));
     assert_eq!(
@@ -326,7 +348,33 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
     std::fs::create_dir_all(base.join("workspace/sub"))?;
     let child=call(client,"agent","create",json!({"title":"Subdirectory","automaticTitle":false,"labels":[],"workspace":{"kind":"directory","path":base.join("workspace/sub")}})).await?;
     assert_eq!(call(client,"agent","memory",json!({"scope":{"kind":"project","sessionId":child["session"]["id"]},"id":project_memory["id"]})).await?,Value::Null);
-    let sent = call(client,"agent","send",json!({"sessionId":sessions[0],"message":"Prefer Chinese for project discussions.","backend":backend})).await?;
+    let file =
+        maka_capabilities::call::immutable_bytes("notes.txt".into(), b"project notes".to_vec());
+    let upload = call_with_attachments(
+        client,
+        "agent",
+        "uploadAttachment",
+        json!({
+            "sessionId": sessions[0], "name": "notes.txt", "bytes": file.bytes(),
+            "digest": file.metadata()["digest"]
+        }),
+        Attachments::from([("file".into(), file)]),
+    )
+    .await?;
+    let attachment = upload["attachment"]["id"]
+        .as_str()
+        .ok_or("missing attachment")?
+        .to_owned();
+    let sent = call(
+        client,
+        "agent",
+        "send",
+        json!({
+            "sessionId":sessions[0], "message":"Prefer Chinese for project discussions.",
+            "attachments":[attachment], "backend":backend
+        }),
+    )
+    .await?;
     assert_eq!(sent["kind"], "queued", "{sent}");
     let respond = observed.recv().await.ok_or("model request missing")?;
     let owner = rig
@@ -423,7 +471,15 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
     let mut forged = reference.clone();
     forged.quote = "Forged evidence".into();
     assert!(call(client,"agent","changeMemory",json!({"scope":project_scope,"edit":{"kind":"add_evidence","id":project_memory["id"],"expectedRevision":1,"assertion":1,"reference":forged}})).await.is_err());
-    let evidence_input = json!({"scope":project_scope,"edit":{"kind":"add_evidence","id":project_memory["id"],"expectedRevision":1,"assertion":1,"reference":reference}});
+    let partial = call(
+        client,
+        "agent",
+        "memorySource",
+        json!({"sessionId":sessions[0],"sequence":reference.sequence,
+       "itemIndex":reference.item_index,"start":0,"end":14,"quote":"Prefer Chinese"}),
+    )
+    .await?;
+    let evidence_input = json!({"scope":project_scope,"edit":{"kind":"add_evidence","id":project_memory["id"],"expectedRevision":1,"assertion":1,"reference":partial}});
     assert_eq!(
         call(client, "agent", "changeMemory", evidence_input).await?["revision"],
         2
@@ -744,6 +800,74 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
         }
     }
     assert_eq!(seen.len(), 3);
+    let query = json!({"terms":["project"],"session_id":sessions[0]});
+    let before = recall_page(client, query.clone()).await?;
+    let fact = before["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == project_memory["id"])
+        .ok_or("missing project fact")?;
+    assert_eq!(fact["sources"][1]["kind"], "conversation", "{fact}");
+    assert_eq!(fact["sourcesComplete"], true);
+    use maka_agent_state::artifacts::{ArtifactStore, CopyArtifact, SessionScope};
+    let owner = rig
+        .captured
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("owner missing")?;
+    let artifacts = ArtifactStore::new(owner.store.data_writer()?);
+    let source_scope = SessionScope {
+        owner: owner.run_owner(),
+        session: sessions[0].as_str().unwrap().to_owned(),
+    };
+    let destination = SessionScope {
+        owner: owner.run_owner(),
+        session: sessions[1].as_str().unwrap().to_owned(),
+    };
+    let source = artifacts
+        .copy_source(source_scope.clone(), attachment.clone())
+        .await?
+        .ok_or("missing original attachment")?;
+    let copy =
+        CopyArtifact::new(source, destination.clone(), Uuid::new_v4().to_string(), 1).for_recall();
+    let copied = artifacts.copy(copy.clone()).await?.artifact.id;
+    artifacts
+        .check_memory_access(destination.clone(), copied.clone())
+        .await?;
+
+    assert_eq!(call(client,"agent","changeMemory",json!({"scope":project_scope,"edit":{"kind":"delete","id":project_memory["id"],"expectedRevision":2}})).await?["kind"],"deleted");
+    for (scope, id) in [(source_scope, attachment), (destination, copied)] {
+        let error = artifacts.check_memory_access(scope, id).await.unwrap_err();
+        assert!(
+            error.to_string().contains("restricted memory evidence"),
+            "{error}"
+        );
+    }
+    assert!(
+        artifacts.copy(copy).await.is_err(),
+        "a cached copy command must recheck at commit"
+    );
+    let after = recall_page(client, query).await?;
+    assert!(!after.to_string().contains("Prefer Chinese"), "{after}");
+    assert!(
+        after["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["id"] != project_memory["id"])
+    );
+    assert!(
+        after["passages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["excerpt"]
+                .as_str()
+                .is_some_and(|text| text.contains("project discussions"))),
+        "{after}"
+    );
     provider.abort();
     let _ = provider.await;
     Ok(())

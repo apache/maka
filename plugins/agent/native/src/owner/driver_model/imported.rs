@@ -39,6 +39,12 @@ impl DriverModel {
         let mut after = None;
         loop {
             let page = snapshot.model_messages(after, 256).await?;
+            let restricted = match (page.items.first(), page.items.last()) {
+                (Some((first, _)), Some((last, _))) => {
+                    snapshot.restricted_imported_parts(*first, *last).await?
+                }
+                _ => Default::default(),
+            };
             for (ordinal, message) in page.items {
                 if self.cancellation.is_cancelled() {
                     return Err(RunError::Cancelled);
@@ -80,6 +86,7 @@ impl DriverModel {
                                 reference,
                                 language,
                                 vision,
+                                restricted.contains(&(ordinal, part_ordinal as u64)),
                             )
                             .await?
                     {
@@ -142,11 +149,21 @@ impl DriverModel {
                             }
                             messages.append(projected).await?;
                         }
-                        ImportedPart::Model { part } => {
+                        ImportedPart::Model { mut part } => {
                             if message.role != HistoricalRole::Assistant {
                                 return Err(RunError::InvalidInput(
                                     "imported model part requires assistant historical role".into(),
                                 ));
+                            }
+                            if let maka_agent_facts::model::ModelPart::ToolResult {
+                                output,
+                                provider_options,
+                                ..
+                            } = &mut part
+                                && restricted.contains(&(ordinal, part_ordinal as u64))
+                            {
+                                *output = json!({"gap": "Archived history output requires a fresh authorized read"});
+                                *provider_options = None;
                             }
                             if let Some(part) = target.part(&part, "", None)? {
                                 assistant.push(part);

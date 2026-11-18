@@ -30,6 +30,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 mod continuation;
+pub mod evidence;
 mod fork;
 pub mod inspection;
 mod metrics;
@@ -88,7 +89,12 @@ impl ExecutorTranscript {
         self.messages.get(&(id.to_owned(), thinking))
     }
 
-    fn observe(&mut self, sequence: u64, record: &RecordedFact) {
+    fn observe(
+        &mut self,
+        sequence: u64,
+        record: &RecordedFact,
+        pieces: &mut Option<Vec<(FactId, FactId, usize)>>,
+    ) {
         use maka_agent_facts::executor::Output;
         let Fact::ExternalTaskObserved { output, .. } = &record.fact else {
             return;
@@ -106,10 +112,47 @@ impl ExecutorTranscript {
                 fact: record.id,
                 body: Default::default(),
             });
+        if let Some(pieces) = pieces {
+            pieces.push((record.id, message.fact, message.body.len_bytes()));
+        }
         message.body = message
             .body
             .inserted(message.body.len_bytes(), text)
             .expect("append at text end");
+    }
+    fn mask_pieces(
+        &mut self,
+        c: &Connection,
+        owner: &RunOwner,
+        pieces: Option<Vec<(FactId, FactId, usize)>>,
+    ) -> Result<(), StoreError> {
+        let Some(pieces) = pieces else { return Ok(()) };
+        let namespace = serde_json::to_string(owner)?;
+        let mut hidden = std::collections::BTreeMap::<FactId, Vec<(u64, u64)>>::new();
+        let mut statement = c.prepare_cached(
+            "SELECT p.value->>1, (p.value->>2)+s.start, (p.value->>2)+s.end
+            FROM json_each(?1) p CROSS JOIN agent_memory_hidden_spans s
+            WHERE s.namespace=?2 AND s.fact=p.value->>0 AND s.ordinal=0",
+        )?;
+        for page in pieces.chunks(256) {
+            let mut rows =
+                statement.query(rusqlite::params![serde_json::to_string(page)?, namespace])?;
+            while let Some(row) = rows.next()? {
+                let fact = sql::identity(row.get(0)?)?;
+                hidden
+                    .entry(fact)
+                    .or_default()
+                    .push((sql::read_u64(row, 1)?, sql::read_u64(row, 2)?));
+            }
+        }
+        for message in self.messages.values_mut() {
+            if let Some(spans) = hidden.get(&message.fact) {
+                let mut body = message.body.to_string();
+                crate::memory::recall::mask(&mut body, 0, spans);
+                message.body = body.into();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -179,6 +222,91 @@ pub struct LiveRunObservation {
     pub pending_interactions: u64,
 }
 
+struct FactBodyRestrictions(RunOwner, Vec<FactId>);
+
+impl Query for FactBodyRestrictions {
+    type Output = std::collections::BTreeMap<usize, Vec<(u64, u64)>>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let keys = self
+            .1
+            .into_iter()
+            .enumerate()
+            .map(|(i, fact)| (i, fact, 0))
+            .collect::<Vec<_>>();
+        crate::memory::recall::indexed_spans(c, &self.0, &keys, &[])
+    }
+}
+
+struct ModelRecoveryDiagnostic(HistoryNamespace, RunId);
+impl Query for ModelRecoveryDiagnostic {
+    type Output = Option<String>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let view = crate::sql::load(c, self.1, &[], false)?;
+        if view.spec.owner != self.0.owner || view.spec.session_id != self.0.session {
+            return Ok(None);
+        }
+        let Some(mut reason) = sql::recovery_diagnostic(c, &view, true)? else {
+            return Ok(None);
+        };
+        if let Some(maka_agent_facts::durable::BlockerKind::ToolCleanupUnconfirmed {
+            diagnostic,
+            ..
+        }) = view.recovery_failure()
+        {
+            let masked = MaskTerminalDiagnostic(self.0, self.1, diagnostic.clone()).execute(c)?;
+            reason = reason.replace(diagnostic, &masked);
+            return Ok(Some(reason));
+        }
+        MaskTerminalDiagnostic(self.0, self.1, reason)
+            .execute(c)
+            .map(Some)
+    }
+}
+
+struct MaskTerminalDiagnostic(HistoryNamespace, RunId, String);
+
+impl Query for MaskTerminalDiagnostic {
+    type Output = String;
+    fn execute(self, c: &Connection) -> Result<String, StoreError> {
+        use maka_agent_facts::history::HistoryRowAddress;
+        use rusqlite::{OptionalExtension, params};
+        let Self(namespace, run, mut diagnostic) = self;
+        // A recovery reason and the terminal row share byte offsets only when the
+        // engine persisted that diagnostic verbatim for this Run.
+        let terminal = c
+            .query_row(
+                "SELECT h.sequence,h.fact_id FROM agent_session_history h
+             JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
+             WHERE h.run=?1 AND h.kind='run_terminated' AND h.owner=?2 AND h.session=?3
+               AND CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?4",
+                params![
+                    run.to_string(),
+                    serde_json::to_string(&namespace.owner)?,
+                    namespace.session,
+                    diagnostic
+                ],
+                |row| Ok((sql::read_u64(row, 0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        if let Some((sequence, fact)) = terminal {
+            let address = HistoryRowAddress::Live {
+                sequence,
+                fact: serde_json::from_value(serde_json::Value::String(fact))?,
+                item_index: 0,
+            };
+            let spans = crate::memory::recall::ReadRestrictions {
+                owner: namespace.owner,
+                addresses: vec![address],
+            }
+            .by_index(c)?;
+            if let Some(spans) = spans.get(&0) {
+                crate::memory::recall::mask(&mut diagnostic, 0, spans);
+            }
+        }
+        Ok(diagnostic)
+    }
+}
+
 impl SessionHistory {
     pub fn new(data: DataWriter, owner: RunOwner, session: String) -> Self {
         Self {
@@ -186,6 +314,65 @@ impl SessionHistory {
             namespace: HistoryNamespace { owner, session },
         }
     }
+    pub async fn read_restrictions(
+        &self,
+        addresses: Vec<maka_agent_facts::history::HistoryRowAddress>,
+    ) -> Result<crate::memory::recall::RestrictionMap, StoreError> {
+        self.data
+            .query(crate::memory::recall::ReadRestrictions {
+                owner: self.namespace.owner.clone(),
+                addresses,
+            })
+            .await
+    }
+    pub async fn fact_body_restrictions(
+        &self,
+        facts: Vec<FactId>,
+    ) -> Result<std::collections::BTreeMap<usize, Vec<(u64, u64)>>, StoreError> {
+        self.data
+            .query(FactBodyRestrictions(self.namespace.owner.clone(), facts))
+            .await
+    }
+
+    pub async fn model_recovery_diagnostic(
+        &self,
+        run: RunId,
+    ) -> Result<Option<String>, StoreError> {
+        self.data
+            .query(ModelRecoveryDiagnostic(self.namespace.clone(), run))
+            .await
+    }
+    pub async fn mask_terminal_diagnostic(
+        &self,
+        run: RunId,
+        diagnostic: String,
+    ) -> Result<String, StoreError> {
+        self.data
+            .query(MaskTerminalDiagnostic(
+                self.namespace.clone(),
+                run,
+                diagnostic,
+            ))
+            .await
+    }
+    pub async fn restricted_archives(
+        &self,
+        facts: Vec<FactId>,
+    ) -> Result<
+        std::collections::BTreeMap<FactId, crate::memory::recall::ArchiveRestriction>,
+        StoreError,
+    > {
+        if facts.is_empty() {
+            return Ok(Default::default());
+        }
+        self.data
+            .query(crate::memory::recall::RestrictedArchives {
+                owner: self.namespace.owner.clone(),
+                facts,
+            })
+            .await
+    }
+
     pub async fn resolve_tool_result(
         &self,
         cut: &HistoryCut,
@@ -657,14 +844,16 @@ impl Query for ViewAt {
         sql::view_at(c, &self.0.namespace, &self.1, self.2, |_, _| {})
     }
 }
-struct ExecutorViewAt(SessionHistory, HistoryCut, RunId);
+struct ExecutorViewAt(SessionHistory, HistoryCut, RunId, bool);
 impl Query for ExecutorViewAt {
     type Output = (crate::fold::RunView, ExecutorTranscript);
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let mut transcript = ExecutorTranscript::default();
+        let mut pieces = self.3.then(Vec::new);
         let view = sql::view_at(c, &self.0.namespace, &self.1, self.2, |sequence, record| {
-            transcript.observe(sequence, record);
+            transcript.observe(sequence, record, &mut pieces);
         })?;
+        transcript.mask_pieces(c, &view.spec.owner, pieces)?;
         Ok((view, transcript))
     }
 }
@@ -734,5 +923,59 @@ impl Query for ResolveToolResult {
     type Output = Option<ToolResultSource>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::resolve_tool_result(c, &self.0, &self.1, &self.2)
+    }
+}
+
+#[cfg(test)]
+mod executor_tests {
+    use super::*;
+    use maka_agent_facts::executor::Output;
+
+    #[test]
+    fn model_transcript_masks_evidence_in_a_later_delta_at_its_original_offset() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE agent_memory_hidden_spans(namespace,fact,ordinal,start,end)")
+            .unwrap();
+        let owner = RunOwner {
+            deployment: uuid::Uuid::new_v4(),
+            namespace: maka_plugin_core::composition::InstanceId(vec![uuid::Uuid::new_v4()]),
+        };
+        let mut transcript = ExecutorTranscript::default();
+        let mut pieces = Some(Vec::new());
+        let run = RunId::new();
+        let task = ExternalTaskId::new();
+        for (index, text) in ["开头 ", "hidden visible"].into_iter().enumerate() {
+            let id = FactId::new();
+            let sequence = index as u64 + 1;
+            let record = RecordedFact {
+                schema_version: SCHEMA_VERSION,
+                id,
+                run,
+                revision: sequence,
+                at: UnixMillis(0),
+                fact: Fact::ExternalTaskObserved {
+                    task,
+                    model_time_ms: None,
+                    index: index as u64,
+                    output: Output::OutputDelta {
+                        message_id: "m".into(),
+                        text: text.into(),
+                    },
+                },
+            };
+            transcript.observe(sequence, &record, &mut pieces);
+            if index == 1 {
+                c.execute(
+                    "INSERT INTO agent_memory_hidden_spans VALUES(?,?,0,0,6)",
+                    rusqlite::params![serde_json::to_string(&owner).unwrap(), id.to_string()],
+                )
+                .unwrap();
+            }
+        }
+        transcript.mask_pieces(&c, &owner, pieces).unwrap();
+        assert_eq!(
+            transcript.text("m", false).unwrap().body.to_string(),
+            "开头 ****** visible"
+        );
     }
 }

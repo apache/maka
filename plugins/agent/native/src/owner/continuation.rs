@@ -53,7 +53,7 @@ impl Owner {
         };
         Ok(match self.continuation_readiness(source, parent).await? {
             ContinuationReadiness::Ready { source, .. } => ContinuationAvailability::Ready {
-                source: super::execution::project(&source),
+                source: self.execution_for_reader(&source, parent).await?,
             },
             ContinuationReadiness::Rejected(reason) => {
                 ContinuationAvailability::Rejected { reason }

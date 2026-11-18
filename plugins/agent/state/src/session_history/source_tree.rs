@@ -135,6 +135,13 @@ impl SourceTree {
                 "imported tool-result source is not the actual snapshot leaf",
             ));
         };
+        if source
+            .restricted_imported_parts(*message_ordinal, *message_ordinal)
+            .await?
+            .contains(&(*message_ordinal, *part_ordinal))
+        {
+            return Err(invalid("Archived output requires a fresh authorized read"));
+        }
         super::tool_result_source::ToolResultReader::imported_result(
             source,
             *message_ordinal,

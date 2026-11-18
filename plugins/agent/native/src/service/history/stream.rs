@@ -25,10 +25,26 @@ use maka_agent_facts::model::prompt_source::source::{
     json::{self, JsonKind, JsonValue},
 };
 use maka_agent_state::session_history::tool_result_source::{
-    ToolProjectionSource, ToolResultFields, ToolResultReader,
+    ToolProjectionSource, ToolResultFields, ToolResultReader, ToolResultSource,
 };
 use std::{io, sync::Arc};
 use tokio_util::sync::CancellationToken;
+
+struct FieldSource {
+    format: wire::SourceFormat,
+    bytes: SourceBytes,
+    indexed_field: Option<ProjectedField>,
+}
+
+impl FieldSource {
+    fn new(format: wire::SourceFormat, bytes: SourceBytes) -> Self {
+        Self {
+            format,
+            bytes,
+            indexed_field: None,
+        }
+    }
+}
 
 struct Budget(Arc<tokio::sync::Semaphore>);
 impl SourceBudget for Budget {
@@ -98,7 +114,7 @@ async fn content_source(
     display: bool,
     stop: &CancellationToken,
     budget: &Arc<dyn SourceBudget>,
-) -> Result<(wire::SourceFormat, SourceBytes), String> {
+) -> Result<FieldSource, String> {
     let reader = data::tool_reader(data, run, stop);
     if matches!(
         fact,
@@ -109,7 +125,7 @@ async fn content_source(
         if path.is_some_and(|path| !path.is_empty()) {
             return Err("agent_history_path_invalid".into());
         }
-        return Ok((
+        return Ok(FieldSource::new(
             wire::SourceFormat::Text,
             reader
                 .source(reference)
@@ -122,6 +138,7 @@ async fn content_source(
         .result(fact, reference, budget.clone())
         .await
         .map_err(|error| error.to_string())?;
+    let provider = matches!(selected, ToolResultSource::Provider(_));
     let source = result_value(
         selected,
         display,
@@ -135,7 +152,14 @@ async fn content_source(
         budget,
     )
     .await?;
-    selected_json(source, path, budget).await
+    let mut source = selected_json(source, path, budget).await?;
+    if provider && path.is_none_or(|path| path.is_empty()) {
+        source.indexed_field = Some(ProjectedField::json_value(
+            maka_agent_state::recall::Field::Result,
+            source.format == wire::SourceFormat::Text,
+        ));
+    }
+    Ok(source)
 }
 
 pub(super) async fn result_value(
@@ -144,8 +168,7 @@ pub(super) async fn result_value(
     optional_projection: bool,
     budget: &Arc<dyn SourceBudget>,
 ) -> Result<JsonSource, String> {
-    use maka_agent_state::session_history::tool_result_source::ToolResultSource;
-    if let ToolResultSource::Direct(source) = selected {
+    if let ToolResultSource::Direct(source) | ToolResultSource::Provider(source) = selected {
         return Ok(source);
     }
     let fields = selected
@@ -186,11 +209,11 @@ pub(super) async fn result_value(
         .map_err(|error| error.to_string())
 }
 
-pub(super) async fn selected_json(
+async fn selected_json(
     source: JsonSource,
     path: Option<&[wire::SourceSegment]>,
     budget: &Arc<dyn SourceBudget>,
-) -> Result<(wire::SourceFormat, SourceBytes), String> {
+) -> Result<FieldSource, String> {
     let mut value = json::inspect(&source, budget.clone())
         .await
         .map_err(|e| e.to_string())?;
@@ -225,7 +248,7 @@ pub(super) async fn selected_json(
     } else {
         (wire::SourceFormat::Json, value.source.into_bytes())
     };
-    Ok((format, bytes))
+    Ok(FieldSource::new(format, bytes))
 }
 
 pub(super) async fn write_bytes(
@@ -301,13 +324,13 @@ pub(super) async fn write_json(
     encoded
 }
 
-pub(super) async fn read_window(
+async fn read_window(
     bytes: SourceBytes,
     format: wire::SourceFormat,
     position: wire::SourcePosition,
     limit: usize,
     budget: &Arc<dyn SourceBudget>,
-) -> Result<(wire::SourceFormat, u64, u64, String), String> {
+) -> Result<source::RenderedExcerpt, String> {
     let total = measure(&bytes, budget).await?;
     let (start, end) = match position {
         wire::SourcePosition::Start => (0, total.min(limit as u64)),
@@ -460,14 +483,18 @@ pub(super) async fn media_metadata_from(
             .map(|metadata| metadata.map(|m| (m.image, m.images, m.is_error)))
             .map_err(|error| error.to_string());
     }
-    let budget = budget();
-    let Some(source) = returned_source(data, item, &budget, stop).await? else {
-        return Ok(None);
-    };
-    let optional_projection = matches!(item.recorded.fact, Fact::Cell { .. });
-    media_metadata_value(&source, optional_projection, &budget)
-        .await
-        .map(Some)
+    // Keep snapshot decoding off the stack of every live history row projection.
+    Box::pin(async {
+        let budget = budget();
+        let Some(source) = returned_source(data, item, &budget, stop).await? else {
+            return Ok(None);
+        };
+        let optional_projection = matches!(item.recorded.fact, Fact::Cell { .. });
+        media_metadata_value(&source, optional_projection, &budget)
+            .await
+            .map(Some)
+    })
+    .await
 }
 async fn media_metadata_value(
     source: &ToolResultFields,
@@ -583,7 +610,7 @@ async fn inline_image_reference(
     clippy::too_many_arguments,
     reason = "Field reading binds the exact history item, path, presentation mode, cancellation and source budget"
 )]
-pub(super) async fn field_source(
+async fn field_source(
     data: &data::DataSource,
     item: &maka_agent_state::session_history::source_tree::SourceItem,
     field: &projection::Field,
@@ -592,7 +619,7 @@ pub(super) async fn field_source(
     raw: bool,
     stop: &CancellationToken,
     budget: &Arc<dyn SourceBudget>,
-) -> Result<(wire::SourceFormat, SourceBytes), String> {
+) -> Result<FieldSource, String> {
     use maka_agent_state::session_history::source_tree::SourceItem;
     match (field, item, data) {
         (projection::Field::Receipt(reply), SourceItem::Canonical(item), _) => {
@@ -649,7 +676,10 @@ pub(super) async fn field_source(
                 if path.is_some_and(|path| !path.is_empty()) {
                     return Err("agent_history_path_invalid".into());
                 }
-                return Ok((wire::SourceFormat::Text, source.into_bytes()));
+                return Ok(FieldSource::new(
+                    wire::SourceFormat::Text,
+                    source.into_bytes(),
+                ));
             }
             if !selectors.is_empty() {
                 let keys: Vec<_> = selectors.iter().map(String::as_str).collect();
@@ -685,7 +715,7 @@ pub(super) async fn field_excerpt(
     display: bool,
     raw: bool,
     stop: &CancellationToken,
-) -> Result<(wire::SourceFormat, u64, u64, String), String> {
+) -> Result<source::RenderedExcerpt, String> {
     if matches!(
         field,
         projection::Field::Text(_) | projection::Field::Json(_)
@@ -693,9 +723,10 @@ pub(super) async fn field_excerpt(
         return source::excerpt_ref(field, path, position, limit);
     }
     let budget = budget();
-    let (format, bytes) =
-        field_source(data, item, field, path, display, raw, stop, &budget).await?;
-    read_window(bytes, format, position, limit, &budget).await
+    let source = field_source(data, item, field, path, display, raw, stop, &budget).await?;
+    let mut excerpt = read_window(source.bytes, source.format, position, limit, &budget).await?;
+    excerpt.indexed_field = source.indexed_field;
+    Ok(excerpt)
 }
 pub(super) async fn write_field(
     data: &data::DataSource,
@@ -714,9 +745,8 @@ pub(super) async fn write_field(
         projection::Field::Json(value) => write_json(value, writer, stop).await,
         field => {
             let budget = budget();
-            let (_, bytes) =
-                field_source(data, item, &field, None, true, false, stop, &budget).await?;
-            let mut cursor = bytes.open(budget.clone());
+            let source = field_source(data, item, &field, None, true, false, stop, &budget).await?;
+            let mut cursor = source.bytes.open(budget.clone());
             let mut buffer = budget
                 .allocate(32 * 1024)
                 .await

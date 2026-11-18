@@ -267,6 +267,18 @@ impl Statement for Write {
             } => (scope, registration, Some(body), Some(bytes), provenance),
             Self::Copy(copy) => {
                 let source = read::original(c, &copy.source)?;
+                if copy.recall {
+                    maka_event_log::connection::Query::execute(
+                        crate::memory::recall::MaterialAccess {
+                            scope: SessionScope {
+                                owner: copy.destination.owner.clone(),
+                                session: source.record.artifact.session_id.clone(),
+                            },
+                            artifact: source.record.artifact.id.clone(),
+                        },
+                        c,
+                    )?;
+                }
                 let record = PublishedArtifact {
                     artifact: copy.artifact,
                     payload: source.record.payload,

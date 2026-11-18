@@ -63,6 +63,7 @@ use uuid::Uuid;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct SelectedTool {
+    history_reader: Option<HistoryReader>,
     selection: ServiceTool,
     binding: String,
     pub(crate) discovery_group: crate::contract::DiscoveryToolGroup,
@@ -72,7 +73,17 @@ pub(crate) struct SelectedTool {
 /// authorized service slot. An admitted operation captures its own binding.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ServiceSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    history_reader: Option<HistoryReader>,
     selection: ServiceTool,
+}
+
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HistoryReader {
+    Other,
+    File,
+    Session,
 }
 
 /// Frozen declarations and binding evidence. These bytes are never live tool authority.
@@ -103,6 +114,7 @@ impl SelectedTool {
     }
     pub(crate) fn declaration(&self) -> ServiceSelection {
         ServiceSelection {
+            history_reader: self.history_reader,
             selection: self.selection.clone(),
         }
     }
@@ -114,11 +126,67 @@ impl SelectedTool {
     }
 }
 
+fn reads_agent_history(method: &str) -> bool {
+    matches!(
+        method,
+        "memory"
+            | "memories"
+            | "execution"
+            | "continuationAvailability"
+            | "work"
+            | "sessionRead"
+            | "history"
+            | "historyLandmarks"
+            | "historyPrompt"
+            | "historyRequests"
+            | "source"
+            | "search"
+            | "toolImage"
+            | "attachmentImage"
+    )
+}
+
 impl ServiceSelection {
     pub(crate) fn name(&self) -> &str {
         &self.selection.name
     }
 
+    pub(crate) fn history_reader(&self) -> Option<HistoryReader> {
+        use maka_plugin_core::contract::ServiceTarget;
+        // Older frozen selections could label these methods Other when given
+        // a built-in tool name. The original service target identifies them.
+        if matches!(&self.selection.target, ServiceTarget::Export { name } if name == "agent")
+            && matches!(
+                self.selection.method.as_str(),
+                "execution" | "continuationAvailability"
+            )
+        {
+            return Some(HistoryReader::Session);
+        }
+        self.history_reader.or_else(|| {
+            match (&self.selection.target, self.selection.method.as_str()) {
+                (ServiceTarget::Import { name }, "read") if name == "files" => {
+                    Some(HistoryReader::File)
+                }
+                (ServiceTarget::Export { name }, method)
+                    if name == "agent" && reads_agent_history(method) =>
+                {
+                    Some(HistoryReader::Session)
+                }
+                (_, method)
+                    if (self.selection.name == "Read"
+                        || maka_agent_facts::memory::is_recall_output(&self.selection.name))
+                        && (matches!(
+                            self.selection.input,
+                            ToolInput::Web | ToolInput::Skill | ToolInput::Shell
+                        ) || (method != "read" && !reads_agent_history(method))) =>
+                {
+                    Some(HistoryReader::Other)
+                }
+                _ => None,
+            }
+        })
+    }
     fn matches(&self, live: &SelectedTool) -> bool {
         let admitted = &self.selection;
         let current = &live.selection;
@@ -564,6 +632,15 @@ pub(crate) fn catalog(
             };
             let selected = SelectedTool {
                 discovery_group,
+                history_reader: if contract == &file_contract && selection.method == "read" {
+                    Some(HistoryReader::File)
+                } else if contract == &agent_contract && reads_agent_history(&selection.method) {
+                    Some(HistoryReader::Session)
+                } else if selection.name == "Read" || maka_agent_facts::memory::is_recall_output(&selection.name) {
+                    Some(HistoryReader::Other)
+                } else {
+                    None
+                },
                 selection: selection.clone(),
                 binding: binding.execution_basis().into(),
             };
@@ -1168,6 +1245,7 @@ mod tests {
         }))
         .unwrap();
         let mut live = SelectedTool {
+            history_reader: None,
             selection: serde_json::from_value(selection).unwrap(),
             discovery_group: crate::contract::DiscoveryToolGroup::Other,
             binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"

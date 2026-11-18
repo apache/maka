@@ -24,6 +24,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha384};
 use std::{collections::BTreeMap, time::Instant};
 
+pub type ConfigureConnection = fn(&Connection) -> Result<(), StoreError>;
+
 /// An immutable schema migration and its ledger identity.
 #[derive(Debug, Clone, Copy)]
 pub struct Migration {
@@ -33,6 +35,8 @@ pub struct Migration {
     pub description: &'static str,
     /// SQL whose exact bytes determine the migration checksum.
     pub sql: &'static str,
+    /// Register functions required by this schema on every writer, including reopen.
+    pub configure: Option<ConfigureConnection>,
 }
 
 /// Compute the SHA384 checksum recorded by the migration ledger.
@@ -48,6 +52,21 @@ pub fn checksum(sql: &str) -> Vec<u8> {
 /// Returns an error for dirty, unknown, or changed applied migrations, or when
 /// SQLite cannot execute or record a migration.
 pub fn run(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreError> {
+    use rusqlite::functions::FunctionFlags;
+    use unicode_normalization::UnicodeNormalization;
+
+    // Migrations and the triggers they install must normalize text identically.
+    connection.create_scalar_function(
+        "maka_nfc",
+        1,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| Ok(ctx.get::<String>(0)?.nfc().collect::<String>()),
+    )?;
+    for configure in migrations.iter().filter_map(|m| m.configure) {
+        configure(connection)?;
+    }
     connection.execute_batch("SAVEPOINT maka_schema_migrations")?;
     let result = apply(connection, migrations).and_then(|()| {
         connection.execute_batch("RELEASE maka_schema_migrations")?;
@@ -143,6 +162,7 @@ mod tests {
         version: 1,
         description: "base",
         sql: "CREATE TABLE migrated(value INTEGER);",
+        configure: None,
     };
 
     fn migrated_database() -> Connection {
@@ -160,6 +180,7 @@ mod tests {
                 version: 2,
                 description: "populate",
                 sql: "INSERT INTO migrated VALUES (7);",
+                configure: None,
             },
         ];
         run(&connection, &migrations).unwrap();
@@ -232,6 +253,7 @@ mod tests {
                     version: 2,
                     description: "broken",
                     sql: "INSERT INTO migrated VALUES(7); INSERT INTO absent VALUES(8);",
+                    configure: None,
                 },
             ],
         )

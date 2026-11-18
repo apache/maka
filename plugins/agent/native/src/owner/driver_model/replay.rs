@@ -32,7 +32,7 @@ use maka_agent_facts::{
     tool_call::ToolRejection,
     tool_output::AcceptedToolResult,
 };
-use maka_agent_state::fold::RunView;
+use maka_agent_state::{fold::RunView, memory::recall::ArchiveRestriction};
 use maka_model::prompt::{AssistantPart, ToolOutput};
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
 use serde_json::json;
@@ -115,6 +115,7 @@ pub(super) enum FailureNote {
 }
 
 pub(super) struct TailReplay<'a, 'source> {
+    aliases: std::collections::BTreeMap<String, crate::tools::HistoryReader>,
     driver: &'a DriverModel,
     target: super::ReplayTarget<'a>,
     failure_note: FailureNote,
@@ -147,8 +148,10 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         messages: &'a mut preparation::PromptBuilder,
         recorded: RecordedInputs,
         failure_note: FailureNote,
+        aliases: std::collections::BTreeMap<String, crate::tools::HistoryReader>,
     ) -> Self {
         Self {
+            aliases,
             driver,
             target,
             failure_note,
@@ -169,8 +172,10 @@ impl<'a, 'source> TailReplay<'a, 'source> {
     pub(super) fn apply<'b>(
         &'b mut self,
         fact: &'b RecordedFact,
+        restriction: Option<ArchiveRestriction>,
     ) -> Result<Option<BoxFuture<'b, Result<(), RunError>>>, RunError> {
         let Self {
+            aliases,
             driver,
             target,
             failure_note,
@@ -184,6 +189,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 RecordedInputs {
                     unfinished_provider_calls,
                     cells: original_cells,
+                    restricted_cells,
                     steering: steering_messages,
                     notifications: notification_facts,
                     step_purposes,
@@ -247,6 +253,26 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     if !notification_facts.insert((view.run, notice.id)) {
                         continue;
                     }
+                    if view.run != driver.execution.run_id
+                        && (restricted_cells.notifications.contains(&notice.id)
+                            || restricted_cells.includes(
+                                notice.cell,
+                                notice
+                                    .knowledge
+                                    .as_ref()
+                                    .map_or(notice.through, |knowledge| knowledge.through),
+                            ))
+                    {
+                        messages
+                            .append(Message::User {
+                                content: vec![maka_model::prompt::ContentPart::text(
+                                    FRESH_READ.to_owned(),
+                                )],
+                                provider_options: None,
+                            })
+                            .await?;
+                        continue;
+                    }
                     driver
                         .append_notification(
                             reader,
@@ -293,6 +319,34 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     return Ok(None);
                 }
                 Box::pin(async move {
+                    let redacted;
+                    let part = match (restriction, part) {
+                        (Some(ArchiveRestriction::Source), ModelPart::ToolCall { call }) => {
+                            redacted = ModelPart::ToolCall {
+                                call: ModelToolCall {
+                                    id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    input: maka_agent_facts::model::ToolInput::Json(
+                                        json!({"gap": "Historical tool arguments are restricted"}),
+                                    ),
+                                    provider_options: None,
+                                    provider_executed: call.provider_executed,
+                                },
+                            };
+                            &redacted
+                        }
+                        (Some(_), ModelPart::ToolResult { id, name, .. }) => {
+                            redacted = ModelPart::ToolResult {
+                                id: id.clone(),
+                                name: name.clone(),
+                                output: json!({"gap": FRESH_READ}),
+                                is_error: true,
+                                provider_options: None,
+                            };
+                            &redacted
+                        }
+                        _ => part,
+                    };
                     if !allowed_attempts.contains(attempt) {
                         assistant
                             .flush(view, prefix_attempt, current, messages)
@@ -336,16 +390,28 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                                 )
                             })?;
                         if tool.accepted.is_none() {
-                            let output = unaccepted_tool_output(
-                                driver,
-                                reader,
-                                view,
-                                original_cells,
-                                *attempt,
-                                tool,
-                                vision,
-                            )
-                            .await?;
+                            let output = if restriction.is_some()
+                                || (view.run != driver.execution.run_id
+                                    && sensitive_tool(
+                                        view,
+                                        tool,
+                                        aliases,
+                                        restricted_cells,
+                                        view.revision,
+                                    )) {
+                                ToolOutput::Json(json!({"gap": FRESH_READ}))
+                            } else {
+                                unaccepted_tool_output(
+                                    driver,
+                                    reader,
+                                    view,
+                                    original_cells,
+                                    *attempt,
+                                    tool,
+                                    vision,
+                                )
+                                .await?
+                            };
                             assistant.recovered_outputs.push(tool_message(call, output));
                         }
                     }
@@ -399,7 +465,23 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 {
                     *compaction_request = Some(tool.clone());
                 }
-                let output = if let Some(output) = driver
+                let output = if restriction.is_some()
+                    || (view.run != driver.execution.run_id
+                        && sensitive_tool(
+                            view,
+                            view.tools
+                                .get(&maka_agent_state::fold::tool_key(tool))
+                                .ok_or_else(|| {
+                                    RunError::ReconciliationRequired(
+                                        "historical result lost its tool call".into(),
+                                    )
+                                })?,
+                            aliases,
+                            restricted_cells,
+                            after,
+                        )) {
+                    ToolOutput::Json(json!({"gap": FRESH_READ}))
+                } else if let Some(output) = driver
                     .archived_tool_result(reader, view, after, fact.id, &fact.fact, &call, vision)
                     .await?
                 {
@@ -449,7 +531,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     messages
                         .append(Message::user(failed_turn_note(
                             view.spec.language,
-                            diagnostic.as_deref(),
+                            diagnostic.as_deref().filter(|_| restriction.is_none()),
                         )))
                         .await?;
                 }
@@ -476,6 +558,63 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             last_emitted_attempt: self.assistant.last_emitted_attempt,
         })
     }
+}
+
+const FRESH_READ: &str = "Archived output requires a fresh authorized read";
+
+fn sensitive_call(
+    name: &str,
+    input: Option<&serde_json::Value>,
+    aliases: &std::collections::BTreeMap<String, crate::tools::HistoryReader>,
+) -> bool {
+    let is_file = match aliases.get(name) {
+        Some(crate::tools::HistoryReader::Session) => return true,
+        Some(crate::tools::HistoryReader::Other) => return false,
+        Some(crate::tools::HistoryReader::File) => true,
+        None if maka_agent_facts::memory::is_recall_output(name) => return true,
+        None => name == "Read",
+    };
+    is_file
+        && input
+            .and_then(|v| v.get("path"))
+            .and_then(|p| p.as_str())
+            .is_some_and(maka_agent_facts::read::reads_history_resource)
+}
+
+pub(super) async fn sensitive_child(
+    reader: &HistorySource<'_>,
+    run: maka_agent_facts::durable::RunId,
+    name: &str,
+    input: &maka_agent_facts::durable::ContentRef,
+    aliases: &std::collections::BTreeMap<String, crate::tools::HistoryReader>,
+) -> Result<bool, RunError> {
+    let input = if aliases.get(name) == Some(&crate::tools::HistoryReader::File)
+        || (name == "Read" && !aliases.contains_key(name))
+    {
+        Some(reader.decode(run, input).await?)
+    } else {
+        None
+    };
+    Ok(sensitive_call(name, input.as_ref(), aliases))
+}
+
+fn sensitive_tool(
+    view: &RunView,
+    tool: &maka_agent_state::fold::Tool,
+    aliases: &std::collections::BTreeMap<String, crate::tools::HistoryReader>,
+    restricted: &super::recovered::RestrictedCells,
+    through: u64,
+) -> bool {
+    if sensitive_call(&tool.call.name, tool.call.input.as_json(), aliases) {
+        return true;
+    }
+    if tool.local_returned.is_some() {
+        return restricted
+            .returns
+            .contains(&maka_agent_state::fold::tool_key(&tool.key));
+    }
+    view.original_cell(tool)
+        .is_some_and(|cell| restricted.includes(cell.id, through))
 }
 
 async fn unaccepted_tool_output(
@@ -675,5 +814,95 @@ mod failed_turn_note_tests {
         assert!(note.starts_with("[Host] 这一轮失败，在此结束："), "{note}");
         assert!(note.ends_with('…'), "{note}");
         assert!(note.chars().count() < MAX_FAILED_TURN_DIAGNOSTIC_CHARS + 30);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sensitive_call;
+    use crate::tools::ServiceSelection;
+    use rusqlite::{Connection, params};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn legacy_search_aliases_preserve_ordinary_results_in_replay_and_archive() {
+        let db = Connection::open_in_memory().unwrap();
+        let migrations: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(maka_agent_state::MIGRATIONS)
+            .copied()
+            .collect();
+        let previous: Vec<_> = migrations
+            .iter()
+            .copied()
+            .filter(|m| m.version <= 64)
+            .collect();
+        maka_event_log::migration::run(&db, &previous).unwrap();
+        let blob = |value: &Value| {
+            let bytes = serde_json::to_vec(value).unwrap();
+            let digest = maka_agent_facts::artifact::content_digest(&bytes);
+            let id = maka_event_log::content::put(&db, &digest, &bytes).unwrap();
+            (id, digest)
+        };
+        let mut services = Vec::new();
+        for (name, target, kind, input) in [
+            ("SessionRead", "web", "import", "web"),
+            ("RecallMore", "skills", "import", "skill"),
+            ("FindMessages", "agent", "export", "json"),
+        ] {
+            services.push(json!({"selection":{"name":name,"description":"Search","method":"search",
+                "target":{"kind":kind,"name":target},"input":input,"result":"json","confirmation":"preapproved"}}));
+        }
+        let (_, selection) = blob(&json!({"services":services}));
+        let (spec, _) = blob(&json!({"toolSelection":{"digest":selection}}));
+        let seed = |run: &str, start: i64| {
+            db.execute("INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,1,'owner','chat',?)", params![run,spec]).unwrap();
+            for (i, service) in services.iter().enumerate() {
+                let name = service["selection"]["name"].as_str().unwrap();
+                let call = json!({"fact":{"part":{"call":{"name":name,"input":{"data":{"query":"notes"}}}}}});
+                for (seq, kind, payload, is_call) in [
+                    (start + 2 * i as i64, "model_observed", call, true),
+                    (
+                        start + 2 * i as i64 + 1,
+                        "local_tool_returned",
+                        json!({"fact":{}}),
+                        false,
+                    ),
+                ] {
+                    let fact = format!("fact-{seq}");
+                    let (id, _) = blob(&payload);
+                    db.execute(
+                        "INSERT INTO agent_facts VALUES(?,?,?,?,1,1,?)",
+                        params![seq, fact, run, seq, id],
+                    )
+                    .unwrap();
+                    db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source,tool_use_id)
+                        VALUES('owner','chat',?,?,1,?,'prefix',?,0,?,?,?)",params![seq,run,kind,is_call,fact,!is_call,name]).unwrap();
+                }
+            }
+        };
+        seed("before", 1);
+        maka_event_log::migration::run(&db, &migrations).unwrap();
+        seed("after", 7);
+        let restricted = db
+            .prepare("SELECT fact FROM agent_memory_recall_outputs ORDER BY fact")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(restricted, ["fact-12", "fact-6"]);
+        let aliases = services
+            .into_iter()
+            .map(|value| serde_json::from_value::<ServiceSelection>(value).unwrap())
+            .filter_map(|selection| {
+                selection
+                    .history_reader()
+                    .map(|kind| (selection.name().to_owned(), kind))
+            })
+            .collect();
+        assert!(!sensitive_call("SessionRead", None, &aliases));
+        assert!(!sensitive_call("RecallMore", None, &aliases));
+        assert!(sensitive_call("FindMessages", None, &aliases));
     }
 }

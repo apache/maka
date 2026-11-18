@@ -141,6 +141,7 @@ fn project(
     }
     let reference:ContentRef=c.query_row("SELECT x.content_sha256,length(x.payload) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.id=? AND f.run=?",params![fact.id.to_string(),fact.run.to_string()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))) .map(|(digest,bytes)|Ok::<_,StoreError>(ContentRef{digest,bytes:unsigned(bytes)?}))??;
     let mut message = Message {
+        fact: fact.id,
         message_id: fact.id.to_string(),
         position: RowPosition {
             source_sequence: sequence,
@@ -235,16 +236,7 @@ fn project(
                 });
             }
             ModelPart::Source { source, .. } => {
-                message.body = match source {
-                    maka_agent_facts::model::ModelSource::Url { url, title, .. } => title
-                        .as_ref()
-                        .map_or_else(|| url.clone(), |title| format!("[{title}]({url})")),
-                    maka_agent_facts::model::ModelSource::Document {
-                        title, filename, ..
-                    } => filename
-                        .as_ref()
-                        .map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
-                };
+                message.body = source.citation_text();
             }
             ModelPart::ToolCall { call } => {
                 message.role = Role::ToolCall;

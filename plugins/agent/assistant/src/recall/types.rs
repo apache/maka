@@ -25,8 +25,11 @@ use unicode_normalization::UnicodeNormalization;
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "RecallQuery")]
 pub struct Query {
-    #[schemars(length(min = 1), inner(length(min = 1)))]
+    /// Supply 1 to 32 search terms of at most 256 UTF-8 bytes each.
+    #[schemars(length(min = 1, max = 32), inner(length(min = 1)))]
     pub terms: Vec<String>,
+    /// Resume current memory facts after the last returned key.
+    pub facts_after: Option<u64>,
     /// An explicit caller-selected result budget; omission retains all matching results.
     #[schemars(range(min = 1))]
     pub limit: Option<usize>,
@@ -37,13 +40,19 @@ pub struct Query {
 }
 impl Query {
     pub fn validate(&mut self) -> Result<(), String> {
-        if self.terms.is_empty()
+        if !(1..=32).contains(&self.terms.len()) {
+            return Err("Recall requires 1 to 32 terms".into());
+        }
+        if self.terms.iter().any(|term| term.len() > 256) {
+            return Err("Each Recall term must fit in 256 UTF-8 bytes".into());
+        }
+        if self.facts_after.is_some_and(|n| n > 9_007_199_254_740_991)
             || self.limit.is_some_and(|n| n == 0)
             || self.since.zip(self.until).is_some_and(|(a, b)| a > b)
             || self.session_id.as_ref().is_some_and(|text| !nonempty(text))
         {
             return Err(
-                "Recall requires nonempty terms, a positive limit and valid Session/time bounds"
+                "Recall requires a safe facts_after cursor, a positive limit and valid Session/time bounds"
                     .into(),
             );
         }
@@ -54,7 +63,9 @@ impl Query {
             *term = term.trim().nfc().collect();
         }
         let mut seen = std::collections::BTreeSet::new();
-        self.terms.retain(|term| seen.insert(fold(term)));
+        // Keep non-ASCII variants that FTS5's unicode61 tokenizer can index separately.
+        self.terms
+            .retain(|term| seen.insert(term.to_ascii_lowercase()));
         Ok(())
     }
 }
@@ -62,8 +73,13 @@ impl Query {
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "RecallToolQuery")]
 pub struct ToolQuery {
-    #[schemars(length(min = 1), inner(length(min = 1)))]
+    /// Continue the current rendered result with the byte offset returned by the previous call.
+    pub output_offset: Option<usize>,
+    /// Supply 1 to 32 search terms of at most 256 UTF-8 bytes each.
+    #[schemars(length(min = 1, max = 32), inner(length(min = 1)))]
     pub terms: Vec<String>,
+    /// Resume current memory facts after the last returned key.
+    pub facts_after: Option<u64>,
     /// An explicit caller-selected result budget; omission retains all matching results.
     #[schemars(range(min = 1))]
     pub limit: Option<usize>,
@@ -80,6 +96,7 @@ impl ToolQuery {
     pub fn into_parts(self) -> Result<(Query, usize, usize), String> {
         let mut query = Query {
             terms: self.terms,
+            facts_after: self.facts_after,
             limit: self.limit,
             session_id: self.session_id,
             since: self.since,
@@ -92,6 +109,8 @@ impl ToolQuery {
 #[derive(Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct More {
+    /// Continue the current rendered result with the byte offset returned by the previous call.
+    pub output_offset: Option<usize>,
     #[schemars(length(min = 1))]
     pub session_id: String,
     #[schemars(length(min = 1))]
@@ -140,6 +159,8 @@ pub struct Passage {
 }
 #[derive(Serialize)]
 pub struct ResultSet {
+    pub facts: Vec<maka_agent_facts::memory::RecallFact>,
+    pub next_facts_after: Option<u64>,
     pub passages: Vec<Passage>,
     pub searched_every_session: bool,
     pub gaps: Vec<String>,
@@ -147,6 +168,15 @@ pub struct ResultSet {
 impl ResultSet {
     pub fn render(&self) -> String {
         let mut text = format!("Search complete: {}\n", self.searched_every_session);
+        for fact in &self.facts {
+            text.push_str(&format!(
+                "Memory fact: {}\n",
+                serde_json::to_string(fact).expect("serializable memory fact")
+            ));
+        }
+        if let Some(after) = self.next_facts_after {
+            text.push_str(&format!("Continue facts with facts_after={after}\n"));
+        }
         for gap in &self.gaps {
             text.push_str(&format!("{gap}\n"));
         }

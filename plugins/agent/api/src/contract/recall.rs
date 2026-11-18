@@ -23,6 +23,8 @@ pub type RecallQuery = maka_assistant::recall::search::Query;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentRecallPage")]
 pub struct RecallPage {
+    pub facts: Vec<maka_agent_facts::memory::RecallFact>,
+    pub next_facts_after: Option<u64>,
     pub titles: Vec<Session>,
     pub passages: Vec<RecallPassage>,
     pub complete: bool,

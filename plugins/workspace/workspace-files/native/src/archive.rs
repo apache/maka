@@ -104,7 +104,7 @@ pub(super) async fn read(
             )
             .await
         }
-        ToolResultSource::Direct(source) => {
+        ToolResultSource::Direct(source) | ToolResultSource::Provider(source) => {
             maka_agent_facts::read::json_page(
                 source,
                 tool_name,
@@ -119,5 +119,14 @@ pub(super) async fn read(
     if page.is_err() {
         cancelled(stop)?;
     }
-    page.map_err(failed)
+    let page = page.map_err(failed)?;
+    if !history
+        .restricted_archives(vec![item.recorded.id])
+        .await
+        .map_err(failed)?
+        .is_empty()
+    {
+        return Err(failed("Archived output has restricted memory evidence"));
+    }
+    Ok(page)
 }

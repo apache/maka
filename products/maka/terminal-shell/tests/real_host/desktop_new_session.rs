@@ -1738,14 +1738,30 @@ async fn desktop_recall_opens_passages_at_their_history_boundaries() {
     // Using the first result's fence for the second must fail the Host's exact row read.
     assert!(passages[1]["anchorPosition"]["sequence"].as_u64().unwrap() > fences[0]);
 
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let gate = ReplyGate::recall(fixture.directory.path(), fixture.address.clone());
+    let desktop = Desktop::open(&fixture, &gate.address).await;
     for (within, selected) in [(true, 0), (false, 1)] {
         let previous = desktop.platform.text_input_target();
         desktop.key("o", true);
         desktop.target_after(previous).await;
         desktop.paste("needle").await;
         if within {
+            let other = format!(
+                "Open matching passage in {}",
+                passages[1]["session"]["title"].as_str().unwrap()
+            );
+            desktop.control(&other).await;
+            desktop.artifact("recall-all-conversations");
+            gate.arm();
             desktop.press("This conversation").await;
+            desktop.held(&gate).await;
+            desktop
+                .until("a result outside the new scope remained visible", || {
+                    desktop.controls(&other).is_empty().then_some(())
+                })
+                .await;
+            desktop.artifact("recall-scope-change");
+            gate.release();
         }
         let title = passages[selected]["session"]["title"].as_str().unwrap();
         desktop

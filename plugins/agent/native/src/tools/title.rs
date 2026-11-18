@@ -17,6 +17,8 @@
  * under the License.
  */
 
+pub(crate) const RECALL_MATERIAL_PRESENTATION: &str = "maka.agent.Builtin@1/RecallMaterial";
+
 use maka_agent_facts::display::Text;
 use maka_agent_facts::read::{ReadInput, ReadRequest};
 use serde::Deserialize;

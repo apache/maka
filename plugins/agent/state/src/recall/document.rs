@@ -181,6 +181,7 @@ pub(crate) fn input_message(
         body.push_str(&directory_label(&directory.path));
     }
     Message {
+        fact: fact.id,
         message_id: id,
         position: RowPosition {
             source_sequence: sequence,
