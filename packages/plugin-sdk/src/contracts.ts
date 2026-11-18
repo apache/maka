@@ -174,6 +174,21 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'artifact',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'room',
                       },
                       messageId: {
@@ -383,6 +398,21 @@ export const contracts: {
             $defs: {
               AgentAttachmentImageSource: {
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'artifact',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -33354,7 +33384,7 @@ export const contracts: {
                 type: 'string',
               },
               path: {
-                $ref: '#/$defs/WorkspacePath',
+                $ref: '#/$defs/FileReadPath',
               },
               expectedVersion: {
                 type: ['string', 'null'],
@@ -33366,6 +33396,25 @@ export const contracts: {
             additionalProperties: false,
             required: ['sessionId', 'path'],
             $defs: {
+              FileReadPath: {
+                description:
+                  'A file selected for reading. Only workspace paths are accepted by editing APIs.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      absolute: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['absolute'],
+                  },
+                ],
+              },
               WorkspacePath: {
                 type: 'object',
                 properties: {
@@ -35518,6 +35567,59 @@ export const contracts: {
                     const: 'screen_recording',
                   },
                 ],
+              },
+            },
+          },
+          resources: {},
+        },
+        resolveFileLink: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentFileLinkRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              pathBytes: {
+                description: 'Exact percent-decoded Markdown path bytes.',
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'pathBytes'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'FileReadPath',
+            description:
+              'A file selected for reading. Only workspace paths are accepted by editing APIs.',
+            anyOf: [
+              {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              {
+                type: 'object',
+                properties: {
+                  absolute: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['absolute'],
+              },
+            ],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
               },
             },
           },

@@ -152,10 +152,9 @@ impl AssetSource {
                     .map_err(|_| "Invalid current file selector")?,
             )
             .map_err(|_| "Invalid current file selector")?;
-            source
-                .path
-                .validate()
-                .map_err(|_| "Invalid current file path")?;
+            if let maka_agent_api::contract::FileReadPath::Workspace(path) = &source.path {
+                path.validate().map_err(|_| "Invalid current file path")?;
+            }
             if source.session_id.is_empty() || source.expected_version.is_none() {
                 return Err("Invalid current file selector".into());
             }

@@ -742,7 +742,7 @@ export function PullRequestTab(props: {
                 tooltip={textTooltip(() => tr('Open on GitHub'))}
                 onPress={() => {
                   const url = detail()?.htmlUrl;
-                  if (url) void host.openLink(url);
+                  if (url) void host.openBrowser(url);
                 }}
                 style={{
                   width: 24,

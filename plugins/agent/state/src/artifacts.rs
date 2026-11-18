@@ -255,6 +255,22 @@ impl ArtifactStore {
             })
             .await
     }
+    pub async fn reference_chunk(
+        &self,
+        scope: SessionScope,
+        id: String,
+        offset: u64,
+        limit: u32,
+    ) -> Result<Option<ArtifactChunk>, StoreError> {
+        self.data
+            .query(read::ReferenceChunk {
+                scope,
+                id,
+                offset,
+                limit,
+            })
+            .await
+    }
     pub async fn chunk(
         &self,
         scope: impl Into<ArtifactReadScope>,

@@ -1024,6 +1024,14 @@ export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency =
 export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
 /**
+ * A file selected for reading. Only workspace paths are accepted by editing APIs.
+ */
+export type AgentReadFileInput_FileReadPath =
+  | AgentReadFileInput_WorkspacePath
+  | {
+      absolute: string;
+    };
+/**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
  */
@@ -3726,7 +3734,7 @@ export interface ServiceMethods {
        */
       input: {
         sessionId: string;
-        path: Runtime.WorkspacePath;
+        path: AgentReadFileInput_FileReadPath;
         expectedVersion?: string | null;
       };
       output: AgentReadFileOutput_AgentFileReadPart | null;
@@ -3799,6 +3807,24 @@ export interface ServiceMethods {
         grants: AgentRequestSystemPermissionOutput_AgentSystemPermissionState[];
         requestable: boolean;
       };
+    };
+    resolveFileLink: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        /**
+         * Exact percent-decoded Markdown path bytes.
+         */
+        pathBytes: string;
+      };
+      /**
+       * A file selected for reading. Only workspace paths are accepted by editing APIs.
+       */
+      output:
+        | Runtime.WorkspacePath
+        | {
+            absolute: string;
+          };
     };
     respond: {
       mode: 'mutation';
@@ -6083,6 +6109,9 @@ export interface AgentPublishCheckpointOutput_AgentHistoryCheckpointObject {
 export interface AgentPublishCheckpointOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning;
+}
+export interface AgentReadFileInput_WorkspacePath {
+  bytesBase64: string;
 }
 export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;

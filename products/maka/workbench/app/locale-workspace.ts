@@ -281,6 +281,11 @@ export const workspaceMessages = {
     '工作区预览不可用。',
     '工作區預覽無法使用。',
   ],
+  'This conversation cannot read that path.': [
+    'This conversation cannot read that path.',
+    '此会话无权读取这个路径。',
+    '此對話無權讀取這個路徑。',
+  ],
   'Image unavailable': ['Image unavailable', '图片不可用', '圖片無法使用'],
   'Image viewport': ['Image viewport', '图片视口', '圖片檢視區'],
   'Jump to turn: {label}': ['Jump to turn: {label}', '跳转到轮次：{label}', '跳至輪次：{label}'],
