@@ -25,6 +25,7 @@ import {
   effect,
   inputAction,
   platform,
+  reduceMotion,
   Scroll,
   signal,
   Text,
@@ -440,6 +441,8 @@ function WriteFields(
   );
 }
 
+const useToolShimmer = () => platform.idiom !== 'terminal' && !reduceMotion();
+
 /** A tool whose call is still streaming in has no record to open yet. */
 export function LiveToolRow(props: { activity(): ToolActivity }) {
   const phase = () =>
@@ -457,13 +460,13 @@ export function LiveToolRow(props: { activity(): ToolActivity }) {
       terminalInset={controlStyle.paddingHorizontal}
       onPress={() => {}}
       trailing={
-        <If when={platform.idiom === 'terminal'}>
+        <If when={!useToolShimmer()}>
           <Status label={phase()} kind={props.activity().phase} />
         </If>
       }
     >
       <If
-        when={platform.idiom !== 'terminal'}
+        when={useToolShimmer()}
         else={<Text style={{ ...disclosureTitleStyle, color: C.secondary }}>{title()}</Text>}
       >
         <ShimmerText text={title()} style={disclosureTitleStyle} />
@@ -680,7 +683,7 @@ export function ToolCard(props: {
                 </If>
               }
             >
-              <If when={platform.idiom === 'terminal'}>
+              <If when={!useToolShimmer()}>
                 <Status label={progressLabel()} kind={progress() ?? 'running'} />
               </If>
             </If>
@@ -691,7 +694,7 @@ export function ToolCard(props: {
           style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 }}
         >
           <If
-            when={platform.idiom !== 'terminal' && progress() != null}
+            when={progress() != null && useToolShimmer()}
             else={
               <Text
                 style={[
