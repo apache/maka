@@ -65,11 +65,13 @@ impl Owner {
                 choices.push(ModelChoice {
                     aliases: Vec::new(),
                     selection: BackendPreference::Model {
+                        service_tier: None,
                         connection_id: row.connection_id.clone(),
                         model_id: id.clone(),
                         thinking_level: None,
                     },
                     source_name: row.name.clone(),
+                    service_tiers: metadata.info.service_tiers,
                     label: metadata.info.display_name.unwrap_or_else(|| id.clone()),
                     thinking_levels: metadata.thinking_levels.into_iter().map(level).collect(),
                     default_thinking_level: metadata.default_thinking_level.map(level),
@@ -132,6 +134,7 @@ impl Owner {
                         ExecutorError::Provider(format!("agent_external_catalog_invalid: {error}"))
                     })?;
                 choices.push(ModelChoice {
+                    service_tiers: Vec::new(),
                     selection: external_selection(runtime_id, None, None),
                     aliases: Vec::new(),
                     source_name: format!("Native CLI · {}", native.name()),
@@ -161,6 +164,7 @@ impl Owner {
                     })?
                     .unwrap_or_default();
                 choices.push(ModelChoice {
+                    service_tiers: Vec::new(),
                     selection: external_selection(runtime_id, Some(id), None),
                     aliases: model
                         .get("aliases")

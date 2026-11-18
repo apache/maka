@@ -46,7 +46,10 @@ import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workben
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
 import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
-import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
+import {
+  backendName,
+  nativeModelSelection,
+} from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
 import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -1629,7 +1632,7 @@ export function createConversationUi(
                 boundaryRevision: observed.boundaryRevision,
                 binding: observed.binding,
               },
-              model: { connectionId: backend.connectionId, modelId: backend.modelId },
+              model: nativeModelSelection(backend),
               thinkingLevel: backend.thinkingLevel ?? null,
             },
           });

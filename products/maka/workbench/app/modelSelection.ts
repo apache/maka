@@ -22,6 +22,7 @@ import type { UiText } from './text';
 import type {
   AgentBackendPreference,
   AgentModelChoice,
+  ModelSelection,
   ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 
@@ -46,11 +47,20 @@ export const routeKey = (backend: ModelBackend): string =>
 export const sameRoute = (left: BackendIdentity, right: BackendIdentity): boolean =>
   left === null || right === null ? left === right : routeKey(left) === routeKey(right);
 
+export const availableSpeeds = (choice: ModelChoice | null) =>
+  choice?.serviceTiers?.filter((tier) => tier.id !== 'default') ?? [];
+
 export function selectionForChoice(
   backend: BackendIdentity,
   choice: ModelChoice,
 ): ModelBackend | null {
   if (!backend) return null;
+  if (backend.kind === 'model' && sameRoute(backend, choice.selection)) {
+    return backend.serviceTier &&
+      !availableSpeeds(choice).some((tier) => tier.id === backend.serviceTier)
+      ? { ...backend, serviceTier: null }
+      : backend;
+  }
   const matched = [choice.selection, ...(choice.aliases ?? [])].find((selection) =>
     sameRoute(backend, selection),
   );
@@ -63,8 +73,26 @@ export const thinkingLevel = (backend: BackendIdentity): string | null =>
   (backend?.kind === 'model' ? backend.thinkingLevel : backend?.selection.settings.thinkingLevel) ??
   null;
 
+export function nativeModelSelection(
+  backend: Extract<ModelBackend, { kind: 'model' }>,
+): ModelSelection {
+  const { connectionId, modelId, serviceTier } = backend;
+  return serviceTier ? { connectionId, modelId, serviceTier } : { connectionId, modelId };
+}
+
+export const serviceTier = (backend: BackendIdentity): string | null =>
+  backend?.kind === 'model' ? (backend.serviceTier ?? null) : null;
+
+export function speedCaption(backend: BackendIdentity, details: ModelDetails): string {
+  const tier = serviceTier(backend);
+  if (!tier || details.kind !== 'ready' || !sameRoute(backend, details.choice.selection)) return '';
+  return availableSpeeds(details.choice).find((item) => item.id === tier)?.name ?? '';
+}
+
 export const sameBackend = (left: BackendIdentity, right: BackendIdentity): boolean =>
-  sameRoute(left, right) && thinkingLevel(left) === thinkingLevel(right);
+  sameRoute(left, right) &&
+  thinkingLevel(left) === thinkingLevel(right) &&
+  serviceTier(left) === serviceTier(right);
 
 export const backendName = (backend: ModelBackend): string =>
   backend.kind === 'model'

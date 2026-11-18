@@ -366,10 +366,7 @@ impl Owner {
                     let sandbox_ceiling = Some(view.spec.permission_ceiling.sandbox);
                     match (&basis.model, &basis.executor) {
                         (Some(accepted), None) => {
-                            let model = ModelSelection {
-                                connection_id: accepted.binding.connection_id.clone(),
-                                model_id: accepted.binding.model.clone(),
-                            };
+                            let model = accepted.selection();
                             let thinking_level = accepted.thinking_level;
                             let effect = match effect {
                                 Target::Discovery => {

@@ -1167,9 +1167,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -1416,6 +1419,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -1834,9 +1840,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -2284,9 +2293,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -2765,9 +2777,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -3014,6 +3029,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -4527,9 +4545,12 @@ export const contracts: {
             $defs: {
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -6628,9 +6649,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -7460,6 +7484,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -7821,9 +7848,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -8070,6 +8100,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -8325,9 +8358,12 @@ export const contracts: {
             $defs: {
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -8507,9 +8543,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -8793,9 +8832,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -11733,9 +11775,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -11982,6 +12027,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -12513,9 +12561,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -12763,6 +12814,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -12976,9 +13030,12 @@ export const contracts: {
             $defs: {
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -19395,9 +19452,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -19644,6 +19704,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -20592,9 +20655,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -20841,6 +20907,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -22824,9 +22893,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -23073,6 +23145,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -27791,9 +27866,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -28040,6 +28118,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -29684,9 +29765,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -29933,6 +30017,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -30181,6 +30268,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -30296,6 +30386,12 @@ export const contracts: {
               AgentModelChoice: {
                 type: 'object',
                 properties: {
+                  serviceTiers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelServiceTier',
+                    },
+                  },
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
                   },
@@ -30326,6 +30422,18 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
               },
+              ModelServiceTier: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'name'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -30344,6 +30452,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -30539,6 +30650,12 @@ export const contracts: {
               AgentModelChoice: {
                 type: 'object',
                 properties: {
+                  serviceTiers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelServiceTier',
+                    },
+                  },
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
                   },
@@ -30569,6 +30686,18 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
               },
+              ModelServiceTier: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'name'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -30587,6 +30716,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -30969,9 +31101,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -31218,6 +31353,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -32140,9 +32278,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -32281,9 +32422,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -34412,9 +34556,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -34661,6 +34808,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -35408,9 +35558,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -37715,6 +37868,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -38620,9 +38776,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -39056,9 +39215,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -39748,9 +39910,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -40330,6 +40495,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -40640,9 +40808,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -40889,6 +41060,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -41374,6 +41548,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -42001,6 +42178,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -42675,6 +42855,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -43023,9 +43206,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -43272,6 +43458,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -43697,6 +43886,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -44041,9 +44233,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -44281,6 +44476,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -45703,6 +45901,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -47528,6 +47729,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -48274,9 +48478,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -48523,6 +48730,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -48891,6 +49101,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -50867,9 +51080,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -51079,9 +51295,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -53038,6 +53257,12 @@ export const contracts: {
               AgentModelChoice: {
                 type: 'object',
                 properties: {
+                  serviceTiers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelServiceTier',
+                    },
+                  },
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
                   },
@@ -53068,6 +53293,18 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
               },
+              ModelServiceTier: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'name'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -53086,6 +53323,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -53492,9 +53732,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -54184,9 +54427,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -67355,9 +67601,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -68619,9 +68868,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,

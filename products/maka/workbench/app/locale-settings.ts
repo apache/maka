@@ -841,6 +841,7 @@ export const settingsMessages = {
   'Read only or private': ['Read only or private', '只读或私有', '唯讀或私有'],
   'Reading plugins…': ['Reading plugins…', '正在读取插件…', '正在讀取外掛…'],
   'Reading preferences…': ['Reading preferences…', '正在读取偏好…', '正在讀取偏好…'],
+  Speed: ['Speed', '速度', '速度'],
   'Reasoning effort': ['Reasoning effort', '推理强度', '推理強度'],
   'Recover original settings actions': [
     'Recover original settings actions',

@@ -897,6 +897,7 @@ export type AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: ThinkingLevel | null;
     }
   | {
@@ -6072,6 +6073,7 @@ export interface AgentModelsCursor {
   offset: number;
 }
 export interface AgentModelChoice {
+  serviceTiers?: ModelServiceTier[];
   selection: AgentBackendPreference;
   /**
    * Previously published selections, including their implied thinking level.
@@ -6081,6 +6083,11 @@ export interface AgentModelChoice {
   label: string;
   thinkingLevels: string[];
   defaultThinkingLevel?: string | null;
+}
+export interface ModelServiceTier {
+  id: string;
+  name: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentExecutorSelection {
   executor: string;
@@ -6461,9 +6468,10 @@ export interface AgentAnswerPage {
   next?: AgentAnswerCursor | null;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;

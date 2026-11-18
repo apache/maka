@@ -141,6 +141,14 @@ impl Provider for Codex {
                 .and_then(|c| c.parallel_tool_calls)
                 .unwrap_or(true);
             let mut options = json!({"openai":{"store":false,"parallelToolCalls":parallel}});
+            if let Some(tier) = request.service_tier {
+                if !info.service_tiers.iter().any(|item| item.id == tier) {
+                    return Err(Error::Invalid(format!(
+                        "unsupported subscription service tier: {tier}"
+                    )));
+                }
+                options["openai"]["serviceTier"] = json!(tier);
+            }
             if let Some(level) = level {
                 options["openai"]["reasoningEffort"] = match level {
                     ThinkingLevel::Off => json!("none"),
@@ -291,6 +299,7 @@ impl Provider for Codex {
     fn verify(&self, request: Verification, context: Context) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             self.resolve(Resolve {
+                service_tier: None,
                 connection: request.connection.clone(),
                 model: request.model.clone(),
                 overrides: request.overrides,

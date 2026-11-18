@@ -29,7 +29,7 @@ mod model_catalog;
 mod model_info;
 mod model_override;
 pub use model_catalog::ModelCatalogEntry;
-pub use model_info::{ImageInput, ModelCapabilities, ModelInfo};
+pub use model_info::{ImageInput, ModelCapabilities, ModelInfo, ModelServiceTier};
 mod model_validation;
 pub mod policy;
 pub use model_override::{
@@ -101,10 +101,12 @@ pub struct ConnectionVersionBasis {
     pub revision: u64,
 }
 
-/// Stable model identity, resolved from current connection settings at admission.
+/// Selected model and optional service tier, resolved from the connection at admission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     #[schemars(length(min = 1))]
     pub connection_id: String,
     #[schemars(length(min = 1))]

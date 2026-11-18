@@ -70,6 +70,8 @@ impl ExecutionRoute {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AcceptedModel {
     pub binding: ModelBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     pub thinking_level: Option<ThinkingLevel>,
     /// Execution policy is captured at message admission. Later model settings
     /// do not reinterpret queued work.
@@ -91,6 +93,14 @@ pub(crate) struct AcceptedModel {
     body_overlay: Option<Value>,
 }
 impl AcceptedModel {
+    pub(crate) fn selection(&self) -> ModelSelection {
+        ModelSelection {
+            connection_id: self.binding.connection_id.clone(),
+            model_id: self.binding.model.clone(),
+            service_tier: self.service_tier.clone(),
+        }
+    }
+
     pub(crate) fn same_execution_route(&self, current: &Self) -> bool {
         self.binding.connection_id == current.binding.connection_id
             && self.binding.model == current.binding.model
@@ -243,6 +253,7 @@ impl Source {
                 &definition,
                 row,
                 &selection.model_id,
+                selection.service_tier.as_deref(),
                 thinking_level,
                 row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id)),
             ).await?;
@@ -261,6 +272,7 @@ impl Source {
                 credentials,
                 accepted: AcceptedModel {
                     public_model,
+                    service_tier: selection.service_tier,
                     editing_tools: Some(editing_tools(row, &selection.model_id, &model.base_url)),
                     tool_mode: ToolMode::from_override(
                         row.model_overrides
@@ -569,6 +581,7 @@ impl Source {
             &self.definition,
             row,
             &self.accepted.binding.model,
+            self.accepted.service_tier.as_deref(),
             self.accepted.thinking_level,
             self.accepted.model_override.as_ref(),
         )
@@ -604,6 +617,7 @@ impl Source {
                         &self.definition,
                         &material.connection,
                         &self.accepted.binding.model,
+                        self.accepted.service_tier.as_deref(),
                         Some(level),
                         self.accepted.model_override.as_ref(),
                     )
@@ -661,6 +675,7 @@ pub(crate) async fn candidate_editing_tools(
         &definition,
         row,
         &selection.model_id,
+        selection.service_tier.as_deref(),
         thinking_level,
         row.model_overrides
             .as_ref()
@@ -688,11 +703,13 @@ async fn resolve(
     definition: &Definition,
     row: &maka_agent_facts::configuration::ConnectionCatalogEntry,
     model: &str,
+    service_tier: Option<&str>,
     thinking_level: Option<ThinkingLevel>,
     overrides: Option<&ModelOverride>,
 ) -> Result<Model, RunError> {
     definition
         .prepare(Resolve {
+            service_tier: service_tier.map(str::to_owned),
             connection: connection(row),
             model: row
                 .models

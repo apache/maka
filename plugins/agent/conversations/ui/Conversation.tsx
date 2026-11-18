@@ -170,6 +170,7 @@ import {
   selectionForChoice,
   sameBackend,
   routeKey,
+  nativeModelSelection,
   backendName,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import type {
@@ -2805,7 +2806,7 @@ export function Conversation(props: ConversationProps) {
         model: backend.modelId,
       });
     return {
-      model: { connectionId: backend.connectionId, modelId: backend.modelId },
+      model: nativeModelSelection(backend),
       thinkingLevel: backend.thinkingLevel ?? null,
     };
   };

@@ -34,6 +34,7 @@ fn preset_storage_isolates_agent_scopes_and_checks_versions_at_commit() {
         description: "Reviews changes".into(),
         instruction: String::new(),
         model: ModelSelection {
+            service_tier: None,
             connection_id: "connection".into(),
             model_id: "model".into(),
         },

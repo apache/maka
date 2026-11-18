@@ -83,6 +83,8 @@ impl Descriptor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Resolve {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     pub connection: Connection,
     pub model: ModelInfo,
     pub overrides: Option<ModelOverride>,

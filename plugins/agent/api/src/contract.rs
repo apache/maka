@@ -584,6 +584,8 @@ pub use maka_agent_facts::executor::BackendPreference;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentModelChoice")]
 pub struct ModelChoice {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<maka_agent_facts::configuration::ModelServiceTier>,
     pub selection: BackendPreference,
     /// Previously published selections, including their implied thinking level.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
