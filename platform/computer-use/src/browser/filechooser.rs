@@ -1056,3 +1056,6 @@ impl Browsers {
         result
     }
 }
+
+#[cfg(test)]
+mod tests;
