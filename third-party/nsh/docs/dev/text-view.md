@@ -13,7 +13,7 @@ colored with the theme's tokens; the app restyles each part over it.
 | `document.rs` | The document model (`Document`, `Block`, `Inline`, `CodeBlock`, `Table`, `Image`, `CustomNode`, ...): serde data, JSON in JS, its TypeScript declarations (`TextViewDocument`, `TextViewBlock`, ...) |
 | `parts.rs` | The parts the app styles: one `parts!` list makes `TextViewClasses`, `TextViewStyles` (each a `PartStyle`, a `Style` declared `StyleProp<TextStyle>`, since most parts are texts) and `TextViewPart`; `TextViewParts` (context): typed `StyleRefinement` functions by part for Rust views |
 | `extension.rs` | `MarkdownOptions`, `MarkdownExtension` (declared syntax), `MarkdownPlugin` / `MarkdownPlugins` (Rust), `Parser` |
-| `markdown/` | Markdown into the model (markdown-rs's mdast); `container.rs`: `:::` containers, split out before parsing (markdown-rs has no such syntax); `streaming.rs`: streaming repair; `cjk.rs`: emphasis beside CJK text read as the CJK-friendly amendment to CommonMark reads it (`**涨幅：**5%` is bold), which markdown-rs does not; `autolink.rs`: bare URLs end where CJK text or a curly quote starts (`https://example.com。下一句` links only the URL); `offsets.rs`: what is inserted before parsing taken out of the tree again, so positions (and a plugin's `ParseContext::source`) are the text given; `latex.rs`: TeX's `\(…\)` and `\[…\]` read as formulas, escaped brackets that hold a reference number or CJK words (`\[1\]\[3\]`) kept as text |
+| `markdown/` | Markdown into the model (markdown-rs's mdast); `incremental.rs`: a text that grew at its end read from where it can still change ("Streaming"); `container.rs`: `:::` containers, split out before parsing (markdown-rs has no such syntax); `streaming.rs`: streaming repair; `cjk.rs`: emphasis beside CJK text read as the CJK-friendly amendment to CommonMark reads it (`**涨幅：**5%` is bold), which markdown-rs does not; `autolink.rs`: bare URLs end where CJK text or a curly quote starts (`https://example.com。下一句` links only the URL); `offsets.rs`: what is inserted before parsing taken out of the tree again, so positions (and a plugin's `ParseContext::source`) are the text given; `latex.rs`: TeX's `\(…\)` and `\[…\]` read as formulas, escaped brackets that hold a reference number or CJK words (`\[1\]\[3\]`) kept as text |
 | `html/` | HTML into the model (html5ever, as a reader mode reads a page); `ELEMENTS`: HTML's element names, outside which a tag in Markdown is text (`<US tech>`) |
 | `tex_text.rs` | A formula's TeX as plain text, which a terminal shows when the app has no `renderMath` |
 | `common.rs` | What both parsers share: `pattern` extensions on inline content, headings' anchors |
@@ -23,12 +23,22 @@ colored with the theme's tokens; the app restyles each part over it.
 ## How it works
 
 - **Parsed in Rust, once per change.** One `computed` reads `markdown`, else `html`, else `document`, with `options`,
-  `extensions` and the `MarkdownPlugins` of the context, into a `Document`. JS only passes strings (or the `document`
-  JSON); parsing never runs in QuickJS. The `Parser` is public, so Rust code reads documents without a view.
+  `extensions` and the `MarkdownPlugins` of the context, into a document. JS only passes strings (or the `document`
+  JSON); parsing never runs in QuickJS. The `Parser` is public, so Rust code reads documents without a view. Markdown
+  that grew at its end is read from where it can still change ("Reading only what can change", below); the view
+  holds its blocks shared (`Parsed`, `SharedBlock`: an `Rc` each), so the document's and the rows' comparisons are
+  of pointers for the blocks kept.
+  Markdown is read to a depth (32 levels of blocks and inline content): what lies deeper is its text, gathered without
+  recursion, and markdown-rs's tree, as deep as the input nests, is dropped without it (`mdast_tree.rs`, which
+  `RichEditor`'s Markdown format uses too), so a reply of thousands of nested quotes or lists cannot run the stack
+  out. Streaming repair removes trailing marker runs (`a * * *`) in a loop for the same reason.
 - **Blocks are rows of an `Each`, keyed by position and kind** (`(index, block.kind())`). A streamed reply grows at its
   end: the blocks before it parse to equal values and keep their nodes, the block being written keeps its row (same
   position, same kind) and only that row is made again. A block that changes kind mid-stream (a paragraph becoming a
-  table once its delimiter row arrives) gets a new row. Footnotes follow the blocks in one region of their own.
+  table once its delimiter row arrives) gets a new row. A row's item (`Row`) is its block (shared), its position,
+  what comes before it (a heading's room above it) and whether it is the last (the caret's), so a row hears of a
+  change through its own item alone and an update runs no memo per row. Footnotes follow the blocks in one region of
+  their own.
 - **Built on `Text`** (`text.md`): every paragraph, heading, table cell and code block is one native text
   block, so wrapping, font scale, selection, span backgrounds (inline code), pressable
   spans (links) and inline attachments (images, inline custom nodes, the caret) are the text element's, with nothing of
@@ -116,6 +126,15 @@ Tailwind's `text-*` classes do. A node with several parts (`heading` then `headi
 order and their styles merged, later parts winning. The full list is `parts.rs`; a new part is one line of `parts!`.
 Rust views also style parts with typed styles: `provide_context(TextViewParts::new().part(TextViewPart::Code, |s| ..))`
 refines a part's `StyleRefinement` (theme colors stay adaptive) before the app's `classes` and `styles` apply.
+
+## Annotated code
+
+A document's `CodeBlock` can carry `id` (the app's, handed back with its actions in `onCodeBlockAction`), `content`
+(the code as inline content: the app's annotations) and `wrap` (fit the code to the view instead of scrolling it
+sideways; default false). `content` shows in place of the highlighted code only when its plain text is `code`, so
+what shows, what is selected and what copying takes stay the same text; other content is ignored with a warning
+(`view.rs` `annotated`). Annotations are ordinary inlines: emphasis, highlights, or custom nodes without
+`renderCustom`, shown as their content in the `custom` part, so they wrap and select with the code.
 
 ## Syntax highlighting
 
@@ -222,6 +241,69 @@ now, a rule, an item or text later), a fence's opening line and the start of its
 (`a*b`) is never closed. So a reply never flashes literal `**`
 or `[` while the next chunk is on its way. The repair is a `Cow`: text with nothing open is parsed as it is.
 
+### Reading only what can change
+
+A reply streamed in N updates would be parsed N times at a growing length. Each `TextView` keeps what it read of
+its `markdown` instead (`markdown/incremental.rs`, `Incremental`: the text, a boundary in it, the blocks before the
+boundary and the anchors of their headings): when the next text starts with the last one and `options`, `extensions`
+and the plugins are the same, only the text from the boundary on is repaired, rewritten (TeX), parsed and converted,
+and the blocks before it are the ones made earlier. With or without `options.streaming`; the document is the one
+`Parser::markdown` makes of the whole text, which stays the reference (the module's tests read every prefix of their
+documents both ways, in steps of several sizes, and random documents).
+
+The boundary moves to the start of a line when all of these hold:
+
+- the line before it is blank, and the scans that read lines with a state of their own are there in the state they
+  start a text in: the streaming repair's (outside fenced code and `$$`) and the TeX rewrite's (outside fenced
+  code). Both report those lines (`repair_tail`, `rewrite_blanks`), so the tail is repaired and rewritten as the end
+  of the whole text is;
+- the line has ended, shows text and is as written (the repair changed nothing up to its end): what a line means is
+  settled when it ends, not while its characters arrive (`#` is a heading, `#a` goes on with the paragraph above);
+- in the tail's syntax tree a block of the top level starts on that line and every block before it ends before it,
+  so a blank line inside a list, a quote, fenced code, a formula, an HTML block or indented code is no boundary;
+- the block before it is a paragraph. markdown-rs carries state from line to line that a blank line does not always
+  clear, and a block read after it is then not read as the first block of a text is: a list item, and a quote whose
+  paragraph went on without its `>`, are closed only by the first line that does not go on with them, which is then
+  read as a line that might have (it starts no table and underlines no heading, an HTML block ends at another line,
+  what may interrupt its paragraph differs); a row of cells cut short by a quote (`| a |` then `>`) leaves the quote
+  open across the code, headings and rules after it. A paragraph of the top level is where this ends, so the
+  boundary waits for the block after the next paragraph: the tail is a few blocks, not one;
+- no HTML element is open across it: `<details>` on lines of its own takes the blocks up to its closing tag as its
+  content when that arrives, so nothing after a tag still waiting for one is final.
+
+The whole text is parsed, as before, when a later line can change any block or the parser reads the whole source:
+
+| When | Until |
+|---|---|
+| A link or footnote definition is in the text (references before it resolve, footnotes are numbered by first reference) | The text is replaced (a definition in the block still being written may yet stop being one: then the boundary moves again) |
+| Plugins (`ParseContext::source`, positions in the whole text), a declared `:::` container, `options.mdx` | They are gone |
+| Front matter is open (`---` first with `options.frontmatter`, its closing line not arrived) | It closes: nothing is kept before |
+| The repair holds back a line at the start of the tail (it then repairs the block before the boundary) | That update only |
+| The text does not start with the last one (replaced, edited, shorter), or `options` / `extensions` changed | That update: reading starts over from it |
+
+A text with definitions is still parsed once per update, never twice. A tree read from the text's start (the
+first set, a replaced text, and every update while nothing is kept) is the whole text's, definitions included: it
+is converted as it is, footnotes too. A definition that arrives in a tail drops what was kept and has the whole
+text read from its start, in that update and the ones after it.
+
+So that the tail is not read first, only for its tree to be dropped, a tail with a line that looks like a
+definition is not read at all (`may_define`): outside fenced code, where a block can start (after a blank line,
+code, a heading or a rule, at an item's or an interrupting quote's start; a footnote's anywhere), a label and a
+colon, and after a link's a destination with at most a title behind it. This is a guess that only saves time: the
+tree alone says whether there is a definition, and a tail whose definition the guess missed is read, then the whole
+text, with the same document. It is narrow on purpose. `]:` is all over code and prose (`if seen[key]:`,
+`[12:00]: build started`, a list of sources under a paragraph's first line), and taking any `]:` for a definition
+reads every such reply whole on each update.
+
+A reply that ends in one large block (a long table, list or code block) has that block after the boundary, so it
+is the part parsed again on each update: the blocks before it are still kept. So is a reply with no paragraph for a
+long stretch (lists, quotes or code one after another): the boundary stays after its last paragraph.
+
+A long text given at once (a file opened, a reply shown whole) is read the same way, a part at a time
+(`parse_long`), because one parse of a whole text grows faster than the text does. The document is the one a single
+parse makes, and the module's tests hold the two to each other. A text the boundary cannot cross (one long table,
+list or code block) is read about as fast as by one parse; a text with definitions is read whole.
+
 ## HTML
 
 `html/` reads fragments and whole pages (their body) through html5ever, so unclosed and misplaced tags build the tree a
@@ -264,11 +346,18 @@ module, which has everything.
 
 ## Performance
 
-- The whole text is parsed again on each change (one `computed`); parsing is Rust and linear, and the rows that did
-  not change make no mount items. A streamed reply of N chunks costs N parses of a growing text (no incremental
-  parse); a baseline belongs in `performance.md` once measured.
-- Rows are made again only when their value changes (`Each` with the position and kind as the key, the block as the
-  value), and render functions only when their value changes.
+- Markdown that grows at its end is read from the last boundary on ("Reading only what can change"): an update
+  parses the blocks since the last paragraph, not the text before them (about 0.04 ms for a typical reply, at 20 KB
+  as at 40 KB), and compares the kept blocks by pointer. What still grows with the document is the pass over its
+  blocks: a pointer copied and compared per block in the document's and the rows' memos, then `Each`'s own pass over
+  its rows and the commit (`nsh-core`), about 1.2 µs a block in all (0.8 ms an update at 640 blocks). And the last
+  block itself: a reply ending in a 400-row table parses and shows that table again on each update. Replaced text,
+  definitions, plugins, containers and MDX are parsed whole on each change. Baselines: `performance.md` "`TextView`
+  streaming".
+- A long text given at once is read in parts ("Reading only what can change"): 1.9 MB of short sections in about
+  0.3 s instead of 2.1 s. Baselines: `performance.md` "`TextView` long text".
+- Rows are made again only when their value changes (`Each` with the position and kind as the key, the row's item as
+  the value), and render functions only when their value changes.
 - A disclosure makes its content only while open.
 - Images default to their natural size (one `image_size` read each), at most the width of the text. An app's
   `renderImage` element on its own (a paragraph or a cell of images) sits in a view as wide as the text, so its own
@@ -287,6 +376,7 @@ module, which has everything.
 | `MarkdownPlugin` | `MarkdownPlugin` (Rust) and `MarkdownExtension` (declared, from TS too) |
 | `image_source` / image loading | `renderImage`; the default loads the URL with the runtime's image loader |
 | Link clicks | `onLinkPress({ url })` |
+| Task box presses | `onTaskPress({ index, checked })` (boxes are always pressable, like links): the task's place in the document, counted by structure (`Block::tasks`) so a closed disclosure's tasks keep theirs |
 | Streaming fade / motion | The app's: the blocks are views it styles and animates (`nsh`'s `Animated`, layout animation) |
 
 ## Limits

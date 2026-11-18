@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "gallery-native"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "env_logger",
  "log",
@@ -3782,7 +3782,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-base"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "html5ever",
@@ -3803,6 +3803,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntect",
+ "tokio",
  "ttf-parser",
  "two-face",
  "unicode-segmentation",
@@ -3813,7 +3814,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-bundler"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "dunce",
@@ -3838,7 +3839,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3881,9 +3882,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "cap-std",
+ "chrono",
  "crc32fast",
  "flate2",
  "futures-util",
@@ -3916,14 +3918,13 @@ dependencies = [
  "unicode-properties",
  "ureq",
  "url",
- "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
  "wuff",
 ]
 
 [[package]]
 name = "nsh-dev"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3939,10 +3940,11 @@ dependencies = [
 
 [[package]]
 name = "nsh-engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2",
  "crossbeam-channel",
+ "env_filter",
  "libc",
  "log",
  "nsh-base",
@@ -3965,12 +3967,13 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "ureq",
  "wgpu",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nsh-i18n"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "rust-i18n-support",
  "serde_json",
@@ -3978,9 +3981,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-ios-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-engine",
  "nsh-platform-apple",
  "nsh-platform-ios",
@@ -3988,9 +3992,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-ios-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-dev",
  "nsh-engine",
  "nsh-platform-ios",
@@ -3998,7 +4003,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-js"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "brotli",
  "flate2",
@@ -4025,9 +4030,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-linux-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-engine",
  "nsh-platform-linux",
  "serde_json",
@@ -4035,9 +4041,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-linux-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-dev",
  "nsh-engine",
  "nsh-platform-linux",
@@ -4045,9 +4052,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-macos-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-engine",
  "nsh-platform-apple",
  "nsh-platform-macos",
@@ -4056,9 +4064,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-macos-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-dev",
  "nsh-engine",
  "nsh-platform-macos",
@@ -4066,7 +4075,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macros"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "imagesize 0.15.0",
  "nsh-core",
@@ -4079,7 +4088,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-package"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -4093,9 +4102,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-android"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "jni 0.21.1",
+ "jni 0.22.4",
  "libc",
  "log",
  "nsh-base",
@@ -4104,6 +4114,7 @@ dependencies = [
  "nsh-engine",
  "nsh-testing",
  "rustc-hash 2.1.3",
+ "rustls-platform-verifier",
  "serde_json",
  "tokio",
  "ttf-parser",
@@ -4111,7 +4122,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-apple"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2",
  "cc",
@@ -4122,14 +4133,19 @@ dependencies = [
  "nsh-engine",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-text",
  "objc2-foundation",
+ "objc2-image-io",
  "objc2-ui-kit",
  "serde_json",
+ "unicode-bidi",
 ]
 
 [[package]]
 name = "nsh-platform-ios"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2",
  "dispatch2",
@@ -4142,6 +4158,7 @@ dependencies = [
  "nsh-platform-apple",
  "nsh-testing",
  "objc2",
+ "objc2-authentication-services",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-text",
@@ -4157,7 +4174,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-linux"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
  "gstreamer",
@@ -4181,7 +4198,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-macos"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2",
  "crossbeam-channel",
@@ -4208,11 +4225,12 @@ dependencies = [
  "objc2-quartz-core",
  "rustc-hash 2.1.3",
  "serde_json",
+ "unicode-bidi",
 ]
 
 [[package]]
 name = "nsh-platform-tui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
  "icy_sixel",
@@ -4234,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-web"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "brotli",
  "crc32c",
@@ -4262,7 +4280,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-windows"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
  "image",
@@ -4286,7 +4304,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-terminal"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4298,7 +4316,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-testing"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -4316,11 +4334,12 @@ dependencies = [
  "serde_json",
  "tokio",
  "ureq",
+ "url",
 ]
 
 [[package]]
 name = "nsh-tui-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -4340,7 +4359,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-updater"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -4356,9 +4375,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-windows-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-engine",
  "nsh-platform-windows",
  "serde_json",
@@ -4366,9 +4386,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-windows-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "log",
+ "nsh-base",
  "nsh-dev",
  "nsh-engine",
  "nsh-platform-windows",
@@ -4459,6 +4480,18 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation",
  "objc2-quartz-core",
+]
+
+[[package]]
+name = "objc2-authentication-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee6d6f7dab884a28adaec1012eb3889257a49cc145724e35f93ece2d209f8b25"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -5609,7 +5642,7 @@ dependencies = [
 
 [[package]]
 name = "post-editor-native"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nsh-base",
  "nsh-core",
@@ -6758,7 +6791,7 @@ dependencies = [
 
 [[package]]
 name = "rust-exports-native"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nsh-base",
  "nsh-core",
@@ -7689,7 +7722,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tasks-rs"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "env_logger",
  "nsh-base",
@@ -9352,7 +9385,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",

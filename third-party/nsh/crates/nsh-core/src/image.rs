@@ -381,6 +381,17 @@ impl InlineImages {
     }
 }
 
+/// `logo@2x.png` -> 2: the pixel density a file name declares (1 without).
+pub fn density(uri: &str) -> f32 {
+    let name = uri.rsplit(['/', '\\']).next().unwrap_or(uri);
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    stem.rsplit_once('@')
+        .and_then(|(_, s)| s.strip_suffix('x'))
+        .and_then(|n| n.parse::<f32>().ok())
+        .filter(|n| *n > 0.0)
+        .unwrap_or(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,7 +477,11 @@ mod tests {
         assert_ne!(src.uri, again.uri);
         assert!(src.uri.starts_with("data:image/png;nsh-key="));
         assert_eq!(src.size, Some((3.0, 2.0)));
-        let data = src.data.clone().unwrap();
+        let sized = src.clone().size(crate::geometry::size_pt(1.5, 1.0));
+        assert_eq!(sized.size, Some((1.5, 1.0)));
+        assert_eq!(sized.uri, src.uri);
+        assert_eq!(sized.data, src.data);
+        let data = sized.data.clone().unwrap();
         let (w, h, rgba) = data.rgba().unwrap();
         assert_eq!((w, h), (3, 2));
         assert!(std::ptr::eq(rgba, &*pixels));

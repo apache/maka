@@ -230,6 +230,8 @@ pub(crate) struct Apk<'a> {
     pub(crate) icon: Option<&'a Path>,
     /// Files under `assets/` in the APK: (path in the APK, contents).
     pub(crate) assets: Vec<(String, Vec<u8>)>,
+    /// Notification sounds, raw resources: (resource name, file).
+    pub(crate) sounds: Vec<(String, PathBuf)>,
     pub(crate) signing: Signing,
 }
 
@@ -298,6 +300,27 @@ pub(crate) fn build(sdk: &Sdk, apk: &Apk<'_>, format: Format, out: &Path) -> any
             .arg(&icon_path)
             .arg("-o")
             .arg(&compiled))?;
+        for entry in fs::read_dir(&compiled)? {
+            flat.push(entry?.path());
+        }
+    }
+
+    // Notification sounds: raw resources, which a channel's sound names.
+    if !apk.sounds.is_empty() {
+        let raw = work.join("res").join("raw");
+        fs::create_dir_all(&raw)?;
+        let compiled = work.join("compiled-raw");
+        fs::create_dir_all(&compiled)?;
+        for (name, source) in &apk.sounds {
+            let extension = source.extension().and_then(|e| e.to_str()).unwrap_or("ogg");
+            let file = raw.join(format!("{name}.{}", extension.to_ascii_lowercase()));
+            fs::copy(source, &file).with_context(|| format!("copy {}", source.display()))?;
+            run(Command::new(sdk.tool("aapt2"))
+                .arg("compile")
+                .arg(&file)
+                .arg("-o")
+                .arg(&compiled))?;
+        }
         for entry in fs::read_dir(&compiled)? {
             flat.push(entry?.path());
         }
@@ -842,6 +865,7 @@ mod tests {
             abis: &[],
             icon: None,
             assets: Vec::new(),
+            sounds: Vec::new(),
             signing: super::Signing::Debug,
         }
     }

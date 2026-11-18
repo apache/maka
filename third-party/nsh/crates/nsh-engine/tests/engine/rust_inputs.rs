@@ -107,13 +107,14 @@ impl Seen {
 }
 
 fn start() -> (Engine, Receiver<MountBatch>, Seen) {
+    start_on(nsh_core::platform::Os::Ios)
+}
+
+fn start_on(os: nsh_core::platform::Os) -> (Engine, Receiver<MountBatch>, Seen) {
     let (tx, rx) = crossbeam_channel::unbounded();
-    let engine = Engine::start(
-        EngineConfig::new(Root::of::<Field>()),
-        || ApproxTextEngine,
-        ChannelSink(tx),
-    )
-    .unwrap();
+    let mut config = EngineConfig::new(Root::of::<Field>());
+    config.environment.os = os;
+    let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let mut seen = Seen::default();
     seen.drain(&rx);
     (engine, rx, seen)
@@ -126,6 +127,18 @@ fn a_rust_inputs_accessory_holds_its_content() {
     let accessory = seen.of(ViewKind::InputAccessory);
     assert_eq!(seen.accessories.get(&input), Some(&Some(accessory)));
     assert!(seen.inside(seen.text("0 characters"), accessory));
+}
+
+#[test]
+fn a_rust_inputs_accessory_stays_empty_off_ios() {
+    let (_engine, _rx, seen) = start_on(nsh_core::platform::Os::Android);
+    assert!(
+        !seen
+            .created
+            .iter()
+            .any(|(_, kind)| *kind == ViewKind::InputAccessory)
+    );
+    assert!(!seen.shows("0 characters"));
 }
 
 #[test]

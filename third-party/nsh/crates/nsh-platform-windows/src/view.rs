@@ -342,6 +342,9 @@ struct Node {
     /// Where the window's last frame painted it (not its children), clipped
     /// to what was visible: the area to draw again when it changes.
     painted: Cell<Option<WindowRect>>,
+    /// It or a view in its subtree may hold a `painted` record: false
+    /// only when none does, so walks for the records stop here.
+    painted_below: Cell<bool>,
     /// The newest change in it or what it holds ([`NshView::changes`]).
     changes: Cell<u64>,
 }
@@ -424,6 +427,7 @@ impl NshView {
             invalidate: RefCell::new(None),
             queued: Cell::new(false),
             painted: Cell::new(None),
+            painted_below: Cell::new(false),
             changes: Cell::new(0),
         }))
     }
@@ -545,11 +549,44 @@ impl NshView {
     /// Records where the window's frame painted it.
     pub(crate) fn set_painted(&self, rect: Option<WindowRect>) {
         self.0.painted.set(rect);
+        if rect.is_some() {
+            self.mark_painted_below();
+        }
+    }
+
+    /// It and the views it is in may hold a record ([`Self::set_painted`]).
+    fn mark_painted_below(&self) {
+        let mut node = self.0.clone();
+        while !node.painted_below.replace(true) {
+            let parent = node.parent.borrow().upgrade();
+            match parent {
+                Some(p) => node = p,
+                None => break,
+            }
+        }
+    }
+
+    /// Forgets where it and its subtree were painted: a frame left them
+    /// out (hidden, out of sight), so no record of theirs stands for what
+    /// is on screen any more. Their old area was drawn again by the change
+    /// that left them out; kept, it would be drawn again with every later
+    /// change of a view around them.
+    pub(crate) fn forget_painted(&self) {
+        if !self.0.painted_below.replace(false) {
+            return;
+        }
+        self.0.painted.set(None);
+        for child in self.0.children.borrow().iter() {
+            child.forget_painted();
+        }
     }
 
     /// Where the window's last frames painted it and its subtree, as one
     /// rectangle (`None`: nowhere).
     pub(crate) fn painted_subtree(&self) -> Option<WindowRect> {
+        if !self.0.painted_below.get() {
+            return None;
+        }
         let mut area = self.0.painted.get();
         for child in self.0.children.borrow().iter() {
             if let Some(b) = child.painted_subtree() {
@@ -558,6 +595,9 @@ impl NshView {
                     None => b,
                 });
             }
+        }
+        if area.is_none() {
+            self.0.painted_below.set(false);
         }
         area
     }
@@ -632,6 +672,10 @@ impl NshView {
             .unwrap_or(children.len());
         children.insert(at, self.clone());
         drop(children);
+        // Its records count in its new parent's.
+        if self.0.painted_below.get() {
+            parent.mark_painted_below();
+        }
         // Where it draws now (its parent draws nothing new of its own).
         self.changed();
     }
@@ -639,8 +683,12 @@ impl NshView {
     /// Takes this view out of its parent.
     pub(crate) fn unparent(&self) {
         // Where it was drawn is drawn again: queued while it can still
-        // reach its surface.
+        // reach its surface. Where its subtree was drawn is kept with it
+        // now: a subtree is taken out from its top and then torn down, and
+        // the views in it leave it before the frame asks where it was (they
+        // can no longer reach the surface to say so themselves).
         if self.parent_view().is_some() {
+            self.set_painted(self.painted_subtree());
             self.changed();
         }
         let parent = self.0.parent.replace(Weak::new()).upgrade();

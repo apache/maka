@@ -48,8 +48,11 @@
 //!   the window (an embedded surface's root window) is minimized or hidden,
 //!   active while the app is the active one (its windows get
 //!   `WM_ACTIVATEAPP`; before the first, the foreground window is the
-//!   process's), inactive otherwise; background too from the moment the
-//!   session may end (signing out, shutting down: [`crate::session`]);
+//!   process's), inactive otherwise; background too while the user cannot
+//!   see it: the session locked or without a display, the display off, the
+//!   window on another virtual desktop ([`crate::presence`], followed from
+//!   the system's notifications), and from the moment the session may end
+//!   (signing out, shutting down: [`crate::session`]);
 //! - the wake count (`wakeCount()`): one more on every
 //!   `WM_POWERBROADCAST` with `PBT_APMRESUMEAUTOMATIC` ([`woke`]), which
 //!   top-level windows get on every resume (an embedded surface's root
@@ -402,17 +405,22 @@ fn lifecycle(surface: &Surface, current: Lifecycle) -> Lifecycle {
     // SAFETY: plain calls on a window handle.
     let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
     // SAFETY: as above.
-    let shown = unsafe { IsWindowVisible(root).as_bool() && !IsIconic(root).as_bool() };
-    lifecycle_of(shown, crate::session::ending(), || {
+    let shown = unsafe { IsWindowVisible(root).as_bool() && !IsIconic(root).as_bool() }
+        && !crate::presence::cloaked(root);
+    // A test's app runs as it does on screen whatever the screen shows (a
+    // locked or remote session), so its tests see what they see unlocked.
+    let seen = surface.testing() || crate::presence::screen_seen();
+    lifecycle_of(shown, seen, crate::session::ending(), || {
         ACTIVE.with(Cell::get).unwrap_or_else(foreground_is_ours)
     })
 }
 
-/// The app's state with its window `shown` (not minimized or hidden),
-/// the session `ending` ([`crate::session`]) and whether it is the
-/// `active` app.
-fn lifecycle_of(shown: bool, ending: bool, active: impl FnOnce() -> bool) -> Lifecycle {
-    if !shown || ending {
+/// The app's state with its window `shown` (not minimized, hidden or on
+/// another virtual desktop), the screen `seen` (the session unlocked and
+/// connected, the display on: [`crate::presence`]), the session `ending`
+/// ([`crate::session`]) and whether it is the `active` app.
+fn lifecycle_of(shown: bool, seen: bool, ending: bool, active: impl FnOnce() -> bool) -> Lifecycle {
+    if !shown || !seen || ending {
         Lifecycle::Background
     } else if active() {
         Lifecycle::Active
@@ -714,6 +722,7 @@ pub(crate) fn open_url(url: &str) -> bool {
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
         Command::Dialog(dialog) => show_dialog(surface, dialog),
+        Command::CloseDialog(dialog) => close_dialog(surface, *dialog),
         Command::SetClipboard(text) => {
             if !set_clipboard_text(text) {
                 log::debug!("windows: cannot set the clipboard");
@@ -731,6 +740,24 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
                 EventKind::Clipboard,
                 clipboard_answer(*id, has, text),
             );
+        }
+        Command::SetClipboardItem(item) => {
+            let units: Vec<u16> = item.text.encode_utf16().chain(Some(0)).collect();
+            let text: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+            let unicode = u32::from(windows::Win32::System::Ole::CF_UNICODETEXT.0);
+            let mut formats = vec![(unicode, text)];
+            if let Some(html) = &item.html {
+                let mut html = clipboard::cf_html(html).into_bytes();
+                html.push(0);
+                formats.push((html_format(), html));
+            }
+            let formats: Vec<(u32, &[u8])> = formats
+                .iter()
+                .map(|(kind, bytes)| (*kind, bytes.as_slice()))
+                .collect();
+            if !set_clipboard_formats(&formats) {
+                log::debug!("windows: cannot set the clipboard");
+            }
         }
         Command::SetClipboardImage(uri) => match clipboard::decode_data_uri(uri) {
             Some(("image/png", bytes)) => {
@@ -762,6 +789,21 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::FileRequest { id, request } => {
             crate::file_requests::request(surface, *id, request)
         }
+        Command::RenderCanvas {
+            id,
+            drawing,
+            width,
+            height,
+            scale,
+            format,
+        } => crate::canvas::render_offscreen(
+            surface,
+            *id,
+            drawing.clone(),
+            (*width, *height),
+            *scale,
+            *format,
+        ),
         Command::OpenUrl { id, url } => {
             let opened = open_url(url);
             surface.event(
@@ -805,7 +847,10 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::StatusBar(_)
         | Command::SetStatusBar(_)
         | Command::LayoutAnimation(_)
-        | Command::CancelPress => {}
+        | Command::CancelPress
+        // The app's address: this platform keeps none.
+        | Command::SetAppUrl(_)
+        | Command::PushAppUrl(_) => {}
         other => log::debug!("windows: command {other:?} is not supported"),
     }
 }
@@ -968,6 +1013,23 @@ fn add_overlay(surface: &Rc<Surface>, serial: u64, kind: OverlayKind) {
     } else {
         kind.opacity().set(0.0);
         fade(surface, serial, 1.0, FADE_IN, false);
+    }
+}
+
+/// Takes back the dialog [`show_dialog`] showed as `id`
+/// (`Command::CloseDialog`): it fades out as an answered one does, and
+/// reports nothing (the core answered it).
+fn close_dialog(surface: &Rc<Surface>, id: u32) {
+    let serial = OVERLAYS.with(|o| {
+        o.borrow().iter().find_map(|o| match &o.kind {
+            OverlayKind::Dialog(d) if o.key == surface.key() && d.id == id && !d.closing.get() => {
+                Some(o.serial)
+            }
+            _ => None,
+        })
+    });
+    if let Some(serial) = serial {
+        remove_overlay(surface, serial);
     }
 }
 
@@ -2032,6 +2094,17 @@ pub(crate) fn dialog_point(
     }
 }
 
+/// Whether a dialog shows over the app: it owns the keyboard, so a view
+/// under it hears no key releases either.
+pub(crate) fn dialog_shown(surface: &Surface) -> bool {
+    OVERLAYS.with(|overlays| {
+        overlays.borrow().iter().any(|overlay| {
+            overlay.key == surface.key()
+                && matches!(&overlay.kind, OverlayKind::Dialog(d) if !d.closing.get())
+        })
+    })
+}
+
 /// Keys while a dialog shows over the app (it is modal: every key goes to
 /// it). Enter and Space press the focused button (the default action at
 /// first), Escape cancels, Tab and the arrows move between the buttons.
@@ -2176,8 +2249,21 @@ fn clipboard_bytes(format: u32) -> Option<Vec<u8>> {
     }
 }
 
+/// Windows' `HTML Format` (CF_HTML).
+fn html_format() -> u32 {
+    use windows::{Win32::System::DataExchange::RegisterClipboardFormatW, core::w};
+    // SAFETY: a plain registration of a constant name.
+    unsafe { RegisterClipboardFormatW(w!("HTML Format")) }
+}
+
 /// Puts `bytes` on the clipboard as `format`, replacing what it holds.
 fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> bool {
+    set_clipboard_formats(&[(format, bytes)])
+}
+
+/// Puts each of `formats`' bytes on the clipboard as its format, together,
+/// replacing what it holds: the same content in several formats.
+fn set_clipboard_formats(formats: &[(u32, &[u8])]) -> bool {
     use windows::Win32::{
         Foundation::{GlobalFree, HANDLE, HGLOBAL},
         System::{
@@ -2185,24 +2271,28 @@ fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> bool {
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
         },
     };
-    // SAFETY: as in `set_clipboard_text`: the memory is the clipboard's once
-    // `SetClipboardData` succeeds, freed here otherwise.
+    // SAFETY: as in `set_clipboard_text`: each format's memory is the
+    // clipboard's once `SetClipboardData` succeeds, freed here otherwise.
     unsafe {
         if OpenClipboard(None).is_err() {
             return false;
         }
-        let mut ok = false;
-        if EmptyClipboard().is_ok()
-            && let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1))
-        {
-            let ptr = GlobalLock(memory) as *mut u8;
-            if !ptr.is_null() {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
-                let _ = GlobalUnlock(memory);
-                ok = SetClipboardData(format, Some(HANDLE(memory.0))).is_ok();
-            }
+        let mut ok = EmptyClipboard().is_ok();
+        for &(format, bytes) in formats {
             if !ok {
-                let _ = GlobalFree(Some(HGLOBAL(memory.0)));
+                break;
+            }
+            ok = false;
+            if let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1)) {
+                let ptr = GlobalLock(memory) as *mut u8;
+                if !ptr.is_null() {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+                    let _ = GlobalUnlock(memory);
+                    ok = SetClipboardData(format, Some(HANDLE(memory.0))).is_ok();
+                }
+                if !ok {
+                    let _ = GlobalFree(Some(HGLOBAL(memory.0)));
+                }
             }
         }
         let _ = CloseClipboard();
@@ -2312,11 +2402,42 @@ mod tests {
 
     #[test]
     fn an_ending_session_puts_the_app_in_the_background() {
-        assert_eq!(lifecycle_of(true, false, || true), Lifecycle::Active);
-        assert_eq!(lifecycle_of(true, false, || false), Lifecycle::Inactive);
-        assert_eq!(lifecycle_of(false, false, || true), Lifecycle::Background);
-        assert_eq!(lifecycle_of(true, true, || true), Lifecycle::Background);
-        assert_eq!(lifecycle_of(true, true, || false), Lifecycle::Background);
+        assert_eq!(lifecycle_of(true, true, false, || true), Lifecycle::Active);
+        assert_eq!(
+            lifecycle_of(true, true, false, || false),
+            Lifecycle::Inactive
+        );
+        assert_eq!(
+            lifecycle_of(false, true, false, || true),
+            Lifecycle::Background
+        );
+        assert_eq!(
+            lifecycle_of(true, true, true, || true),
+            Lifecycle::Background
+        );
+        assert_eq!(
+            lifecycle_of(true, true, true, || false),
+            Lifecycle::Background
+        );
+    }
+
+    #[test]
+    fn a_screen_the_user_cannot_see_puts_the_app_in_the_background() {
+        // Locked, disconnected or turned off: active or not, nothing shows.
+        assert_eq!(
+            lifecycle_of(true, false, false, || true),
+            Lifecycle::Background
+        );
+        assert_eq!(
+            lifecycle_of(true, false, false, || false),
+            Lifecycle::Background
+        );
+        let locked = crate::presence::Screen::default()
+            .session_changed(windows::Win32::UI::WindowsAndMessaging::WTS_SESSION_LOCK);
+        assert_eq!(
+            lifecycle_of(true, locked.seen(), false, || true),
+            Lifecycle::Background
+        );
     }
 
     #[test]

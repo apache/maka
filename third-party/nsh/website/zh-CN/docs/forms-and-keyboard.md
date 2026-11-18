@@ -163,6 +163,12 @@ let composing = false;
 > [!NOTE]
 > 受控输入框不会丢失按键。每次原生编辑都带有一个编辑计数，JS 传回的 `value` 只有对应最新一次编辑时才会被应用。如果 JS 较慢，而用户在这期间又输入了更多内容，过期的值会被丢弃，不会覆盖更新的文本。
 
+### 硬件按键与输入框
+
+`Input` 拥有用于编辑它的按键。平台会原生地应用这些按键，以及负责组字的输入法；祖先上的 `onKeyDown` / `onKeyUp` 监听或 `captureKeys` 规则都不会改变这一点：它不会拦截输入、光标移动、选区或编辑命令，也拿不走系统交给该输入框的按键。原始硬件按键（`onKeyDown` / `onKeyUp`、`captureKeys`）用于自行绘制的交互界面，而不是扩展文本输入框；输入框自身的文本请使用 `onKeyPress`、`onChange` 和 `onSubmit`（[键盘](../elements/keyboard.md#自定义视图的硬件按键)）。
+
+位于捕获视图中的表单控件同样保持这一边界：只有该控件本身不拥有的按键（例如功能键，或控件不接收的 Tab）会到达捕获规则，并以 `defaultPrevented` 报告策略对本次转换的决定。
+
 ## 属性
 
 在 Rust 中，每个属性都是 `input()` 上同名的蛇形命名方法（`.placeholder(..)`、`.masked(true)`、`.max_length(6)`、`.return_key_type(ReturnKeyType::Next)`、`.selected_range((0, 4))`），以下几个有自己的名字：`.keyboard_type(KeyboardType::Email)` 及 `KeyboardType` 的其他变体，`autoComplete` 对应 `.auto_fill(AutoFill::Email)`，`ios={{ … }}` 中的属性对应 `.keyboard_appearance(..)` 和 `.input_accessory(..)`。每个事件都是一个 `on_` 方法：`.on_change(|text: &str| ..)`、`.on_submit(|text: &str| ..)`、`.on_focus(..)`、`.on_blur(..)`、`.on_selection_change(|s: &Selection| ..)`、`.on_key_press(|key: &str| ..)`、`.on_content_size_change(|size: &Size<Points>| ..)`。
@@ -176,10 +182,10 @@ let composing = false;
 | `keyboardType` | `KeyboardType` | `"default"` | 键盘布局。 |
 | `returnKeyType` | `ReturnKeyType` | `"default"` | 回车键上的文字。 |
 | `autoCapitalize` | `"none" \| "sentences" \| "words" \| "characters"` | `"sentences"` | 自动大写。 |
-| `autoCorrect` | `boolean` | `true` | 系统的自动更正。 |
+| `autoCorrect` | `boolean` | `true` | 系统的自动更正：拼写，以及 iOS、macOS 上的智能引号、破折号和文本替换。输入代码或标识符时关掉它。 |
 | `autoComplete` | `AutoComplete` | | 输入框内容的类型，用于自动填充。 |
 | `multiline` | `boolean` | `false` | 多行；回车插入换行（`submitBehavior` 另有设置时除外）。 |
-| `maxLength` | `number` | | 用户最多能输入的字符数。超出的粘贴只插入放得下的部分，与浏览器一致。 |
+| `maxLength` | `number` | | 用户最多能输入的字符数，各平台都按 Unicode 码点计数：像 😀 这样的表情或一个生僻汉字都算一个。超出的粘贴只插入放得下的部分，与浏览器一致，不会把带肤色的表情这类字符从中间截开。 |
 | `readonly` | `boolean` | `false` | 用户可以选择和复制文本，但不能修改。 |
 | `autoFocus` | `boolean` | `false` | 出现时自动获得焦点。 |
 | `submitBehavior` | `"submit" \| "blurAndSubmit" \| "newline"` | 单行 `"blurAndSubmit"`，多行 `"newline"` | 回车键做什么：提交并保持焦点、提交后失去焦点，或插入换行（仅多行）。 |
@@ -247,6 +253,8 @@ input()
 在 iOS 上，`.keyboard_appearance(KeyboardAppearance::Dark)`（TSX 的 `ios={{ keyboardAppearance: "dark" }}`；或浅色、默认）让键盘使用浅色或深色外观而不随系统外观变化，适合在浅色模式下运行的深色应用。Android 的键盘始终跟随系统主题。
 
 自动填充（`.auto_fill(AutoFill::Email)`，TSX 的 `autoComplete`）告诉系统字段里装的是什么，系统就能提供已保存的姓名、地址、密码以及短信中的验证码。Rust 的 `AutoFill` 每种内容一个变体（`Name`、`GivenName`、`FamilyName`、`Email`、`Tel`、`Username`、`Password`、`NewPassword`、`OneTimeCode`、`StreetAddress`、`PostalCode`、`Country`、`CreditCardNumber`、`Url`、`Birthdate` 等，以及 `Off`）。TSX 接受以下取值：`"name"`、`"given-name"`、`"family-name"`、`"email"`、`"tel"`、`"username"`、`"current-password"`、`"new-password"`、`"one-time-code"`、`"street-address"`、`"postal-code"`、`"country"`、`"cc-number"`、`"cc-exp"`、`"cc-csc"`、`"url"`、`"birthdate-full"` 等，或 `"off"`。iOS 自己的名字（`"emailAddress"`、`"oneTimeCode"` 等）也可以用在 `autoComplete` 或 `ios={{ textContentType }}` 中。
+
+未开启 `masked` 的密码框（例如点了“显示密码”之后）就是以明文显示的密码：`autoComplete` 为 `"current-password"` 或 `"new-password"`（`AutoFill::Password`、`AutoFill::NewPassword`）且 `masked` 关闭时，Android 使用可见密码键盘，iOS 使用 ASCII 键盘，各平台都不会自动大写、提供建议或自动更正，无论 `autoCapitalize` 和 `autoCorrect` 如何设置。显示/隐藏按钮只需切换 `masked`。
 
 ```rust tabs
 use nsh_core::element::AutoFill;
@@ -362,7 +370,7 @@ mount(SignIn);
 | `set_selection(start, end)` | `setSelection(start, end?)` | 选中 `start..end`（UTF-16 码元）；两者相等时为光标（TSX：不传 `end`）。 |
 | `insert_text(text)` | `insertText(text)` | 以用户编辑的方式用 `text` 替换选区：是输入框撤销历史中的一步，由 `onChange` 报告；目前只在 Linux、Web 和无头测试中生效（[粘贴](#粘贴图片和文件)）。 |
 
-在 macOS 和 Web 上，可按压视图的 ref 的 `focus()` 和 `blur()` 也会像 Tab 一样移动键盘焦点（[键盘焦点](../elements/index.md#键盘焦点)）。
+在 macOS、Web 和 Android 上，可按压视图的 ref 的 `focus()` 和 `blur()` 也会像 Tab 一样移动键盘焦点（[键盘焦点](../elements/index.md#键盘焦点)）；在 Android 上，该视图在这次焦点期间可在触摸模式下获得焦点，默认按钮失去焦点后又恢复为触摸中性。
 
 Rust 中的 `dismiss_keyboard()` 和 TSX 中 `nsh` 的 `Keyboard.dismiss()` 让当前拥有焦点的输入框失去焦点：
 
@@ -716,6 +724,8 @@ function ChatScreen() {
 内边距（`.pb_keyboard()`）让上方内容缩小，背景仍延伸到屏幕底部；底部外边距（`marginBottom: "env(keyboard-inset-height)"`、`.mb_keyboard()`）让整个视图止于键盘顶部。`calc(env(keyboard-inset-height) + <length>)`（Rust `.pb_keyboard_plus(..)`、`.mb_keyboard_plus(..)`）再加一段长度，例如减去视图下方标签栏的高度。
 
 完整的键盘高度适合延伸到 surface 底部的视图，页面内容通常如此。在会为键盘缩小窗口的 Android 宿主上，窗口本身已经变小，该变量为 0。见[键盘](../elements/keyboard.md)。
+
+浮层自己会避开键盘：底部的 [Sheet](../elements/sheet.md#the-software-keyboard)、抽屉，以及手机上以 sheet 呈现的菜单、选择器和日期选择器都贴在键盘上沿，并随键盘移动。
 
 ### 键盘访问器
 

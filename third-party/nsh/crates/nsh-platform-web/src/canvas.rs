@@ -176,10 +176,12 @@ fn rule(r: FillRule) -> &'static str {
 }
 
 pub(crate) fn font(f: &CanvasFont) -> String {
-    let family = f.family.as_deref().map_or_else(
-        || "system-ui, sans-serif".to_owned(),
-        |f| format!("\"{f}\""),
-    );
+    let family = f
+        .family
+        .as_deref()
+        .map(crate::text::family_list)
+        .filter(|list| !list.is_empty())
+        .unwrap_or_else(|| "system-ui, sans-serif".to_owned());
     format!(
         "{}{}{} {}px {family}",
         if f.italic { "italic " } else { "" },
@@ -307,7 +309,16 @@ pub(crate) fn encode(drawing: &Drawing) -> String {
                     }
                     None => w.0.push_str("null"),
                 }
-                w.nums(dest);
+                // A missing size (NaN) as `null`: the player sizes it.
+                for &n in dest {
+                    match n {
+                        Num::Const(v) if v.is_nan() => {
+                            w.sep();
+                            w.0.push_str("null");
+                        }
+                        n => w.num(n),
+                    }
+                }
             }),
         }
     }

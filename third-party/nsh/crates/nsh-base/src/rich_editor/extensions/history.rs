@@ -248,8 +248,7 @@ impl Branch {
     // The maps of the items from..to, with their mirrors.
     fn remapping(&self, from: usize, to: usize) -> Mapping {
         let mut maps = Mapping::new();
-        for i in from..to {
-            let item = &self.items[i];
+        for (i, item) in self.items.iter().enumerate().take(to).skip(from) {
             let mirror = item
                 .mirror_offset
                 .filter(|&offset| i >= offset && i - offset >= from)
@@ -314,8 +313,8 @@ impl Branch {
             }
         }
         let mut items = self.items[..start].to_vec();
-        for i in rebased_count..new_until {
-            items.push(Arc::new(Item::map_only(mapping.maps[i].clone())));
+        for map in mapping.maps.iter().take(new_until).skip(rebased_count) {
+            items.push(Arc::new(Item::map_only(map.clone())));
         }
         let rebased_len = rebased_items.len();
         items.extend(rebased_items);

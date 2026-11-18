@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import android.annotation.TargetApi;
 import android.graphics.BlendMode;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
@@ -11,6 +12,7 @@ import android.graphics.Shader;
 import android.os.Build;
 import android.view.PointerIcon;
 import android.view.View;
+import android.animation.TimeInterpolator;
 import android.view.animation.PathInterpolator;
 import java.nio.ByteBuffer;
 
@@ -32,9 +34,14 @@ final class Effects {
     int outlineColor, outlineStyle;
     boolean hidden;
     int cursor;
-    /** Transition: property groups (0: none), ms, ms, cubic Bézier. */
+    /**
+     * Transition: property groups (0: none), ms (a spring's: the time it settles in), ms, and its
+     * curve: a cubic Bézier's control points, or with {@code transitionSpring} a spring's
+     * stiffness, damping and mass.
+     */
     int transitionProps;
     float transitionDuration, transitionDelay;
+    boolean transitionSpring;
     final float[] transitionEasing = new float[4];
     /** Keyframes: 0 none, 1 spin, 2 ping, 3 pulse, 4 bounce. */
     int keyframes;
@@ -138,6 +145,7 @@ final class Effects {
         e.transitionProps = b.getInt();
         e.transitionDuration = b.getFloat();
         e.transitionDelay = b.getFloat();
+        e.transitionSpring = b.getInt() == 1;
         for (int i = 0; i < 4; i++) e.transitionEasing[i] = b.getFloat();
         e.keyframes = b.getInt();
         e.animationDuration = b.getFloat();
@@ -166,8 +174,27 @@ final class Effects {
         return f;
     }
 
-    static PathInterpolator interpolator(float[] c) {
-        return new PathInterpolator(c[0], c[1], c[2], c[3]);
+    /**
+     * The transition's curve: its cubic Bézier (a {@code y} outside 0..1 overshoots), or its spring
+     * released at rest over the time it settles in, as `nsh_core`'s {@code Spring::progress}.
+     */
+    TimeInterpolator transitionInterpolator() {
+        float[] c = transitionEasing;
+        if (!transitionSpring) return new PathInterpolator(c[0], c[1], c[2], c[3]);
+        final double k = c[0], m = c[2], seconds = transitionDuration / 1000.0;
+        final double omega = Math.sqrt(k / m), zeta = c[1] / (2 * Math.sqrt(k * m));
+        return t -> {
+            if (t >= 1) return 1;
+            double s = Math.max(t, 0) * seconds;
+            if (Math.abs(zeta - 1) < 1e-3) return (float) (1 - (1 + omega * s) * Math.exp(-omega * s));
+            if (zeta < 1) {
+                double decay = zeta * omega, wd = omega * Math.sqrt(1 - zeta * zeta);
+                return (float) (1 - Math.exp(-decay * s) * (Math.cos(wd * s) + decay / wd * Math.sin(wd * s)));
+            }
+            double root = omega * Math.sqrt(zeta * zeta - 1);
+            double slow = zeta * omega - root, fast = zeta * omega + root;
+            return (float) (1 - (fast * Math.exp(-slow * s) - slow * Math.exp(-fast * s)) / (fast - slow));
+        };
     }
 
     /** Filters and the blend mode of `v`: render effects (API 31+) or a layer paint. */
@@ -216,6 +243,7 @@ final class Effects {
     /** Tag key marking layers this class set (an id unlikely to clash). */
     private static final int R_LAYER = 0x7f0e7f01;
 
+    @TargetApi(29)
     private static BlendMode blendMode(int code) {
         switch (code) {
             case 1: return BlendMode.MULTIPLY;

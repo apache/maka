@@ -33,6 +33,23 @@ unsafe extern "C" {
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 }
 
+/// Has the window manager leave `surface` (a toplevel not shown yet)
+/// unfocused when it maps, under X11: its user time 0 (EWMH's
+/// `_NET_WM_USER_TIME`), GDK's own call. Elsewhere it does nothing.
+pub(crate) fn no_focus_on_map(surface: &gtk::gdk::Surface) {
+    if surface.display().type_().name() != "GdkX11Display" {
+        return;
+    }
+    // SAFETY: GDK's X11 function, looked up in the GTK already loaded.
+    unsafe {
+        let set_user_time: Option<unsafe extern "C" fn(*mut c_void, u32)> =
+            sym(std::ptr::null_mut(), c"gdk_x11_surface_set_user_time");
+        if let Some(set_user_time) = set_user_time {
+            set_user_time(surface.as_ptr().cast(), 0);
+        }
+    }
+}
+
 /// The X functions the agent calls, resolved once.
 pub(crate) struct Xtest {
     display: *mut Display,
@@ -81,6 +98,15 @@ impl Xtest {
     }
 
     fn load() -> Option<Xtest> {
+        // XTest's keys go to the window with the X input focus, which
+        // the agent would take from the app the user types in: in the
+        // background the agent keeps to the widgets' signals (an app runs
+        // in the background only where a user may type,
+        // `window::run_in_background`).
+        if crate::window::in_background() {
+            log::info!("test: in the background, keys go to the widgets' signals");
+            return None;
+        }
         let display = gtk::gdk::Display::default()?;
         if display.type_().name() != "GdkX11Display" {
             return None;

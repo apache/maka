@@ -39,17 +39,16 @@ pub(crate) struct Font {
 impl Font {
     /// The CSS `font` shorthand `measure_text` takes.
     pub(crate) fn css(&self) -> String {
-        let family = self.family.as_str();
-        // Generic families stay bare; named ones are quoted.
-        let generic = matches!(
-            family,
-            "monospace" | "sans-serif" | "serif" | "system-ui" | "ui-monospace"
-        );
-        if generic {
-            format!("{}px {}", self.size.0, family)
-        } else {
-            format!("{}px \"{}\"", self.size.0, family.replace('"', ""))
-        }
+        let families = nsh_core::css_font_families(self.family.as_str());
+        format!(
+            "{}px {}",
+            self.size.0,
+            if families.is_empty() {
+                "system-ui"
+            } else {
+                &families
+            }
+        )
     }
 }
 
@@ -2020,5 +2019,25 @@ mod tests {
         let marks = st.diagnostic_rects(0..st.display.row_count());
         assert_eq!(marks.len(), 1);
         assert_eq!(marks[0].1, Error);
+    }
+
+    #[test]
+    fn font_css_preserves_comma_separated_fallback_stacks() {
+        let font = Font {
+            family: "SF Mono, Menlo, PingFang SC".into(),
+            size: Points(13.0),
+            line_height: Points(20.0),
+        };
+        let css = font.css();
+        assert_eq!(css, "13px \"SF Mono\", \"Menlo\", \"PingFang SC\"");
+        let parsed = nsh_core::canvas::CanvasFont::parse(&css).expect("valid CSS font");
+        assert_eq!(
+            nsh_core::font_families(parsed.family.as_deref().unwrap()).collect::<Vec<_>>(),
+            vec![
+                nsh_core::FamilyName::Named("SF Mono"),
+                nsh_core::FamilyName::Named("Menlo"),
+                nsh_core::FamilyName::Named("PingFang SC"),
+            ]
+        );
     }
 }

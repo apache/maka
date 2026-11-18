@@ -19,8 +19,9 @@ See [Web view and video](../docs/web-view-and-video.md) for the guide and [`<Web
 ```ts
 const WebView: (props: WebViewProps) => JSX.Element;
 
-interface WebViewProps extends Omit<ViewProps, "children" | "ios" | "desktop">, WebViewHostProps {
+interface WebViewProps extends Omit<ViewProps, "children" | "ios" | "android" | "desktop">, WebViewHostProps {
   ios?: IOSWebViewHostProps;
+  android?: AndroidWebViewProps;
   desktop?: DesktopWebViewHostProps;
 }
 ```
@@ -63,6 +64,7 @@ mount(Browser);
 | `incognito` | `boolean` | `false` | The pages' website data (cookies, storage, the cache) lives only as long as the web view, apart from the app's; on Android the web view loads without the HTTP cache and saves no form data ([website data](../docs/web-view-and-video.md#website-data)). Read when the web view is made. |
 | `ios` | `{ allowsBackForwardNavigationGestures?: boolean }` | | iOS only: swipe from the edges to go back and forward. |
 | `desktop` | `{ allowsBackForwardNavigationGestures?: boolean }` | | macOS: two-finger trackpad swipes go back and forward; Windows: touchscreen swipes; Linux: touchpad swipes. |
+| `android` | `{ downloads?: { scope?: string[] } }` | | Android HTTP(S) GET request scope for download decisions; see [download destinations](../elements/web-view.md#download-destinations-in-rust). |
 
 ## Events
 
@@ -73,6 +75,7 @@ mount(Browser);
 | `onError` | `{ message: string }` | A page failed to load. |
 | `onNavigationStateChange` | `WebViewNavigation` | The URL, title, loading state or history changed. |
 | `onMessage` | `{ data: string }` | The page called `window.nsh.postMessage(data)`. |
+| `onDownload` | `WebViewDownload` | Download lifecycle: started, finished, failed, or cancelled. See [downloads](../elements/web-view.md#events) for sources, destination rules and diagnostics. |
 
 ```ts
 interface WebViewNavigation {

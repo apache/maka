@@ -52,6 +52,43 @@ test("the DataTable demo selects cells and columns", async () => {
   await app.waitFor("Column Name");
 });
 
+test("a Shift press on the quote table still selects that one row", async () => {
+  const app = await still();
+  await app.keyboard.down("shift");
+  await app.press("text:Microsoft 2");
+  await app.keyboard.up("shift");
+  await app.waitFor("Row 2");
+});
+
+test("Several lets the app pick rows, a block of cells and a run of columns", async () => {
+  const app = await still();
+  await app.press("label:Toggle several");
+  await app.waitFor("Nothing picked");
+  await app.press("text:Microsoft 2");
+  await app.waitFor("Row 2");
+  await app.keyboard.down("shift");
+  await app.press("text:NVIDIA 3");
+  await app.keyboard.up("shift");
+  await app.waitFor("Rows 2-3");
+  await app.press("Cells");
+  await app.waitFor("Nothing picked");
+  await app.press("text:/^US$/ >> nth=0");
+  await app.waitFor("Cell row 1, Market");
+  await app.keyboard.down("shift");
+  await app.press("text:/^US$/ >> nth=2");
+  await app.keyboard.up("shift");
+  await app.waitFor("Cells rows 1-3, Market");
+  await app.keyboard.down("shift");
+  await app.press("text:Price");
+  await app.keyboard.up("shift");
+  await app.waitFor("Column Price");
+  await app.keyboard.down("shift");
+  await app.press("text:/^Chg$/");
+  await app.keyboard.up("shift");
+  await app.waitFor("Columns Price-Chg");
+  expect(app.shows("Nothing selected")).toBe(false);
+});
+
 test("the DataTable demo sorts with a title's sort button and scrolls to a row", async () => {
   const app = await still();
   // Ascending, then descending: the app serves the rows the other way up.

@@ -438,7 +438,7 @@ fn report(
 /// or unparented: GTK would hand it to the parent, which (not focusable)
 /// gives it to its first focusable descendant, the field of another
 /// screen (selecting all its text).
-fn drop_focus(widget: &impl IsA<gtk::Widget>) {
+pub(crate) fn drop_focus(widget: &impl IsA<gtk::Widget>) {
     let widget = widget.as_ref();
     if let Some(root) = widget.root()
         && root
@@ -1468,7 +1468,7 @@ pub(crate) fn modal_config(surface: &Rc<Surface>, view: &NshView, config: &Modal
     }
     let mut nav = surface.nav.borrow_mut();
     let id = view.id();
-    nav.modals.entry(id).or_default().config = *config;
+    nav.modals.entry(id).or_default().config = config.clone();
     nav.size_modal(surface, id);
 }
 

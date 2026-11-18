@@ -1134,6 +1134,9 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
         })
         .flex_shrink(1.0)
         .min_h(px(0.0))
+        // A command runs on the first tap while the software keyboard is up
+        // for the search field: it does not only dismiss the keyboard.
+        .keyboard_taps(KeyboardTaps::Handled)
         .app_class(props.list_class)
         .inline_style(props.list_style)
         .child(rows);

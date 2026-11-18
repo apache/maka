@@ -167,6 +167,11 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &NotificationCommand) {
                 log::warn!("notifications: cannot close: {err}");
             }
         }
+        NotificationCommand::CloseAll => {
+            if let Err(err) = close_all() {
+                log::warn!("notifications: cannot close them: {err}");
+            }
+        }
         NotificationCommand::Listen => {
             LISTENER.with(|l| *l.borrow_mut() = Some(Rc::downgrade(surface)));
             for id in PRESSES.with(|p| std::mem::take(&mut *p.borrow_mut())) {
@@ -316,6 +321,16 @@ fn close(id: &str) -> Result<()> {
         &HSTRING::from(GROUP),
         &HSTRING::from(app),
     )
+}
+
+/// Removes NSH's toasts of the app from the notification center, those an
+/// earlier run left included: the history is the app id's.
+fn close_all() -> Result<()> {
+    let Some((app, _)) = app() else {
+        return Ok(());
+    };
+    ToastNotificationManager::History()?
+        .RemoveGroupWithId(&HSTRING::from(GROUP), &HSTRING::from(app))
 }
 
 /// The toast showing `notification`. The press hands back its `launch`

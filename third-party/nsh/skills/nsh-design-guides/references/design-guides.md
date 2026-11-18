@@ -532,8 +532,23 @@ Keep global navigation stable while content changes. Give the primary work area 
 (`.flex_1()`) and `min-w-0` / `min-h-0` where overflowing children must shrink. Use `Scroll` and `List` for their
 intended behavior instead of rebuilding scrolling or virtualization from nested views.
 
-On the desktops, a title bar of the app's own ([`nsh/desktop`](../modules/nsh-desktop.md)) is window chrome first.
-Preserve its drag region (`.window_drag(true)`) and avoid binding ordinary title clicks to infrequent editing
+On the desktops, draw the app's own title bar by default. The system's title bar is painted in the operating system's
+colors, so on top of a themed app it reads as a light strip above a dark window (or the reverse), repeats the app name the
+sidebar already shows, and spends a row of height on nothing. Hide it (`titleBar: { style: "hidden", height }` in
+[`nsh/desktop`](../modules/nsh-desktop.md#a-title-bar-of-your-own), `TitleBarStyle::Hidden` in Rust) and let the app's
+first row take its place:
+
+- the bar uses the app's surface tokens, so it follows the app's light, dark and custom themes; in a sidebar workspace the
+  sidebar and content each carry their own color up to the window's top edge, with no full-width strip above them;
+- reserve the native window controls' room with `titleBar()` / `title_bar()` (`left` for macOS's traffic lights,
+  `right` for the Windows and Linux buttons) instead of hard-coded padding, and keep the bar's height from that API;
+- put real content in it: the sidebar's brand or navigation toggle, the page title, search, primary actions — not a
+  second, empty header under the bar;
+- mark the bar's background `.window_drag(true)` and give interactive children `.window_drag(false)`; keep the
+  platform's double-click behavior.
+
+Keep the system's title bar only for a quick prototype, a utility window without a theme of its own, or a
+document-style window the platform styles anyway. Ordinary title clicks must not be bound to infrequent editing
 commands. Rename belongs behind an explicit object command, with a keyboard path where appropriate.
 
 ### Responsive windows
@@ -1634,6 +1649,8 @@ report each group as passed or as what was fixed. A group not checked is not pas
 **Platforms**
 - [ ] Desktop and web share one design; mobile follows iOS / Android sizes and navigation (44pt / 48dp targets,
   sheets, back); TUI works by keyboard on whole cells in 16 colors.
+- [ ] Desktop windows draw their own title bar in the app's theme (hidden system bar, controls' room from
+  `titleBar()`, drag region kept); no OS-colored strip above the app.
 
 **Platforms and states of content**
 - [ ] Empty, loading, error and long-content states designed, not left blank.

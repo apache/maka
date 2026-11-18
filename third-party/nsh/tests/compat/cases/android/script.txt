@@ -14,6 +14,27 @@ absent Translucent dialog
 expect Opaque dialog
 covers [nsh/base] Dialog
 covers [props] android.statusBarTranslucent
+# base-split-view-android
+tap id:case-base-split-view-android
+# 390 wide: one column at a time, the first the visibility shows;
+# `automatic` the sidebar. Every column's stack stays placed.
+expect Sidebar column
+absent Content column
+absent Detail column
+tap id:show-double
+expect Content column
+absent Sidebar column
+tap id:show-detail
+expect Detail column
+absent Content column
+tap id:show-all
+expect Sidebar column
+absent Detail column
+covers [nsh/base] SplitView
+covers [props] SplitView.sidebar
+covers [props] SplitView.content
+covers [props] SplitView.detail
+covers [props] SplitView.columnVisibility
 # mod-clipboard-android
 tap id:case-mod-clipboard-android
 # the clipboard carries text: image writes and reads reject, hasImage is no.

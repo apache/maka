@@ -202,7 +202,7 @@ pub(crate) fn downloaded(
     let run = nsh_engine::updates::package_to_run(
         shipped,
         Some(updater.into_bytes()),
-        host.data_dir.as_deref(),
+        host.support_dir.as_deref(),
     )?;
     // Before the engine starts: it may read assets (fonts) at once.
     let set = env

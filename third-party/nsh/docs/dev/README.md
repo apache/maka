@@ -4,6 +4,10 @@ For people working on NSH itself (`AGENTS.md` at the root is the short version a
 
 | Page | What |
 |---|---|
+| [repository-map.md](repository-map.md) | Crate/component inventory and documentation ownership |
+| [engineering.md](engineering.md) | Detailed implementation and public API constraints |
+| [commands.md](commands.md) | Build, packaging and verification cookbook |
+| [workflow.md](workflow.md) | PR, CI and parallel-work reference |
 | [architecture.md](architecture.md) | Threads, the data flow from JS to native views, crates |
 | [native-pipeline.md](native-pipeline.md) | How apps are compiled and run: the JSX compiler, the native modules, the renderer, types, hot reload |
 | [js-modules.md](js-modules.md) | The modules (`nsh`, `nsh/*`, apps' UI sets), where each module is implemented and declared, platform props, where new things go |

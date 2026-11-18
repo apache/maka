@@ -504,6 +504,33 @@ pub(crate) fn install(widget: &gtk::Widget, fps: &Rc<Fps>) {
     widget.connect_realize(hook);
 }
 
+/// Logs the process's first presented frame ([`nsh_engine::perf::first_frame`]):
+/// the first after-paint whose paint phase ran (a surface was drawn).
+pub(crate) fn log_first_frame(clock: &gdk::FrameClock) {
+    let painted = Rc::new(Cell::new(false));
+    let paint = clock.connect_paint({
+        let painted = painted.clone();
+        move |_| painted.set(true)
+    });
+    let ids = Rc::new(Cell::new(Some(paint)));
+    let after = Rc::new(Cell::new(None::<glib::SignalHandlerId>));
+    after.set(Some(clock.connect_after_paint({
+        let after = after.clone();
+        move |clock| {
+            if !painted.get() {
+                return;
+            }
+            nsh_engine::perf::first_frame();
+            if let Some(id) = ids.take() {
+                clock.disconnect(id);
+            }
+            if let Some(id) = after.take() {
+                clock.disconnect(id);
+            }
+        }
+    })));
+}
+
 fn connect(clock: &gdk::FrameClock, fps: &Weak<Fps>) {
     let weak = fps.clone();
     clock.connect_before_paint(move |_| {

@@ -533,6 +533,22 @@ impl State {
     }
 }
 
+/// The font as the platform draws the view's texts: the app's size and row
+/// height grown by the user's text size, as the core grows every text's
+/// (`fontScale`; a terminal's Cells stay as they are). Columns, rows and the
+/// sides' widths are measured in it, so a line fits the box it is drawn in.
+fn drawn_font(family: SharedString, size: Points, line_height: Points) -> Font {
+    let scale = match crate::terminal::is_terminal() {
+        true => 1.0,
+        false => nsh_core::element::font_scale(),
+    };
+    Font {
+        family,
+        size: size * scale,
+        line_height: crate::terminal::row_height(line_height * scale),
+    }
+}
+
 /// The width of a number column up to the number `last`, at least two digits
 /// wide, in columns of `column`.
 fn number_column(column: Points, last: usize) -> Points {
@@ -739,11 +755,14 @@ pub(crate) struct Dv {
 
 impl Dv {
     pub(crate) fn new(props: DiffViewProps, cx: Scope<DiffViewEvent>) -> Dv {
-        let font = Font {
-            family: font_family(props.font_family.get_untracked()),
-            size: props.font_size.get_untracked(),
-            line_height: crate::terminal::row_height(props.line_height.get_untracked()),
-        };
+        // Untracked as the props: `follow_props` measures again on a change.
+        let font = untracked(|| {
+            drawn_font(
+                font_family(props.font_family.get_untracked()),
+                props.font_size.get_untracked(),
+                props.line_height.get_untracked(),
+            )
+        });
         let dv = Dv {
             st: Rc::new(RefCell::new(State::new(font))),
             props,
@@ -784,11 +803,12 @@ impl Dv {
     fn follow_props(&self) {
         let dv = self.clone();
         effect(move || {
-            let font = Font {
-                family: font_family(dv.props.font_family.get()),
-                size: dv.props.font_size.get(),
-                line_height: crate::terminal::row_height(dv.props.line_height.get()),
-            };
+            // The user's text size (`fontScale`) too: the texts grow with it.
+            let font = drawn_font(
+                font_family(dv.props.font_family.get()),
+                dv.props.font_size.get(),
+                dv.props.line_height.get(),
+            );
             {
                 let mut st = dv.st.borrow_mut();
                 st.column = crate::editor::controller::text_width(&font.css(), "0");

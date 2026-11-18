@@ -77,6 +77,18 @@ impl Notifications {
         Ok(())
     }
 
+    /// Removes every notification of the app's, shown or waiting to show,
+    /// those an earlier run of the app left included where the system keeps
+    /// them for the app (macOS, iOS, Windows, Android): call it when the user
+    /// signs out, so what the notifications said goes with them. Rejects
+    /// with `ERR_ACCESS_DENIED` when the `notifications` capability is not
+    /// granted.
+    pub(crate) async fn close_all(sys: System) -> Result<(), JsError> {
+        granted(&sys)?;
+        crate::prelude::close_all_notifications();
+        Ok(())
+    }
+
     /// Shows `count` on the app's icon, and `0` clears it: the Dock on
     /// macOS, an installed web app's icon, the home screen on iOS, which
     /// needs the permission (`requestPermission`). Android has no count to
@@ -143,6 +155,12 @@ pub(crate) struct ShowNotificationOptions {
     body: Option<String>,
     /// Shows it without a sound or vibration (false: with the system's).
     silent: Option<bool>,
+    /// A sound the app ships (an asset's path or `asset:/` URI, an imported
+    /// sound), played instead of the system's default; `silent` wins. Apple
+    /// platforms play `.caf`, `.aiff` and `.wav` of at most 30 s, Android
+    /// `.ogg`, `.mp3` and `.wav`; Windows (unpackaged), the web and a
+    /// platform that cannot read it play the default.
+    sound: Option<String>,
 }
 
 impl ShowNotificationOptions {
@@ -152,10 +170,19 @@ impl ShowNotificationOptions {
                 "Notifications.show: `id` and `title` must not be empty".into(),
             ));
         }
-        Ok(
+        let mut notification =
             Notification::new(self.id, self.title, self.body.unwrap_or_default())
-                .silent(self.silent.unwrap_or_default()),
-        )
+                .silent(self.silent.unwrap_or_default());
+        if let Some(sound) = self.sound {
+            if (sound.contains("://") && !sound.starts_with("asset:")) || sound.starts_with("data:")
+            {
+                return Err(JsError::Range(format!(
+                    "Notifications.show: `sound` must be a sound the app ships (an asset), not {sound}"
+                )));
+            }
+            notification = notification.sound(sound);
+        }
+        Ok(notification)
     }
 }
 

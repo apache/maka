@@ -503,8 +503,8 @@ mod tests {
         a.apply(&MountItem::Animation(AnimationOp::CreateDiffClamp {
             node: 3,
             input: 2,
-            min: 0.0,
-            max: 50.0,
+            min: crate::animation::Operand::Const(0.0),
+            max: crate::animation::Operand::Const(50.0),
             snap: true,
         }));
         a.apply(&MountItem::ScrollConfig {

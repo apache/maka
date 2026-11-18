@@ -78,7 +78,7 @@ text("提交前先运行 ")
 </Text>
 ```
 
-Tailwind 类同样适用：`<Text class="bg-gray-100 rounded">`。内边距和边框是方框样式，片段上不起作用；在片段内两侧加空格，方框两边就会留出空间。
+Tailwind 类同样适用：`<Text class="bg-gray-100 rounded px-1">`。水平内边距会在片段两端的行内占位，背景也覆盖这段空间，与 CSS 行内盒一致；垂直内边距会让背景向文字上下延伸，但不改变行高；边框对片段不起作用。
 
 ### 隐藏片段
 
@@ -101,7 +101,7 @@ text("The answer is ")
 
 ### 链接
 
-带按压处理函数的片段就是链接：按在它的字符上由该片段处理，按在其他位置则由段落处理。在终端里，每个链接也是一个键盘焦点停靠点：Tab 依次到达段落里的链接，Return 按下获得焦点的那一个。
+带按压处理函数的片段就是链接：按在它的字符上由该片段处理，按在其他位置则由段落处理。鼠标停在片段的字符上时，片段采用它的悬停样式（`hoverStyle`、`hover:`、`.hover(..)`）；按住链接时，链接采用它的按下样式（`activeStyle`、`active:`、`.active(..)`）；段落其余部分保持原样。鼠标停在链接里的片段上时，悬停的是链接：把样式写在链接上。在终端里，每个链接也是一个键盘焦点停靠点：Tab 依次到达段落里的链接，Return 按下获得焦点的那一个。
 
 ```rust tabs
 text("继续即表示你同意")
@@ -110,7 +110,7 @@ text("继续即表示你同意")
     .child(
         text("服务条款")
             .text_color(rgb(0x0969da))
-            .underline()
+            .hover(|s| s.underline())
             .on_press(move || open("terms")),
     )
     .child("。")
@@ -119,7 +119,11 @@ text("继续即表示你同意")
 ```tsx tabs
 <Text style={{ fontSize: 15 }} onPress={() => log("整句话")}>
   {"继续即表示你同意"}
-  <Text style={{ color: "#0969da", textDecorationLine: "underline" }} onPress={() => open("terms")}>
+  <Text
+    style={{ color: "#0969da" }}
+    hoverStyle={{ textDecorationLine: "underline" }}
+    onPress={() => open("terms")}
+  >
     服务条款
   </Text>
   。
@@ -128,7 +132,7 @@ text("继续即表示你同意")
 
 ### 行内视图和图片
 
-文本中的其他元素（视图、图片，即使位于片段内）都是行内附件：按自身尺寸布局，坐落在基线上（或由样式 `verticalAlign` 决定位置：`"text-top"`、`"text-bottom"`、`"middle"`，与 CSS 一致；所在行会撑高以容纳它），并随文字一起换行。它们可以单独响应按压。
+文本中的其他元素（视图、图片，即使位于片段内）都是行内附件：按自身尺寸布局，坐落在基线上（或由样式 `verticalAlign` 决定位置：`"text-top"`、`"text-bottom"`、`"middle"`，与 CSS 一致；所在行会撑高以容纳它；在基线上时，内部有文字的视图以其首行文字的基线对齐所在行，与 `inline-flex` 盒子一致），并随文字一起换行。它们可以单独响应按压。
 
 ```rust tabs
 text("基于 ")

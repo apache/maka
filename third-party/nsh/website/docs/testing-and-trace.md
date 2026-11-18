@@ -76,7 +76,8 @@ options set below: `storage` (`MemoryStorage::new(entries)`), `network` (`StubNe
 `scroll(selector, px(3000.0))`, `back`, `wait`, `wait_for`, `wait_for_gone`, `wait_until`, `run_for`, `fast_forward`,
 `set_system_time`, `set_viewport`, `set_clipboard` and `on_dialog`; `app.shows(text)` and `app.screen()` (`texts()`,
 `count(selector)`, `enabled(selector)`, `dialogs()`, `clipboard()`, `commands()`) read what is on screen. A step
-returns an error with the texts on screen when it cannot be taken.
+returns an error with the texts on screen when it cannot be taken. `app.clear_commands()` starts the record of
+`commands()` afresh, so a long test keeps only the commands of the steps it checks.
 
 `nsh_testing::tsx(entry, sets)` (feature `bundle`) opens an app's TSX entry the same way, built against NSH's and the
 crate's UI sets ([Building with Rust](./rust.md#testing)). `examples/gallery-rs` tests its Rust root this way, one
@@ -173,7 +174,7 @@ options as the test gives them: one the target's platform cannot honor makes `op
 | `locale` | `"en-US"` | The device's locale, a BCP 47 tag (`locale()`, `Intl`'s default). |
 | `localeSettings` | the locale's, in UTC | The user's locale settings (`localeSettings()`), the ones it names over the locale's: `languages` (BCP 47 tags, most preferred first; `[locale]`), `timeZone` (an IANA name; `"UTC"`), `hourCycle` (`"h12"`, `"h23"`, `"h11"` or `"h24"`), `firstDayOfWeek` (1 for Monday to 7 for Sunday), `measurementSystem` (`"metric"`, `"us"` or `"uk"`) and `temperatureUnit` (`"celsius"` or `"fahrenheit"`), the last four the locale's region's. A time zone names the zone: local times, `Date`'s and `Intl`'s, stay the machine's, and so does the zone `Intl` names. |
 | `reducedMotion` | `false` | The user asked for less motion (`reduceMotion()`). |
-| `platform` | `"ios"` | The platform the app runs as headless: `"ios"`, `"android"`, or a desktop's, `"macos"`, `"windows"`, `"linux"`, or `"web"` in the desktop idiom (`platform.os`, `ios={{…}}` / `android={{…}}` / `desktop={{…}}` props, keyboard shortcuts, a page's `header` at its top as wide as the window on the desktops and the web, the header bar the system's on iOS and Android). With `--target`, the app runs as the target's platform: a desktop's `platform` on any desktop and the web, always as a desktop (in the browser in the desktop idiom at any width, `platform.os` staying `"web"`), `"ios"` and `"android"` on their own. |
+| `platform` | `"ios"` | The platform the app runs as headless: `"ios"`, `"android"`, or a desktop's, `"macos"`, `"windows"`, `"linux"`, or `"web"` in the desktop idiom (`platform.os`, `ios={{…}}` / `android={{…}}` / `desktop={{…}}` props, keyboard shortcuts, a page's `header` at its top as wide as the window on the desktops and the web, the header bar the system's on iOS and Android, its leading item at its start, its trailing item at its end and the title view between them). With `--target`, the app runs as the target's platform: a desktop's `platform` on any desktop and the web, always as a desktop (in the browser in the desktop idiom at any width, `platform.os` staying `"web"`), `"ios"` and `"android"` on their own. |
 | `clock` | the system's | A manual clock, whose time moves only as the test moves it: `{}`, or `{ time }` to start at a `Date` (or milliseconds since the Unix epoch). See [Controlling time](#controlling-time). |
 | `host` | none | The embedding app's part, which the test plays: `{ params, handlers }`. See [Playing the host app](#playing-the-host-app). |
 | `modules` | none | Stand-ins for exports of the native modules the app imports, by specifier: see [Faking native modules](#faking-native-modules). Headless runs only. |
@@ -255,6 +256,15 @@ recorded and reported to the app as opened, and nothing opens on this machine. `
 ```tsx
 await app.press("Contact us");
 expect(app.openedUrls()).toEqual(["mailto:help@example.com"]);
+```
+
+`app.failOpenUrls(url)` makes the URLs that match it fail to open, as on a device with no app for them, so a test
+checks what the app shows when a link does not open:
+
+```tsx
+await app.failOpenUrls("https://example.com/*");
+await app.press("Read the guide");
+expect(app.shows("Could not open the link")).toBe(true);
 ```
 
 ### Stubbing the network
@@ -409,22 +419,22 @@ one: a selector matching several fails the step, and the error says how to narro
 
 | Step | Description |
 |---|---|
-| `await app.press(selector)` | Presses the view, or the nearest view around it that hears presses (the button around a text): `onPressDown`, `onPressUp`, `onPress`, inside a finger going down and lifting, which the views around it that listen to touches hear (an overlay's `onPressOutside`). A span of a text is pressed on its characters (`await app.press("Privacy policy")`), headless and on iOS, Android and the desktops. A second press of the same view within 500 ms is its second click (`clicks: 2`, a double press), as the platforms count them. Rejects when it is disabled. |
+| `await app.press(selector)` | Presses the view, or the nearest view around it that hears presses (the button around a text): `onPressDown`, `onPressUp`, `onPress`, inside a finger going down and lifting, which the views around it that listen to touches hear (an overlay's `onPressOutside`). A span of a text is pressed on its characters (`await app.press("Privacy policy")`), headless and on iOS, Android and the desktops. A second press of the same view within 500 ms is its second click (`clicks: 2`, a double press), as the platforms count them. On iOS, a header button of `ios.headerRightItems` (which UIKit draws) is pressed by `id:<key>` or its label: it presses, or opens its menu. Rejects when it is disabled. |
 | `await app.longPress(selector)` | Holds a finger on it (or the nearest view around it that hears presses or touches) for its `delayLongPress` (500 ms): `onPressDown`, `onLongPress`, `onPressUp`; no `onPress` follows. The touches' handlers hear the finger (a `ContextMenu` or `Tooltip` opens). |
 | `await app.clear(selector)` | Empties the input, as selecting all and deleting does. |
-| `await app.type(selector, text)` | Types into the input (or the first input inside the view; `text:` also matches an input's text or placeholder) at the end of what it holds, key by key: it takes the focus, then each character is an `onKeyPress` and an `onChange`, within `maxLength`. A `\n` in a single-line input is the return key. |
+| `await app.type(selector, text)` | Types into the input (or the first input inside the view; `text:` also matches an input's text or placeholder) key by key, as the user's typing does: an input that does not have the focus is pressed to take it (on a device, where the press lands puts the caret; headless, the caret is at the end of what it holds), one that has it is not, so the text goes in at its caret and replaces its selection (after `keyboard.press("mod+a")`, say; headless, only a view that keeps its own selection, such as `Editor`, has one). Each character is an `onKeyPress` and an `onChange`, within `maxLength`. A `\n` in a single-line input is the return key. |
 | `await app.submit(selector)` | The return key in the input, as its `submitBehavior` says: `onSubmit` (and the focus leaves a single-line input), or a line break in a multiline one. |
 | `await app.scroll(selector, distance)` | Drags the scroll view or list (the view, the one around it, or the first inside it) by `distance` points along its axis, 10 points per frame, within its content, as the user may (`scrollable`). Negative scrolls back. |
 | `await app.hover(selector)` | Moves the mouse over the middle of the view: the views under it that it left hear `onMouseLeave`, those it came over `onMouseEnter` and take their `hover:` styles, and those listening hear `onMouseMove` with where it is and no button down. The desktops and the web at any width, a browser in the phone idiom included (headless: a desktop or `"web"` `platform`); an iOS or Android phone has no mouse: there it rejects. |
 | `await app.rightClick(selector)` | The mouse's secondary button over the middle of the view: it, or the nearest view around it listening, hears `onContextMenu`. The desktops and the web (headless: a desktop `platform`); a phone has no mouse: there it rejects. |
 | `await app.paste(selector, { text?, html?, files?, uris? })` | Pastes into the input as the user does with that on the clipboard: it takes the focus and hears `onPaste` (`html` the same content with its formatting, `files` are paths whose bytes it gets as `File`s, `uris` `file:` URLs), then its text goes in as `pasteBehavior` says. Headless, on macOS, on iOS and on the web; the machine's clipboard stays as it was. |
 | `app.menu()` | The actions of the context menu the app shows (`Menu.popup`), or of the system's edit menu an editor shows over its selection on a phone (`RichEditor`'s, labelled as the platform labels them: `Cut`, `Copy`, `Paste`, `Select All`): `label` (a submenu's after its own, `"Share > Mail"`), `disabled`, and `checked` for a checkable item; `null` when none is open. |
-| `await app.chooseMenuItem(label)` | Chooses the open context menu's action, as a click on it does: the app hears `onMenu` (its `onSelect` runs), then the menu closes. From an edit menu, the editor carries out the action; Paste pastes the test's clipboard. Rejects when the item is disabled or missing. |
-| `await app.closeMenu()` | Closes the open context menu with nothing chosen, as Escape does. |
-| `await app.keyboard.press(keys)` | Presses a key with its modifiers, as `keymap` names it (`"mod+k"`, `"shift+/"`, `"escape"`; `mod` is the platform's command key), on a hardware keyboard, on every platform (phones and tablets have one too): the app's shortcut of it hears it (`keymap.bind`, `onKeyCommand`), else on a desktop the application menu's item with that shortcut is chosen (`Menu.setApplicationMenu`, its `when` kept while an input has the focus), else on macOS and the web Tab and Shift+Tab move the keyboard focus between the inputs and the views that take presses (`onFocus`, `onBlur`, `focus:` styles), inside the newest dialog while one is open (it gives the focus back to what had it when it closes), and Return or Space presses the view it is on, and on the web (`platform: "web"`) Shift+F10 asks it for its context menu (`onContextMenu` with `pointerType: null`), else the focused input takes a character, Backspace or the return key, else Escape goes back. |
+| `await app.chooseMenuItem(label)` | Chooses the open context menu's action, as a click on it does: the app hears `onMenu` (its `onSelect` runs), then the menu closes. From an edit menu, the editor carries out the action; Paste pastes the test's clipboard. On iOS it chooses from the menu the system shows (a `MenuButton`'s, a `ContextMenu`'s, a header button's), as a tap does. Rejects when the item is disabled or missing. |
+| `await app.closeMenu()` | Closes the open context menu with nothing chosen, as Escape does (on iOS, a tap outside the system's menu). |
+| `await app.keyboard.press(keys)` | Presses a key with its modifiers, as `keymap` names it (`"mod+k"`, `"shift+/"`, `"escape"`; `mod` is the platform's command key), on a hardware keyboard, on every platform (phones and tablets have one too): the app's shortcut of it hears it (`keymap.bind`, `onKeyCommand`), else on a desktop the application menu's item with that shortcut is chosen (`Menu.setApplicationMenu`, its `when` kept while an input has the focus), else on macOS and the web Tab and Shift+Tab move the keyboard focus between the inputs and the views that take presses (`onFocus`, `onBlur`, `focus:` styles), inside the newest dialog while one is open (it gives the focus back to what had it when it closes), and Return or Space presses the view it is on when that view is in the newest dialog (or no dialog is open; else the key goes to the shortcuts); a page pushed onto a `NavStack`, or a back that pops one, takes the focus off the page that no longer shows (its view hears `onBlur`), and on the web (`platform: "web"`) Shift+F10 asks it for its context menu (`onContextMenu` with `pointerType: null`), else the focused input takes a character, Backspace or the return key, else Escape goes back. |
 | `await app.keyboard.down(keys)` / `up(keys)` | Holds modifier keys (`"mod"`, `"shift"`, `"alt"`, `"ctrl"`, `"meta"`, joined by `+`) down until `up`: the presses, drags and hovers meanwhile carry them, as a Mod-click or a Shift-drag does. Headless and on Linux for now. |
 | `await app.dragAndHold(selector, by)` / `app.drop()` | Drags as `drag` does and keeps the finger down until `drop()`, which lifts it where it is: the steps between look at the screen mid-drag (a drag preview, a drop line). Headless and on Linux for now. |
-| `await app.dropFiles(selector, uris)` | Drops local files (`file:` URLs, as a file manager drags them) on the middle of the view: it, or the nearest view around it listening, hears `onFileDrop`. Desktops, headless and on Linux for now. |
+| `await app.dropFiles(selector, uris)` | Drops local files (`file:` URLs, as a file manager drags them) on the middle of the view: it, or the nearest view around it listening, hears `onFileDrop`. Desktops, headless, on Linux and on macOS for now. |
 | `await app.drag(selector, { x, y })` | A finger lands on the middle of the view, rests for 100 ms, moves by `x`, `y` points, 10 per frame, and lifts, as the platform's input takes it: a pan follows it (`pan={{ x, y }}`, `onPanStart`, `onPanEnd` with the release velocity), the views listening to touches hear it (`onTouchStart`, `PanResponder`), a scroll view scrolls with it and, pulled far enough past its top, refreshes (`onRefresh`), and a press under it is cancelled once it moves away. On the desktops and the web it is the mouse. |
 | `await app.wait(ms)` | Lets the app run for `ms` milliseconds: timers, animations, requests. On a manual clock, moves it by `ms` (`app.clock.runFor`). |
 | `await app.waitFor(selector, options?)` | Resolves once a view matches, or with `{ state: "gone" }` once none does; rejects after `timeout` ms (5000). On a manual clock, moves it a display frame at a time while it waits, by `timeout` at most. |
@@ -435,25 +445,30 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.texts()` | The texts on screen now, in order. |
 | `app.value(selector)` | The text of an input, `null` when none matches. |
 | `app.spanStyle(selector)` | The first matched character’s resolved style, headless and on every `--target`: `color`, optional `backgroundColor`, `fontSize`, `fontWeight`, `italic`, `underline`, and `lineThrough`. Colors are `#rrggbbaa`; sizes are in points. |
+| `app.viewStyle(selector)` | The matched view’s style as the app set it, headless and on every `--target`: optional `backgroundColor` (absent when transparent), its own `opacity`, and `effectiveOpacity` (its opacity times every ancestor’s). Colors are `#rrggbbaa`. Returns `null` when nothing matches; reports an error for an ambiguous selector. |
 | `app.storage()` | What the app's storage holds now. |
-| `await app.back()` | Goes back as the user does (a header's back button, swiping a sheet down): the innermost stack of the newest modal, else of the screen, that is laid out with a size (not in a tab laid out at no size) pops its top screen (`onDismiss`), or asks it (`onBackRequest`) when it has `preventBack`; without one, the newest modal asks to close (`onRequestClose`). Rejects when there is nothing to go back from. |
+| `await app.back()` | Goes back as the user does (a header's back button, swiping a sheet down; in a sheet showing a pushed page, its header's back button): the innermost stack of the newest modal, else of the screen, that is laid out with a size (not in a tab laid out at no size) pops its top screen (`onDismiss`), or asks it (`onBackRequest`) when it has `preventBack`; without one, the newest modal asks to close (`onRequestClose`). Rejects when there is nothing to go back from. |
 | `await app.forward()` | Goes forward in the browser's history, as its forward button does. With `--target web` only; elsewhere it rejects with `ERR_NSH_TEST_UNSUPPORTED`. |
 | `app.onDialog(handler)` | Answers the dialogs the app shows from now on (`Alert.alert`, action sheets): `handler` gets the dialog (`title`, `message`, `buttons`, `cancelable`, `sheet`) and returns the text of the button to press, or `null` to close it without one. |
 | `app.dialogs()` | The dialogs the app showed, in order. |
 | `app.onPick(handler)` | Answers the picks the app asks for from now on (`Picker.pickImages`, `Picker.pickFiles`): `handler` gets what the pick asks (`kind`: `"images"` or `"files"`, `multiple`, `limit`, `maxDimension`, `quality`, `format`, `filters`, `maxSize`) and returns the files the user picks (`{ name, type?, data: Uint8Array }`, given to the app as they are; one larger than `maxSize` reaches the app unread, `status` `"tooLarge"`), or `null` to cancel. Without a handler, picks are cancelled. Headless runs. |
 | `app.picks()` | The picks the app asked for, in order. |
+| `app.onShare({ action, target })` | Gives the run a share sheet and answers the shares the app shows from now on (`Share.show`): `action` `"shared"` (to `target`) or `"dismissed"`. Headless runs. |
+| `app.shares()` | What the app shared, in order (`{ title, text, url, files }`). |
 | `app.hear(text)` | The user says `text` into the running speech session (`Speech.start`): its `result` reports `text` as the whole transcript so far. Headless runs. |
 | `app.endSpeech(error?)` | Ends the running speech session: with `error` (`"no-speech"`, `"network"`, ...) it fails, else a last final result and `end` come, `no-speech` when nothing was heard. Headless runs. |
 | `app.speechRequests()` | The speech sessions the app started, in order: `lang` (`null` for the user's) and `interim`. |
 | `app.audio()` | What the app asked of the speaker (`Sound`, `AudioPlayer`), in order: `command` (`"load"`, `"play"`, `"stop"`, `"unload"`, `"open"`, `"preload"`, `"resume"`, `"pause"`, `"seek"`, `"set"`, `"close"`), `src`, and `volume`, `rate`, `position` where they apply. Headless runs. |
 | `app.endAudio()` | The players playing reach their end (`end`; those that loop start again). Headless runs. |
 | `app.clipboard()` | The text on the clipboard now, `null` when it holds none. |
+| `app.clipboardItem()` | The item on the clipboard now, `{ text, html? }` (`Clipboard.write`; text alone has no `html`), `null` when it holds none. Headless tests only. |
 | `app.requests()` | The requests the app made, in order: `method`, `url`, `headers`, `body`. |
 | `await app.host.send(name, data?)` | Sends an event of the host app's to the app (`host.on`), then waits until it is quiet. See [Playing the host app](#playing-the-host-app). |
 | `app.host.calls()`, `app.host.posts()` | The app's calls and posts that `open`'s `host.handlers` got, in order: `name`, `data`. |
 | `app.openedUrls()` | The URLs the app opened (`openUrl`), in order: recorded, never opened. |
 | `await app.openWithUrl(url)` | The system hands the app a link that opens it, as when the user opens one while it runs (`UrlScheme.on("open")`; a link of a scheme the app does not claim is dropped, as on a device), then waits until it is quiet. Headless runs only. |
 | `await app.failImages(url)` | The images whose source is `url` fail to load from now on, those loading now included: each reports the failure with `onError`, as on a device, so a test checks what the app shows instead (an avatar's initials, a placeholder). `url` is matched whole and `*` in it matches anything (`"https://cdn.example.com/avatars/*"`), as `network` routes are; a bundled image's is `asset:/<path>`. Then waits until the app is quiet. Headless runs only. |
+| `await app.failOpenUrls(url)` | The URLs the app opens that match `url` fail to open from now on: `openUrl` resolves `{ opened: false }`, as on a device with no app for them, so a test checks what the app shows then. `url` is matched whole and `*` in it matches anything (`"https://example.com/*"`), as `network` routes are; `app.openedUrls()` still lists them. Then waits until the app is quiet. Headless runs only. |
 | `await app.setViewport(width, height)` | Resizes the viewport, as rotating the device or resizing a window does (`windowSize()`). |
 | `await app.setColorScheme(scheme)` | Switches the system's appearance to `"light"` or `"dark"`, as the user does. |
 | `await app.setLifecycle(state)` | Moves the app to `"background"`, `"inactive"` or `"active"`, as the system does when the user leaves it, switches to another app or window and comes back (`lifecycle()`). Headless runs only. |
@@ -493,6 +508,8 @@ a test matches the code:
 await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
 ```
 
+`app.viewStyle("id:card")` checks that a view is dimmed or highlighted without a screenshot. It reads the values the app set: while an animation runs it reports the animation’s end value, not the frame on screen. Backgrounds a native control paints by itself are not reported; check those with `app.screenshot`.
+
 `app.spanStyle("id:guide")` reads a nested `<Text testID="guide">`; `text:word` reads the first character
 of that match. Scope queries with `id:note >> text:word` and select repeated matches with `>> nth=0`.
 The query reports an error for a missing, ambiguous or empty span. Updating a span’s `testID` reuses its text
@@ -513,8 +530,10 @@ that only a real platform can do:
   host](#the-pages-host)).
 - **The app runs under its capabilities**: what its `nsh.json` declares in `capabilities` is enforced as on a device,
   so what it does not declare is refused.
-- **URLs are recorded**: what the app opens is reported opened, and `app.openedUrls()` lists it.
+- **URLs are recorded**: what the app opens is reported opened unless the test fails it (`app.failOpenUrls`), and `app.openedUrls()` lists it.
 - **Picks are answered**: with the test's files (`onPick`), else cancelled, so `Picker.pickImages` and `Picker.pickFiles` resolve `[]`.
+- **Shares are the test's**: a run has a share sheet once `onShare` gives it one, which answers each share as it says;
+  before that `Share.available()` resolves `false`.
 - **Speech is the test's**: `Speech.available()` resolves `true`, a session starts at once and hears what `hear` says.
 - **Sound plays to a fake speaker**: sounds decode as WAV (their length from the header; other bytes fail with `decode`), players play a minute of their source at once and end at `endAudio()`.
 - **Modals show at once**: `onShow` comes when one is presented.
@@ -613,7 +632,9 @@ nsh test tests/form.test.tsx --target macos   # one file
 
 The window opens at the viewport's size (390 × 844 unless `open` says), within the screen (on macOS, `setViewport`
 keeps it there, its top left corner when it is larger); on iOS and Android the app fills the device's screen, at the
-device's size. The app runs as the target's platform (`platform.os`). A manual `clock` works as
+device's size. On macOS, Windows, GPUI and Linux the apps run in the background: their windows show, the keyboard stays with
+the app you type in, and the steps' clicks, keys and shortcuts go to the windows directly (`--foreground` lets them
+become the active app). The app runs as the target's platform (`platform.os`). A manual `clock` works as
 it does headless: `app.clock.runFor`, `fastForward` and `setSystemTime` move the app's time at once (timers,
 `requestAnimationFrame` a frame apart, `Date`), `app.wait(ms)`, `waitFor` and `waitUntil` move it too, and each frame
 the platform shows moves it a frame (1/60 s), so the app's time passes while it animates. The platform's own animations, and a route's
@@ -649,7 +670,8 @@ when it finds none). One browser serves the run, and each `open` gets a page wit
 the browser's trusted input, as a user's: mouse clicks, wheel scrolling and keys.
 
 On iOS, the apps run in the development host in an iOS simulator: the one `--device` names (by name or UDID), else
-the booted one, else the newest iPhone, which `nsh test` boots. The steps are a finger's touches and the software
+the booted one, else the newest iPhone, which `nsh test` boots. The Simulator app opens behind the app you type in,
+and the steps reach the app in the simulator directly. The steps are a finger's touches and the software
 keyboard's typing, as UIKit gets them from the device. `setColorScheme` switches the simulator's appearance, which
 `nsh test` sets back after the app, and the screen has the simulated device's size. The variables of `nsh test`'s
 environment that the app declares in `capabilities.process.env` reach the app in the simulator, as on the desktops
@@ -819,7 +841,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: cargo test                            # a Rust app's tests
       - run: nsh test --junit test-results.xml     # its TypeScript tests, or a TSX app's
 ```

@@ -27,7 +27,7 @@ test("/ opens the blocks and typing narrows them", async () => {
   await app.type("label:Document", "/");
   await app.waitFor("role:listbox[Blocks]");
   expect(app.shows("text:Heading 1")).toBe(true);
-  expect(app.count("role:option")).toBe(13);
+  expect(app.count("role:option")).toBe(14);
   await app.type("label:Document", "list");
   // Three lists match: bulleted, numbered, to-do.
   await app.waitFor("role:option[Divider]", { state: "gone" });
@@ -205,8 +205,8 @@ test("the arrows keep the highlighted block in view in a list taller than the me
   await newLine(app);
   await app.type("label:Document", "/");
   await app.waitFor("role:listbox[Blocks]");
-  // Table is the last of thirteen blocks, below what the menu shows at first.
-  for (let i = 0; i < 12; i++) await app.keyboard.press("down");
+  // Table is the last of fourteen blocks, below what the menu shows at first.
+  for (let i = 0; i < 13; i++) await app.keyboard.press("down");
   expect(app.shows("role:option[Table]")).toBe(true);
   await app.keyboard.press("enter");
   await app.waitFor("role:listbox[Blocks]", { state: "gone" });
@@ -431,4 +431,81 @@ test("Escape then Shift-Down selects a run of blocks, which Backspace deletes; S
   await app.press(REVIEW);
   await app.keyboard.press("shift+down");
   await app.waitFor("role:toolbar[Format]");
+});
+
+test("a toggle hides and shows its body with its arrow", async () => {
+  const app = await openDemo();
+  await newLine(app);
+  await app.type("label:Document", "/toggle");
+  await app.keyboard.press("enter");
+  await app.waitFor("role:listbox[Blocks]", { state: "gone" });
+  await app.type("label:Document", "Details");
+  await app.keyboard.press("right");
+  await app.type("label:Document", "Hidden words");
+  await app.waitFor("text:Hidden words");
+  // What the screen shows (a hidden view is still made, so selectors find it).
+  const shown = (text: string) => app.texts().includes(text);
+  await app.press("role:button[Collapse]");
+  await app.waitFor("role:button[Expand]");
+  expect(shown("Hidden words")).toBe(false);
+  expect(shown("Details")).toBe(true);
+  await app.press("role:button[Expand]");
+  await app.waitFor("role:button[Collapse]");
+  expect(shown("Hidden words")).toBe(true);
+});
+
+test("a list item dragged to the right goes under the item above it, and to the left comes back out", async () => {
+  const app = await openDemo(true);
+  const handle = "role:button[Drag to move, press for the menu]";
+  await app.hover("text:Brief the regional leads");
+  await app.waitFor(handle);
+  // Across, staying on its line: nested, a numbered list inside a numbered list letters it.
+  await app.drag(handle, { x: 60 });
+  await app.waitFor("text:a.");
+  expect(app.texts().includes("Brief the regional leads")).toBe(true);
+  await app.hover("text:Brief the regional leads");
+  await app.waitFor(handle);
+  await app.drag(handle, { x: -60 });
+  await app.waitFor("text:a.", { state: "gone" });
+});
+
+test("a run of blocks moves and duplicates as one", async () => {
+  const app = await openDemo();
+  const index = order(app);
+  await app.press("Confirm the launch date");
+  await app.keyboard.press("escape");
+  await app.keyboard.press("shift+down");
+  // The first two items go below the third, in their order.
+  await app.keyboard.press("mod+shift+down");
+  await app.wait(200);
+  expect(index("Open the beta to five percent of traffic")).toBeLessThan(index("Confirm the launch date"));
+  expect(index("Confirm the launch date")).toBeLessThan(index("Brief the regional leads"));
+  // Still selected: they go back up together.
+  await app.keyboard.press("mod+shift+up");
+  await app.wait(200);
+  expect(index("Brief the regional leads")).toBeLessThan(index("Open the beta to five percent of traffic"));
+  // A copy of both.
+  await app.keyboard.press("mod+d");
+  await app.wait(200);
+  expect(app.count("text:Confirm the launch date")).toBe(2);
+  expect(app.count("text:Brief the regional leads")).toBe(2);
+});
+
+test("a list item carried across says what the drop will do, and a toggle nested in a callout has its arrow", async () => {
+  const app = await openDemo(true);
+  const handle = "role:button[Drag to move, press for the menu]";
+  await app.hover("text:Brief the regional leads");
+  await app.waitFor(handle);
+  await app.dragAndHold(handle, { x: 60 });
+  await app.waitFor("text:Drop to indent");
+  await app.drop();
+  await app.waitFor("text:a.");
+  // A toggle inside a callout.
+  await newLine(app);
+  await app.type("label:Document", "/callout");
+  await app.keyboard.press("enter");
+  await app.type("label:Document", "/toggle");
+  await app.keyboard.press("enter");
+  await app.type("label:Document", "Inner");
+  await app.waitFor("role:button[Collapse]");
 });

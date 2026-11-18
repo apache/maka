@@ -6,7 +6,9 @@
   `ios` / `macos` `infoPlist` keys and `entitlements` (`crates/nsh-cli/src/apple.rs`: JSON as property list values,
   the keys NSH sets refused with what to set instead; `MinimumOSVersion` / `LSMinimumSystemVersion` are the runtime's
   minimum, `IOS_MINIMUM` / `MACOS_MINIMUM`, which an app may raise but not lower (checked when `nsh.json` is read;
-  `actool` compiles the iOS icon for the version declared); device builds check entitlements against the profile,
+  `actool` compiles the iOS icon, and `ios.launchScreen`'s color and image named in `UILaunchScreen`, for the version
+  declared, and the app's Rust builds for iOS and macOS compile for it unless the environment sets the deployment
+  target); device builds check entitlements against the profile,
   which keeps the app's values in place of its own). iOS: `.app`, `.ipa` with `--sign <identity>
   --profile <file.mobileprovision>` (entitlements come from the profile; icons are compiled by `actool` into `Assets.car`).
   Android: an APK assembled without Gradle (`aapt2 link`, native libraries stored uncompressed and 16 KB ZIP aligned, `apksigner`;
@@ -27,6 +29,10 @@
   options); plus the same as `<name>.zip`. No tools are needed; `--run` launches the executable.
   GPUI is the backend for embedding in GPUI and GPUI Kit apps (below), which ship it in their own executable: `nsh
   package` refuses `--target gpui` and names this OS's target, the one backend each desktop packages apps with.
+- iOS device packages check that the runner contains an `arm64` slice and default
+  `UIRequiredDeviceCapabilities` to `["arm64"]` (overridable with `ios.infoPlist`). Before signing,
+  the CLI writes Xcode's `DT*` metadata and `BuildMachineOSBuild` from the active toolchain
+  (`xcrun`, `xcodebuild -version`, `sw_vers`); tool discovery failures stop packaging.
 - Links: `nsh.json` `"schemes": [...]` names the URL schemes a packaged app claims (checked by
   `nsh_core::url_scheme::schemes_from_json` in the bundler, the CLI and a Rust app's generated root). `nsh package`
   declares them to the system (`CFBundleURLTypes` on macOS and iOS) and writes them to `app.json`, which the runner
@@ -35,6 +41,13 @@
   core drops the links of other schemes and keeps the rest until the app listens (`UrlScheme.on("open")`,
   `next_url_scheme_open()`). Links are untrusted input: the app checks what they ask for, and nothing navigates on its own.
   A signed package embedded in another app claims no schemes: the embedding app owns them.
+- Handoff: `nsh.json` `"handoff": true` makes `nsh package` declare `<id>.url` in `NSUserActivityTypes` on macOS and
+  iOS; the release runners turn it on when their bundle declares it (`nsh_platform_apple::handoff::declared`), and an
+  embedding app with `NshAppView.handoff` / `SurfaceOptions::handoff` / `AppOptions::handoff`. The core sends the
+  address the app sets (`Command::SetAppUrl` / `PushAppUrl`) to every platform; iOS and macOS make it the current
+  `NSUserActivity` (`nsh_platform_apple::handoff::Activity`) and hand an activity the system continues to the app as a
+  link (`continued_url`, the root's `UrlScheme` event); web pages go to the other device's browser, since the core
+  takes no web links. The other native platforms ignore the command.
 - Android's `libnsh.so` uses 16 KB ELF LOAD alignment and a 16 KB-aligned RELRO end, set by `nsh-platform-android/build.rs` and
   the generated Android runtimes' build scripts. `cargo xtask android` checks every linked library's LOAD alignment
   with the NDK's `llvm-objdump` before copying it into the runtime; `cargo xtask dist` uses the same checked libraries
@@ -163,7 +176,9 @@
   surface, no globals.
   - *Launch parameters*: `set_params(map)` before a load; the engine snapshots them when it starts (`HostChannel::bridge`)
     and `host.params` reads them synchronously (a JSON object, `{}` without any), fixed for the app's life. Later
-    requests ("open conversation X" from a notification) are events.
+    requests ("open conversation X" from a notification) are events. Parameters alone leave the channel unconfigured
+    (`HostBridge::available`): a handler or an event configures it, so the web page's `runModule({ params })` keeps
+    the app's calls on the page's host.
   - *Events* (`send(name, data)`, any thread, never waiting): `Message::HostEvent` on the attached engine
     (`HostChannel::attach`: an engine attaches when it starts and detaches when it goes, by id, so a reload's new engine
     is not detached by the old one). While no engine runs, the channel keeps them for the next (`HostInbox`, 256, the
@@ -256,6 +271,16 @@
   follows too. `None` / `nil` / `null` / 0 follows the system's again (its settings are read again). The text
   size scales what allows font scaling (`Core::set_font_scale`): texts, inputs, the components' labels; lengths, `rem`
   in classes included, stay as they are. The layout direction stays the system's language's.
+- **The host's own floating UI** (the safe area): a host that draws its own UI over the view (a tab bar floating over
+  the content) adds it to the safe area, so the app's content scrolls under that UI and still ends clear of it
+  (`safeAreaInsets()`, `env(safe-area-inset-*)`). On iOS that is UIKit's own: the surface reads the view's
+  `safeAreaInsets` (`surface.rs`), which the host's `additionalSafeAreaInsets` on its view controller adds to. On
+  Android the view publishes the system bars' insets it sits under, so Java `NshView.setAdditionalSafeAreaInsets(left,
+  top, right, bottom)` (px, on the UI thread) adds the host's on top in `publishEnvironment`; the keyboard still
+  measures from the view's edge. All zeros takes them away. When the safe area changes (the host's insets or the
+  system bars), the view reports every mounted screen's insets again (`Mounter.reportAllScreenInsets`), so the pages
+  already shown in a `NavStack` follow. A host's UI floating over the content is a mobile pattern: the desktop hosts
+  lay their own UI out beside the view.
 - **The host's theme overrides**: a host that embeds one app in several branded host apps overrides the app's theme
   tokens (brand colors, `radius`, ...) at run time: Rust `AppView::set_theme_overrides(Option<&str>)` (AppKit, GTK,
   Win32; GPUI's takes `cx` as well; the iOS `AppView`'s too), Swift `NshAppView.setThemeOverrides(_:)` (C `nsh_app_set_theme_overrides`), Java
@@ -308,7 +333,8 @@ NSH draws (`src/layers.rs`).
 
 - **One GPUI.** NSH draws with GPUI Fast (`gpui-fast` from crates.io); GPUI Kit (`gpui-kit` / `gpui-component`) must
   use it too: its `gpui-fast` feature. `cargo tree -i gpui-fast` must show one version, else the app has two GPUIs
-  and NSH's views are not the app's elements. `nsh_platform_gpui::gpui` re-exports NSH's.
+  and NSH's views are not the app's elements. `nsh_platform_gpui::gpui` re-exports NSH's. NSH builds with GPUI Fast
+  0.1.14 or later, which GPUI Kit is built on from 0.9.1.
 - **A view.** `cx.new(|cx| AppView::new(options, window, cx))`, then `view.read(cx).load(App::Js(bundle))` (or a
   Rust app's root); the app puts the entity wherever it wants as a child element. The surface fills the space its
   parent gives it and follows it when resized (each layout reports the size to the engine). Several views run at once,
@@ -362,11 +388,13 @@ NSH draws (`src/layers.rs`).
   view runs, as `NshAppView.limits` and `NshView.setLimits` on iOS and Android: `Limits::default()` (an app embedded
   in another app) unless set; the development host `nsh-gpui-host` runs apps on its own, with `Limits::standalone()`
   (`sandbox.md`).
-- **Storage.** Each app keeps its `Storage` in `<data dir>/<app id>/storage.json`, which the engine picks
-  (`EngineConfig::data_dir`, `app_dir_name(App::app_id())`, `default` without a valid id): the id travels with the app
+- **Storage.** Each app keeps its `Storage` in `storage.json` of its data directory, which the engine picks
+  (`EngineConfig::data_dir` as it is, else `<EngineConfig::support_dir>/<app_dir_name(App::app_id())>`, `default`
+  without a valid id): the id travels with the app
   (`app.json` next to a bundle, written by `nsh build` / `nsh package`; the dev server's bundle message; a verified
-  package's id; `Root::app_id` in Rust apps' generated code). Platforms only give the data dir: the system's
-  (`nsh_engine::data_dir()`) on the desktops (`AppOptions::data_dir` to change it), `Application Support/nsh` on iOS,
+  package's id; `Root::app_id` in Rust apps' generated code). Platforms only give the support dir: the system's
+  (`nsh_engine::support_dir()`) on the desktops, where `AppOptions::data_dir` names one app's directory instead (the
+  release runners set it from `nsh.json` `dataDir`, the development hosts from `--data-dir`), `Application Support/nsh` on iOS,
   `filesDir/nsh` on Android. `AppOptions::storage`, `NshAppView.storageDirectory` and `NshView.setStorageDirectory`
   override one app's place; all from the next load.
 - **Notifications.** The process's notifications (`nsh`'s `Notifications`) belong to the embedding app unless it

@@ -124,8 +124,7 @@ pub(crate) struct Props {
     pub(crate) bits: u32,
     /// The maximum length, in UTF-16 units.
     pub(crate) max_length: u32,
-    /// `ES_AUTOHSCROLL` / `ES_AUTOVSCROLL`: how the text scrolls (never a
-    /// scroll bar: there is no window to put one in).
+    /// Scroll-bar support and auto-scrolling flags. The host draws the indicators.
     pub(crate) scroll: u32,
     /// The character a password shows.
     pub(crate) password: u16,
@@ -179,12 +178,30 @@ pub(crate) struct Notes {
     pub(crate) composition_end: bool,
 }
 
+impl Notes {
+    /// Nothing was noted.
+    fn is_empty(&self) -> bool {
+        !self.changed
+            && !self.selection
+            && self.composition_start.is_none()
+            && !self.composition_end
+    }
+}
+
+/// The services' id of the timer that hands the field the notifications
+/// they sent outside its messages ([`notes_later`]); their own ids are
+/// small.
+const NOTES_LATER: u32 = u32::MAX;
+
 /// Our `ITextHost2`.
 #[repr(C)]
 struct Host {
     vtbl: *const HostVtbl,
     refs: Cell<u32>,
     hwnd: HWND,
+    /// The window the field shows in (`hwnd`'s, or one of the app's own):
+    /// where its client points are on the screen.
+    shown_in: Cell<HWND>,
     props: RefCell<Props>,
     caret: Cell<Caret>,
     notes: Cell<Notes>,
@@ -199,7 +216,8 @@ struct Host {
     /// Asks the field to draw again.
     invalidate: Box<dyn Fn()>,
     /// Called after a timer's message, which may have changed the
-    /// selection (a drag scrolling).
+    /// selection (a drag scrolling), and once the services noted a change
+    /// outside the field's messages ([`notes_later`]).
     after_timer: Box<dyn Fn()>,
 }
 
@@ -239,6 +257,7 @@ impl Editor {
             vtbl: &HOST_VTBL,
             refs: Cell::new(1),
             hwnd,
+            shown_in: Cell::new(hwnd),
             props: RefCell::new(props),
             caret: Cell::new(Caret::default()),
             notes: Cell::new(Notes::default()),
@@ -288,6 +307,11 @@ impl Editor {
     fn host(&self) -> &Host {
         // SAFETY: the editor holds a reference to the host.
         unsafe { &*self.host }
+    }
+
+    /// The field shows in window `hwnd`: the IME's candidates go by it.
+    pub(crate) fn show_in(&self, hwnd: HWND) {
+        self.host().shown_in.set(hwnd);
     }
 
     /// The host's properties, to read.
@@ -373,6 +397,37 @@ impl Editor {
         (min, max, pos, page)
     }
 
+    /// The height of the text laid out `width` pixels wide (pixels).
+    pub(crate) fn text_height(&self, width: i32) -> Option<i32> {
+        use windows::Win32::{
+            Foundation::SIZE,
+            Graphics::Gdi::{GetDC, ReleaseDC},
+            UI::Controls::RichEdit::{TXTNS_FITTOCONTENT, TXTNS_INCLUDELASTLINE},
+        };
+        let (mut w, mut h) = (width.max(1), 1);
+        // The extent (HIMETRIC) sets the width to fit the text in.
+        let extent = SIZE {
+            cx: w * 2540 / 96,
+            cy: 2540 / 96,
+        };
+        // SAFETY: the screen's DC, released below; local out values.
+        unsafe {
+            let dc = GetDC(None);
+            let done = self.services.TxGetNaturalSize(
+                1, // DVASPECT_CONTENT
+                dc,
+                Default::default(),
+                std::ptr::null_mut(),
+                (TXTNS_FITTOCONTENT.0 | TXTNS_INCLUDELASTLINE.0) as u32,
+                &extent,
+                &mut w,
+                &mut h,
+            );
+            ReleaseDC(None, dc);
+            done.ok().map(|_| h)
+        }
+    }
+
     /// Draws the text into `target` (an `ID2D1RenderTarget` whose
     /// transform maps client pixels), in `bounds`. False when the services
     /// would not draw: while an input method's edit holds the text (the
@@ -429,7 +484,10 @@ impl Editor {
 impl Drop for Editor {
     fn drop(&mut self) {
         let host = self.host;
-        TIMERS.with(|t| {
+        // `try_with`: an editor dropped during thread teardown, after the
+        // timers' list, must not abort the process (#1767); the thread's
+        // timers go with it.
+        let _ = TIMERS.try_with(|t| {
             t.borrow_mut().retain(|&(id, h, _)| {
                 if h == host {
                     // SAFETY: a thread timer we set.
@@ -726,6 +784,17 @@ unsafe extern "system" fn timer_proc(_: HWND, _: u32, id: usize, _: u32) {
     unsafe {
         let host = &*host;
         let services = host.services.get();
+        if re_id == NOTES_LATER {
+            // Once: the notes are the field's to take from here.
+            TIMERS.with(|t| t.borrow_mut().retain(|e| e.0 != id));
+            let _ = KillTimer(None, id);
+            // Nothing left when the field took them after a message of its
+            // own meanwhile.
+            if !services.is_null() && !host.notes.get().is_empty() {
+                (host.after_timer)();
+            }
+            return;
+        }
         if services.is_null() {
             return;
         }
@@ -748,6 +817,31 @@ unsafe extern "system" fn tx_set_timer(this: This, id: u32, ms: u32) -> BOOL {
     }
     TIMERS.with(|t| t.borrow_mut().push((sys, host, id)));
     BOOL(1)
+}
+
+/// Hands the field `host`'s notes once the thread is back in its message
+/// loop, unless it took them by then. The field takes them after each
+/// message it sends the services, but an input method that writes through
+/// Text Services Framework (Microsoft Pinyin, the other built-in ones)
+/// edits their text from the thread's message loop, in no message of the
+/// field's: its composition, and the text it commits, waited for the next
+/// key the field sent (a commit showed only once another key was typed).
+fn notes_later(host: *const Host) {
+    // `try_with`: none during thread teardown (#1767).
+    let pending = TIMERS.try_with(|t| {
+        t.borrow()
+            .iter()
+            .any(|&(_, h, re)| h == host && re == NOTES_LATER)
+    });
+    if !matches!(pending, Ok(false)) {
+        return;
+    }
+    // SAFETY: a thread timer with a TIMERPROC that lives for the program;
+    // `Editor`'s drop kills it with the services' timers.
+    let sys = unsafe { SetTimer(None, 0, 0, Some(timer_proc)) };
+    if sys != 0 {
+        let _ = TIMERS.try_with(|t| t.borrow_mut().push((sys, host, NOTES_LATER)));
+    }
 }
 
 unsafe extern "system" fn tx_kill_timer(this: This, id: u32) {
@@ -794,12 +888,12 @@ unsafe extern "system" fn tx_set_cursor(_: This, _: HCURSOR, _: BOOL) {
 
 unsafe extern "system" fn tx_screen_to_client(this: This, pt: *mut POINT) -> BOOL {
     // SAFETY: the window and a point from the caller.
-    unsafe { ScreenToClient(host(this).hwnd, pt) }
+    unsafe { ScreenToClient(host(this).shown_in.get(), pt) }
 }
 
 unsafe extern "system" fn tx_client_to_screen(this: This, pt: *mut POINT) -> BOOL {
     // SAFETY: as above.
-    unsafe { ClientToScreen(host(this).hwnd, pt) }
+    unsafe { ClientToScreen(host(this).shown_in.get(), pt) }
 }
 
 unsafe extern "system" fn tx_activate(_: This, old: *mut i32) -> HRESULT {
@@ -939,9 +1033,14 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
             }
         }
         EN_ENDCOMPOSITION => notes.composition_end = true,
-        _ => {}
+        _ => return S_OK,
     }
     host.notes.set(notes);
+    // Not while drawing, nor once the editor is going (its timers are
+    // killed before the services are deactivated, which may notify).
+    if !host.drawing.get() && !host.services.get().is_null() {
+        notes_later(host);
+    }
     S_OK
 }
 
@@ -1028,8 +1127,17 @@ unsafe extern "system" fn tx_get_horz_extent(_: This, out: *mut i32) -> HRESULT 
     S_FALSE
 }
 
+/// How much the services' drawing is scaled into a target of `scale`:
+/// they turn client pixels into the target's units by GDI's DPI
+/// ([`dpi`]), whatever the target's own DPI is. 1 on a monitor at the
+/// system's scale; on any other the text would be drawn `scale` over GDI's
+/// scale times too large, from the target's origin.
+pub(crate) fn target_scale(hwnd: HWND, scale: f32) -> f32 {
+    dpi(hwnd) / (96.0 * scale.max(0.01))
+}
+
 /// The window's vertical DPI as GDI reports it, which the services convert
-/// twips to pixels with.
+/// twips to pixels with, and client pixels to a Direct2D target's units.
 pub(crate) fn dpi(hwnd: HWND) -> f32 {
     // SAFETY: a DC of the window, released after the query.
     unsafe {
@@ -1037,5 +1145,230 @@ pub(crate) fn dpi(hwnd: HWND) -> f32 {
         let dpi = GetDeviceCaps(Some(dc), LOGPIXELSY);
         ReleaseDC(Some(hwnd), dc);
         if dpi > 0 { dpi as f32 } else { 96.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use windows::Win32::UI::{
+        Controls::RichEdit::{EM_SETEVENTMASK, ENM_CHANGE, ENM_SELCHANGE},
+        WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW},
+    };
+
+    use super::*;
+
+    /// `EM_REPLACESEL`.
+    const EM_REPLACESEL: u32 = 0x00C2;
+
+    /// Runs the thread's message loop for `ms`.
+    fn pump(ms: u64) {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < until {
+            let mut msg = MSG::default();
+            // SAFETY: the thread's own queue.
+            unsafe {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&msg);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// An editor that counts the times it hands its notes on, with no
+    /// notes left.
+    fn editor() -> (Editor, Rc<Cell<u32>>) {
+        let handed = Rc::new(Cell::new(0));
+        let count = handed.clone();
+        let e = Editor::new(
+            HWND::default(),
+            Props::default(),
+            Box::new(|| {}),
+            Box::new(move || count.set(count.get() + 1)),
+        )
+        .expect("RichEdit");
+        e.send(EM_SETEVENTMASK, 0, (ENM_CHANGE | ENM_SELCHANGE) as isize);
+        pump(30);
+        e.take_notes();
+        handed.set(0);
+        (e, handed)
+    }
+
+    fn type_in(e: &Editor, text: &str) {
+        let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+        e.send(EM_REPLACESEL, 1, wide.as_ptr() as isize);
+    }
+
+    /// Where the ink of "MMMM" lands (pixels: left, top, right, bottom),
+    /// drawn in the client rectangle (200, 100)–(600, 200) through a target
+    /// of `scale` with the transform scaled by `k`.
+    fn ink(scale: f32, k: f32) -> Option<(u32, u32, u32, u32)> {
+        let dpi = 96.0 * scale;
+        use windows::Win32::{
+            Graphics::{
+                Direct2D::{
+                    Common::{
+                        D2D_POINT_2U, D2D_RECT_U, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        D2D1_PIXEL_FORMAT,
+                    },
+                    D2D1_BITMAP_OPTIONS, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                    D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET,
+                    D2D1_BITMAP_PROPERTIES1, D2D1_MAP_OPTIONS_READ,
+                },
+                Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+            },
+            UI::Controls::RichEdit::{CFM_COLOR, CFM_FACE, CFM_SIZE, TXTBIT_D2DDWRITE},
+        };
+        use windows_numerics::Matrix3x2;
+        let gfx = crate::gfx::get().unwrap();
+        let mut p = Props {
+            client: RECT {
+                left: 200,
+                top: 100,
+                right: 600,
+                bottom: 200,
+            },
+            bits: TXTBIT_D2DDWRITE,
+            ..Props::default()
+        };
+        p.char_format.Base.dwMask = CFM_FACE | CFM_SIZE | CFM_COLOR;
+        p.char_format.Base.yHeight = (40.0 * 1440.0 / super::dpi(HWND::default())) as i32;
+        for (i, u) in "Segoe UI".encode_utf16().enumerate() {
+            p.char_format.Base.szFaceName[i] = u;
+        }
+        let client = p.client;
+        let e = Editor::new(HWND::default(), p, Box::new(|| {}), Box::new(|| {})).unwrap();
+        e.set_text("MMMM");
+        let (w, h) = (1600u32, 600u32);
+        let props = |options: D2D1_BITMAP_OPTIONS| D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: options,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let size = D2D_SIZE_U {
+            width: w,
+            height: h,
+        };
+        // SAFETY: COM calls on live objects; the mapped memory is read
+        // before `Unmap`.
+        unsafe {
+            let dc = &gfx.dc;
+            let target = dc
+                .CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_TARGET))
+                .unwrap();
+            dc.SetTarget(&target);
+            dc.SetDpi(dpi, dpi);
+            dc.BeginDraw();
+            dc.Clear(None);
+            dc.SetTransform(&Matrix3x2 {
+                M11: k,
+                M12: 0.0,
+                M21: 0.0,
+                M22: k,
+                M31: 0.0,
+                M32: 0.0,
+            });
+            assert!(e.draw(dc.as_raw(), client));
+            dc.SetTransform(&Matrix3x2::identity());
+            dc.EndDraw(None, None).unwrap();
+            dc.SetTarget(None);
+            dc.SetDpi(96.0, 96.0);
+            let read = dc
+                .CreateBitmap(
+                    size,
+                    None,
+                    0,
+                    &props(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW),
+                )
+                .unwrap();
+            read.CopyFromBitmap(
+                Some(&D2D_POINT_2U { x: 0, y: 0 }),
+                &target,
+                Some(&D2D_RECT_U {
+                    left: 0,
+                    top: 0,
+                    right: w,
+                    bottom: h,
+                }),
+            )
+            .unwrap();
+            let mapped = read.Map(D2D1_MAP_OPTIONS_READ).unwrap();
+            let mut b: Option<(u32, u32, u32, u32)> = None;
+            for y in 0..h {
+                let row = std::slice::from_raw_parts(
+                    mapped.bits.add((y * mapped.pitch) as usize),
+                    (w * 4) as usize,
+                );
+                for x in 0..w {
+                    if row[(x * 4 + 3) as usize] > 40 {
+                        b = Some(match b {
+                            None => (x, y, x, y),
+                            Some((l, t, r, bt)) => (l.min(x), t.min(y), r.max(x), bt.max(y)),
+                        });
+                    }
+                }
+            }
+            read.Unmap().unwrap();
+            b
+        }
+    }
+
+    /// A window on a monitor of another scale than the system's (GDI's
+    /// DPI stays the system's there): the text is drawn where the client
+    /// rectangle is, at its size, whatever the target's scale.
+    #[test]
+    fn text_lands_in_the_client_rectangle_at_any_target_scale() {
+        let hwnd = HWND::default();
+        let system = ink(dpi(hwnd) / 96.0, 1.0).expect("text at the system's scale");
+        assert!(system.0 >= 200 && system.1 >= 100 && system.2 < 600 && system.3 < 200);
+        for scale in [1.0, 1.25, 1.5, 2.5] {
+            let at = ink(scale, target_scale(hwnd, scale)).expect("text");
+            for (a, b) in [
+                (at.0, system.0),
+                (at.1, system.1),
+                (at.2, system.2),
+                (at.3, system.3),
+            ] {
+                assert!(a.abs_diff(b) <= 2, "at {scale}: {at:?}, not {system:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn notes_left_untaken_reach_the_field_from_the_loop() {
+        // As an input method's commit through Text Services Framework,
+        // which is in no message of the field's.
+        let (e, handed) = editor();
+        type_in(&e, "你好");
+        assert_eq!(handed.get(), 0, "not from inside the services");
+        pump(60);
+        assert_eq!(handed.get(), 1, "handed on once");
+        assert!(e.take_notes().changed, "the notes stay for the field");
+    }
+
+    #[test]
+    fn notes_the_field_took_are_not_handed_again() {
+        let (e, handed) = editor();
+        type_in(&e, "a");
+        assert!(e.take_notes().changed);
+        pump(60);
+        assert_eq!(handed.get(), 0);
+    }
+
+    #[test]
+    fn a_gone_editor_hands_nothing_on() {
+        let (e, handed) = editor();
+        type_in(&e, "a");
+        drop(e);
+        pump(60);
+        assert_eq!(handed.get(), 0);
+        assert!(TIMERS.with(|t| t.borrow().is_empty()));
     }
 }

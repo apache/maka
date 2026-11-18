@@ -34,7 +34,7 @@ pub fn main() {
     let mut asset_base = None;
     let mut package = None;
     let mut roots = Vec::new();
-    let mut data_dir = None;
+    let mut support_dir = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -63,7 +63,7 @@ pub fn main() {
             "--fps" => fps = true,
             // Where apps keep their data (`nsh test --target ios` gives each
             // app a fresh one); the app's data directory otherwise.
-            "--data-dir" => data_dir = args.next().map(PathBuf::from),
+            "--data-dir" => support_dir = args.next().map(PathBuf::from),
             // Foundation reads `-Key value` pairs as user defaults.
             other if other.starts_with('-') && !other.starts_with("--") => {
                 args.next();
@@ -93,10 +93,10 @@ pub fn main() {
             fps,
             asset_base,
             // Its caches too (downloaded images): a test's app starts with none.
-            cache: data_dir.as_ref().map_or_else(Default::default, |dir| {
+            cache: support_dir.as_ref().map_or_else(Default::default, |dir| {
                 nsh_engine::CacheOptions::at(nsh_engine::CacheLocation::Dir(dir.join("cache")))
             }),
-            data_dir,
+            support_dir,
         },
     );
 }

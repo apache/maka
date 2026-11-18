@@ -49,11 +49,18 @@ serde_json = { workspace = true, optional = true }
 # The requests routes' JS functions answer, waiting for the test file's VM.
 tokio = { workspace = true, features = ["sync"], optional = true }
 ureq = { workspace = true, optional = true }
+url.workspace = true
 
 # The dev client the agent's `Tester` answers through (not the web's page,
 # which talks to the dev server in JS).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 nsh-dev = { workspace = true, optional = true, features = ["client"] }
+# The headless driver's engines run what a native host does: WebSockets,
+# updates, SVG images, remote images and `fetch`. Native only: the web's
+# development runtime links the agent, and these features would pull
+# ureq and rustls (ring, getrandom 0.2) into WebAssembly.
+nsh-core = { workspace = true, features = ["websocket", "updater", "svg", "loader"] }
+nsh-engine = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 # `every_export_is_documented` reads the specs' text (nsh-core `declarations`).

@@ -353,17 +353,13 @@ fn tls_config() -> Result<rustls::ClientConfig, JsError> {
         .with_safe_default_protocol_versions()
         .map_err(failed)?;
     // The system trust store: roots the OS (or an administrator) trusts,
-    // such as a corporate proxy's, verify without NSH bundling them.
-    #[cfg(not(target_os = "android"))]
+    // such as a corporate proxy's, verify without NSH bundling them. On
+    // Android the host initializes the verifier over JNI first.
     let builder = builder
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
             rustls_platform_verifier::Verifier::new(provider).map_err(failed)?,
         ));
-    #[cfg(target_os = "android")]
-    let builder = builder.with_root_certificates(rustls::RootCertStore::from_iter(
-        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-    ));
     Ok(builder.with_no_client_auth())
 }
 

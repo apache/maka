@@ -45,7 +45,7 @@ use crate::{
     },
     websocket::{WebSocketData, WebSocketEvent, WebSocketRequest, WebSocketTask},
 };
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
 mod native;
 /// The largest message one write sends or one read returns, and the bytes
 /// of unread messages past which reading pauses.
@@ -267,7 +267,7 @@ impl WebSocket {
         sys: System,
     ) -> Result<Later<WebSocketConnection>, JsError> {
         let Some(transport) = sys.websocket.clone() else {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             {
                 let connection = native::WebSocket::connect(url, options, sys)?;
                 return Ok(Later::new(async move {
@@ -281,6 +281,12 @@ impl WebSocket {
                 JsError::Error("The host has no WebSocket transport configured".into())
                     .with_code(codes::UNAVAILABLE),
             );
+            #[cfg(all(not(target_arch = "wasm32"), not(feature = "websocket")))]
+            return Err(JsError::Error(
+                "this build has no WebSocket transport: nsh-core's `websocket` feature is off"
+                    .into(),
+            )
+            .with_code(codes::UNAVAILABLE));
         };
         let parsed = url::Url::parse(&url)
             .map_err(|error| JsError::Type(format!("invalid WebSocket URL: {error}")))?;
@@ -351,7 +357,7 @@ impl WebSocket {
 }
 
 enum Connection {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
     Native(native::WebSocketConnection),
     Host(HostConnection),
 }
@@ -370,7 +376,7 @@ impl WebSocketConnection {
     /// with `ERR_SOCKET_CLOSED`.
     pub(crate) fn write(&self, data: Data) -> Result<Later<()>, JsError> {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.write(data),
             Connection::Host(host) => {
                 let data = match data {
@@ -436,7 +442,7 @@ impl WebSocketConnection {
     /// takes one.
     pub(crate) fn read(&self) -> Result<Later<Option<Data>>, JsError> {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.read(),
             Connection::Host(host) => {
                 if host.state.borrow_mut().reading.replace(true) {
@@ -489,7 +495,7 @@ impl WebSocketConnection {
     ) -> Result<Later<()>, JsError> {
         let frame = CloseStatus::requested(code, reason)?;
         Ok(match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.close(frame),
             Connection::Host(host) => {
                 let paused = {
@@ -567,7 +573,7 @@ impl WebSocketConnection {
     /// How the connection closed, once it did.
     fn status(&self) -> Option<CloseStatus> {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.status(),
             Connection::Host(host) => host.state.borrow().status.clone(),
         }
@@ -749,6 +755,11 @@ impl HostState {
 }
 
 #[cfg(test)]
+// Without the native client, `Connection` has only `Host`.
+#[cfg_attr(
+    any(target_arch = "wasm32", not(feature = "websocket")),
+    allow(irrefutable_let_patterns)
+)]
 mod tests {
     /// What `later` settles JS's promise with: its value as JSON (`null`
     /// for `undefined` too), or its error's `code`.
@@ -833,7 +844,7 @@ mod tests {
 
     // Android has no other dependency selecting a TLS provider. A peer closing
     // at once must produce a handshake error, not a missing-provider panic.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
     #[tokio::test]
     async fn native_wss_has_a_tls_provider() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -905,7 +916,7 @@ mod tests {
             ..System::default()
         }
         .with_refuse_connections(Some(refuse));
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
         {
             let Err(error) = WebSocket::connect("ws://example.com".into(), None, native.clone())
             else {

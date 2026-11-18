@@ -49,7 +49,7 @@ export function createAnimation(invoke, live, wake, environment) {
       const extrapolate = config.extrapolate ?? "clamp";
       return derive([1,idOf(this),config.inputRange,config.outputRange,config.extrapolateLeft ?? extrapolate,config.extrapolateRight ?? extrapolate,config.easing], [this]);
     },
-    diffClamp(min,max,options) { return derive([7,idOf(this),min,max,!!options?.snap], [this]); },
+    diffClamp(min,max,options) { return derive([7,idOf(this),min,max,!!options?.snap], [this,min,max].filter(v => nodes.has(v))); },
     add(b) { return math("add",this,b); }, sub(b) { return math("sub",this,b); },
     mul(b) { return math("mul",this,b); }, div(b) { return math("div",this,b); }, mod(b) { return math("mod",this,b); },
   });

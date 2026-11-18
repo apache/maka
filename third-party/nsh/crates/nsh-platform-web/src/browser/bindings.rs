@@ -464,6 +464,11 @@ impl JsHost for Bindings {
             .map_or(f64::NAN, |d| d.as_millis() as f64);
         Value::checked(invoke(41, bytes.0, name.0, mime.0, millis)).map(owned)
     }
+    fn new_blob(&self, data: &nsh_core::ImageData, mime: &str) -> Result<JsRaw, PropError> {
+        let bytes = Value::bytes(data.bytes())?;
+        let mime = Value::string(mime)?;
+        Value::checked(invoke(51, bytes.0, mime.0, 0, 0.0)).map(owned)
+    }
     fn new_date(&self, value: f64) -> Result<JsRaw, PropError> {
         Value::checked(invoke(25, 0, 0, 0, value)).map(owned)
     }

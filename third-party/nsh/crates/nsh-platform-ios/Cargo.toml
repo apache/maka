@@ -13,12 +13,12 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "svg"]
 # JS apps (bundles, signed packages, the embedding API's loaders); without
 # it, a Rust app links no QuickJS.
 js = ["nsh-engine/js-core"]
 # Development host support: dev-server client, log forwarding, error overlay.
-dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
+dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "dep:nsh-dev", "dep:nsh-testing", "svg"]
 # The C ABI the NativeShell Swift module is built on (`embed`), exported for
 # the static library `cargo xtask dist` builds with `cargo rustc --crate-type
 # staticlib`. Off for nsh-ios-host / nsh-ios-app, so they export nothing.
@@ -48,8 +48,18 @@ zlib = ["js", "nsh-engine/zlib"]
 # The standard JS module `crypto` and the globals of Web Crypto.
 crypto = ["js", "nsh-engine/crypto"]
 
+# The native WebSocket client (tokio-tungstenite, rustls). Without it
+# `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+websocket = ["nsh-core/websocket"]
+# App self-updates (`nsh/updater`). Without it a check finds no update.
+updater = ["nsh-core/updater"]
+
+# SVG images (resvg). Without it an SVG is recognized and shows nothing,
+# its load failing with a message naming the feature.
+svg = ["nsh-core/svg"]
+
 [dependencies]
-nsh-core = { workspace = true, features = ["svg"] }
+nsh-core.workspace = true
 nsh-engine.workspace = true
 nsh-base.workspace = true
 serde_json.workspace = true
@@ -73,5 +83,6 @@ block2.workspace = true
 objc2-foundation.workspace = true
 objc2-quartz-core.workspace = true
 objc2-ui-kit.workspace = true
+objc2-authentication-services.workspace = true
 rustc-hash.workspace = true
 libc.workspace = true

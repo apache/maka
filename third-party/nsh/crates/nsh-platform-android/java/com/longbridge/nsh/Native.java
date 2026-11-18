@@ -92,6 +92,17 @@ final class Native {
     static final int PINCH = 80;
     static final int WEB_EVALUATION = 81;
     static final int MOUSE_UP = 82;
+    static final int CANVAS_IMAGE = 83;
+    static final int KEY_DOWN = 84;
+    static final int KEY_UP = 85;
+    static final int WEB_VIEW_REPLY = 86;
+    static final int DOWNLOAD_PENDING = 87;
+    static final int DOWNLOAD_OFFER = 88;
+    static final int DOWNLOAD_PROGRESS = 89;
+    static final int DOWNLOAD_END = 90;
+    static final int SHARE = 91;
+    static final int DETENT_CHANGE = 92;
+    static final int AUTH_SESSION = 93;
 
     /**
      * Draws the SVG {@code bytes} for a view {@code maxPx} pixels on its longer side, with its shorter side that long
@@ -119,6 +130,9 @@ final class Native {
     /** No VM limits for the apps loaded next: they run on their own. */
     static native void setStandaloneLimits(long handle);
 
+    /** Whether scroll views make their content's native views only near their viewport (default: true). */
+    static native void setContentCulling(long handle, boolean enabled);
+
     /** The directory the storage of the apps loaded next is kept in (null: each app's own in the data directory). */
     static native void setStorage(long handle, String dir);
 
@@ -136,10 +150,12 @@ final class Native {
 
     /**
      * Ends a download of {@code url} through the disk cache: {@code status} 0 when the request failed, else the
-     * response's status, {@code headers} (names and values) and body. Returns the cached bytes when they are what to
-     * show (a 304; a stale copy when the request failed), or null. Any thread.
+     * response's status, {@code headers} (names and values), body and {@code redirects}, the URLs the download was
+     * redirected to (null: none), which the cache keeps with the copy and checks again before it serves it. Returns
+     * the cached bytes when they are what to show (a 304; a stale copy when the request failed), or null. Any thread.
      */
-    static native byte[] imageCacheComplete(long handle, String url, int status, String[] headers, byte[] body);
+    static native byte[] imageCacheComplete(
+            long handle, String url, int status, String[] headers, byte[] body, String[] redirects);
 
     /**
      * The embedding app's theme overrides (a shadcn/ui theme file, null: the
@@ -252,14 +268,48 @@ final class Native {
     static native void event(long handle, int id, int kind, String text, int count, float x, float y);
 
     /**
-     * A hardware key went down: whether the app's shortcuts ({@code nsh/keymap}) take it.
+     * A hardware key went down: whether the app's shortcuts ({@code nsh/keymap}) or a mounted
+     * {@code captureKeys} rule takes it (then Android runs no default). The raw event still goes
+     * to {@code focusedId} when {@code raw}, with the same {@code defaultPrevented} decision.
      * {@code unicode}: what it types without modifiers ({@code KeyEvent.getUnicodeChar(0)});
-     * {@code repeat}: an auto-repeat; {@code editing}: a text input or hosted view has the focus.
+     * {@code text}: the printable character it reports with the modifiers held (the raw
+     * {@code key}); {@code scanCode}: the kernel's evdev scan code ({@code KeyEvent.getScanCode()},
+     * 0 when Android supplied none: the raw {@code code} is then empty); {@code repeat}: an
+     * auto-repeat; {@code editing}: a text input or hosted view has the focus; {@code focusedId}:
+     * the focused node ({@code ROOT_ID} when {@code NshView} holds the focus, a modal's id in its
+     * dialog, `0` for a native child that owns its keys); {@code windowId}: that window's root node
+     * for `nsh/keymap` bindings; {@code control}: the focused node takes presses (`Keymap::find_at`);
+     * {@code defaultPrevented}: a mounted rule captures this transition; {@code raw}: the focused
+     * view or an ancestor hears raw keys. No capture rule or listener builds no raw event.
      */
-    static native boolean keyDown(long handle, int keyCode, int unicode, int meta, boolean repeat, boolean editing);
+    static native boolean keyDown(long handle, int keyCode, int unicode, int text, int meta, int scanCode,
+            boolean repeat, boolean editing, int focusedId, int windowId, boolean control,
+            boolean defaultPrevented, boolean raw);
 
-    /** A hardware key went up: whether its press was taken (then so is its release). */
-    static native boolean keyUp(long handle, int keyCode);
+    /**
+     * A hardware key went up: whether its release is consumed (the app's shortcuts held it, or a
+     * mounted rule captures it now). The raw {@code KeyUp} goes to {@code focusedId} when the
+     * current listeners/raw policy accept it ({@code 0}: a native child has the keys); a
+     * shortcut's release is still observed where the focus listens now.
+     */
+    static native boolean keyUp(long handle, int keyCode, int unicode, int text, int meta, int scanCode,
+            int focusedId, boolean defaultPrevented, boolean raw);
+
+    /**
+     * A key with Control came as a shortcut first: whether the app's shortcuts take it. No raw
+     * event is reported here; a key the shortcuts leave goes on to {@link #keyDown}.
+     */
+    static native boolean keyShortcut(long handle, int keyCode, int unicode, int meta, int windowId,
+            boolean control, boolean repeat, boolean editing);
+
+    /** A key's release was cancelled: forget it without a {@code KeyUp}; whether its press was taken. */
+    static native boolean keyCancel(long handle, int keyCode);
+
+    /** The window lost the focus or the app went away: no held key has a release any more. */
+    static native void keyReset(long handle);
+
+    /** The user gave the surface input with a pointer (a press that focuses a custom view). */
+    static native void pointerInput(long handle);
 
     /**
      * Mouse event {@code kind} ({@code onMouseEnter}, {@code onMouseMove}, {@code onMouseLeave}) of
@@ -287,6 +337,13 @@ final class Native {
 
     /** `onPaste`: the pasted text, the images' encoded bytes and local files' {@code file:} URLs. */
     static native void paste(long handle, int id, String text, byte[][] images, String[] uris);
+
+    /**
+     * {@link #CANVAS_IMAGE} on the root: the answer to `OffscreenCanvas` render {@code request}, the encoded image
+     * {@code bytes}, or when they are null why not: {@code failure} ({@link CanvasRender#RENDER_FAILED},
+     * {@link CanvasRender#RENDER_TOO_LARGE}) and the message {@code error}.
+     */
+    static native void canvasImage(long handle, int request, byte[] bytes, int failure, String error);
 
     /** Applies the animation items of batches up to {@code seq}; returns bound values. */
     static native float[] afterBatch(long handle, long seq);
@@ -366,8 +423,9 @@ final class Native {
     /**
      * Touches for the JS responder system. phase: 0 start, 1 move, 2 end,
      * 3 cancel. Per finger: id, target node, path length (in {@code paths},
-     * innermost first), pageX, pageY, locationX, locationY (in
-     * {@code coords}, dp) and whether it changed. {@code time}: ms.
+     * innermost first), pageX, pageY, locationX, locationY (dp), pressure,
+     * tiltX, tiltY (degrees) and kind (0 touch, 1 pen, 2 mouse) (8 floats
+     * in {@code coords}) and whether it changed. {@code time}: ms.
      */
     static native void touch(long handle, int phase, int[] ids, int[] targets, int[] pathLengths, int[] paths,
             float[] coords, boolean[] changed, long time, int activated);

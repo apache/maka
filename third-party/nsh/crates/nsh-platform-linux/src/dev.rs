@@ -514,9 +514,7 @@ fn app_came(ui: &RefCell<DevUi>, view: &AppView, app: &App) {
 
 /// Shows the window `view` is in.
 fn present(view: &AppView) {
-    if let Some(window) = view.widget().root().and_downcast::<gtk::Window>() {
-        window.present();
-    }
+    crate::window::activate_main(view.surface());
 }
 
 /// Whether the window `view` is in is shown (minimized or not).

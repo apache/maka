@@ -371,8 +371,8 @@ fn escape_in_a_sheet_gives_the_focus_back_to_where_it_came_from() {
     draw_until(&mut view, &mut terminal, &rx, "seen opener.");
     key(&mut view, "Enter", false);
     draw_until(&mut view, &mut terminal, &rx, "inside");
-    // Its backdrop covers the page: Tab goes into the sheet and stays in
-    // it, as in a modal.
+    // The sheet is a dialog: the focus goes into it as it opens, and Tab
+    // stays in it.
     key(&mut view, "Tab", false);
     draw_until(&mut view, &mut terminal, &rx, "seen opener inside.");
     key(&mut view, "Tab", false);
@@ -399,7 +399,7 @@ fn escape_in_a_sheet_gives_the_focus_back_to_where_it_came_from() {
 }
 
 #[test]
-fn escape_closing_a_sheet_before_the_focus_went_in_gives_it_back_to_the_opener() {
+fn escape_closing_a_sheet_at_once_gives_the_focus_back_to_the_opener() {
     let (mut view, rx) = surface();
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
     view.load(App::Rust(Root::new::<SheetFocus>(|| ())))
@@ -407,13 +407,14 @@ fn escape_closing_a_sheet_before_the_focus_went_in_gives_it_back_to_the_opener()
     draw_until(&mut view, &mut terminal, &rx, "after");
     key(&mut view, "Tab", false);
     draw_until(&mut view, &mut terminal, &rx, "seen opener.");
+    // The sheet is a dialog: the focus goes in as it opens.
     key(&mut view, "Enter", false);
-    draw_until(&mut view, &mut terminal, &rx, "inside");
+    draw_until(&mut view, &mut terminal, &rx, "seen opener inside.");
     draw_until_still(&mut view, &mut terminal, &rx);
-    // Closed at once: the backdrop covered the opener, which takes the
-    // focus back as the sheet goes, and Enter opens it again.
+    // Closed at once: the opener takes the focus back as the sheet goes,
+    // and Enter opens it again.
     key(&mut view, "Escape", false);
-    draw_until(&mut view, &mut terminal, &rx, "seen opener opener.");
+    draw_until(&mut view, &mut terminal, &rx, "seen opener inside opener.");
     key(&mut view, "Enter", false);
     draw_until(&mut view, &mut terminal, &rx, "inside");
 }

@@ -1,7 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the
 // `RichEditor` view's bubble menu: the app's content shown next to the
-// selection while the app passes it, gone when it does not, with the
-// touch selection's handle parts' classes; and a table shown as a grid of
+// selection while the app passes it, gone when it does not; its layer over
+// the document (`contentLayer`) and the box of a block in it; files
+// dragged over it and dropped on it; the touch selection's handle parts' classes; and a table shown as a grid of
 // its cells, with the table parts' classes; and editors without a height,
 // as tall as their documents, one stopped by its `maxHeight`.
 import { Text, View, signal } from "nsh";
@@ -10,6 +11,10 @@ import { RichEditor, StarterKit, TableKit, createRichEditor } from "nsh/base";
 function App() {
   const editor = createRichEditor({ extensions: [StarterKit], content: "Some text" });
   const open = signal(true);
+  const drop = signal("none");
+  // The layer over the document: a marker the app places at the first block, pressed to read the block's box.
+  const mark = signal("LayerMark");
+  const box = () => editor.nodeRect(0) as { x: number; y: number; width: number; height: number } | null;
   const tables = createRichEditor({
     extensions: [StarterKit, TableKit],
     content: "| CellA | CellB |\n| --- | --- |\n| CellC | CellD |\n",
@@ -32,8 +37,17 @@ function App() {
         bubbleMenu={open() ? <Text>BubbleMenu</Text> : undefined}
         bubbleMenuPlacement="bottom"
         bubbleMenuOffset={4}
+        contentLayer={
+          <View style={{ position: "absolute", right: 0, top: 0 }} onPress={() => mark.set(`LayerBox ${(box()?.height ?? 0) > 0} ${box()?.x} ${box()?.y}`)}>
+            <Text>{mark()}</Text>
+          </View>
+        }
         classes={{ selectionHandle: "bg-blue-500", selectionHandleStart: "size-3", selectionHandleEnd: "size-3" }}
         styles={{ selectionHandle: { opacity: 0.9 } }}
+        testID="rich-drop"
+        onFileDragEnter={(e) => drop.set(`enter ${e.uris.join(" ")} [${e.mimeTypes.join(" ")}]`)}
+        onFileDragLeave={() => drop.set(`${drop()} leave`)}
+        onFileDrop={(e) => drop.set(`dropped ${e.uris.join(" ")} [${e.mimeTypes.join(" ")}]`)}
       />
       <RichEditor
         editor={tables}
@@ -49,6 +63,8 @@ function App() {
       />
       <RichEditor testID="rich-auto" editor={auto} />
       <RichEditor testID="rich-capped" editor={capped} style={{ maxHeight: 40 }} />
+      {/* Last, so it moves none of the frames the script checks. */}
+      <Text>{`RichDrop: ${drop()}`}</Text>
     </View>
   );
 }

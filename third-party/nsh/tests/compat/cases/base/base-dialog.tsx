@@ -10,10 +10,13 @@
 // `Dialog` declares none) for the script to find them. A dialog is a
 // `"dialog"` for screen readers unless its `role` says otherwise
 // (`"alertdialog"`), named by its `accessibilityLabel` and described by its
-// `accessibilityDescription`. Its script checks
+// `accessibilityDescription`. An iOS sheet rests at `detents` (its
+// `detent` controlled, its `defaultDetent`, its grabber and the detent up
+// to which what is behind stays undimmed) and reports the user's moves
+// (`onDetentChange({ detent })`). Its script checks
 // each.
 import { Text, View, signal } from "nsh";
-import { Button, Dialog } from "nsh/base";
+import { Button, Dialog, type SheetDetent } from "nsh/base";
 
 function Control(props: { label: string; onPress: () => void }) {
   return (
@@ -31,6 +34,8 @@ function App() {
   // One that closes only when the app says so.
   const guarded = signal(false);
   const swipes = signal(false);
+  const sheet = signal(false);
+  const detent = signal<SheetDetent>("medium");
   const log = signal<string[]>([]);
   const note = (line: string) => log.set([...log(), line]);
   return (
@@ -42,6 +47,7 @@ function App() {
       <Control label="Stubborn on" onPress={() => stubborn.set(true)} />
       <Control label="Open guarded" onPress={() => guarded.set(true)} />
       <Control label="Open swipes" onPress={() => swipes.set(true)} />
+      <Control label="Open sheet" onPress={() => sheet.set(true)} />
       <Control label="Clear log" onPress={() => log.set([])} />
       <Dialog {...{ testID: "plain" }}>
         <Text>Plain dialog</Text>
@@ -102,6 +108,23 @@ function App() {
         }}
       >
         <Text>Swipes dialog</Text>
+      </Dialog>
+      <Dialog
+        {...{ testID: "sheet" }}
+        open={sheet()}
+        presentation="pageSheet"
+        detents={["medium", "large", { height: 200 }, { fraction: 0.4 }]}
+        detent={detent()}
+        defaultDetent="large"
+        grabber
+        largestUndimmedDetent="medium"
+        onDetentChange={({ detent: next }) => {
+          note(`sheet detent ${typeof next === "string" ? next : JSON.stringify(next)}`);
+          detent.set(next);
+        }}
+        onOpenChange={({ open }) => sheet.set(open)}
+      >
+        <Text>Sheet dialog</Text>
       </Dialog>
     </View>
   );

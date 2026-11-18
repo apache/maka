@@ -2,9 +2,15 @@ package com.longbridge.nsh;
 
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.View;
+import android.view.ViewParent;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * Accessibility of one view, from the app's properties
@@ -34,12 +40,9 @@ final class A11y extends View.AccessibilityDelegate {
         null, null, null, "row", "cell", "column header", "row group", null, "option", null, "region",
         "navigation", "tree", "tree item", "menu item", "menu item", "dialog", "alert dialog",
     };
-    /** Spoken states of `accessibilityState.current`, by its kind in the state's bits 11 to 13. */
-    private static final String[] CURRENT_DESCRIPTIONS = {
-        null, "current", "current page", "current step", "current location", "current date", "current time",
-    };
     private static final int ROLE_ADJUSTABLE = 8;
     private static final int ROLE_HEADER = 9;
+    private static final int ROLE_SWITCH = 22;
     /** Ids of custom actions (outside the framework's action ids). */
     private static final int CUSTOM_ACTION_BASE = 0x3f000000;
 
@@ -56,6 +59,8 @@ final class A11y extends View.AccessibilityDelegate {
     int liveRegion;
     String[] actionNames = new String[0];
     String[] actionLabels = new String[0];
+    /** The view's pending range selection before API 30, carried from the delegate this one replaces. */
+    private SelectedSender selectedSender;
 
     A11y(Mounter mounter, int id) {
         this.mounter = mounter;
@@ -81,10 +86,142 @@ final class A11y extends View.AccessibilityDelegate {
         if (Build.VERSION.SDK_INT >= 28) v.setAccessibilityHeading(role == ROLE_HEADER);
     }
 
+    /**
+     * Tells accessibility services what changed since {@code before}, the delegate this one
+     * replaces on {@code v} ({@link A11yChanges} picks the event). Called once this one is
+     * installed: a service answers the event by querying the node, which must be the new one.
+     * A first mount, an unchanged update, a hidden element, a view not shown and a device
+     * without a running service send nothing.
+     */
+    void changed(View v, A11y before) {
+        if (before == null) return;
+        if (before.selectedSender != null && before.selectedSender.view == v) selectedSender = before.selectedSender;
+        if (hidden || before.hidden) return;
+        // Sending while no service runs throws on the main thread; most updates come without one.
+        AccessibilityManager manager = mounter.host.accessibility();
+        if (manager == null || !manager.isEnabled()) return;
+        boolean range = hasRange(), rangeBefore = before.hasRange();
+        boolean rangeChanged = range && rangeBefore && (Float.compare(min, before.min) != 0
+                || Float.compare(max, before.max) != 0 || Float.compare(now, before.now) != 0);
+        boolean nodeChanged = range != rangeBefore || role != before.role || !Objects.equals(hint, before.hint)
+                || !Objects.equals(testId, before.testId) || !Arrays.equals(actionNames, before.actionNames)
+                || !Arrays.equals(actionLabels, before.actionLabels);
+        // The state descriptions differ only if one of these does (the role picks on / off).
+        boolean described = state != before.state || role != before.role
+                || !Objects.equals(shownValueText(), before.shownValueText());
+        // Most updates change nothing of this: leave them without allocating.
+        if (!described && !rangeChanged && !nodeChanged) return;
+        if (!v.isShown()) return;
+        boolean focused = focused(v);
+        boolean clicked = focused && mounter.accessibilityClicked != null
+                && SystemClock.uptimeMillis() - mounter.accessibilityClickedAt <= A11yChanges.CLICK_MS
+                && within(v, mounter.accessibilityClicked);
+        int event = A11yChanges.event(before.state, state, described ? before.stateDescription() : null,
+                described ? stateDescription() : null, rangeChanged, nodeChanged, focused, clicked,
+                Build.VERSION.SDK_INT);
+        switch (event) {
+            case A11yChanges.CLICKED:
+                // One click per click of the service's.
+                mounter.accessibilityClicked = null;
+                v.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_CLICKED);
+                break;
+            case A11yChanges.SELECTED:
+                if (selectedSender == null) selectedSender = new SelectedSender(v);
+                v.removeCallbacks(selectedSender);
+                v.postDelayed(selectedSender, A11yChanges.SELECTED_MS);
+                break;
+            case A11yChanges.STATE_DESCRIPTION:
+                // Sent at once, as `View.setStateDescription` sends it: merged with other views'
+                // changes it would come from their common ancestor, which has no focus.
+                sendContentChange(v, A11yChanges.CONTENT_CHANGE_TYPE_STATE_DESCRIPTION);
+                break;
+            case A11yChanges.CONTENT: {
+                // Only a refresh: the framework merges these, at most one every 100 ms.
+                ViewParent parent = v.getParent();
+                if (parent != null) {
+                    parent.notifySubtreeAccessibilityStateChanged(v, v,
+                            AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    /**
+     * Sends a content change of {@code types}, a plain int: API 30's state description type is
+     * sent on every level, as androidx sends it.
+     */
+    private static void sendContentChange(View v, int types) {
+        AccessibilityEvent e = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        e.setContentChangeTypes(types);
+        v.sendAccessibilityEventUnchecked(e);
+    }
+
+    /** Whether {@code v} or an ancestor has the accessibility focus, as TalkBack checks. */
+    private static boolean focused(View v) {
+        for (View at = v; ; ) {
+            if (at.isAccessibilityFocused()) return true;
+            ViewParent parent = at.getParent();
+            if (!(parent instanceof View)) return false;
+            at = (View) parent;
+        }
+    }
+
+    /** Whether {@code v} is {@code ancestor} or inside it. */
+    private static boolean within(View v, View ancestor) {
+        for (View at = v; ; ) {
+            if (at == ancestor) return true;
+            ViewParent parent = at.getParent();
+            if (!(parent instanceof View)) return false;
+            at = (View) parent;
+        }
+    }
+
+    /**
+     * A range's {@code TYPE_VIEW_SELECTED} before API 30, posted to send at most one every
+     * {@link A11yChanges#SELECTED_MS}, as a {@code ProgressBar}'s {@code AccessibilityEventSender}
+     * does. Kept across the view's delegates.
+     */
+    private static final class SelectedSender implements Runnable {
+        final View view;
+
+        SelectedSender(View view) {
+            this.view = view;
+        }
+
+        @Override
+        public void run() {
+            // `sendAccessibilityEvent` sends nothing without a running service.
+            if (view.isShown()) view.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED);
+        }
+    }
+
+    /**
+     * The view's events carry what its node says (the widget class, enabled, checked, a range's
+     * position), as a widget's do. TalkBack reads a click's state from the node it queries again,
+     * the event's class picks how it treats some events (a progress bar's or a seek bar's).
+     */
+    @Override
+    public void onInitializeAccessibilityEvent(View host, AccessibilityEvent event) {
+        super.onInitializeAccessibilityEvent(host, event);
+        String className = className();
+        if (className != null) event.setClassName(className);
+        if ((state & 1) != 0) event.setEnabled(false);
+        if ((state & 256) != 0) event.setChecked((state & 512) != 0);
+        else if ((state & 8) != 0) event.setChecked((state & 16) != 0);
+        if (hasRange() && max > min) {
+            // `ProgressBar`'s item count and index, in hundredths of the range.
+            event.setItemCount(100);
+            event.setCurrentItemIndex(Math.max(0, Math.min(100, Math.round((now - min) / (max - min) * 100))));
+        }
+    }
+
     @Override
     public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfo(host, info);
-        String className = role < CLASS_NAMES.length ? CLASS_NAMES[role] : null;
+        String className = className();
         if (className != null) info.setClassName(className);
         String description = role < ROLE_DESCRIPTIONS.length ? ROLE_DESCRIPTIONS[role] : null;
         if (description != null && Build.VERSION.SDK_INT >= 30) {
@@ -96,48 +233,28 @@ final class A11y extends View.AccessibilityDelegate {
         if ((state & 2) != 0) info.setSelected(true);
         // ARIA's `aria-invalid`: the content does not pass the app's checks.
         if ((state & (1 << 14)) != 0) info.setContentInvalid(true);
-        StringBuilder stateText = new StringBuilder();
         if ((state & 8) != 0) {
             info.setCheckable(true);
             info.setChecked((state & 16) != 0);
-            if ((state & 32) != 0) stateText.append("mixed");
         }
         if ((state & 256) != 0) {
             // A toggle button (`accessibilityState.pressed`), read as on or off.
-            info.setClassName("android.widget.ToggleButton");
             info.setCheckable(true);
             info.setChecked((state & 512) != 0);
-            if ((state & 1024) != 0) {
-                if (stateText.length() > 0) stateText.append(", ");
-                stateText.append("mixed");
-            }
         }
         if ((state & 64) != 0) {
-            if (stateText.length() > 0) stateText.append(", ");
-            stateText.append((state & 128) != 0 ? "expanded" : "collapsed");
             info.addAction((state & 128) != 0 ? AccessibilityAction.ACTION_COLLAPSE : AccessibilityAction.ACTION_EXPAND);
         }
-        int current = (state >> 11) & 7;
-        if (current != 0 && current < CURRENT_DESCRIPTIONS.length) {
-            if (stateText.length() > 0) stateText.append(", ");
-            stateText.append(CURRENT_DESCRIPTIONS[current]);
+        if (hasRange()) {
+            info.setRangeInfo(AccessibilityNodeInfo.RangeInfo.obtain(
+                    AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_FLOAT, min, max, now));
         }
-        if (hasValue) {
-            if (valueText != null) {
-                if (stateText.length() > 0) stateText.append(", ");
-                stateText.append(valueText);
-            } else if (!Float.isNaN(now) && !Float.isNaN(min) && !Float.isNaN(max)) {
-                info.setRangeInfo(AccessibilityNodeInfo.RangeInfo.obtain(
-                        AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_FLOAT, min, max, now));
-            }
+        String stateText = stateDescription();
+        if (stateText != null) {
+            // Before API 30 the extras entry androidx's node compat reads, as TalkBack reads it.
+            if (Build.VERSION.SDK_INT >= 30) info.setStateDescription(stateText);
+            else info.getExtras().putCharSequence(A11yChanges.STATE_DESCRIPTION_KEY, stateText);
         }
-        if ((state & (1 << 14)) != 0) {
-            // TalkBack reads content invalid only with an error text: the
-            // state is read as WebKit reads it.
-            if (stateText.length() > 0) stateText.append(", ");
-            stateText.append("invalid data");
-        }
-        if (stateText.length() > 0 && Build.VERSION.SDK_INT >= 30) info.setStateDescription(stateText);
         if (role == ROLE_ADJUSTABLE || has("increment")) info.addAction(AccessibilityAction.ACTION_SCROLL_FORWARD);
         if (role == ROLE_ADJUSTABLE || has("decrement")) info.addAction(AccessibilityAction.ACTION_SCROLL_BACKWARD);
         if (has("activate") || mounter.wants(id, Native.PRESS)) {
@@ -162,10 +279,12 @@ final class A11y extends View.AccessibilityDelegate {
             return true;
         }
         if (action == AccessibilityNodeInfo.ACTION_CLICK && has("activate")) {
+            clickedBy(host);
             report("activate");
             return true;
         }
         if (action == AccessibilityNodeInfo.ACTION_CLICK && mounter.wants(id, Native.PRESS)) {
+            clickedBy(host);
             mounter.event(id, Native.PRESS);
             return true;
         }
@@ -193,6 +312,35 @@ final class A11y extends View.AccessibilityDelegate {
             return true;
         }
         return super.performAccessibilityAction(host, action, args);
+    }
+
+    /**
+     * Notes a service's click the delegate takes (the framework sends no click event for it):
+     * the state it changes in a later batch is that click's ({@link #changed}).
+     */
+    private void clickedBy(View host) {
+        mounter.accessibilityClicked = host;
+        mounter.accessibilityClickedAt = SystemClock.uptimeMillis();
+    }
+
+    /** The widget class the node and its events report: a toggle button's, or its role's. */
+    private String className() {
+        if ((state & 256) != 0) return "android.widget.ToggleButton";
+        return role < CLASS_NAMES.length ? CLASS_NAMES[role] : null;
+    }
+
+    /** Whether the value is a numeric range the node exposes (a value's text is said instead). */
+    private boolean hasRange() {
+        return hasValue && valueText == null && !Float.isNaN(now) && !Float.isNaN(min) && !Float.isNaN(max);
+    }
+
+    private String shownValueText() {
+        return hasValue ? valueText : null;
+    }
+
+    /** What the node says of its state: mixed, expanded, current, the value's text, invalid, and the checked word with them. */
+    private String stateDescription() {
+        return A11yChanges.stateDescription(state, shownValueText(), (state & 256) != 0 || role == ROLE_SWITCH);
     }
 
     private boolean has(String name) {

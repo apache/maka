@@ -1,10 +1,11 @@
 import { type JSX, LayoutAnimation, reduceMotion, Scroll, signal, Text, token, View } from "nsh";
-import { ContextMenu, Menu, MenuItem, MenuSeparator, type OpenChangeReason, Submenu, Toolbar } from "nsh/base";
+import { ContextMenu, Menu, MenuButton, MenuItem, MenuSeparator, type OpenChangeReason, Submenu, Toolbar } from "nsh/base";
+import { SegmentedControl } from "nsh/mobile";
 import { platform } from "nsh";
 import { keymap } from "nsh";
 import { Icon, type IconName, LucideIcon, type LucideIconName } from "../icons";
 import { toast, updateToast } from "../toast";
-import { alpha, Button, Caption, Card, colors, DemoPage, finish, isDark, menuHighlight, setAppearance, menuIndicator, menuItemGlyph, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, MenuLabel, MenuMark, menuPressed, menuSeparator, mono, Row, Segmented, SubmenuBack, SubmenuRow, terminal, Tip, menuPopup, Kbd, placementWords } from "../ui";
+import { alpha, Button, Caption, Card, colors, DemoPage, finish, isDark, menuHighlight, setAppearance, menuIndicator, menuItemGlyph, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, menuIsPopup, MenuLabel, MenuMark, menuPressed, menuSeparator, mono, Row, Segmented, SubmenuBack, SubmenuRow, terminal, Tip, menuPopup, Kbd, placementWords } from "../ui";
 
 // The look of every menu here is the gallery's (`look/menu.tsx`):
 // `nsh/base` draws none.
@@ -188,10 +189,10 @@ function Preview(props: { sidebar: boolean; minimap: boolean; sort: SortBy; zoom
  * shortcuts, submenus three levels deep, checkable settings and choices of
  * one that arrange a preview, group titles, disabled and destructive items; menus on the rows of a list
  * (the secondary button or a held finger, and a ⋯ button); where a popup
- * goes; a long menu that scrolls; a menu a shortcut opens. On desktops they
- * are popups with cascading submenus that grow out of their trigger, on
- * touch screens sheets that slide up, whose submenus take the place of
- * their items.
+ * goes; a long menu that scrolls; a menu a shortcut opens. On desktops and
+ * on an iPad in a regular width they are popups with cascading submenus that
+ * grow out of their trigger, on phones sheets that slide up, whose submenus
+ * take the place of their items.
  */
 export function Menus() {
   const events = signal<string[]>([]);
@@ -247,7 +248,7 @@ export function Menus() {
     });
     const key = (k: string) => (platform.desktop ? keymap.label(k) : undefined);
     return (
-      <Card icon="lists" title="Menu bar" subtitle={platform.desktop ? "Hover across submenus; the shortcuts work too" : "Each menu a sheet; submenus take its place"}>
+      <Card icon="lists" title="Menu bar" subtitle={platform.desktop ? "Hover across submenus; the shortcuts work too" : menuIsPopup() ? "Submenus open beside their items" : "Each menu a sheet; submenus take its place"}>
         {/* A toolbar: with one menu open, the pointer over another title opens it. */}
         <Toolbar accessibilityLabel="Menu bar" style={{ flexDirection: "row", gap: 2, marginLeft: pointer ? -10 : 0 }}>
           <Menu offset={4} margin={8} {...menuPopup()} onOpenChange={changed("File")} trigger={<Chip bar label="File" open={isOpen("File")} />}>
@@ -395,7 +396,7 @@ export function Menus() {
     const placement = signal<"top" | "bottom" | "left" | "right">("bottom");
     const align = signal<"start" | "center" | "end">("start");
     return (
-      <Card icon="components" title="Where it goes" subtitle={platform.desktop ? "The side and alignment; it flips where there is no room" : "Phones show menus as sheets: try a desktop"}>
+      <Card icon="components" title="Where it goes" subtitle={menuIsPopup() ? "The side and alignment; it flips where there is no room" : "Menus are sheets here: try a desktop"}>
         <Segmented
           size="small"
           options={[{ value: "top", label: "Top" }, { value: "bottom", label: "Bottom" }, { value: "left", label: "Left" }, { value: "right", label: "Right" }]}
@@ -484,5 +485,108 @@ export function Menus() {
     );
   }
 
-  return <DemoPage cards={[MenuBar, Rows, Placement, LongList, Commands, Events]} />;
+  /**
+   * The system's own controls: `MenuButton` shows UIKit's menu from the
+   * gallery's chip on iOS (the platform's context menu on the desktops),
+   * a `ContextMenu` given `items` lifts its note into UIKit's context menu
+   * on iOS (the gallery's drawn menu elsewhere), and `SegmentedControl` is
+   * a `UISegmentedControl` on iOS, the gallery's drawn segments elsewhere.
+   */
+  function SystemMenu() {
+    const sort = signal<"Name" | "Date" | "Size">("Date");
+    const starred = signal(false);
+    const folder = signal<"Documents" | "Archive">("Documents");
+    const note = "Design review";
+    const choose = (id: string) => {
+      if (id === "star") starred.set(!starred());
+      if (id.startsWith("move:")) folder.set(id.slice(5) as "Documents" | "Archive");
+      log(`context menu · ${id}`);
+    };
+    const layout = signal(0);
+    const layouts = ["List", "Grid", "Columns"] as const;
+    const ios = platform.os === "ios";
+    const menuOff = !ios && !platform.desktop;
+    return (
+      <Card icon="system" title="The system's menu" subtitle={ios ? "UIKit's menu and segmented control" : platform.desktop ? "The platform's menu at the pointer" : "Phones without a system menu use Menu"}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <MenuButton
+            testID="system-menu"
+            accessibilityLabel="Arrange"
+            title="Arrange"
+            disabled={menuOff}
+            items={[
+              { id: "", label: "Sort by", inline: true, items: (["Name", "Date", "Size"] as const).map((by) => ({ id: `sort:${by}`, label: by, checked: sort() === by })) },
+              { id: "share", label: "Share", icon: "square.and.arrow.up" },
+              { id: "duplicate", label: "Duplicate", icon: "plus.square.on.square" },
+              { id: "", label: "", inline: true, items: [{ id: "delete", label: "Delete", icon: "trash", destructive: true }] },
+            ]}
+            onSelect={({ id }) => {
+              if (id.startsWith("sort:")) sort.set(id.slice(5) as "Name" | "Date" | "Size");
+              log(`system menu · ${id}`);
+            }}
+          >
+            <Chip label={`Sorted by ${sort()}`} lucide="list-filter" />
+          </MenuButton>
+        </View>
+        <ContextMenu
+          margin={8}
+          {...menuPopup()}
+          title={`${note}.key`}
+          items={[
+            { id: "star", label: starred() ? "Unstar" : "Star", icon: starred() ? "star.slash" : "star" },
+            { id: "share", label: "Share", icon: "square.and.arrow.up" },
+            { id: "", label: "Move to", icon: "folder", items: (["Documents", "Archive"] as const).map((to) => ({ id: `move:${to}`, label: to, checked: folder() === to })) },
+            { id: "", label: "", inline: true, items: [{ id: "delete", label: "Delete", icon: "trash", destructive: true }] },
+          ]}
+          onSelect={({ id }) => choose(id)}
+          onOpenChange={changed(note)}
+          trigger={
+            <View
+              focusable
+              accessibilityLabel={`${note}, in ${folder()}`}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 12,
+                padding: 12,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: colors.border,
+                backgroundColor: isOpen(note) ? token("accent") : colors.raised,
+              }}
+            >
+              <View style={{ width: 36, height: 36, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: colors.inset }}>
+                <Icon name="layers" size={18} tint={colors.muted} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={{ numberOfLines: 1, flexShrink: 1, fontSize: 14, fontWeight: "600", color: colors.text }}>{note}</Text>
+                  <If when={starred()}>
+                    <Icon name="star" size={12} tint={colors.accent} />
+                  </If>
+                </View>
+                <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.muted }}>{`Keynote · ${folder()}`}</Text>
+              </View>
+            </View>
+          }
+        >
+          <Item label="Starred" checked={starred()} onSelect={() => choose("star")} />
+          <Item label="Share" icon="share-2" onSelect={() => choose("share")} />
+          <SubmenuOf label="Move to" icon="folder-input">
+            <Item label="Documents" radio checked={folder() === "Documents"} onSelect={() => choose("move:Documents")} />
+            <Item label="Archive" radio checked={folder() === "Archive"} onSelect={() => choose("move:Archive")} />
+          </SubmenuOf>
+          <Separator />
+          <Item label="Delete" icon="trash" danger onSelect={() => choose("delete")} />
+        </ContextMenu>
+        <Caption label={ios ? "Hold the note: UIKit lifts it into its context menu" : platform.desktop ? "Right click the note" : "Hold the note"} />
+        <If when={ios} else={<Segmented size="small" options={layouts.map((l, i) => ({ value: String(i), label: l }))} value={String(layout())} onChange={(v) => layout.set(Number(v))} />}>
+          <SegmentedControl testID="system-segments" items={layouts.map((title) => ({ title }))} selectedIndex={layout()} onChange={({ index }) => layout.set(index)} />
+        </If>
+        <Caption label={`${layouts[layout()]} · sorted by ${sort()}`} />
+      </Card>
+    );
+  }
+
+  return <DemoPage cards={[MenuBar, Rows, Placement, LongList, Commands, SystemMenu, Events]} />;
 }

@@ -409,6 +409,47 @@ test("canvas records paths and gradients through the shared Rust decoder", { ski
   dispose();f.close();
 });
 
+test("nsh's OffscreenCanvas records as a canvas view does and asks the engine to render", { skip: !path }, async () => {
+  const f = await fixture();
+  const requests=[];
+  const canvas = createCanvas(f.invoke,f.api,f.dom,()=>!f.values.closed,()=>{},(op,receiver,args)=>{requests.push([op,receiver,args]);return Promise.resolve(f.invoke(op,[receiver,args,0]));});
+  const offscreen=new canvas.OffscreenCanvas(20.7,10);
+  assert.equal(offscreen.width,20);assert.equal(offscreen.height,10);
+  assert.notEqual(canvas.OffscreenCanvas,globalThis.OffscreenCanvas);
+  assert.throws(()=>new canvas.OffscreenCanvas(-1,1),TypeError);
+  assert.equal(offscreen.getContext("webgl"),null);
+  const cx=offscreen.getContext("2d");assert.equal(offscreen.getContext("2d"),cx);
+  assert.ok(cx instanceof canvas.CanvasRenderingContext2D);assert.equal(cx.canvas.width,20);
+  cx.fillStyle="red";cx.fillRect(0,0,5,5);
+  await offscreen.convertToBlob({type:"image/png",scale:2});
+  assert.equal(requests.length,1);
+  const [op,ops,args]=requests[0];
+  assert.equal(op,604);assert.ok(ops.length>0);assert.deepEqual(args,[20,10,"image/png",2]);
+  await offscreen.convertToBlob();assert.deepEqual(requests[1][2],[20,10,"",null]);
+  await assert.rejects(canvas.OffscreenCanvas.prototype.convertToBlob.call({}),TypeError);
+  f.close();
+});
+
+test("an OffscreenCanvas cleared whole starts its recording anew", { skip: !path }, async () => {
+  const f = await fixture();
+  const requests=[];
+  const canvas = createCanvas(f.invoke,f.api,f.dom,()=>!f.values.closed,()=>{},(op,receiver,args)=>{requests.push(receiver);return Promise.resolve(f.invoke(op,[receiver,args,0]));});
+  const offscreen=new canvas.OffscreenCanvas(40,20);const cx=offscreen.getContext("2d");
+  for(let i=0;i<30;i++){
+    cx.clearRect(0,0,40,20);cx.fillStyle=i%2?"#ff0000":"#0000ff";cx.fillStyle="not a color";
+    cx.beginPath();cx.arc(20,10,i,0,6);cx.fill();
+    await offscreen.convertToBlob();
+  }
+  // The fill style that took effect and the current path are kept; the
+  // earlier frames are not.
+  assert.deepEqual(requests.at(-1),[24,"#0000ff",12,20,10,28,0,6,false,24,"#ff0000",24,"not a color",7,12,20,10,29,0,6,false,18,null,"nonzero"]);
+  const kept=new canvas.OffscreenCanvas(40,20);const k=kept.getContext("2d");
+  k.fillRect(0,0,1,1);k.translate(1,0);k.clearRect(0,0,40,20);k.save();k.resetTransform();k.clearRect(-10,-10,60,40);k.restore();
+  await kept.convertToBlob();
+  assert.equal(requests.at(-1).filter(v=>v===21).length,1);assert.equal(requests.at(-1)[0],21);
+  f.close();
+});
+
 test("navigation keeps duplicate route entries and keymaps validate atomically", { skip: !path }, async () => {
   const f=await fixture();const env=createEnvironment(f.api,f.invoke,f.dom);
   const {createNavStack}=createNavigation(f.api,f.dom,env);
@@ -761,7 +802,7 @@ test("host events preserve order, owner cleanup and platform calls", { skip: !pa
 
 test("Rust component event callbacks retain their error boundary owner", { skip: !path }, async () => {
   const { api, values, components, close } = await fixture();
-  const Component = components.make({ name: "Fixture", id: 0, props: [], events: ["change"], methods: [] }, () => {});
+  const Component = components.make({ name: "Fixture", id: 0, props: [], events: ["change"], methods: [], hostProps: [] }, () => {});
   let output, node, dispose;
   api.root(stop => {
     dispose = stop;
@@ -778,7 +819,7 @@ test("Rust component event callbacks retain their error boundary owner", { skip:
 
 test("Rust renderer getters retain their error boundary owner", { skip: !path }, async () => {
   const { api, values, components, close } = await fixture();
-  const Component = components.make({ name: "Fixture", id: 0, props: [], events: [], methods: [] }, () => {});
+  const Component = components.make({ name: "Fixture", id: 0, props: [], events: [], methods: [], hostProps: [] }, () => {});
   let output, node, dispose;
   api.root(stop => {
     dispose = stop;

@@ -208,8 +208,9 @@ final class TestAgent {
     /** Presses the key `code` (`KeyEvent.KEYCODE_*`) with `meta` (`KeyEvent.META_*`). */
     static void key(NshView host, int code, int meta) {
         onMain(() -> {
-            View focus = focused(host);
-            View to = focus != null ? focus : target(host);
+            // The window's root hands the key down the focus path, as the
+            // input stage does, so NshView / the modal's key dispatch sees it.
+            View to = target(host);
             long now = SystemClock.uptimeMillis();
             KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, meta);
             // With Ctrl, a shortcut first, as the window's input stage

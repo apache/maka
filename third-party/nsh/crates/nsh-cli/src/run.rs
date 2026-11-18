@@ -224,7 +224,7 @@ pub(crate) fn run(
     // until it is replaced.
     let udid = match target {
         Target::Ios => {
-            let udid = simulator(device)?;
+            let udid = simulator(device, SimulatorWindow::Front)?;
             let _ = simctl(&["terminate", &udid, BUNDLE_ID]);
             Some(udid)
         }
@@ -293,7 +293,7 @@ pub(crate) fn run(
                 .args(&args)
                 .args(["--name", name, "--app-id", &id])
                 .args(["-ApplePersistenceIgnoreState", "YES"])
-                .args(config.macos.host_args())
+                .args(config.macos_host_args())
                 .args(window.args());
             run_local(&session, &mut command, "the macOS host")
         }
@@ -399,6 +399,13 @@ fn run_rust_app(
         }
         // A menu bar app on macOS (the other runners leave it).
         config.macos.add_to_app_json(&mut info);
+        // The runner runs in place, outside an app bundle: the Dock shows
+        // the app's icon only when the runner is given it.
+        if target == Target::Macos
+            && let Some(icon) = config.icon(crate::package::PackageTarget::Macos)
+        {
+            info["icon"] = icon.to_string_lossy().as_ref().into();
+        }
         config.add_file_types_to_app_json(&mut info);
         // The main window's launch options, as a package's `app.json`.
         if let Some(window) = &config.window {
@@ -442,7 +449,7 @@ fn run_rust_app(
             run_rust_local(&app, &mut command)
         }
         Target::Ios => {
-            let udid = simulator(device)?;
+            let udid = simulator(device, SimulatorWindow::Front)?;
             let env = simctl_app_env(&config);
             let out = run.join("ios");
             package_for_run(
@@ -476,6 +483,7 @@ fn run_rust_app(
             use crate::android;
             let sdk = android::Sdk::find()?;
             let serial = android::device(&sdk)?;
+            let env = android_app_env(&config);
             let out = run.join("android");
             // The device's ABI alone: each one is a build of the app's crate.
             let abi = android::device_abis(&sdk, &serial)?
@@ -492,18 +500,10 @@ fn run_rust_app(
             let apk = out.join(format!("{name}.apk"));
             let step = ui::Step::start(format!("installing {id} on {serial}"));
             android::adb(&sdk, &serial, &["install", "-r", &apk.to_string_lossy()])?;
-            android::adb(
-                &sdk,
-                &serial,
-                &[
-                    "shell",
-                    "am",
-                    "start",
-                    "-S",
-                    "-n",
-                    &format!("{id}/com.longbridge.nsh.AppActivity"),
-                ],
-            )?;
+            let activity = format!("{id}/com.longbridge.nsh.AppActivity");
+            let mut start = vec!["shell", "am", "start", "-S", "-n", activity.as_str()];
+            start.extend(env.iter().map(String::as_str));
+            android::adb(&sdk, &serial, &start)?;
             step.done(format!("launched {id} on {serial}"));
             let _stoppable = ui::Stoppable::new();
             let result = app.watch(|| Ok(false));
@@ -542,6 +542,7 @@ fn package_for_run(
         arch: None,
         run: false,
         asset_url: None,
+        development: true,
     })
 }
 
@@ -860,6 +861,7 @@ pub(crate) fn install_android_host(
                 abis: &[],
                 icon: None,
                 assets: Vec::new(),
+                sounds: Vec::new(),
                 signing: Signing::Debug,
             },
             &apk_path,
@@ -1056,9 +1058,11 @@ fn simctl_child_env(
 
 /// The variables of this environment that the app's `nsh.json` declares in
 /// `capabilities.process.env`, as `adb shell am start` arguments for the
-/// Android development host: `am start` starts the app in a process the
-/// system makes, so each one goes as a string extra `nsh.env.<name>`, which
-/// `DevActivity` sets in its process's environment before the app starts.
+/// Android development host and a Rust app's development build: `am start`
+/// starts the app in a process the system makes, so each one goes as a
+/// string extra `nsh.env.<name>`, which `DevActivity` (or a debuggable
+/// build's `AppActivity`) sets in its process's environment before the app
+/// starts.
 /// The app reads them in `process.env` as the desktops' hosts, the CLI's
 /// children, do.
 pub(crate) fn android_app_env(config: &crate::package::AppConfig) -> Vec<String> {
@@ -1125,9 +1129,20 @@ struct Device {
     available: bool,
 }
 
+/// How [`simulator`] shows the simulators' window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SimulatorWindow {
+    /// In front, active: `nsh run`, where the user works with the app.
+    Front,
+    /// Opened, or left where it is, without becoming the active app: `nsh
+    /// test`, whose input goes to the app in the simulator directly, so the
+    /// keyboard stays with the app the user types in.
+    Behind,
+}
+
 /// Picks a simulator (`wanted` by name or UDID; else a booted one; else the
-/// newest iPhone), boots it and shows the Simulator app.
-pub(crate) fn simulator(wanted: Option<&str>) -> anyhow::Result<String> {
+/// newest iPhone), boots it and shows the Simulator app (`window`).
+pub(crate) fn simulator(wanted: Option<&str>, window: SimulatorWindow) -> anyhow::Result<String> {
     let list: DeviceList =
         serde_json::from_str(&simctl(&["list", "devices", "available", "--json"])?)?;
     // Runtimes sort by version within a platform; newest last.
@@ -1168,27 +1183,41 @@ pub(crate) fn simulator(wanted: Option<&str>) -> anyhow::Result<String> {
     if let Some(step) = booting {
         step.done(format!("booted {}", device.name));
     }
-    show_simulators();
+    show_simulators(window);
     Ok(device.udid.clone())
+}
+
+/// `open`'s arguments before what it opens: `-g` keeps a window opened
+/// [`SimulatorWindow::Behind`] from activating the app.
+fn open_args(window: SimulatorWindow) -> &'static [&'static str] {
+    match window {
+        SimulatorWindow::Front => &[],
+        SimulatorWindow::Behind => &["-g"],
+    }
 }
 
 /// Brings up the simulators' window: Simulator.app, or DeviceHub.app in
 /// Xcode versions that replaced it.
-fn show_simulators() {
+fn show_simulators(window: SimulatorWindow) {
     let quiet = |cmd: &mut Command| {
         cmd.stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|s| s.success())
     };
-    if quiet(Command::new("open").args(["-b", "com.apple.iphonesimulator"])) {
+    let open = || {
+        let mut open = Command::new("open");
+        open.args(open_args(window));
+        open
+    };
+    if quiet(open().args(["-b", "com.apple.iphonesimulator"])) {
         return;
     }
     let developer = Command::new("xcode-select").arg("-p").output();
     if let Ok(out) = developer {
         let developer = String::from_utf8_lossy(&out.stdout);
         let hub = Path::new(developer.trim()).join("../Applications/DeviceHub.app");
-        if hub.exists() && quiet(Command::new("open").arg(&hub)) {
+        if hub.exists() && quiet(open().arg(&hub)) {
             return;
         }
     }
@@ -1254,9 +1283,18 @@ mod tests {
     use clap::ValueEnum as _;
 
     use super::{
-        HostWindow, Target, android_app_env, android_env_extras, shell_quote, simctl_app_env,
-        simctl_child_env,
+        HostWindow, SimulatorWindow, Target, android_app_env, android_env_extras, open_args,
+        shell_quote, simctl_app_env, simctl_child_env,
     };
+
+    /// `nsh run` brings the simulators' window to the front; `nsh test`
+    /// opens it without activating it (`open -g`), so the keyboard stays
+    /// with the app the user types in.
+    #[test]
+    fn only_a_run_brings_the_simulator_to_the_front() {
+        assert!(open_args(SimulatorWindow::Front).is_empty());
+        assert_eq!(open_args(SimulatorWindow::Behind), ["-g"]);
+    }
 
     /// The simulator's app gets the declared variables this environment
     /// has, prefixed for simctl, each once; undeclared ones stay behind,

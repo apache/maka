@@ -544,14 +544,6 @@ fs-set-times@0.20.3 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT); autho
 futures-lite@2.6.1 (Apache-2.0 OR MIT); authors declared by package: Stjepan Glavina <stjepang@gmail.com>, Contributors to futures-rs
 group@0.13.0 (MIT/Apache-2.0); authors declared by package: Sean Bowe <ewillbefull@gmail.com>, Jack Grigg <jack@z.cash>
 group@0.14.0 (MIT/Apache-2.0); authors declared by package: Sean Bowe <ewillbefull@gmail.com>, Jack Grigg <jack@z.cash>
-gstreamer-app-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-app@0.25.2 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-audio-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-audio@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-base-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-base@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
 home@0.5.12 (MIT OR Apache-2.0); authors declared by package: Brian Anderson <andersrb@gmail.com>
 indoc@2.0.8 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 inventory@0.3.25 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
@@ -567,7 +559,6 @@ linux-raw-sys@0.12.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT); auth
 linux-raw-sys@0.4.15 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT); authors declared by package: Dan Gohman <dev@sunfishcode.online>
 minimal-lexical@0.2.1 (MIT/Apache-2.0); authors declared by package: Alex Huszagh <ahuszagh@gmail.com>
 once_cell@1.21.4 (MIT OR Apache-2.0); authors declared by package: Aleksey Kladov <aleksey.kladov@gmail.com>
-option-operations@0.6.1 (MIT/Apache-2.0); authors declared by package: François Laignel <fengalin@free.fr>
 ordered-stream@0.2.0 (MIT OR Apache-2.0); authors declared by package: Daniel De Graaf <code@danieldg.net>, Zeeshan Ali Khan <zeeshanak@gnome.org>
 parking@2.2.1 (Apache-2.0 OR MIT); authors declared by package: Stjepan Glavina <stjepang@gmail.com>, The Rust Project Developers
 paste@1.0.15 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
@@ -674,14 +665,6 @@ https://crates.io/api/v1/crates/fs-set-times/0.20.3/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/futures-lite/2.6.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/group/0.13.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/group/0.14.0/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/gstreamer-app-sys/0.25.4/download :: LICENSE
-https://crates.io/api/v1/crates/gstreamer-app/0.25.2/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/gstreamer-audio-sys/0.25.4/download :: LICENSE
-https://crates.io/api/v1/crates/gstreamer-audio/0.25.4/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/gstreamer-base-sys/0.25.4/download :: LICENSE
-https://crates.io/api/v1/crates/gstreamer-base/0.25.4/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/gstreamer-sys/0.25.4/download :: LICENSE
-https://crates.io/api/v1/crates/gstreamer/0.25.4/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/home/0.5.12/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/indoc/2.0.8/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/inventory/0.3.25/download :: LICENSE-MIT
@@ -697,7 +680,6 @@ https://crates.io/api/v1/crates/linux-raw-sys/0.12.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/linux-raw-sys/0.4.15/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/minimal-lexical/0.2.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/once_cell/1.21.4/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/option-operations/0.6.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/ordered-stream/0.2.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/parking/2.2.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/paste/1.0.15/download :: LICENSE-MIT
@@ -2017,10 +1999,6 @@ gix-imara-diff@0.3.3 (Apache-2.0); authors declared by package: pascalkuthe <pas
 glob@0.3.4 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers
 group@0.13.0 (MIT/Apache-2.0); authors declared by package: Sean Bowe <ewillbefull@gmail.com>, Jack Grigg <jack@z.cash>
 group@0.14.0 (MIT/Apache-2.0); authors declared by package: Sean Bowe <ewillbefull@gmail.com>, Jack Grigg <jack@z.cash>
-gstreamer-app@0.25.2 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-audio@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-base@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
 gzip-header@1.1.0 (MIT/Apache-2.0); authors declared by package: oyvindln <oyvindln@users.noreply.github.com>
 hash32@0.2.1 (MIT OR Apache-2.0); authors declared by package: Jorge Aparicio <jorge@japaric.io>
 hash32@0.3.1 (MIT OR Apache-2.0); authors declared by package: Jorge Aparicio <jorge@japaric.io>
@@ -2082,7 +2060,6 @@ oid-registry@0.6.1 (MIT/Apache-2.0); authors declared by package: Pierre Chiffli
 once_cell@1.21.4 (MIT OR Apache-2.0); authors declared by package: Aleksey Kladov <aleksey.kladov@gmail.com>
 openssl-probe@0.1.6 (MIT/Apache-2.0); authors declared by package: Alex Crichton <alex@alexcrichton.com>
 openssl-probe@0.2.1 (MIT OR Apache-2.0); authors declared by package: Alex Crichton <alex@alexcrichton.com>
-option-operations@0.6.1 (MIT/Apache-2.0); authors declared by package: François Laignel <fengalin@free.fr>
 ordered-stream@0.2.0 (MIT OR Apache-2.0); authors declared by package: Daniel De Graaf <code@danieldg.net>, Zeeshan Ali Khan <zeeshanak@gnome.org>
 ordermap@1.2.2 (Apache-2.0 OR MIT)
 palette@0.7.7 (MIT OR Apache-2.0); authors declared by package: Erik Hedvall <hello@erikhedvall.nu>
@@ -2275,10 +2252,6 @@ https://crates.io/api/v1/crates/gix-imara-diff/0.3.3/download :: LICENSE
 https://crates.io/api/v1/crates/glob/0.3.4/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/group/0.13.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/group/0.14.0/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/gstreamer-app/0.25.2/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/gstreamer-audio/0.25.4/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/gstreamer-base/0.25.4/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/gstreamer/0.25.4/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/gzip-header/1.1.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/hash32/0.2.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/hash32/0.3.1/download :: LICENSE-APACHE
@@ -2340,7 +2313,6 @@ https://crates.io/api/v1/crates/oid-registry/0.6.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/once_cell/1.21.4/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/openssl-probe/0.1.6/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/openssl-probe/0.2.1/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/option-operations/0.6.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/ordered-stream/0.2.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/ordermap/1.2.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/palette/0.7.7/download :: LICENSE-APACHE
@@ -3677,7 +3649,7 @@ clap@4.6.7 (MIT OR Apache-2.0)
 clap_builder@4.6.7 (MIT OR Apache-2.0)
 clap_derive@4.6.7 (MIT OR Apache-2.0)
 clap_lex@1.1.1 (MIT OR Apache-2.0)
-kstring@2.0.5 (MIT OR Apache-2.0)
+env_filter@2.0.0 (MIT OR Apache-2.0)
 serde_spanned@0.6.9 (MIT OR Apache-2.0)
 serde_spanned@1.1.2 (MIT OR Apache-2.0)
 toml@0.8.23 (MIT OR Apache-2.0)
@@ -3696,7 +3668,7 @@ https://crates.io/api/v1/crates/clap/4.6.7/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/clap_builder/4.6.7/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/clap_derive/4.6.7/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/clap_lex/1.1.1/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/kstring/2.0.5/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/env_filter/2.0.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/serde_spanned/0.6.9/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/serde_spanned/1.1.2/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/toml/0.8.23/download :: LICENSE-MIT
@@ -3965,6 +3937,7 @@ cobs@0.3.0 (MIT OR Apache-2.0); authors declared by package: Allen Welkie <>, Ja
 crc32fast@1.5.3 (MIT OR Apache-2.0); authors declared by package: Sam Rijs <srijs@airpost.net>, Alex Crichton <alex@alexcrichton.com>
 diff@0.1.13 (MIT OR Apache-2.0); authors declared by package: Utkarsh Kukreti <utkarshkukreti@gmail.com>
 enum-as-inner@0.6.1 (MIT/Apache-2.0); authors declared by package: Benjamin Fry <benjaminfry@me.com>
+env_filter@2.0.0 (MIT OR Apache-2.0)
 fallible-iterator@0.3.0 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 fallible-streaming-iterator@0.1.9 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 foreign-types-macros@0.2.4 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
@@ -3973,7 +3946,6 @@ foreign-types-shared@0.3.1 (MIT/Apache-2.0); authors declared by package: Steven
 foreign-types@0.3.2 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 foreign-types@0.5.0 (MIT/Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 hex@0.4.3 (MIT OR Apache-2.0); authors declared by package: KokaKiwi <kokakiwi@kokakiwi.net>
-kstring@2.0.5 (MIT OR Apache-2.0)
 native-tls@0.2.18 (MIT OR Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
 openssl-macros@0.1.1 (MIT/Apache-2.0)
 openssl@0.10.81 (Apache-2.0); authors declared by package: Steven Fackler <sfackler@gmail.com>
@@ -3995,6 +3967,7 @@ https://crates.io/api/v1/crates/cobs/0.3.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/crc32fast/1.5.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/diff/0.1.13/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/enum-as-inner/0.6.1/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/env_filter/2.0.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/fallible-iterator/0.3.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/fallible-streaming-iterator/0.1.9/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/foreign-types-macros/0.2.4/download :: LICENSE-APACHE
@@ -4003,7 +3976,6 @@ https://crates.io/api/v1/crates/foreign-types-shared/0.3.1/download :: LICENSE-A
 https://crates.io/api/v1/crates/foreign-types/0.3.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/foreign-types/0.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/hex/0.4.3/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/kstring/2.0.5/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/native-tls/0.2.18/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/openssl-macros/0.1.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/openssl/0.10.81/download :: LICENSE-APACHE
@@ -4227,7 +4199,6 @@ apple-cf@0.9.3 (MIT OR Apache-2.0); authors declared by package: Per Johansson <
 apple-metal@0.8.8 (MIT OR Apache-2.0); authors declared by package: Per Johansson <per@doom.fish>
 approx@0.5.1 (Apache-2.0); authors declared by package: Brendan Zabarauskas <bjzaba@yahoo.com.au>
 ast_node@5.0.0 (Apache-2.0); authors declared by package: 강동윤 <kdy1997.dev@gmail.com>
-atomic_refcell@0.1.14 (Apache-2.0 OR MIT); authors declared by package: Bobby Holley <bobbyholley@gmail.com>
 atspi-common@0.14.0 (Apache-2.0 OR MIT)
 atspi-connection@0.14.0 (Apache-2.0 OR MIT)
 atspi-proxies@0.14.0 (Apache-2.0 OR MIT)
@@ -4261,7 +4232,7 @@ json-strip-comments@3.1.2 (Apache-2.0)
 kurbo@0.13.1 (Apache-2.0 OR MIT)
 lru-slab@0.1.3 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Benjamin Saunders <ben.e.saunders@gmail.com>
 nohash-hasher@0.2.0 (Apache-2.0 OR MIT); authors declared by package: Parity Technologies <admin@parity.io>
-nsh-js@0.5.0 (Apache-2.0)
+nsh-js@0.6.0 (Apache-2.0)
 ntapi@0.4.3 (Apache-2.0 OR MIT); authors declared by package: MSxDOS <melcodos@gmail.com>
 numtoa@0.2.4 (MIT OR Apache-2.0); authors declared by package: Michael Aaron Murphy <mmstickman@gmail.com>
 opentelemetry-http@0.32.0 (Apache-2.0)
@@ -4335,7 +4306,6 @@ zune-jpeg@0.5.15 (MIT OR Apache-2.0 OR Zlib); authors declared by package: caleb
 https://crates.io/api/v1/crates/apple-cf/0.9.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/apple-metal/0.8.8/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/approx/0.5.1/download :: LICENSE
-https://crates.io/api/v1/crates/atomic_refcell/0.1.14/download :: LICENSE.APACHE
 https://crates.io/api/v1/crates/atspi-common/0.14.0/download :: LICENSE-APACHE2.txt
 https://crates.io/api/v1/crates/atspi-connection/0.14.0/download :: LICENSE-APACHE2.txt
 https://crates.io/api/v1/crates/atspi-proxies/0.14.0/download :: LICENSE-APACHE2.txt
@@ -4400,7 +4370,7 @@ https://crates.io/api/v1/crates/zeroize/1.9.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zeroize_derive/1.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-core/0.5.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-jpeg/0.5.15/download :: LICENSE-APACHE
-https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
+https://github.com/longbridge/nsh#71e6c842b0fe62c32de48129d8cc9d2dad7deff2 (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
 https://raw.githubusercontent.com/dudykr/ddbase/19f6487518dbebbc198346bfb979313ef457199e/LICENSE
 https://raw.githubusercontent.com/dudykr/ddbase/d46ef439d30d2b64eb87d4e197929548b51b21be/LICENSE
 https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE
@@ -6969,34 +6939,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-================================================================================
-
-atomic_refcell@0.1.14 (Apache-2.0 OR MIT); authors declared by package: Bobby Holley <bobbyholley@gmail.com>
-
-https://crates.io/api/v1/crates/atomic_refcell/0.1.14/download :: LICENSE.MIT
-
-MIT License
-
-Copyright (c) 2022 Bobby Holley
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 ================================================================================
 
@@ -21095,50 +21037,6 @@ conditions.
 
 ================================================================================
 
-gstreamer-app-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-app@0.25.2 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-audio-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-audio@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-base-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-base@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer-sys@0.25.4 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-gstreamer@0.25.4 (MIT OR Apache-2.0); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-
-https://crates.io/api/v1/crates/gstreamer-app-sys/0.25.4/download :: COPYRIGHT
-https://crates.io/api/v1/crates/gstreamer-app/0.25.2/download :: COPYRIGHT
-https://crates.io/api/v1/crates/gstreamer-audio-sys/0.25.4/download :: COPYRIGHT
-https://crates.io/api/v1/crates/gstreamer-audio/0.25.4/download :: COPYRIGHT
-https://crates.io/api/v1/crates/gstreamer-base-sys/0.25.4/download :: COPYRIGHT
-https://crates.io/api/v1/crates/gstreamer-base/0.25.4/download :: COPYRIGHT
-https://crates.io/api/v1/crates/gstreamer-sys/0.25.4/download :: COPYRIGHT
-https://crates.io/api/v1/crates/gstreamer/0.25.4/download :: COPYRIGHT
-
-The gstreamer-rs project is dual-licensed under Apache 2.0 and MIT terms, with
-the exception of the sys crates which are licensed only under the terms of the
-MIT license.
-
-Copyrights in the gstreamer-rs project are retained by their contributors. No
-copyright assignment is required to contribute to the gstreamer-rs project.
-
-Some files include explicit copyright notices and/or license notices. For full
-authorship information, see the version control history.
-
-Except as otherwise noted (below and/or in individual files), gstreamer-rs is
-licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
-<http://www.apache.org/licenses/LICENSE-2.0> or the MIT license <LICENSE-MIT>
-or <http://opensource.org/licenses/MIT>, at your option.
-
-All the sys crates (e.g. gstreamer/sys and gstreamer-base/sys) are licensed
-only under the terms of the MIT license.
-
-This project provides interoperability with various GStreamer libraries but
-doesn't distribute any parts of them. Distributing compiled libraries and
-executables that link to those libraries may be subject to terms of the GNU
-LGPL or other licenses. For more information check the license of each
-GStreamer library.
-
-================================================================================
-
 gzip-header@1.1.0 (MIT/Apache-2.0); authors declared by package: oyvindln <oyvindln@users.noreply.github.com>
 
 https://crates.io/api/v1/crates/gzip-header/1.1.0/download :: LICENSE-MIT
@@ -28018,34 +27916,6 @@ MIT License
 
 ================================================================================
 
-muldiv@1.0.1 (MIT); authors declared by package: Sebastian Dröge <sebastian@centricular.com>
-
-https://crates.io/api/v1/crates/muldiv/1.0.1/download :: LICENSE
-
-The MIT License (MIT)
-
-Copyright (c) 2017 Sebastian Dröge <sebastian@centricular.com>.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
 naga@29.0.4 (MIT OR Apache-2.0); authors declared by package: gfx-rs developers
 
 https://crates.io/api/v1/crates/naga/29.0.4/download :: LICENSE.MIT
@@ -29370,9 +29240,9 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ================================================================================
 
-nsh-base@0.5.0 (Apache-2.0)
+nsh-base@0.6.0 (Apache-2.0)
 
-https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
+https://github.com/longbridge/nsh#71e6c842b0fe62c32de48129d8cc9d2dad7deff2 (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
 
 The KaTeX fonts in katex.pack.zst (KaTeX_*.ttf of https://github.com/KaTeX/KaTeX,
 unmodified, packed in one zstd-compressed file):
@@ -29472,9 +29342,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ================================================================================
 
-nsh-base@0.5.0 (Apache-2.0)
+nsh-base@0.6.0 (Apache-2.0)
 
-https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
+https://github.com/longbridge/nsh#71e6c842b0fe62c32de48129d8cc9d2dad7deff2 (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
 
 emoji.tsv is generated from emojibase-data (https://github.com/milesj/emojibase),
 whose names and keywords come from the Unicode Common Locale Data Repository.
@@ -29547,22 +29417,22 @@ authorization of the copyright holder.
 
 ================================================================================
 
-nsh-base@0.5.0 (Apache-2.0)
-nsh-bundler@0.5.0 (Apache-2.0)
-nsh-core@0.5.0 (Apache-2.0)
-nsh-engine@0.5.0 (Apache-2.0)
-nsh-i18n@0.5.0 (Apache-2.0)
-nsh-js@0.5.0 (Apache-2.0)
-nsh-macros@0.5.0 (Apache-2.0)
-nsh-package@0.5.0 (Apache-2.0)
-nsh-platform-apple@0.5.0 (Apache-2.0)
-nsh-platform-linux@0.5.0 (Apache-2.0)
-nsh-platform-macos@0.5.0 (Apache-2.0)
-nsh-platform-tui@0.5.0 (Apache-2.0)
-nsh-platform-windows@0.5.0 (Apache-2.0)
-nsh-updater@0.5.0 (Apache-2.0)
+nsh-base@0.6.0 (Apache-2.0)
+nsh-bundler@0.6.0 (Apache-2.0)
+nsh-core@0.6.0 (Apache-2.0)
+nsh-engine@0.6.0 (Apache-2.0)
+nsh-i18n@0.6.0 (Apache-2.0)
+nsh-js@0.6.0 (Apache-2.0)
+nsh-macros@0.6.0 (Apache-2.0)
+nsh-package@0.6.0 (Apache-2.0)
+nsh-platform-apple@0.6.0 (Apache-2.0)
+nsh-platform-linux@0.6.0 (Apache-2.0)
+nsh-platform-macos@0.6.0 (Apache-2.0)
+nsh-platform-tui@0.6.0 (Apache-2.0)
+nsh-platform-windows@0.6.0 (Apache-2.0)
+nsh-updater@0.6.0 (Apache-2.0)
 
-https://raw.githubusercontent.com/longbridge/nsh/75e009e652ccb18c3dfbcc7e65a44b1f21da538c/LICENSE-APACHE
+https://raw.githubusercontent.com/longbridge/nsh/71e6c842b0fe62c32de48129d8cc9d2dad7deff2/LICENSE-APACHE
 
 Copyright 2026 Longbridge <https://longbridge.com>
 
@@ -49561,37 +49431,6 @@ agreement.
 5.4. "Results" means any outcome obtained by computational analysis
 of Data, including for example machine learning models and models'
 insights.
-
-================================================================================
-
-webview2-com-macros@0.8.1 (MIT)
-webview2-com-sys@0.39.1 (MIT)
-webview2-com@0.39.1 (MIT)
-
-https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE
-https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE
-
-MIT License
-
-Copyright (c) 2021 Bill Avery
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 ================================================================================
 

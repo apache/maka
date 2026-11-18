@@ -27,19 +27,53 @@ thread_local! {
     /// (`View::pointer`). AppKit hands the view a copy of a posted event and
     /// keeps 16 bits of its event number, which real events reach; the
     /// timestamp survives the copy to the nanosecond (rounded), and no
-    /// real event shares it.
-    static AGENT: std::cell::RefCell<std::collections::VecDeque<(NSEventType, i64)>> =
+    /// real event shares it. With each, the window point it was made at
+    /// ([`placed`]).
+    static AGENT: std::cell::RefCell<std::collections::VecDeque<(NSEventType, i64, NSPoint)>> =
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Whether `event` is one of the agent's mouse events.
 pub(crate) fn from_agent(event: &NSEvent) -> bool {
+    made_at(event).is_some()
+}
+
+/// The window point the agent made `event` at, when it is one of its
+/// mouse events.
+fn made_at(event: &NSEvent) -> Option<NSPoint> {
     let (kind, at) = (event.r#type(), nanoseconds(event));
     AGENT.with_borrow(|events| {
         events
             .iter()
-            .any(|&(k, t)| k == kind && (t - at).abs() <= 1)
+            .find(|&&(k, t, _)| k == kind && (t - at).abs() <= 1)
+            .map(|&(_, _, p)| p)
     })
+}
+
+/// The agent's mouse `event` at the window point it was made at, when it
+/// reaches its window somewhere else: AppKit reads a posted event's place
+/// again from the window server as it takes it off the queue, and while
+/// the screen is locked the window server shows the windows shrunk behind
+/// the lock screen (to nine tenths, around the screen's middle), so a
+/// press would land on another view than the one the agent aimed at.
+/// `None` for the user's events and those where they were made.
+pub(crate) fn placed(event: &NSEvent) -> Option<Retained<NSEvent>> {
+    let p = made_at(event)?;
+    let at = event.locationInWindow();
+    if (at.x - p.x).abs() < 0.5 && (at.y - p.y).abs() < 0.5 {
+        return None;
+    }
+    NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        event.r#type(),
+        p,
+        event.modifierFlags(),
+        event.timestamp(),
+        event.windowNumber(),
+        None,
+        event.eventNumber(),
+        event.clickCount(),
+        event.pressure(),
+    )
 }
 
 /// `event`'s timestamp in whole nanoseconds.
@@ -71,14 +105,17 @@ pub(crate) fn mouse_event(
         clicks,
         if clicks > 0 { 1.0 } else { 0.0 },
     )
-    .inspect(|event| {
-        AGENT.with_borrow_mut(|events| {
-            if events.len() == AGENT_EVENTS {
-                events.pop_front();
-            }
-            events.push_back((event.r#type(), nanoseconds(event)));
-        });
-    })
+    .inspect(|event| remember(event))
+}
+
+/// Keeps `event` among the agent's latest ([`from_agent`], [`placed`]).
+fn remember(event: &NSEvent) {
+    AGENT.with_borrow_mut(|events| {
+        if events.len() == AGENT_EVENTS {
+            events.pop_front();
+        }
+        events.push_back((event.r#type(), nanoseconds(event), event.locationInWindow()));
+    });
 }
 
 pub(crate) fn mouse_with(
@@ -288,7 +325,8 @@ pub(crate) fn key_event(
             continue;
         }
         let app = NSApplication::sharedApplication(MainThreadMarker::from(window));
-        // Key equivalents (menus) and key monitors (`nsh/keymap`) are the
+        // Key equivalents (menus) and key monitors (`nsh/keymap` and the
+        // raw keys of focused views, `nsh/keyboard`) are the
         // application's, which hands the key to its key window.
         if window.isKeyWindow() {
             app.sendEvent(&event);
@@ -296,6 +334,10 @@ pub(crate) fn key_event(
             // The app's key monitor never sees a window's own events: it
             // gets the key first, as it would in the key window (the test
             // window often is not one, its app left in the background).
+        } else if kind == NSEventType::KeyDown && crate::keyboard::key_down(surface, &event) {
+            // The focused view captured the key: no menu, no default.
+        } else if kind == NSEventType::KeyUp && crate::keyboard::key_up(surface, &event) {
+            // The release of a captured key.
         } else if kind == NSEventType::KeyDown && key_equivalent(window, &app, &event) {
             // A key equivalent of the window's views (Command keys) or of
             // the main menu, sent where the application would send it to
@@ -596,4 +638,43 @@ fn png(rep: &objc2_app_kit::NSBitmapImageRep) -> Result<Vec<u8>, String> {
 fn drawn(window: &NSWindow) -> Result<Vec<u8>, String> {
     let rep = crate::capture::bitmap(window, None)?;
     png(&rep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A left press at `(x, y)` (window points) stamped `at`.
+    fn press(x: f64, y: f64, at: f64) -> Retained<NSEvent> {
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::LeftMouseDown,
+            NSPoint::new(x, y),
+            NSEventModifierFlags::empty(),
+            at,
+            0,
+            None,
+            0,
+            1,
+            1.0,
+        )
+        .expect("a mouse event")
+    }
+
+    #[test]
+    fn an_agent_press_read_elsewhere_goes_back_where_it_was_made() {
+        let made = press(119.5, 70.0, 1000.25);
+        remember(&made);
+        // The same press as AppKit took it off the queue on a locked screen.
+        let read = press(52.8, 23.7, 1000.25);
+        let back = placed(&read).expect("put back");
+        let at = back.locationInWindow();
+        assert_eq!((at.x, at.y), (119.5, 70.0));
+        assert!(from_agent(&back));
+        assert_eq!(back.clickCount(), 1);
+        assert!(placed(&made).is_none(), "where it was made: as it is");
+        assert!(
+            placed(&press(52.8, 23.7, 1001.0)).is_none(),
+            "the user's: as it is"
+        );
+    }
 }

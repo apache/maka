@@ -219,6 +219,36 @@ pub unsafe extern "C" fn nsh_app_set_limits(
     app.view.set_limits(limits.limits());
 }
 
+/// Whether scroll views make the views of their content only near their
+/// viewport (true, the default), or all of it (false), in the running app
+/// and the apps `app` loads next ([`AppView::set_content_culling`]).
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_set_content_culling(app: *mut NshApp, enabled: bool) {
+    // SAFETY: guaranteed by the caller.
+    let app = unsafe { &*app };
+    app.view.set_content_culling(enabled);
+}
+
+/// Gives the address of the apps `app` loads (`UrlScheme.setUrl`) to the
+/// system as the current `NSUserActivity`, for Handoff. An address
+/// that is no web page needs `<bundle id>.url` in the embedding app's
+/// Info.plist `NSUserActivityTypes`. Off by default; applies from the next
+/// load.
+///
+/// # Safety
+///
+/// `app` must come from [`nsh_app_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_set_handoff(app: *mut NshApp, handoff: bool) {
+    // SAFETY: guaranteed by the caller.
+    let app = unsafe { &*app };
+    app.view.set_handoff(handoff);
+}
+
 /// The directory the storage (`nsh/storage`) of the apps `app` loads is
 /// kept in (`storage.json` in it); `NULL`: each app's own,
 /// `nsh/<app id>` in the embedding app's Application Support (the id of
@@ -555,6 +585,15 @@ pub extern "C" fn nsh_status_bar_hidden() -> bool {
 pub extern "C" fn nsh_status_bar_animation() -> objc2_ui_kit::UIStatusBarAnimation {
     main_thread();
     crate::status_bar_animation()
+}
+
+/// Internal: the bridge behind `NshAppView.supportedInterfaceOrientations`
+/// (`NativeShell.swift`), which host apps use: the orientations the page
+/// shown asked for (`supportedOrientations`), empty when no page asks.
+#[unsafe(no_mangle)]
+pub extern "C" fn nsh_supported_orientations() -> objc2_ui_kit::UIInterfaceOrientationMask {
+    main_thread();
+    crate::system::page_orientations().unwrap_or(objc2_ui_kit::UIInterfaceOrientationMask(0))
 }
 
 /// The keys, revocations and accepted builds that signed packages are
@@ -1716,5 +1755,29 @@ mod tests {
         assert_eq!(*probe.messages.borrow(), ["no release"]);
         // SAFETY: never released by the handler (no `release`).
         drop(unsafe { Box::from_raw(context) });
+    }
+
+    /// A Swift host cannot call `set_ui_sets`: a part missing from the
+    /// default fails every app that imports it.
+    #[test]
+    fn the_sdk_serves_every_part_of_nsh_base() {
+        let exports = |sets: &[nsh_core::element::Registry]| {
+            sets.iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .flat_map(nsh_core::element::Registry::specs)
+                .map(|spec| spec.export.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let served = exports(&crate::ui_sets());
+        assert_eq!(served, exports(&[nsh_base::registry()]));
+        for name in [
+            "TextView",
+            #[cfg(feature = "emoji-picker")]
+            "EmojiPicker",
+            #[cfg(feature = "rich-editor")]
+            "RichEditor",
+        ] {
+            assert!(served.contains(name), "{name} is not served");
+        }
     }
 }

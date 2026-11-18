@@ -20,7 +20,15 @@ apps that never use it.
 Apps extend NSH in Rust. An app's own crate can export Rust components, modules and classes to its TSX, register
 native components, and call any platform API directly ([Building with Rust](website/docs/rust.md),
 [Native components](website/docs/native-components.md), [Platform extensions](website/docs/platform-extensions.md)).
-What one app or a few apps need belongs there, or in a community crate, not in NSH. The tools NSH already ships for
+What one app or a few apps need belongs there, or in a third-party extension, not in NSH.
+
+A third-party extension is an ordinary Rust crate with a `#[native_module]` entry. `nsh add` installs it from
+crates.io, Git or a local directory, and both Rust and TSX apps use the same implementation
+([CLI: nsh add](website/docs/cli.md#nsh-add)). Because extensions exist, "useful to some apps" is no longer a reason
+to put a feature in NSH: publish it as an extension instead. It ships on its own schedule, and only the apps that
+install it pay its size, build time and dependencies. A feature belongs in NSH itself only when an extension cannot
+provide it (it needs changes to the core, layout, rendering or a platform backend), or when nearly every app needs
+it. The tools NSH already ships for
 delivering apps (packaging, signing, updates) exist because every app needs to be delivered; they are not precedent
 for adding other features.
 
@@ -49,7 +57,8 @@ These need no prior issue.
 
 A new feature, one NSH does not have in any form, is accepted only when all of these hold:
 
-- **Apps cannot build it themselves**, with NSH's existing APIs or through the Rust extension points above. A
+- **Apps cannot build it themselves**, with NSH's existing APIs, through the Rust extension points above, or as a
+  third-party extension installed with `nsh add`. A
   WebView's page and the app already talk through `postMessage` / `onMessage` and `evaluate`, for example, so a flow
   that can go through that bridge needs no new API.
 - **Many apps need it**, not one app's scenario.
@@ -57,6 +66,9 @@ A new feature, one NSH does not have in any form, is accepted only when all of t
   nothing on some platforms, or that covers a few cases of a larger problem, is not accepted, even with documented
   "unsupported" errors.
 - **Its cost is measured and justified**: dependencies, binary size, build time and start-up time.
+
+When a proposal fails these points but the feature is still worth sharing, the answer is an extension, not a smaller
+version in NSH; reviewers point there instead of reviewing the code.
 
 Not accepted, unless a complete design meets every point above: wrappers of individual platform APIs for specific
 scenarios (WebView cookies, downloads, page capture, developer tools and similar controls), features only some
@@ -171,8 +183,10 @@ Before opening a pull request, please make sure that:
 - The code has been reviewed by you and properly tested: tests at the layer that owns the behavior, `nsh test --trace` for
   the JS runtime, engine and core, and a run on a simulator, emulator or device for platform code (screenshots or
   recordings are encouraged for UI changes).
-- A pull request focuses on one thing and keeps the diff as small as practical. When using AI, ask it to avoid
-  unrelated refactors, cleanup, or formatting. **Less is better.**
+- A pull request focuses on one thing and keeps the diff as small as practical. A refactor needed to correct the root cause is part of that scope: reproduce the
+  defect, trace the faulty state to its origin, migrate callers and remove obsolete internal paths while preserving
+  released public compatibility. Avoid unrelated refactors, cleanup or formatting. Do not substitute retries,
+  swallowed errors or guards for understanding the fault; keep defensive checks when their constraints are valid.
 
 ### Describe public API changes
 
@@ -262,7 +276,7 @@ entries, then squash merges it. A failing check removes the entry; fix the failu
 
 ### Checks
 
-Run these before opening a pull request (the full list is in [AGENTS.md](AGENTS.md)):
+Run these before opening a pull request (the full list is in [Development commands](docs/dev/commands.md)):
 
 ```sh
 cargo test --workspace

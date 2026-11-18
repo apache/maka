@@ -693,12 +693,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "atomic_refcell"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
-
-[[package]]
 name = "atspi"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4459,6 +4453,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6400,128 +6403,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gstreamer"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4237e2066a25ecb7e54be6c066409e30615920265b9799b8d560ef8ac9857c6"
-dependencies = [
- "cfg-if",
- "futures-channel",
- "futures-core",
- "futures-util",
- "glib",
- "gstreamer-sys",
- "itertools 0.15.0",
- "kstring",
- "libc",
- "muldiv",
- "num-integer",
- "num-rational",
- "option-operations",
- "pastey",
- "pin-project-lite",
- "smallvec",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "gstreamer-app"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97f8ae9238c2352398dcc084de28df3f7099af216ac6c160b52318d23f25c010"
-dependencies = [
- "futures-core",
- "futures-sink",
- "glib",
- "gstreamer",
- "gstreamer-app-sys",
- "gstreamer-base",
- "libc",
-]
-
-[[package]]
-name = "gstreamer-app-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0798b8aef6694341d40bb81edc759f8979b896b59f9f0f45d8cfa3bb7bf2e743"
-dependencies = [
- "glib-sys",
- "gstreamer-base-sys",
- "gstreamer-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
-name = "gstreamer-audio"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "544f14e19e3b7221845be0e5c2f2cf284576b7baa16835ac16def6e734bfa866"
-dependencies = [
- "cfg-if",
- "glib",
- "gstreamer",
- "gstreamer-audio-sys",
- "gstreamer-base",
- "libc",
- "smallvec",
-]
-
-[[package]]
-name = "gstreamer-audio-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a010deb715bc29953a07c6714249132e736b3daf3a529e70586b58a7063888"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-base-sys",
- "gstreamer-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
-name = "gstreamer-base"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17cbd8f59586a369c40d4b0d2f3a61cf9e9287b3cf5503cdcd8e7c5faa99265e"
-dependencies = [
- "atomic_refcell",
- "cfg-if",
- "glib",
- "gstreamer",
- "gstreamer-base-sys",
- "libc",
-]
-
-[[package]]
-name = "gstreamer-base-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b05f77bfd76b5afee6b29c27dae19eaf5018b5cf8d0d17520f3de44c6385c32"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
-name = "gstreamer-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "436d9532847489a8285d57b8c3670762c12a18f777fdc2ab159b52e0e6f521b9"
-dependencies = [
- "cfg-if",
- "glib-sys",
- "gobject-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
 name = "gtk4"
 version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7942,15 +7823,6 @@ checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
-]
-
-[[package]]
-name = "kstring"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a09b82a7f771ed02dc0dd9b27130a0fa5499fa15ed3027116c1e5e4e591bd9e"
-dependencies = [
- "static_assertions",
 ]
 
 [[package]]
@@ -10177,12 +10049,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "muldiv"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "956787520e75e9bd233246045d19f42fb73242759cc57fba9611d940ae96d4b0"
-
-[[package]]
 name = "mxc-sdk"
 version = "1.0.1"
 source = "git+https://github.com/microsoft/mxc?rev=05a430bc17a3e1b3fa2131524fc52e4319e07298#05a430bc17a3e1b3fa2131524fc52e4319e07298"
@@ -10477,7 +10343,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-base"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "html5ever 0.27.0",
@@ -10506,7 +10372,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-bundler"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "dunce",
@@ -10531,9 +10397,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "cap-std",
+ "chrono",
  "crc32fast",
  "flate2",
  "futures-util",
@@ -10564,16 +10431,16 @@ dependencies = [
  "unicode-properties",
  "ureq",
  "url",
- "webpki-roots 1.0.11",
  "windows-sys 0.61.2",
  "wuff",
 ]
 
 [[package]]
 name = "nsh-engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
+ "env_filter",
  "libc",
  "log",
  "nsh-core",
@@ -10591,7 +10458,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-i18n"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "rust-i18n-support",
  "serde_json",
@@ -10599,7 +10466,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-js"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -10621,7 +10488,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macros"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "imagesize 0.15.0",
  "proc-macro2",
@@ -10633,7 +10500,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-package"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -10647,7 +10514,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-apple"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2 0.6.2",
  "cc",
@@ -10658,19 +10525,21 @@ dependencies = [
  "nsh-engine",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-text",
  "objc2-foundation 0.3.2",
+ "objc2-image-io",
  "objc2-ui-kit",
  "serde_json",
+ "unicode-bidi",
 ]
 
 [[package]]
 name = "nsh-platform-linux"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-audio",
  "gtk4",
  "image",
  "log",
@@ -10686,7 +10555,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-macos"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2 0.6.2",
  "crossbeam-channel",
@@ -10710,11 +10579,12 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "rustc-hash 2.1.3",
  "serde_json",
+ "unicode-bidi",
 ]
 
 [[package]]
 name = "nsh-platform-tui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
  "icy_sixel",
@@ -10731,7 +10601,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-windows"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
  "image",
@@ -10744,7 +10614,6 @@ dependencies = [
  "serde_json",
  "ttf-parser",
  "url",
- "webview2-com",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-numerics",
@@ -10752,7 +10621,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-terminal"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -10764,18 +10633,19 @@ dependencies = [
 
 [[package]]
 name = "nsh-testing"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
  "log",
  "nsh-core",
  "nsh-engine",
  "regex",
+ "url",
 ]
 
 [[package]]
 name = "nsh-updater"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -11509,15 +11379,6 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
-name = "option-operations"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aca39cf52b03268400c16eeb9b56382ea3c3353409309b63f5c8f0b1faf42754"
-dependencies = [
- "pastey",
-]
 
 [[package]]
 name = "ordered-float"
@@ -18548,40 +18409,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "webview2-com"
-version = "0.39.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6"
-dependencies = [
- "webview2-com-macros",
- "webview2-com-sys",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "webview2-com-macros"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "webview2-com-sys"
-version = "0.39.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb"
-dependencies = [
- "thiserror 2.0.21",
- "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]

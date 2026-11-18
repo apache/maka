@@ -216,6 +216,37 @@ fn an_app_without_parameters_reads_an_empty_object() {
     drop(engine);
 }
 
+const PARAMS_ONLY: &str = r#"import { mount, signal, Text } from "nsh";
+import { host } from "nsh";
+
+const call = signal("pending");
+host.call("echo", 1).catch((e) => call.set(String(e.code)));
+mount(() => (
+  <Text>{`conversation ${host.params.conversation} available ${host.available()} call ${call()}`}</Text>
+));
+"#;
+
+#[test]
+fn parameters_alone_leave_calls_to_the_platform() {
+    // The web page's case: it passes parameters and answers calls with its
+    // own host, so the app's calls must not go to a channel that handles
+    // none. Here the platform has no host: the call fails as it says so.
+    let host = HostChannel::new();
+    let mut params = serde_json::Map::new();
+    params.insert("conversation".into(), json!("c-42"));
+    host.set_params(params);
+    let (engine, rx) = start(bundle(PARAMS_ONLY), &host);
+    wait_for(
+        &rx,
+        &[
+            "conversation c-42",
+            "available false",
+            "call ERR_FEATURE_UNAVAILABLE_ON_PLATFORM",
+        ],
+    );
+    drop(engine);
+}
+
 const QUITTER: &str = r#"import { host, mount, signal, Text } from "nsh";
 import { Application } from "nsh/desktop";
 

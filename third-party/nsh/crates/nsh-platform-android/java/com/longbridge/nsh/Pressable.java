@@ -29,6 +29,7 @@ final class Pressable {
     private boolean tracking, pressedIn, longPressed;
     private final Runnable pressIn = this::pressIn;
     private final Runnable longPress = this::longPress;
+    private final Box.LongOnly longOnly;
 
     Pressable(View view, Mounter mounter, int id) {
         this(view, mounter, id, false);
@@ -40,6 +41,7 @@ final class Pressable {
         this.view = view;
         this.mounter = mounter;
         this.id = id;
+        this.longOnly = new Box.LongOnly(view);
     }
 
     /** The view itself takes presses. */
@@ -69,6 +71,7 @@ final class Pressable {
             }
         }
         if (!feedbackOnly) at.track(e);
+        if (!feedbackOnly && !span) longOnly.forward(e, mounter.handlesTap(id), mounter);
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 downX = e.getX();
@@ -140,6 +143,7 @@ final class Pressable {
         if (!tracking) return;
         if (!pressedIn) pressIn();
         longPressed = true;
+        longOnly.longPressed();
         event(Native.LONG_PRESS);
     }
 

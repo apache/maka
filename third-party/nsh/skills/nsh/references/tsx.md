@@ -105,6 +105,7 @@ export function Home() {
 ```
 
 - `If` builds a branch only when truthiness flips. A function child gets an accessor of `when`'s value without `null`.
+- To build a branch again for each new value (a component that reads a prop once at setup), use the ternary form, which rebuilds whenever what it reads changes: `{file() ? <Reader file={file()!} /> : null}`. Better, read the prop where it is used (`props.file`) so the existing branch follows it.
 - `cond() && <A />` and `cond() ? <A /> : <B />` work, but rebuild the branch each time anything they read changes, losing its state. Fine for a leaf; use `If` for more.
 - `Each` keeps rows by `key`, by default the item (objects by identity, primitives by value). The row gets **accessors**, so read `todo().title`. Give a `key` whenever items get replaced by new objects, or rows rebuild.
 - `items().map(...)` compiles, and rebuilds every row on any change. Use `Each`.
@@ -459,7 +460,7 @@ export function Confirm() {
 - `Dialog` keeps closing if the user closes it, whatever `open` says: keep `open` in sync in `onOpenChange`.
 - `closeOnEscape`, `closeOnBackdropPress`, `closeOnSwipe`, `closeOnPressOutside` decide dismissal up front.
 - `Sheet` takes `open`, `onOpenChange`, `side` and `popupClass`. `Popover` and `Menu` take `trigger` and `popupClass`.
-- `const { action } = await AlertDialog.show({ title, actions: [{ id: "delete", label: "Delete", role: "destructive" }] })` resolves the chosen `id`, or `null` when closed without one.
+- `const { action } = await AlertDialog.show({ title, actions: [{ id: "delete", label: "Delete", role: "destructive" }] })` resolves the chosen `id`, or `null` when closed without one. An alert with `input: { defaultValue, placeholder, selectTextOnFocus, required }` shows the system's text field (iOS, Android, macOS, web) and resolves its text as `value`.
 - `Menu` holds `MenuItem`s, each with `onSelect`.
 - `ToastStack`, `Tooltip`, `HoverCard`, `ContextMenu` and `Command` are also in `nsh/base`.
 

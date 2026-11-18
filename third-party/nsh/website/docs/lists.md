@@ -137,17 +137,17 @@ Rows can have different heights. Until a row has been measured, the list assumes
 
 ## Changing the data
 
-In Rust, give the count as a signal or a closure (`move || posts.with(Vec::len)`): the list grows and shrinks in place. Rows added or removed at the end need nothing more; when rows come and go elsewhere, give their identities with `.keys(move || posts.with(|p| p.iter().map(|p| p.id).collect::<Vec<_>>()))`, and the list keeps the common start and end and treats what is between as removed and inserted.
+In Rust, give the count as a signal or a closure (`move || posts.with(Vec::len)`): the list grows and shrinks in place. Rows added or removed at the end need nothing more; when rows come and go elsewhere, give their identities with `.keys(move || posts.with(|p| p.iter().map(|p| p.id).collect::<Vec<_>>()))`, and the list matches the rows by key.
 
-In TSX, pass a new array to change the items: `posts.set([...posts(), ...more])`. The list compares the old and the new array **by item identity** (`===`), keeps the common start and end, and treats what is between as removed and inserted.
+In TSX, pass a new array to change the items: `posts.set([...posts(), ...more])`. The list compares the old and the new array **by item identity** (`===`), or by the keys `keyExtractor` returns.
 
-In both, measurements stay with their rows, and when rows are inserted above the rows on screen, the visible rows stay where they are instead of jumping.
+In both, a row that stays keeps its cell, its content and its measured size wherever it moves (an item sorted to the top once it changes), and so do the rows it passes: a focused field or an open menu in them stays open. Only new items get new rows. When rows are inserted above the rows on screen, the visible rows stay where they are instead of jumping.
 
 - In TSX, update immutably: a new array, with the unchanged item objects reused. Mutating the array in place (`push`) is not seen.
 - A changed item should be a new object (`{ ...post, title }`), so its row shows the change.
 - Prepending (new messages, a refreshed feed) keeps the user's place.
 
-`keyExtractor` names items in viewability tokens (below); by default the key is `item.key`, then `item.id`, then the index. It does not affect how changes are matched in TSX, which is always by identity.
+`keyExtractor` gives the key changes are matched by, so rows rebuilt as new objects keep their rows, and names items in viewability tokens (below). Without it, changes are matched by identity, and tokens name items by `item.key`, then `item.id`, then the index.
 
 ## Props
 
@@ -180,7 +180,7 @@ A list takes every scrolling prop of the scroll view that makes sense for a list
 | `loadMoreAtStartThreshold` | `.load_more_at_start_threshold(..)` | `number` | `1` | How close to the start, in viewports, `onLoadMoreAtStart` fires. |
 | `onViewableItemsChange` | `.on_viewable_items_change(..)` | `(info) => void` | | Items became or stopped being viewable. |
 | `viewabilityConfig` | `.viewability(..)`, `.minimum_view_time(..)` | `ViewabilityConfig` | | When items count as viewable. |
-| `keyExtractor` | `.keys(..)` | `(item, index) => string` | | The key in viewability tokens; in Rust, the rows' identities. |
+| `keyExtractor` | `.keys(..)` | `(item, index) => string` | | The rows' identities, which changes are matched by; also the key in viewability tokens. |
 | `refreshing` / `onRefresh` | `.refreshing(..)` / `.on_refresh(..)` | `boolean` / `() => void` | | Pull to refresh. |
 | `refreshIndicator` | `.refresh_indicator(..)` | `{ height: number }` | | The app's own pull-to-refresh indicator, in place of the platform's spinner (see [Scrolling](./scrolling.md#an-indicator-of-your-own)). |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](../elements/scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. |

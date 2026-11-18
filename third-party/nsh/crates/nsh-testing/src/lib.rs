@@ -68,8 +68,9 @@ use nsh_engine::{Bundle, EngineConfig};
 pub use self::headless::UreqNetwork;
 #[cfg(not(target_arch = "wasm32"))]
 pub use self::headless::{
-    AudioCall, DialogAnswer, DirectoryAssets, Headless, RecordingNetwork, StubHandler, StubNetwork,
-    StubReply, StubResponse, StubRoute, WAIT, default_answer, print_batch, start,
+    AudioCall, Browser, DialogAnswer, DirectoryAssets, Headless, HistoryEntry, RecordingNetwork,
+    StubHandler, StubNetwork, StubReply, StubResponse, StubRoute, WAIT, default_answer,
+    print_batch, start,
 };
 #[cfg(feature = "js")]
 #[allow(deprecated)]
@@ -79,7 +80,7 @@ pub use self::{
     driver::Host,
     module::{
         App, ClockOptions, ColorScheme, Entries, Expectation, NetworkOption, OpenOptions, Platform,
-        RouteOption, SPECIFIER, SafeArea, SpanStyle, StubRequest, Testing, registry,
+        RouteOption, SPECIFIER, SafeArea, SpanStyle, StubRequest, Testing, ViewStyle, registry,
     },
     run::{
         Built, Compile, Entry, Failure, HostOptions, HostTarget, Output, StartHost, TestResult,

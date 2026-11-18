@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import android.annotation.TargetApi;
 import android.view.WindowInsets;
 import android.view.WindowInsetsAnimation;
 import java.util.List;
@@ -8,6 +9,7 @@ import java.util.List;
  * The keyboard's curve and duration for Android 11+ (only loaded there, so
  * that {@code NshView} verifies without these types on older versions).
  */
+@TargetApi(30)
 final class KeyboardAnimation {
     private KeyboardAnimation() {}
 
@@ -18,6 +20,11 @@ final class KeyboardAnimation {
             public void onPrepare(WindowInsetsAnimation animation) {
                 // Before the end state's insets are applied.
                 if ((animation.getTypeMask() & WindowInsets.Type.ime()) == 0) return;
+                // A move a gesture drives has no duration (-1): the back
+                // swipe that dismisses the keyboard (predictive back). The
+                // last timed move's curve and duration stay: an animator
+                // given -1 throws.
+                if (animation.getDurationMillis() < 0) return;
                 view.keyboardDuration = animation.getDurationMillis();
                 mounter.keyboardMotion(animation.getInterpolator(), view.keyboardDuration);
             }

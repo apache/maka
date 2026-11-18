@@ -13,7 +13,7 @@ use nsh_platform_tui::{
     ColorDepth, CursorStyle, Input, Modifiers, MouseButton, MouseInput, MouseKind, RunEvent,
     TerminalCapabilities,
 };
-use ratatui_crossterm::crossterm::{cursor, event, execute, style::Print, terminal};
+use ratatui_crossterm::crossterm::{Command, cursor, event, execute, style::Print, terminal};
 
 const ENABLE_ALTERNATE_SCROLL: &str = "\x1b[?1007h";
 const DISABLE_ALTERNATE_SCROLL: &str = "\x1b[?1007l";
@@ -33,6 +33,77 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(unix)]
 const QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[?2026$p\x1b[c";
 
+/// The kitty keyboard flags the host pushes: Escape and modified keys as
+/// CSI-u sequences, the event kinds (`Repeat` and `Release`), and the
+/// alternate key that carries the shifted character of the user's layout.
+///
+/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES` (kitty's flag 8) is deliberately not
+/// here, though it would report plain text keys' repeats and releases: it
+/// stops the terminal sending those keys' text at all ("text will not be
+/// sent, instead only key events are sent"); the text is only reportable
+/// with `REPORT_ASSOCIATED_TEXT` (flag 16), the third field of a CSI-u
+/// event, which crossterm drops. Composed input (dead keys, IME, an AltGr
+/// character) would then be lost or arrive as the base key's character,
+/// which is worse than a missing release. Only a parser that reads that
+/// field (crossterm's gap, not this host's) makes flag 8 safe.
+const KEYBOARD_FLAGS: event::KeyboardEnhancementFlags =
+    event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        .union(event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+        .union(event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS);
+
+/// Sets [`KEYBOARD_FLAGS`] without pushing them (`CSI = flags u`).
+///
+/// [`event::PushKeyboardEnhancementFlags`] stacks a level, which `restore`
+/// pops at exit. A terminal coming back to focus needs the flags again when
+/// a multiplexer reset them, but pushing them again on every return would
+/// stack a level per return: set them instead, so the one push stays the
+/// one level the exit removes.
+struct SetKeyboardEnhancementFlags;
+
+impl Command for SetKeyboardEnhancementFlags {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        write!(f, "\x1b[={}u", KEYBOARD_FLAGS.bits())
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the kitty keyboard protocol is not part of the Windows console API",
+        ))
+    }
+}
+
+/// The escape sequences turning the input modes on again. `keyboard` is
+/// whether the terminal takes the kitty protocol; when the session's flags
+/// are still pushed, `pushed` sets them rather than pushing a second level.
+fn reassert_sequences(keyboard: bool, pushed: bool, mouse: bool) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    execute!(bytes, event::EnableBracketedPaste, event::EnableFocusChange)?;
+    if mouse {
+        execute!(bytes, event::EnableMouseCapture)?;
+    }
+    if keyboard {
+        if pushed {
+            execute!(bytes, SetKeyboardEnhancementFlags)?;
+        } else {
+            execute!(bytes, event::PushKeyboardEnhancementFlags(KEYBOARD_FLAGS))?;
+        }
+    }
+    Ok(bytes)
+}
+
+/// The escape sequences letting the kitty flags go while the terminal does
+/// not have the focus: the level pushed on focus is popped on blur, so
+/// focus moving back and forth never stacks levels.
+fn suspend_sequences(pushed: bool) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    if pushed {
+        execute!(bytes, event::PopKeyboardEnhancementFlags)?;
+    }
+    Ok(bytes)
+}
+
 #[cfg(unix)]
 mod unix;
 
@@ -51,6 +122,9 @@ pub(crate) struct Session {
     capabilities: TerminalCapabilities,
     synchronized: bool,
     mouse: bool,
+    /// Whether the terminal takes the kitty keyboard protocol: its flags
+    /// are pushed while the terminal has the focus.
+    keyboard: bool,
     #[cfg(unix)]
     _transport: unix::Transport,
 }
@@ -219,17 +293,29 @@ impl Session {
     }
 
     /// Turns the input modes on again: a terminal coming back to focus (a
-    /// multiplexer's pane or tab switch) may have reset them.
+    /// multiplexer's pane or tab switch) may have reset them. The kitty
+    /// flags are pushed again only if blur popped them; when the session
+    /// still holds their level they are set, never stacked.
     pub(crate) fn reassert(&self) -> io::Result<()> {
-        execute!(
-            Output,
-            event::EnableBracketedPaste,
-            event::EnableFocusChange
-        )?;
-        if self.mouse {
-            execute!(Output, event::EnableMouseCapture)?;
+        let pushed = self.modes.keyboard.load(Ordering::Acquire);
+        let bytes = reassert_sequences(self.keyboard, pushed, self.mouse)?;
+        if self.keyboard && !pushed {
+            self.modes.keyboard.store(true, Ordering::Release);
         }
-        Ok(())
+        Output.write_all(&bytes)?;
+        Output.flush()
+    }
+
+    /// The terminal lost the focus: a multiplexer may hand it to another
+    /// program. The kitty flags go back to what the terminal had, and the
+    /// return pushes them once more rather than a level per return.
+    pub(crate) fn focus_lost(&self) -> io::Result<()> {
+        if !self.modes.keyboard.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let bytes = suspend_sequences(true)?;
+        Output.write_all(&bytes)?;
+        Output.flush()
     }
 
     /// Enters raw mode and the alternate screen. With `mouse`, the terminal reports
@@ -240,6 +326,7 @@ impl Session {
             capabilities: TerminalCapabilities::default(),
             synchronized: false,
             mouse,
+            keyboard: false,
             #[cfg(unix)]
             _transport: unix::Transport::enter()?,
         };
@@ -273,15 +360,9 @@ impl Session {
             event::EnableFocusChange
         );
         if keyboard_protocol(&replies, |name| std::env::var(name).ok()) {
-            execute!(
-                Output,
-                event::PushKeyboardEnhancementFlags(
-                    event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                        | event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                        | event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                )
-            )?;
+            execute!(Output, event::PushKeyboardEnhancementFlags(KEYBOARD_FLAGS))?;
             session.modes.keyboard.store(true, Ordering::Release);
+            session.keyboard = true;
             session.capabilities.command_key = true;
         }
         if mouse {
@@ -561,18 +642,14 @@ pub fn convert(event: event::Event) -> RunEvent {
         event::Event::Key(key) => {
             // Ctrl+C reaches the surface: it copies a selection there, else
             // the terminal Key scheme quits.
-            let release = key.kind == event::KeyEventKind::Release;
-            let name = match key.code {
-                event::KeyCode::Char(c) => c.to_string(),
-                event::KeyCode::Esc => "Escape".into(),
-                event::KeyCode::BackTab => "Tab".into(),
-                event::KeyCode::F(number) => format!("F{number}"),
-                other => format!("{other:?}"),
-            };
+            let name = key_name(&key.code);
             let mut modifiers = modifiers(key.modifiers);
             if key.code == event::KeyCode::BackTab {
                 modifiers.shift = true;
             }
+            // The event kind is the terminal's: `Press` always, with
+            // `Repeat` and `Release` only when it reports event types (the
+            // kitty keyboard protocol, or crossterm's Windows input).
             if key.kind == event::KeyEventKind::Repeat {
                 RunEvent::Input(Input::KeyRepeat {
                     key: name,
@@ -582,10 +659,69 @@ pub fn convert(event: event::Event) -> RunEvent {
                 RunEvent::Input(Input::Key {
                     key: name,
                     modifiers,
-                    release,
+                    release: key.kind == event::KeyEventKind::Release,
                 })
             }
         }
+    }
+}
+
+/// A key's name as the surface and the app's raw key events name it: the
+/// character it types, or the key's DOM spelling (`ArrowLeft`, `Enter`,
+/// `CapsLock`, `Shift`). Keys without a name of their own stay
+/// `Unidentified`.
+fn key_name(code: &event::KeyCode) -> String {
+    use event::{KeyCode as K, MediaKeyCode as M, ModifierKeyCode as Mod};
+    match code {
+        K::Char(c) => c.to_string(),
+        K::Enter => "Enter".into(),
+        K::Esc => "Escape".into(),
+        // Shift+Tab, which the terminal has a code of its own for.
+        K::Tab | K::BackTab => "Tab".into(),
+        K::Backspace => "Backspace".into(),
+        K::Delete => "Delete".into(),
+        K::Insert => "Insert".into(),
+        K::Home => "Home".into(),
+        K::End => "End".into(),
+        K::PageUp => "PageUp".into(),
+        K::PageDown => "PageDown".into(),
+        K::Left => "ArrowLeft".into(),
+        K::Right => "ArrowRight".into(),
+        K::Up => "ArrowUp".into(),
+        K::Down => "ArrowDown".into(),
+        K::F(number) => format!("F{number}"),
+        K::CapsLock => "CapsLock".into(),
+        K::ScrollLock => "ScrollLock".into(),
+        K::NumLock => "NumLock".into(),
+        K::PrintScreen => "PrintScreen".into(),
+        K::Pause => "Pause".into(),
+        K::Menu => "ContextMenu".into(),
+        K::Media(media) => match media {
+            M::Play => "MediaPlay",
+            M::Pause => "MediaPause",
+            M::PlayPause => "MediaPlayPause",
+            M::Reverse => "MediaReverse",
+            M::Stop => "MediaStop",
+            M::FastForward => "MediaFastForward",
+            M::Rewind => "MediaRewind",
+            M::TrackNext => "MediaTrackNext",
+            M::TrackPrevious => "MediaTrackPrevious",
+            M::Record => "MediaRecord",
+            M::LowerVolume => "AudioVolumeDown",
+            M::RaiseVolume => "AudioVolumeUp",
+            M::MuteVolume => "AudioVolumeMute",
+        }
+        .into(),
+        K::Modifier(modifier) => match modifier {
+            Mod::LeftShift | Mod::RightShift => "Shift",
+            Mod::LeftControl | Mod::RightControl => "Control",
+            Mod::LeftAlt | Mod::RightAlt => "Alt",
+            Mod::LeftSuper | Mod::RightSuper | Mod::LeftMeta | Mod::RightMeta => "Meta",
+            Mod::LeftHyper | Mod::RightHyper => "Hyper",
+            Mod::IsoLevel3Shift | Mod::IsoLevel5Shift => "AltGraph",
+        }
+        .into(),
+        K::Null | K::KeypadBegin => "Unidentified".into(),
     }
 }
 
@@ -664,6 +800,77 @@ mod tests {
             convert(event::Event::Key(key)),
             RunEvent::Input(Input::KeyRepeat { .. })
         ));
+    }
+
+    #[test]
+    fn arrows_and_modifier_keys_get_the_names_raw_key_events_use() {
+        // The title of a raw key event is the DOM's: the arrows are
+        // `ArrowLeft`…, and a modifier key reports itself.
+        for (code, name) in [
+            (event::KeyCode::Left, "ArrowLeft"),
+            (event::KeyCode::Right, "ArrowRight"),
+            (event::KeyCode::Up, "ArrowUp"),
+            (event::KeyCode::Down, "ArrowDown"),
+            (event::KeyCode::Esc, "Escape"),
+            (event::KeyCode::F(5), "F5"),
+            (event::KeyCode::CapsLock, "CapsLock"),
+            (event::KeyCode::Menu, "ContextMenu"),
+            (
+                event::KeyCode::Modifier(event::ModifierKeyCode::RightShift),
+                "Shift",
+            ),
+            (
+                event::KeyCode::Modifier(event::ModifierKeyCode::LeftAlt),
+                "Alt",
+            ),
+            (
+                event::KeyCode::Modifier(event::ModifierKeyCode::RightMeta),
+                "Meta",
+            ),
+            (
+                event::KeyCode::Media(event::MediaKeyCode::RaiseVolume),
+                "AudioVolumeUp",
+            ),
+            (event::KeyCode::Null, "Unidentified"),
+        ] {
+            assert_eq!(key_name(&code), name);
+        }
+        // A release is the terminal's, forwarded as one.
+        let mut key = event::KeyEvent::new(event::KeyCode::Left, event::KeyModifiers::NONE);
+        key.kind = event::KeyEventKind::Release;
+        let RunEvent::Input(Input::Key {
+            key: name, release, ..
+        }) = convert(event::Event::Key(key))
+        else {
+            panic!("key input");
+        };
+        assert_eq!(name, "ArrowLeft");
+        assert!(release);
+    }
+
+    // The kitty flags are pushed only where the startup query is read (Unix)
+    // and crossterm's push has an ANSI form.
+    #[cfg(unix)]
+    #[test]
+    fn reasserting_input_modes_sets_the_keyboard_flags_without_pushing_again() {
+        // Still pushed: `CSI = flags u` sets them, so a focus return after a
+        // multiplexer reset does not stack a second level the exit would
+        // leave behind.
+        let text = String::from_utf8(reassert_sequences(true, true, true).unwrap()).unwrap();
+        assert!(text.contains("\x1b[=7u"), "{text:?}");
+        assert!(!text.contains("\x1b[>"), "{text:?}");
+        assert!(text.contains("?1000h"), "{text:?}");
+        // Blur popped the level: the return pushes exactly one.
+        let text = String::from_utf8(reassert_sequences(true, false, false).unwrap()).unwrap();
+        assert!(text.contains("\x1b[>7u"), "{text:?}");
+        // Without the protocol, no flags follow; without the mouse, its
+        // capture stays off.
+        let text = String::from_utf8(reassert_sequences(false, false, false).unwrap()).unwrap();
+        assert!(!text.contains("u"), "{text:?}");
+        assert!(!text.contains("?1000h"), "{text:?}");
+        // Blur pops what focus pushed, and nothing otherwise.
+        assert_eq!(suspend_sequences(true).unwrap().as_slice(), b"\x1b[<1u");
+        assert!(suspend_sequences(false).unwrap().is_empty());
     }
 
     #[test]

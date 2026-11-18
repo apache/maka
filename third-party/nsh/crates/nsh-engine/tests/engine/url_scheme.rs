@@ -339,6 +339,53 @@ fn a_pushed_address_reads_back_at_once_and_an_unknown_history_is_a_type_error() 
     );
 }
 
+#[test]
+fn a_native_platform_gets_the_address_the_app_sets() {
+    use nsh_core::Command;
+    let config = EngineConfig {
+        viewport: Size::new(px(400.0), px(600.0)),
+        ui_sets: vec![nsh_base::registry()],
+        environment: nsh_engine::Environment {
+            os: nsh_core::platform::Os::Ios,
+            ..Default::default()
+        },
+        ..EngineConfig::new(bundle_of(PUSH_APP, "nsh-app-url-native").with_url_schemes(["myapp"]))
+    };
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let _engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+    let mut addresses = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        let Ok(batch) = rx.recv_timeout(Duration::from_millis(50)) else {
+            continue;
+        };
+        let mut done = false;
+        for item in batch.items {
+            match item {
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::PushAppUrl(url),
+                } => addresses.push(format!("push:{url}")),
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::SetAppUrl(url),
+                } => addresses.push(format!("set:{url}")),
+                MountItem::Text { text, .. } => done |= text.text.contains("done"),
+                _ => {}
+            }
+        }
+        if done {
+            break;
+        }
+    }
+    // As on the web, in order: iOS and macOS give it to the system; the
+    // refused `history` sends nothing.
+    assert_eq!(
+        addresses,
+        ["push:myapp://tabs/live", "set:myapp://tabs/all"]
+    );
+}
+
 /// Hears links on `UrlScheme` and files on `Application.on("openFiles")`,
 /// listening only after a while, so the files reported at the start wait.
 const FILES_APP: &str = r#"

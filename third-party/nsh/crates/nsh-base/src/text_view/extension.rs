@@ -296,7 +296,7 @@ impl Parser {
 
     /// Markdown `source` read.
     pub fn markdown(&self, source: &str) -> Document {
-        super::markdown::parse(self, source, false).document
+        super::markdown::parse(self, source)
     }
 
     /// The Markdown syntax tree with byte positions in the original source.
@@ -308,7 +308,7 @@ impl Parser {
     /// Markdown with canonical UTF-8 provenance for a rendered document.
     /// This uses the same parser and converter as `markdown`.
     pub(super) fn markdown_projection(&self, source: &str) -> super::markdown::Projection {
-        super::markdown::parse(self, source, true)
+        super::markdown::project(self, source, true)
     }
 
     /// HTML `source` read (a fragment or a whole page: its body).

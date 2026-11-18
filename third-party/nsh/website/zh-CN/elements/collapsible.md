@@ -80,6 +80,7 @@ collapsible 显示应用传入的值。在 Rust 里，`collapsible()` 创建一�
 |---|---|---|---|---|
 | `open` | `.open(..)` | `boolean` | `false` | 展开：`content` 在树中，位于子元素之后。值由应用持有。 |
 | `reveal` | `.reveal(..)` | `boolean` | `false` | 以展开动效打开和收起：内容放在一个裁剪它的区域里，`open` 打开时区域高度从零弹到内容自身的高度，关闭时弹回，临界阻尼（约 265 毫秒，不过冲）。collapsible 之后的内容随之移动，内容一直留在树中，直到区域收起。减少动态效果时立即打开和收起。收起时这个区域也在布局里，高度为零，所以 collapsible 的 `gap` 也会出现在它之前。 |
+| `revealSpring` | `.reveal_spring(..)` | `{ stiffness?, damping?, mass? }`（Rust `Spring`） | 无 | 展开动效使用的弹簧，即 `AnimatedValue.spring` 的选项，未给出的字段取它的默认值（stiffness 170、damping 26、mass 1）：应用自己的动效 token（`{ stiffness: 620, damping: 36 }` 略有过冲，约 384 毫秒稳定）。不设置时使用上面的临界阻尼弹簧。内容在这个弹簧稳定后离开树。只在设置 `reveal` 时生效；减少动态效果时仍立即打开和收起。 |
 | `content` | `.content(..)` | `JSX.Element` | 无 | 展开的内容。它只创建一次，收起时保留，所以里面的状态（输入框的文字、滚动位置、开关）在下次展开时还在。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 始终显示的部分：摘要、切换 `open` 的触发控件。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 包住子元素和内容的区域（`gap-2` 设置它们的间距）。 |

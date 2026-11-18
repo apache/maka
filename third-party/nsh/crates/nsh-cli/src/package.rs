@@ -7,6 +7,7 @@
 //! embedding in GPUI apps and has no package of its own.
 
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -157,6 +158,10 @@ pub(crate) struct AppConfig {
     pub(crate) icon: Option<AppIcon>,
     /// The lowest runtime that runs a signed package (`nsh publish`).
     pub(crate) min_runtime: Option<String>,
+    /// The NSH versions the app is written for (`">=0.5"`), which every
+    /// command checks this CLI against first ([`check_nsh_version`]).
+    #[serde(default, rename = "nsh")]
+    _nsh: Option<serde_json::Value>,
     /// Read and checked by the bundler.
     #[serde(default, rename = "tailwind")]
     _tailwind: Option<serde_json::Value>,
@@ -189,6 +194,9 @@ pub(crate) struct AppConfig {
     /// The app's Rust crate: its builds are the app's own (`rust_app.rs`).
     #[serde(default, rename = "rust")]
     _rust: Option<serde_json::Value>,
+    /// The app's third-party extensions, linked like its crates (`extensions.rs`).
+    #[serde(default, rename = "extensions")]
+    _extensions: Option<serde_json::Value>,
     /// A Rust app's root component in its crate (`rust_app::RootConfig`).
     #[serde(default, rename = "root")]
     _root: Option<serde_json::Value>,
@@ -213,6 +221,27 @@ pub(crate) struct AppConfig {
     /// release runner reads it; macOS runs one instance of an app already.
     #[serde(default)]
     pub(crate) single_instance: bool,
+    /// The packaged app's data directory (`"dataDir": "${homeDir}/.myapp"`),
+    /// in place of the one under its id in the system's directory for apps'
+    /// data: its storage (`nsh/storage`), logs, `process.dataDir` and
+    /// `${dataDir}`. An absolute path, or `${homeDir}` followed by one under
+    /// the user's home ([`nsh_engine::resolve_data_dir`]); it stays put when
+    /// the app's id changes. Written into `app.json`, where the desktop
+    /// release runners (macOS, Windows, Linux) read it; [`read_config`]
+    /// drops a value they would refuse.
+    pub(crate) data_dir: Option<String>,
+    /// Gives the app's address (`UrlScheme.setUrl`) to the system on iOS
+    /// and macOS (`"handoff": true`), so Handoff continues it on the user's
+    /// other devices. iOS and macOS
+    /// packages declare `<id>.url` in `NSUserActivityTypes`
+    /// ([`activity_types`]), which the release runners read.
+    #[serde(default)]
+    pub(crate) handoff: bool,
+    /// Native features a package always includes (`"features": ["plot"]`),
+    /// which nothing in the bundle shows it uses: what its Rust code or a
+    /// computed import needs (`native_features`).
+    #[serde(default)]
+    pub(crate) features: Vec<String>,
     /// The file types the app opens (`"fileTypes"`: `[{ "name": "Video",
     /// "extensions": ["mp4"] }]`), which packages declare to the system;
     /// the app hears the files through `Application.on("openFiles", ...)`
@@ -320,6 +349,14 @@ impl AppConfig {
     pub(crate) fn add_file_types_to_app_json(&self, info: &mut serde_json::Value) {
         if let Some(types) = self.file_types_json() {
             info["fileTypes"] = types;
+        }
+    }
+
+    /// Adds `"dataDir"` to a package's `app.json` `info`, where the desktop
+    /// release runners read it (their `setup`).
+    pub(crate) fn add_data_dir_to_app_json(&self, info: &mut serde_json::Value) {
+        if let Some(dir) = &self.data_dir {
+            info["dataDir"] = dir.as_str().into();
         }
     }
 
@@ -436,6 +473,7 @@ pub(crate) fn desktop_app_json(
         info["singleInstance"] = true.into();
     }
     config.add_file_types_to_app_json(&mut info);
+    config.add_data_dir_to_app_json(&mut info);
     info
 }
 
@@ -523,6 +561,25 @@ fn url_types(info: &mut plist::Dictionary, id: &str, schemes: &[String]) {
     );
 }
 
+/// Declares the activity type of the app's addresses that are no web pages
+/// (`<id>.url`, `nsh_platform_apple::handoff`) in an Apple `Info.plist`
+/// (`NSUserActivityTypes`, after those `infoPlist` gives) for `nsh.json`
+/// `"handoff": true`.
+fn activity_types(info: &mut plist::Dictionary, id: &str, handoff: bool) {
+    use plist::Value;
+    if !handoff {
+        return;
+    }
+    let kind = Value::String(format!("{id}.url"));
+    match info.get_mut("NSUserActivityTypes") {
+        Some(Value::Array(types)) if types.contains(&kind) => {}
+        Some(Value::Array(types)) => types.push(kind),
+        _ => {
+            info.insert("NSUserActivityTypes".into(), Value::Array(vec![kind]));
+        }
+    }
+}
+
 /// `nsh.json` `"web"`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -576,6 +633,9 @@ pub(crate) struct PackageOptions<'a> {
     pub(crate) run: bool,
     /// The web: the URL the site's files are served from (`--asset-url`).
     pub(crate) asset_url: Option<&'a str>,
+    /// A development build for `nsh run`. Android: the APK is debuggable,
+    /// so `AppActivity` takes the environment `nsh run` passes it.
+    pub(crate) development: bool,
 }
 
 /// `nsh.json` `"icon"`: one PNG for every target, or one per platform
@@ -619,6 +679,59 @@ impl AppConfig {
     pub(crate) fn icon(&self, target: PackageTarget) -> Option<&Path> {
         self.icon.as_ref()?.of(target)
     }
+
+    /// The macOS development host's arguments for the app (`nsh run`,
+    /// `nsh test`): its activation policy ([`MacosConfig::host_args`]) and
+    /// its icon. The host is an executable without an app bundle around it,
+    /// so the Dock and the app switcher show the app's icon only when the
+    /// host is given it.
+    pub(crate) fn macos_host_args(&self) -> Vec<OsString> {
+        let mut args: Vec<OsString> = self.macos.host_args().into_iter().map(Into::into).collect();
+        if let Some(icon) = self.icon(PackageTarget::Macos) {
+            args.extend(["--icon".into(), icon.into()]);
+        }
+        args
+    }
+}
+
+/// Fails when the `nsh.json` next to `entry` asks for NSH versions
+/// (`"nsh": ">=0.5"`) this CLI is not one of, with one message that names
+/// both, before a build fails on what the other version lacks.
+pub(crate) fn check_nsh_version(entry: &Path) -> anyhow::Result<()> {
+    let dir = entry.parent().unwrap_or(Path::new("."));
+    let path = dir.join("nsh.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    // A file that does not read is reported by the command itself.
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(());
+    };
+    nsh_version_error(&value["nsh"], env!("CARGO_PKG_VERSION"))
+        .map_or(Ok(()), |e| Err(anyhow::anyhow!("{}: {e}", path.display())))
+}
+
+/// Why `required` (`nsh.json` `"nsh"`) does not take NSH `version`, if it
+/// does not.
+fn nsh_version_error(required: &serde_json::Value, version: &str) -> Option<String> {
+    if required.is_null() {
+        return None;
+    }
+    let Some(text) = required.as_str() else {
+        return Some("\"nsh\" must be a version requirement string, e.g. \">=0.5\"".into());
+    };
+    let req = match semver::VersionReq::parse(text) {
+        Ok(req) => req,
+        Err(e) => {
+            return Some(format!(
+                "\"nsh\": invalid version requirement {text:?}: {e}"
+            ));
+        }
+    };
+    // A nightly or other prerelease counts as its release.
+    let mut this = semver::Version::parse(version).ok()?;
+    this.pre = semver::Prerelease::EMPTY;
+    (!req.matches(&this)).then(|| format!("this app requires nsh {text}; this is nsh {version}"))
 }
 
 /// Reads `nsh.json` next to `entry`, if any; relative paths become absolute.
@@ -660,6 +773,15 @@ pub(crate) fn read_config(entry: &Path) -> anyhow::Result<AppConfig> {
         ignored.push(format!("window: {e}"));
         config.window = None;
     }
+    // The runner resolves it again on the user's machine, with their home.
+    if let Some(dir) = &config.data_dir
+        && nsh_engine::resolve_data_dir(dir).is_none()
+    {
+        ignored.push(format!(
+            "dataDir: `{dir}` is neither an absolute path nor `${{homeDir}}/...` (no `..`, no other `${{...}}`)"
+        ));
+        config.data_dir = None;
+    }
     config.icon = match config.icon {
         Some(AppIcon::All(icon)) => Some(AppIcon::All(dir.join(icon))),
         Some(AppIcon::Platforms(icons)) => Some(AppIcon::Platforms(
@@ -678,6 +800,10 @@ pub(crate) fn read_config(entry: &Path) -> anyhow::Result<AppConfig> {
         None => None,
     };
     warn_ignored(&path, &ignored);
+    config.ios.launch_screen = config
+        .ios
+        .launch_screen
+        .map(|screen| screen.relative_to(dir));
     config.ios.check(ApplePlatform::Ios)?;
     config.macos.check()?;
     config.web.host = config.web.host.map(|host| dir.join(host));
@@ -899,6 +1025,53 @@ pub(crate) fn release_name_and_id(
     Ok(name_and_id(entry, config))
 }
 
+/// Whether the TSX app at `entry` builds its own release runner for
+/// `target` (`rust_app::runner_only`): this machine's desktop, with cargo
+/// here and no prebuilt runtime asked for (`NSH_RUNTIME`). It is then the
+/// app of this command ([`crate::rust_app::current`]). Another OS's
+/// package keeps the prebuilt runner, which needs no cross toolchain.
+fn trimmed_runner(entry: &Path, target: PackageTarget) -> bool {
+    let this_machine = match target {
+        PackageTarget::Linux => cfg!(target_os = "linux"),
+        PackageTarget::Macos => cfg!(target_os = "macos"),
+        PackageTarget::Windows => cfg!(windows),
+        // iOS's runner builds with Xcode's SDK, so only on macOS.
+        PackageTarget::Ios | PackageTarget::IosSimulator => cfg!(target_os = "macos"),
+        // Android's library is cross-compiled with the NDK on any OS;
+        // without it (or the Rust target) the build fails and the package
+        // gets the prebuilt library.
+        PackageTarget::Android => true,
+        _ => false,
+    };
+    if !this_machine || std::env::var_os("NSH_RUNTIME").is_some() {
+        return false;
+    }
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let has_cargo = std::process::Command::new(cargo)
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success());
+    if !has_cargo {
+        ui::note(
+            "no cargo here: the package has the prebuilt runner, with every native feature; \
+             install Rust (rustup.rs) to build one with only those the app uses",
+        );
+        return false;
+    }
+    match crate::rust_app::runner_only(entry) {
+        Ok(app) => {
+            crate::rust_app::set_current(app);
+            true
+        }
+        Err(e) => {
+            ui::warn(format!(
+                "the prebuilt runner it is, with every native feature: {e:#}"
+            ));
+            false
+        }
+    }
+}
+
 pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
     if options.asset_url.is_some() && options.target != PackageTarget::Web {
         bail!("--asset-url is where a web site's files are served from: package with --target web");
@@ -964,11 +1137,57 @@ pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
     if options.target != PackageTarget::Web {
         crate::updater::add_config(config, &id, options.out, &mut built)?;
     }
+    // An app builds its own release runner: with only the native features
+    // its bundle can reach, and those `nsh.json` keeps. A TSX app does too
+    // where cargo is, else it ships the prebuilt runner, which has all.
+    let has_crates = crate::rust_app::current().is_some();
+    let mut own_runner = false;
+    if options.target != PackageTarget::Web
+        && !crate::rust_app::is_root(&entry)
+        && (has_crates || trimmed_runner(&entry, options.target))
+    {
+        own_runner = !has_crates;
+        let choices = crate::native_features::choose(built.native_use.as_ref(), &config.features);
+        for c in &choices {
+            let mark = if c.keep { "keep" } else { "leave out" };
+            ui::note(format!("{mark} `{}`: {}", c.feature, c.why));
+        }
+        crate::rust_app::set_runner_features(
+            choices
+                .into_iter()
+                .filter(|c| c.keep)
+                .map(|c| c.feature.to_owned())
+                .collect(),
+        );
+        // A TSX app's own runner is a saving, never a requirement: built
+        // now, so a failure (system libraries, a Rust target, crates.io)
+        // leaves it the prebuilt runner as before, not a failed package.
+        // The packaging below finds the runner built.
+        // Android's is built when packaging, for the APK's ABIs
+        // (`package_android`), which falls back the same way.
+        if !has_crates && options.target != PackageTarget::Android {
+            let built = match options.target {
+                PackageTarget::Macos => macos_runners(options.arch).map(drop),
+                PackageTarget::Linux => runtime::file(Platform::Linux, true).map(drop),
+                PackageTarget::Ios => runtime::file(Platform::IphoneOs, true).map(drop),
+                PackageTarget::IosSimulator => {
+                    runtime::file(Platform::IphoneSimulator, true).map(drop)
+                }
+                _ => runtime::file(Platform::Windows, true).map(drop),
+            };
+            if let Err(e) = built {
+                crate::rust_app::clear_current();
+                ui::warn(format!(
+                    "the app's own runner did not build, so it has the prebuilt one, with every native feature: {e:#}"
+                ));
+            }
+        }
+    }
     let platform = match options.target {
         PackageTarget::Ios => Platform::IphoneOs,
         PackageTarget::IosSimulator => Platform::IphoneSimulator,
         PackageTarget::Android => {
-            return package_android(&options, config, &name, &id, &built);
+            return package_android(&options, config, &name, &id, &built, own_runner);
         }
         PackageTarget::Linux => {
             let app = App {
@@ -995,6 +1214,9 @@ pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
         PackageTarget::Gpui => unreachable!("refused above"),
     };
     let runner = runtime::file(platform, true)?;
+    if options.target == PackageTarget::Ios && !lipo_archs(&runner)?.iter().any(|a| a == "arm64") {
+        bail!("iOS device runner must contain arm64: {}", runner.display());
+    }
 
     fs::create_dir_all(options.out)?;
     let app = options.out.join(format!("{name}.app"));
@@ -1020,6 +1242,7 @@ pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
             {
                 let mut info = serde_json::json!({ "id": id, "name": name });
                 config.add_file_types_to_app_json(&mut info);
+                config.add_data_dir_to_app_json(&mut info);
                 info
             },
             &schemes,
@@ -1033,6 +1256,7 @@ pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
         }
         fs::copy(&asset.source, &dest).with_context(|| format!("copy {}", asset.path))?;
     }
+    copy_apple_sounds(config, &built, &app)?;
 
     let sdk = match options.target {
         PackageTarget::Ios => "iphoneos",
@@ -1045,10 +1269,16 @@ pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
         | PackageTarget::Gpui => "iphonesimulator",
     };
     let mut info = info_plist(&name, &id, &executable, config, sdk)?;
+    if sdk == "iphoneos" {
+        info.extend(ios_toolchain_info()?);
+    }
     url_types(&mut info, &id, &schemes);
+    activity_types(&mut info, &id, config.handoff);
     document_types(&mut info, &config.file_types());
-    if let Some(icon) = config.icon(PackageTarget::Ios) {
-        let partial = compile_icon(icon, &app, sdk, minimum_os(&info))?;
+    let icon = config.icon(PackageTarget::Ios);
+    let launch_screen = config.ios.launch_screen.as_ref();
+    if icon.is_some() || launch_screen.is_some() {
+        let partial = compile_assets(icon, launch_screen, &app, sdk, minimum_os(&info))?;
         for (key, value) in partial {
             info.insert(key, value);
         }
@@ -1068,7 +1298,7 @@ pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
             codesign(&app, "-", path.as_deref())?;
             ui::done(format!("packaged {}", ui::path(&app)));
             if options.run {
-                let udid = crate::run::simulator(None)?;
+                let udid = crate::run::simulator(None, crate::run::SimulatorWindow::Front)?;
                 let step = ui::Step::start(format!("installing {id} in the simulator"));
                 crate::run::simctl(&["install", &udid, &app.to_string_lossy()])?;
                 crate::run::simctl_with_env(
@@ -1164,6 +1394,7 @@ fn package_android(
     name: &str,
     id: &str,
     built: &crate::build::Built,
+    own_runner: bool,
 ) -> anyhow::Result<()> {
     use crate::android::{self, Apk, Signing};
     let sdk = android::Sdk::find()?;
@@ -1177,7 +1408,19 @@ fn package_android(
         None => None,
     };
     let abis = apk_abis(options.abis, device.as_deref())?;
-    let runtime = runtime::android(false, &abis)?;
+    // A TSX app's own library is a saving, never a requirement
+    // (`trimmed_runner`): a failure (no NDK, a Rust target, crates.io)
+    // leaves it the prebuilt library, with every native feature.
+    let runtime = match runtime::android(false, &abis) {
+        Err(e) if own_runner => {
+            crate::rust_app::clear_current();
+            ui::warn(format!(
+                "the app's own library did not build, so it has the prebuilt one, with every native feature: {e:#}"
+            ));
+            runtime::android(false, &abis)?
+        }
+        runtime => runtime?,
+    };
     // A Rust app has no bundle: `AppActivity` runs its root (the
     // manifest's `com.longbridge.nsh.RUST`).
     let mut assets = Vec::new();
@@ -1228,7 +1471,7 @@ fn package_android(
             version_code: config.build.unwrap_or(1),
             target_sdk,
             activity: "com.longbridge.nsh.AppActivity",
-            dev: false,
+            dev: options.development,
             cleartext: config.android.uses_cleartext_traffic,
             notifications: config.notifications(),
             microphone: config.web_media("microphone"),
@@ -1240,6 +1483,7 @@ fn package_android(
             abis: &abis,
             icon: config.icon(PackageTarget::Android),
             assets,
+            sounds: android_sounds(config, built),
             signing,
         },
         options.format,
@@ -1350,7 +1594,13 @@ fn package_linux(
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    crate::updater::copy_archive(config, name, &archive, options.out)?;
+    crate::updater::copy_archive(
+        config,
+        name,
+        &nsh_updater::platform(),
+        &archive,
+        options.out,
+    )?;
     step.done(format!(
         "packaged {} and {}",
         ui::path(&dir),
@@ -1367,6 +1617,67 @@ fn package_linux(
         ui::done(format!("launched {name}"));
     }
     Ok(())
+}
+
+/// The file types Apple platforms play as a notification's sound.
+const APPLE_SOUNDS: &[&str] = &["caf", "aiff", "aif", "wav"];
+/// The file types Android plays as a notification channel's sound.
+const ANDROID_SOUNDS: &[&str] = &["ogg", "mp3", "wav"];
+
+/// The app's sounds a notification can play (`Notifications.show`'s
+/// `sound`), of the file types in `extensions`: none without the
+/// `notifications` capability.
+fn notification_sounds<'a>(
+    config: &AppConfig,
+    built: &'a crate::build::Built,
+    extensions: &'static [&'static str],
+) -> impl Iterator<Item = &'a crate::build::Asset> {
+    let on = config.notifications();
+    built.assets.iter().filter(move |asset| {
+        on && Path::new(&asset.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| extensions.contains(&e.to_ascii_lowercase().as_str()))
+    })
+}
+
+/// Copies the app's notification sounds into `dir`, the app's main bundle
+/// on Apple platforms, where the system finds them by file name.
+fn copy_apple_sounds(
+    config: &AppConfig,
+    built: &crate::build::Built,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let mut names = std::collections::HashMap::new();
+    for asset in notification_sounds(config, built, APPLE_SOUNDS) {
+        let name = nsh_core::notifications::Notification::sound_file_name(&asset.path);
+        if let Some(other) = names.insert(name.to_owned(), asset.path.clone()) {
+            ui::warn(format!(
+                "notification sounds {other} and {} share the file name {name}: only the last plays",
+                asset.path
+            ));
+        }
+        fs::copy(&asset.source, dir.join(name)).with_context(|| format!("copy {}", asset.path))?;
+    }
+    Ok(())
+}
+
+/// The app's notification sounds as Android raw resources: (resource
+/// name, file).
+fn android_sounds(config: &AppConfig, built: &crate::build::Built) -> Vec<(String, PathBuf)> {
+    let mut sounds: Vec<(String, PathBuf)> = Vec::new();
+    for asset in notification_sounds(config, built, ANDROID_SOUNDS) {
+        let name = nsh_core::notifications::Notification::sound_resource_name(&asset.path);
+        if sounds.iter().any(|(n, _)| *n == name) {
+            ui::warn(format!(
+                "notification sound {} has the resource name {name} of another: only the first plays",
+                asset.path
+            ));
+            continue;
+        }
+        sounds.push((name, asset.source.clone()));
+    }
+    sounds
 }
 
 /// `<out>/<name>.app`, a macOS app bundle: the release runner as
@@ -1413,6 +1724,7 @@ fn package_macos(
         }
         fs::copy(&asset.source, &dest).with_context(|| format!("copy {}", asset.path))?;
     }
+    copy_apple_sounds(config, built, &resources)?;
     let version = config.version.as_deref().unwrap_or("1.0.0");
     let mut info = serde_json::json!({ "name": name, "id": id, "version": version });
     if let Some(appearance) = &config.appearance {
@@ -1420,6 +1732,7 @@ fn package_macos(
     }
     config.macos.add_to_app_json(&mut info);
     config.add_file_types_to_app_json(&mut info);
+    config.add_data_dir_to_app_json(&mut info);
     let schemes = config.url_schemes();
     fs::write(
         nsh.join("app.json"),
@@ -1434,6 +1747,7 @@ fn package_macos(
     };
     let mut plist = macos_info_plist(name, id, executable, config, icon)?;
     url_types(&mut plist, id, &schemes);
+    activity_types(&mut plist, id, config.handoff);
     document_types(&mut plist, &config.file_types());
     plist::Value::Dictionary(plist)
         .to_file_xml(contents.join("Info.plist"))
@@ -1745,6 +2059,77 @@ pub(crate) fn desktop_entry(
     )
 }
 
+/// Build metadata for device packages, from the active Xcode installation.
+/// Keep tool discovery outside `info_plist` so its defaults stay testable on every OS.
+fn ios_toolchain_info() -> anyhow::Result<plist::Dictionary> {
+    fn read(program: &str, args: &[&str]) -> anyhow::Result<String> {
+        let output = Command::new(program)
+            .args(args)
+            .output()
+            .with_context(|| format!("run {program} {}", args.join(" ")))?;
+        if !output.status.success() {
+            bail!(
+                "{program} {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let value = String::from_utf8(output.stdout)?.trim().to_owned();
+        if value.is_empty() {
+            bail!("{program} {} returned no build metadata", args.join(" "));
+        }
+        Ok(value)
+    }
+    let version = read("xcrun", &["--sdk", "iphoneos", "--show-sdk-version"])?;
+    let sdk_build = read("xcrun", &["--sdk", "iphoneos", "--show-sdk-build-version"])?;
+    let xcode = read("xcodebuild", &["-version"])?;
+    let (xcode_version, xcode_build) = xcode_info(&xcode)?;
+    let os_build = read("sw_vers", &["-buildVersion"])?;
+    Ok([
+        ("DTPlatformName", "iphoneos".to_owned()),
+        ("DTPlatformVersion", version.clone()),
+        ("DTPlatformBuild", sdk_build.clone()),
+        ("DTSDKName", format!("iphoneos{version}")),
+        ("DTSDKBuild", sdk_build),
+        ("DTXcode", xcode_version),
+        ("DTXcodeBuild", xcode_build),
+        (
+            "DTCompiler",
+            "com.apple.compilers.llvm.clang.1_0".to_owned(),
+        ),
+        ("BuildMachineOSBuild", os_build),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), plist::Value::String(v)))
+    .collect())
+}
+
+fn xcode_info(output: &str) -> anyhow::Result<(String, String)> {
+    let version = output
+        .lines()
+        .find_map(|l| l.strip_prefix("Xcode "))
+        .context("xcodebuild -version did not report an Xcode version")?;
+    let parts = version
+        .split('.')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.is_empty() || parts.len() > 3 || parts.iter().skip(1).any(|v| *v > 9) {
+        bail!("unsupported Xcode version: {version}");
+    }
+    let encoded = format!(
+        "{:02}{}{}",
+        parts[0],
+        parts.get(1).unwrap_or(&0),
+        parts.get(2).unwrap_or(&0)
+    );
+    let build = output
+        .lines()
+        .find_map(|l| l.strip_prefix("Build version "))
+        .filter(|v| !v.trim().is_empty())
+        .context("xcodebuild -version did not report a build version")?;
+    Ok((encoded, build.trim().to_owned()))
+}
+
 fn info_plist(
     name: &str,
     id: &str,
@@ -1777,6 +2162,12 @@ fn info_plist(
             "iPhoneSimulator"
         })]),
     );
+    if sdk == "iphoneos" {
+        d.insert(
+            "UIRequiredDeviceCapabilities".into(),
+            Value::Array(vec![s("arm64")]),
+        );
+    }
     // The runtime's, unless the app raises it (`ios.infoPlist`).
     d.insert("MinimumOSVersion".into(), s(IOS_MINIMUM));
     d.insert(
@@ -1786,10 +2177,12 @@ fn info_plist(
     d.insert("LSRequiresIPhoneOS".into(), true.into());
     config.usage_descriptions(&mut d);
     bundle_localizations(&mut d, config);
-    // A launch screen entry opts into the full screen (no letterboxing).
+    // A launch screen entry opts into the full screen (no letterboxing);
+    // the app's color and image are in its asset catalog
+    // ([`launch_screen_sets`]).
     d.insert(
         "UILaunchScreen".into(),
-        Value::Dictionary(Default::default()),
+        Value::Dictionary(launch_screen_info(config.ios.launch_screen.as_ref())),
     );
     d.insert("UIApplicationSupportsMultipleScenes".into(), false.into());
     // ProMotion iPhones run display links above 60 Hz only with this:
@@ -1850,35 +2243,153 @@ fn minimum_os(info: &plist::Dictionary) -> &str {
         .unwrap_or(IOS_MINIMUM)
 }
 
-/// Compiles `icon` into the app's asset catalog (`Assets.car`) with
-/// `actool`, for `minimum`, the oldest iOS the app declares (as Xcode
-/// compiles it for the deployment target), returning the Info.plist keys
-/// it produces.
-fn compile_icon(
-    icon: &Path,
+/// The asset catalog's name of the launch screen's color.
+const LAUNCH_BACKGROUND: &str = "LaunchBackground";
+/// The asset catalog's name of the launch screen's image.
+const LAUNCH_IMAGE: &str = "LaunchImage";
+
+/// `UILaunchScreen`: the names of the app's launch screen color and image
+/// in its asset catalog, none for the system's background.
+fn launch_screen_info(screen: Option<&crate::apple::LaunchScreen>) -> plist::Dictionary {
+    let mut d = plist::Dictionary::new();
+    if let Some(screen) = screen {
+        if screen.background.is_some() {
+            d.insert("UIColorName".into(), LAUNCH_BACKGROUND.into());
+        }
+        if screen.image.is_some() {
+            d.insert("UIImageName".into(), LAUNCH_IMAGE.into());
+        }
+    }
+    d
+}
+
+/// A set of an asset catalog, as [`compile_assets`] writes it.
+#[derive(Debug)]
+struct CatalogSet {
+    /// Its directory in the catalog (`LaunchImage.imageset`).
+    dir: String,
+    /// Its `Contents.json`.
+    contents: serde_json::Value,
+    /// The images it copies in: the source and its file name in the set.
+    files: Vec<(PathBuf, String)>,
+}
+
+/// The asset catalog sets of a launch screen.
+fn launch_screen_sets(screen: &crate::apple::LaunchScreen) -> Vec<CatalogSet> {
+    use serde_json::json;
+    let info = json!({ "author": "nsh", "version": 1 });
+    let dark = json!([{ "appearance": "luminosity", "value": "dark" }]);
+    let mut sets = Vec::new();
+    if let Some(background) = &screen.background {
+        let color = |color: &crate::apple::Color| {
+            let [r, g, b, a] = color.0;
+            json!({
+                "color-space": "srgb",
+                "components": {
+                    "red": format!("0x{r:02X}"),
+                    "green": format!("0x{g:02X}"),
+                    "blue": format!("0x{b:02X}"),
+                    "alpha": format!("{:.3}", f32::from(a) / 255.0),
+                },
+            })
+        };
+        let (light, dark_color) = background.variants();
+        let mut colors = vec![json!({ "idiom": "universal", "color": color(light) })];
+        if let Some(dark_color) = dark_color {
+            colors.push(json!({
+                "idiom": "universal",
+                "appearances": dark,
+                "color": color(dark_color),
+            }));
+        }
+        sets.push(CatalogSet {
+            dir: format!("{LAUNCH_BACKGROUND}.colorset"),
+            contents: json!({ "colors": colors, "info": info }),
+            files: Vec::new(),
+        });
+    }
+    if let Some(image) = &screen.image {
+        let (light, dark_image) = image.variants();
+        let mut images =
+            vec![json!({ "idiom": "universal", "filename": "light.png", "scale": "3x" })];
+        let mut files = vec![(light.clone(), "light.png".to_owned())];
+        if let Some(dark_image) = dark_image {
+            images.push(json!({
+                "idiom": "universal",
+                "filename": "dark.png",
+                "scale": "3x",
+                "appearances": dark,
+            }));
+            files.push((dark_image.clone(), "dark.png".to_owned()));
+        }
+        sets.push(CatalogSet {
+            dir: format!("{LAUNCH_IMAGE}.imageset"),
+            contents: json!({ "images": images, "info": info }),
+            files,
+        });
+    }
+    sets
+}
+
+/// Compiles the app's asset catalog (`Assets.car`) with `actool`: its
+/// `icon` and its `launch_screen`'s color and image, for `minimum`, the
+/// oldest iOS the app declares (as Xcode compiles it for the deployment
+/// target), returning the Info.plist keys it produces.
+fn compile_assets(
+    icon: Option<&Path>,
+    launch_screen: Option<&crate::apple::LaunchScreen>,
     app: &Path,
     sdk: &str,
     minimum: &str,
 ) -> anyhow::Result<plist::Dictionary> {
     let work = app.with_extension("xcassets-work");
-    let set = work.join("Assets.xcassets/AppIcon.appiconset");
-    fs::create_dir_all(&set)?;
-    fs::copy(icon, set.join("icon.png")).with_context(|| format!("copy {}", icon.display()))?;
+    let catalog = work.join("Assets.xcassets");
+    fs::create_dir_all(&catalog)?;
     fs::write(
-        work.join("Assets.xcassets/Contents.json"),
+        catalog.join("Contents.json"),
         r#"{"info":{"author":"nsh","version":1}}"#,
     )?;
-    // One 1024 pt image; actool derives every size (Xcode 14+ catalogs).
-    fs::write(
-        set.join("Contents.json"),
-        r#"{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"nsh","version":1}}"#,
-    )?;
+    if let Some(icon) = icon {
+        let set = catalog.join("AppIcon.appiconset");
+        fs::create_dir_all(&set)?;
+        fs::copy(icon, set.join("icon.png")).with_context(|| format!("copy {}", icon.display()))?;
+        // One 1024 pt image; actool derives every size (Xcode 14+ catalogs).
+        fs::write(
+            set.join("Contents.json"),
+            r#"{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"nsh","version":1}}"#,
+        )?;
+    }
+    for CatalogSet {
+        dir,
+        contents,
+        files,
+    } in launch_screen.map(launch_screen_sets).unwrap_or_default()
+    {
+        let set = catalog.join(dir);
+        fs::create_dir_all(&set)?;
+        fs::write(set.join("Contents.json"), contents.to_string())?;
+        for (source, file) in files {
+            fs::copy(&source, set.join(file)).with_context(|| {
+                format!(
+                    "copy {} (nsh.json ios.launchScreen.image)",
+                    source.display()
+                )
+            })?;
+        }
+    }
     let partial = work.join("partial.plist");
-    let output = Command::new("xcrun")
-        .args(["actool", "--compile"])
-        .arg(app)
-        .args(["--platform", sdk, "--minimum-deployment-target", minimum])
-        .args(["--app-icon", "AppIcon", "--output-partial-info-plist"])
+    let mut command = Command::new("xcrun");
+    command.args(["actool", "--compile"]).arg(app).args([
+        "--platform",
+        sdk,
+        "--minimum-deployment-target",
+        minimum,
+    ]);
+    if icon.is_some() {
+        command.args(["--app-icon", "AppIcon"]);
+    }
+    let output = command
+        .arg("--output-partial-info-plist")
         .arg(&partial)
         .args([
             "--target-device",
@@ -1888,7 +2399,7 @@ fn compile_icon(
             "--output-format",
             "human-readable-text",
         ])
-        .arg(work.join("Assets.xcassets"))
+        .arg(&catalog)
         .output()
         .context("run xcrun actool (is Xcode installed?)")?;
     if !output.status.success() || !partial.exists() {
@@ -2028,6 +2539,145 @@ fn make_ipa(app: &Path, ipa: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    /// Without `ios.launchScreen` the launch screen is the system's
+    /// background; with it `UILaunchScreen` names the catalog's color and
+    /// image, which are sets for both appearances or one for each.
+    #[test]
+    fn launch_screens_become_named_colors_and_images() {
+        let info = info_plist("A", "com.a", "a", &AppConfig::default(), "iphoneos").unwrap();
+        assert_eq!(
+            info["UILaunchScreen"],
+            plist::Value::Dictionary(Default::default())
+        );
+
+        let (config, ignored) = parse_config(
+            r##"{ "ios": { "launchScreen": {
+                "background": { "light": "#ffffff", "dark": "#13131280" },
+                "image": "launch.png"
+            } } }"##,
+        )
+        .unwrap();
+        assert!(ignored.is_empty(), "{ignored:?}");
+        let info = info_plist("A", "com.a", "a", &config, "iphoneos").unwrap();
+        let screen = info["UILaunchScreen"].as_dictionary().unwrap();
+        assert_eq!(
+            screen["UIColorName"],
+            plist::Value::String(LAUNCH_BACKGROUND.into())
+        );
+        assert_eq!(
+            screen["UIImageName"],
+            plist::Value::String(LAUNCH_IMAGE.into())
+        );
+
+        let sets = launch_screen_sets(config.ios.launch_screen.as_ref().unwrap());
+        let CatalogSet {
+            dir,
+            contents: color,
+            files,
+        } = &sets[0];
+        assert_eq!(dir, "LaunchBackground.colorset");
+        assert!(files.is_empty());
+        assert_eq!(color["colors"][0]["color"]["components"]["red"], "0xFF");
+        assert_eq!(color["colors"][0].get("appearances"), None);
+        assert_eq!(color["colors"][1]["appearances"][0]["value"], "dark");
+        assert_eq!(color["colors"][1]["color"]["components"]["blue"], "0x12");
+        assert_eq!(color["colors"][1]["color"]["components"]["alpha"], "0.502");
+        let CatalogSet {
+            dir,
+            contents: image,
+            files,
+        } = &sets[1];
+        assert_eq!(dir, "LaunchImage.imageset");
+        assert_eq!(image["images"].as_array().unwrap().len(), 1);
+        assert_eq!(image["images"][0]["scale"], "3x");
+        assert_eq!(
+            files,
+            &[(PathBuf::from("launch.png"), "light.png".to_owned())]
+        );
+
+        // A color that does not read is left out with a warning, as other
+        // values are.
+        let (config, ignored) =
+            parse_config(r#"{ "ios": { "launchScreen": { "background": "white" } } }"#).unwrap();
+        assert_eq!(config.ios.launch_screen.unwrap().background, None);
+        assert_eq!(ignored.len(), 1, "{ignored:?}");
+    }
+
+    #[test]
+    fn ios_device_capabilities_and_overrides() {
+        let config = AppConfig::default();
+        let device = info_plist("A", "com.a", "a", &config, "iphoneos").unwrap();
+        assert_eq!(
+            device["UIRequiredDeviceCapabilities"].as_array().unwrap(),
+            &[plist::Value::String("arm64".into())]
+        );
+        let simulator = info_plist("A", "com.a", "a", &config, "iphonesimulator").unwrap();
+        assert!(!simulator.contains_key("UIRequiredDeviceCapabilities"));
+        let config: AppConfig = serde_json::from_value(serde_json::json!({
+            "ios": {"infoPlist": {"UIRequiredDeviceCapabilities": ["arm64", "gps"]}}
+        }))
+        .unwrap();
+        let device = info_plist("A", "com.a", "a", &config, "iphoneos").unwrap();
+        assert_eq!(
+            device["UIRequiredDeviceCapabilities"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn xcode_build_metadata() {
+        for (version, encoded) in [
+            ("27.2", "2720"),
+            ("16.4.1", "1641"),
+            ("9.3", "0930"),
+            ("27", "2700"),
+        ] {
+            assert_eq!(
+                xcode_info(&format!("Xcode {version}\nBuild version 27B52\n")).unwrap(),
+                (encoded.into(), "27B52".into())
+            );
+        }
+        for output in [
+            "",
+            "Xcode 27.2",
+            "Xcode nope\nBuild version A",
+            "Xcode 27.10\nBuild version A",
+        ] {
+            assert!(xcode_info(output).is_err());
+        }
+    }
+
+    #[test]
+    fn nsh_json_names_the_nsh_versions_it_needs() {
+        let ok = |r: serde_json::Value, v| nsh_version_error(&r, v);
+        assert_eq!(ok(serde_json::Value::Null, "0.4.0"), None);
+        assert_eq!(ok(serde_json::json!(">=0.5"), "0.5.0"), None);
+        assert_eq!(ok(serde_json::json!(">=0.5, <0.7"), "0.6.3"), None);
+        assert_eq!(ok(serde_json::json!("0.5"), "0.5.2"), None);
+        // A prerelease counts as its release.
+        assert_eq!(ok(serde_json::json!(">=0.5"), "0.5.0-nightly.1"), None);
+        assert_eq!(
+            ok(serde_json::json!(">=0.5"), "0.4.0").as_deref(),
+            Some("this app requires nsh >=0.5; this is nsh 0.4.0")
+        );
+        assert!(
+            ok(serde_json::json!("latest"), "0.5.0")
+                .unwrap()
+                .contains("invalid")
+        );
+        assert!(
+            ok(serde_json::json!(5), "0.5.0")
+                .unwrap()
+                .contains("must be")
+        );
+        // The key is known: no "unknown key" warning.
+        let (_, ignored) = parse_config(r#"{ "nsh": ">=0.5" }"#).unwrap();
+        assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
     /// Each processor is a build for its Rust target, this Mac's own
     /// without `--target` (the build `nsh run` shares), named as `lipo`
     /// and the updater name it.
@@ -2078,6 +2728,7 @@ mod tests {
                 arch: Some(Arch::X86_64),
                 run: false,
                 asset_url: None,
+                development: false,
             })
             .unwrap_err();
             assert_eq!(
@@ -2329,6 +2980,30 @@ mod tests {
     }
 
     #[test]
+    fn handoff_declares_the_apps_activity_type() {
+        let types = |json: &str| {
+            let config: AppConfig = serde_json::from_str(json).unwrap();
+            let mut info = info_plist("A", "com.a", "a", &config, "iphoneos").unwrap();
+            activity_types(&mut info, "com.a", config.handoff);
+            info.get("NSUserActivityTypes").map(|types| {
+                types
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(plist::Value::as_string)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+        };
+        // Off by default: nothing declared, so the runner gives nothing.
+        assert_eq!(types("{}"), None);
+        assert_eq!(types(r#"{ "handoff": true }"#).unwrap(), ["com.a.url"]);
+        // After the app's own types, once.
+        let own = r#"{ "handoff": true, "ios": { "infoPlist": { "NSUserActivityTypes": ["com.a.edit", "com.a.url"] } } }"#;
+        assert_eq!(types(own).unwrap(), ["com.a.edit", "com.a.url"]);
+    }
+
+    #[test]
     fn desktop_packages_carry_the_main_windows_options() {
         let config: AppConfig = serde_json::from_str(
             r#"{ "appearance": "dark", "window": { "title": "Focus", "closeOnPress": false } }"#,
@@ -2351,6 +3026,38 @@ mod tests {
         // An app without them has none.
         let info = desktop_app_json(&AppConfig::default(), "A", "com.a", "1.0.0");
         assert!(info.get("window").is_none());
+    }
+
+    #[test]
+    fn an_apps_data_dir_goes_into_app_json() {
+        let config: AppConfig =
+            serde_json::from_str(r#"{ "dataDir": "${homeDir}/.myapp" }"#).unwrap();
+        let info = desktop_app_json(&config, "A", "com.a", "1.0.0");
+        assert_eq!(info["dataDir"], serde_json::json!("${homeDir}/.myapp"));
+        let info = desktop_app_json(&AppConfig::default(), "A", "com.a", "1.0.0");
+        assert!(info.get("dataDir").is_none());
+    }
+
+    #[test]
+    fn a_data_dir_the_runner_would_refuse_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("nsh-data-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("App.tsx");
+        for (value, kept) in [
+            ("${homeDir}/.myapp", true),
+            (".myapp", false),
+            ("${homeDir}/../elsewhere", false),
+            ("${appId}/data", false),
+        ] {
+            std::fs::write(
+                dir.join("nsh.json"),
+                serde_json::json!({ "dataDir": value }).to_string(),
+            )
+            .unwrap();
+            let config = read_config(&entry).unwrap();
+            assert_eq!(config.data_dir.is_some(), kept, "{value}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2512,6 +3219,39 @@ mod tests {
                 ]
                 .into()
             ))
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The macOS development host gets the app's macOS icon, after its
+    /// activation policy; an app without one gets none.
+    #[test]
+    fn the_macos_host_gets_the_apps_icon() {
+        let dir = std::env::temp_dir().join(format!("nsh-macos-host-icon-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("app.tsx");
+        let args = |json: &str| {
+            fs::write(dir.join("nsh.json"), json).unwrap();
+            read_config(&entry).unwrap().macos_host_args()
+        };
+        let icon = |name: &str| OsString::from(dir.join(name));
+        assert!(args("{}").is_empty());
+        assert!(args(r#"{ "icon": { "windows": "win.png" } }"#).is_empty());
+        assert_eq!(
+            args(r#"{ "icon": "icon.png" }"#),
+            [OsString::from("--icon"), icon("icon.png")]
+        );
+        assert_eq!(
+            args(
+                r#"{ "icon": { "macos": "mac.png", "windows": "win.png" },
+                     "macos": { "activationPolicy": "accessory" } }"#
+            ),
+            [
+                OsString::from("--activation-policy"),
+                "accessory".into(),
+                "--icon".into(),
+                icon("mac.png"),
+            ]
         );
         fs::remove_dir_all(&dir).unwrap();
     }

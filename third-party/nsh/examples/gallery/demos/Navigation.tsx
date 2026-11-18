@@ -2,7 +2,7 @@ import { effect, type JSX, List, Scroll, signal, Text, UrlScheme, View } from "n
 import { createAnimatedValue } from "nsh";
 import { BackHandler } from "nsh/mobile";
 import { platform } from "nsh";
-import { AlertDialog, Dialog, NavPage, NavStack, Input, createNavStack } from "nsh/base";
+import { AlertDialog, Dialog, NavPage, NavStack, Input, createNavStack, type SheetDetent } from "nsh/base";
 import { safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
@@ -222,6 +222,155 @@ function CustomHeader() {
   );
 }
 
+/** A custom title longer than the bar: it shrinks and clamps between the
+ * back button and the trailing item, which stay on the bar. */
+function LongTitle() {
+  const title = "A session title long enough to need more than one phone's width";
+  const center = () => (
+    <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Text style={{ numberOfLines: 1, flex: 1, minWidth: 0, fontSize: 17, fontWeight: "600", color: colors.text }}>
+        {title}
+      </Text>
+      <Icon name="chevron-down" size={18} tint={colors.muted} />
+    </View>
+  );
+  const right = () => (
+    <Text hitSlop={10} style={{ color: colors.accent, fontSize: 17, fontWeight: "500" }}>
+      Edit
+    </Text>
+  );
+  return (
+    <NavPage title="Long title" headerTitle={center()} headerRight={right()} header={<PageHeader title="Long title" center={center()} right={right()} />}>
+      <Page intro="The title view takes the room between the bar's items: a long title clamps to one line, and the chevron and Edit stay visible.">
+        <Section title="Header" note="headerTitle">
+          <Text style={{ color: colors.muted }}>{title}</Text>
+        </Section>
+      </Page>
+    </NavPage>
+  );
+}
+
+/** Trailing iOS bar buttons with a native menu; other platforms keep the
+ * `headerRight` views. */
+function NativeBarButtons() {
+  const filter = signal<"all" | "open" | "done">("all");
+  const log = signal("Tap Edit, Filter or +");
+  const editing = signal(false);
+  const right = () => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+      <Text
+        onPress={() => {
+          editing.set(!editing());
+          log.set(editing() ? "Editing" : "Edit");
+        }}
+        hitSlop={10}
+        style={{ color: colors.accent, fontSize: 17, fontWeight: "500" }}
+      >
+        {editing() ? "Done" : "Edit"}
+      </Text>
+      <Text
+        onPress={() => log.set(`Filter: ${filter()}`)}
+        hitSlop={10}
+        style={{ color: colors.accent, fontSize: 17, fontWeight: "500" }}
+      >
+        Filter
+      </Text>
+      <Text onPress={() => log.set("Add")} hitSlop={10} style={{ color: colors.accent, fontSize: 22, fontWeight: "400" }}>
+        +
+      </Text>
+    </View>
+  );
+  return (
+    <NavPage
+      title="Bar buttons"
+      {...header}
+      headerRight={right()}
+      header={<PageHeader title="Bar buttons" right={right()} />}
+      ios={{
+        headerRightItems: [
+          {
+            key: "edit",
+            label: editing() ? "Done" : "Edit",
+            onPress: () => {
+              editing.set(!editing());
+              log.set(editing() ? "Editing" : "Edit");
+            },
+          },
+          {
+            key: "filter",
+            label: "Filter",
+            menu: [
+              {
+                label: "All",
+                checked: filter() === "all",
+                onSelect: () => {
+                  filter.set("all");
+                  log.set("Filter: all");
+                },
+              },
+              {
+                label: "Open",
+                checked: filter() === "open",
+                onSelect: () => {
+                  filter.set("open");
+                  log.set("Filter: open");
+                },
+              },
+              {
+                label: "Done",
+                checked: filter() === "done",
+                onSelect: () => {
+                  filter.set("done");
+                  log.set("Filter: done");
+                },
+              },
+              {
+                label: "Danger",
+                inline: true,
+                submenu: [
+                  {
+                    label: "Clear filters",
+                    destructive: true,
+                    symbol: "trash",
+                    onSelect: () => {
+                      filter.set("all");
+                      log.set("Filters cleared");
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            key: "add",
+            systemItem: "add",
+            label: "Add",
+            onPress: () => log.set("Add"),
+          },
+        ],
+      }}
+    >
+      <Page
+        intro={hint(
+          "iOS: Edit, Filter (a native menu with a check mark) and + share one Liquid Glass group on iOS 26. Android and the desktops show the same actions as headerRight views.",
+          "The trailing actions are views here; on iOS they are UIKit bar buttons with a native Filter menu.",
+        )}
+      >
+        <Section title="Last action" note="onPress / onSelect">
+          <Figure value={log()} />
+        </Section>
+        <Section title="Filter" note="checked menu item">
+          <View style={{ flexDirection: "row" }}>
+            <Stat width="33%" label="All" value={filter() === "all" ? "On" : "—"} tone={filter() === "all" ? "up" : "neutral"} />
+            <Stat width="33%" label="Open" value={filter() === "open" ? "On" : "—"} tone={filter() === "open" ? "up" : "neutral"} />
+            <Stat width="34%" label="Done" value={filter() === "done" ? "On" : "—"} tone={filter() === "done" ? "up" : "neutral"} />
+          </View>
+        </Section>
+      </Page>
+    </NavPage>
+  );
+}
+
 function Locked() {
   return (
     <NavPage title="No swipe back" {...header} popOnSwipe={false} header={<PageHeader title="No swipe back" />}>
@@ -390,11 +539,12 @@ function Deep(props: { depth: number }) {
   );
 }
 
-type Sheet = "fullScreen" | "pageSheet" | "formSheet" | "fade" | "dialog" | "kept" | null;
+type Sheet = "fullScreen" | "pageSheet" | "stacked" | "formSheet" | "fade" | "dialog" | "kept" | null;
 
 const modals: { key: Exclude<Sheet, null>; title: string; note: string; icon: IconName }[] = [
   { key: "fullScreen", title: "Full screen", note: "Slides up", icon: "mobile" },
   { key: "pageSheet", title: "Page sheet", note: hint("iOS sheet", "A tall centered card"), icon: "components" },
+  { key: "stacked", title: "Half-height sheet", note: platform.os === "ios" ? "iOS detents, pages inside" : "Pages inside", icon: "lists" },
   { key: "formSheet", title: "Form sheet", note: hint("iOS, centered", "A smaller centered card"), icon: "form" },
   { key: "fade", title: "Fade", note: "Fades in", icon: "spark" },
   { key: "dialog", title: "Card dialog", note: "Over the page", icon: "bell" },
@@ -421,6 +571,105 @@ function ModalBody(props: { title: string; note: string; body: string; fullScree
         <Button label="Close" onPress={props.onClose} />
       </View>
     </View>
+  );
+}
+
+/** The settings a page of the stacked sheet opens, with their choices. */
+const sheetPages: { name: string; icon: IconName; choices: string[] }[] = [
+  { name: "Appearance", icon: "styles", choices: ["Automatic", "Light", "Dark"] },
+  { name: "Notifications", icon: "bell", choices: ["Everything", "Mentions only", "Nothing"] },
+  { name: "Sorting", icon: "sliders", choices: ["Newest first", "Oldest first", "By name"] },
+];
+
+/** An iOS page sheet that opens at half the screen with the system's
+ * grabber and drags to full height (`detents`, `detent`,
+ * `onDetentChange`), holding a stack whose pages come with the system's
+ * header, back button and swipe back. Elsewhere the dialog covers the
+ * window and the stack shows the app's header. */
+function StackedSheet(props: { open: boolean; onClose: () => void }) {
+  const detent = signal<SheetDetent>("medium");
+  const pages = createNavStack<string>(["Settings"]);
+  const chosen = signal<Record<string, string>>({});
+  const choice = (name: string) => chosen()[name] ?? sheetPages.find((p) => p.name === name)?.choices[0] ?? "";
+  const full = () => detent() === "large";
+  // Only iOS's system sheet rests at detents: elsewhere it is full height.
+  const detents = platform.os === "ios";
+  // The next opening starts at half height, on the first page.
+  const done = () => {
+    detent.set("medium");
+    pages.popToRoot();
+    props.onClose();
+  };
+  return (
+    <Dialog
+      open={props.open}
+      presentation="pageSheet"
+      detents={["medium", "large"]}
+      detent={detent()}
+      onDetentChange={({ detent: next }) => detent.set(next)}
+      grabber
+      accessibilityLabel="Settings"
+      onOpenChange={({ open }) => !open && done()}
+      style={{ flex: 1 }}
+    >
+      <NavStack state={pages} style={{ flex: 1 }}>
+        {(route) => (
+          <NavPage
+            title={route}
+            {...header}
+            header={<PageHeader title={route} root={route === "Settings"} onBack={() => pages.pop()} />}
+            style={{ backgroundColor: colors.background }}
+          >
+            {route === "Settings" ? (
+              <Scroll style={{ flex: 1 }}>
+                <View style={{ padding: 16, gap: 16 }}>
+                  {detents ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Badge label={full() ? "Full height" : "Half height"} tone="accent" />
+                      <Text style={{ flex: 1, fontSize: 13, color: colors.muted }}>Drag the grabber, or scroll up, to change the height.</Text>
+                    </View>
+                  ) : null}
+                  <Card title="Settings" subtitle="Each opens a page" flush>
+                    <View>
+                      <Each of={sheetPages}>
+                        {(page, i) => <LinkRow first={i() === 0} icon={page().icon} title={page().name} note={choice(page().name)} onPress={() => pages.push(page().name)} />}
+                      </Each>
+                    </View>
+                  </Card>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    {detents ? <Button flex={1} label={full() ? "Half height" : "Full height"} variant="secondary" onPress={() => detent.set(full() ? "medium" : "large")} /> : null}
+                    <Button flex={1} label="Done" onPress={done} />
+                  </View>
+                </View>
+              </Scroll>
+            ) : (
+              <Scroll style={{ flex: 1 }}>
+                <View style={{ padding: 16, gap: 16 }}>
+                  <Card title={route} subtitle={hint("Back with the header's button or a swipe from the edge", "Back with the header's button")} flush>
+                    <View>
+                      <Each of={sheetPages.find((p) => p.name === route)?.choices ?? []}>
+                        {(name, i) => (
+                          <LinkRow
+                            first={i() === 0}
+                            icon={choice(route) === name() ? "check" : "radio"}
+                            title={name()}
+                            note={choice(route) === name() ? "Chosen" : ""}
+                            onPress={() => {
+                              chosen.set({ ...chosen(), [route]: name() });
+                              pages.pop();
+                            }}
+                          />
+                        )}
+                      </Each>
+                    </View>
+                  </Card>
+                </View>
+              </Scroll>
+            )}
+          </NavPage>
+        )}
+      </NavStack>
+    </Dialog>
   );
 }
 
@@ -530,6 +779,8 @@ export function Navigation() {
               <LinkRow icon="lists" title="Large title list" note="headerLargeTitle, List" onPress={push(LargeTitleList)} />
               <LinkRow icon="styles" title="Transparent header" note="headerTransparent" onPress={push(Transparent)} />
               <LinkRow icon="star" title="Custom header items" note="headerLeft / Title / Right" onPress={push(CustomHeader)} />
+              <LinkRow icon="text" title="Long custom title" note="headerTitle, clamped" onPress={push(LongTitle)} />
+              <LinkRow icon="sliders" title="Native bar buttons" note="ios.headerRightItems" onPress={push(NativeBarButtons)} />
               <LinkRow icon="mobile" title="No header" note="headerVisible={false}" onPress={push(Headerless)} />
               <LinkRow icon="spark" title="Fade in" note='animation="fade"' onPress={push(Faded)} />
               <LinkRow icon="animation" title="No animation" note='animation="none"' onPress={push(Instant)} />
@@ -587,6 +838,7 @@ export function Navigation() {
           onClose={close}
         />
       </Dialog>
+      <StackedSheet open={sheet() === "stacked"} onClose={close} />
       <Dialog
         open={sheet() === "kept"}
         presentation="pageSheet"

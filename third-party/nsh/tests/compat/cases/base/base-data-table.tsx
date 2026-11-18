@@ -31,6 +31,7 @@ export default function BaseDataTable() {
   const read = signal("none");
   const sorted = signal("none");
   const pressed = signal("none");
+  const columnPress = signal("none");
   let table!: DataTableRef;
   return (
     <View style={{ paddingTop: 20 }}>
@@ -44,6 +45,7 @@ export default function BaseDataTable() {
           bounces={false}
           accessibilityLabel="Fruits"
           cellSelectable
+          cellClasses={[{ row: 1, column: 0, class: "bg-[#00ff00]" }]}
           sort={sort()}
           onSortChange={({ sort: next }) => {
             sorted.set(next ? `${next.key} ${next.direction}` : "cleared");
@@ -51,6 +53,7 @@ export default function BaseDataTable() {
           }}
           onSelectionChange={({ selection: s }) => selected.set(s ? `row ${s.row} column ${s.column}` : "none")}
           onRowPress={e => pressed.set(`${e.row}:${e.column} ${e.clicks}`)}
+          onColumnPress={e => columnPress.set(`${e.column} ${e.clicks}`)}
           onVisibleRowsChange={({ range: r }) => visible.set(`${r.start}-${r.end}`)}
           renderCell={cell => <Text>{`Cell ${cell.row}:${cell.key} ${cell.text}`}</Text>}
           style={{ flex: 1 }}
@@ -59,6 +62,7 @@ export default function BaseDataTable() {
       <Text>{() => `Selected: ${selected()}`}</Text>
       <Text>{() => `Sorted: ${sorted()}`}</Text>
       <Text>{() => `Pressed: ${pressed()}`}</Text>
+      <Text>{() => `Column: ${columnPress()}`}</Text>
       <Text>{() => `Visible: ${visible()}`}</Text>
       <Text>{() => `Read: ${read()}`}</Text>
       <View testID="select" style={{ height: 20 }} onPress={() => table.select({ row: 2, column: 1 })} />

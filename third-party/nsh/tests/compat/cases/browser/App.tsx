@@ -3,11 +3,13 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import BaseDropdownLooks from "./base-dropdown-looks";
 import BaseHoverCardDesktop from "./base-hover-card-desktop";
 import BasePopupAnchorsDesktop from "./base-popup-anchors-desktop";
 import BasePopupLooks from "./base-popup-looks";
 import BasePopupsDesktop from "./base-popups-desktop";
 import BaseSelectDesktop from "./base-select-desktop";
+import BaseTooltipGracePeriodDesktop from "./base-tooltip-grace-period-desktop";
 import PropsPlatformWeb from "./props-platform-web";
 import PropsViewWebElement from "./props-view-web-element";
 import PropsTextScaling from "./props-text-scaling";
@@ -24,8 +26,10 @@ const cases: Record<string, () => JSX.Element> = {
   "base-popups-desktop": BasePopupsDesktop,
   "base-popup-looks": BasePopupLooks,
   "base-select-desktop": BaseSelectDesktop,
+  "base-dropdown-looks": BaseDropdownLooks,
   "base-hover-card-desktop": BaseHoverCardDesktop,
   "base-popup-anchors-desktop": BasePopupAnchorsDesktop,
+  "base-tooltip-grace-period-desktop": BaseTooltipGracePeriodDesktop,
 };
 const shown = signal("");
 

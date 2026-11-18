@@ -499,6 +499,9 @@ pub(crate) struct Listbox {
     /// The list is open (between [`Listbox::opened`] and
     /// [`Listbox::closed`]).
     open: Stored<bool>,
+    /// Its popup or sheet is there (between [`Listbox::arrived`] and
+    /// [`Listbox::gone`]), on its way out too.
+    there: Stored<bool>,
     /// The rows wholly in view, as the list last said.
     visible: Stored<Option<(usize, usize)>>,
     /// A row to reveal once the list says what is in view.
@@ -563,6 +566,7 @@ impl Listbox {
             lit: stored(std::array::from_fn(|_| signal(None))),
             highlighted: stored(None),
             open: stored(false),
+            there: stored(false),
             visible: stored(None),
             reveal: stored(None),
             list: element_ref(),
@@ -716,12 +720,31 @@ impl Listbox {
         self.set_highlight(item, Via::Keyboard);
     }
 
-    /// The list closed: the query goes back to its default.
+    /// The list closed. Its query stays until the list is gone
+    /// ([`Listbox::gone`]): on its way out (the app's ending look, a
+    /// sheet sliding down) it shows the rows it showed, not every item
+    /// again.
     pub(crate) fn closed(self) {
         self.open.replace(false);
-        self.own_query.set(self.default_query());
+        if !self.there.get() {
+            self.own_query.set(self.default_query());
+        }
         self.a11y.set(None);
         self.typeahead.with(Typeahead::clear);
+    }
+
+    /// Its popup or sheet is all there.
+    fn arrived(self) {
+        self.there.replace(true);
+    }
+
+    /// Its popup or sheet is gone: unless it opened again, the query goes
+    /// back to its default (what a combobox's input shows while closed).
+    fn gone(self) {
+        self.there.replace(false);
+        if !self.open.get() {
+            self.own_query.set(self.default_query());
+        }
     }
 
     /// The user typed `query` in the search field: while the app sets no
@@ -1042,6 +1065,9 @@ pub(crate) struct Hooks {
     pub(crate) dismiss: Rc<dyn Fn(OpenChangeReason)>,
     /// It is all there (`true`) or all gone (`false`).
     pub(crate) shown: Rc<dyn Fn(bool)>,
+    /// The desktops: it closed and starts to go; where the keyboard focus
+    /// goes from the popup it is given ([`Presence::back`]).
+    pub(crate) back: Rc<dyn Fn(ElementRef)>,
 }
 
 /// The list while it is open, in its component's dropdown
@@ -1057,7 +1083,18 @@ pub(crate) fn present(
     let presence = Presence {
         open: hooks.open.clone(),
         dismiss: hooks.dismiss.clone(),
-        shown: hooks.shown.clone(),
+        shown: {
+            let shown = hooks.shown.clone();
+            Rc::new(move |there| {
+                if there {
+                    lb.arrived();
+                } else {
+                    lb.gone();
+                }
+                shown(there);
+            })
+        },
+        back: hooks.back.clone(),
     };
     popup::dropdown(
         anchor,
@@ -1138,6 +1175,10 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
         .element_ref(&lb.listbox)
         .flex_shrink(1.0)
         .min_h(px(0.0))
+        // An option acts on the first tap while the software keyboard is
+        // up (a combobox's own field, or an input outside): it does not
+        // only dismiss the keyboard.
+        .keyboard_taps(KeyboardTaps::Handled)
         .when(is_terminal(), |v| v.min_w(move || Length::from(widest())))
         .app_class(parts.list_class)
         .inline_style(parts.list_style)
@@ -1361,7 +1402,7 @@ fn item_row(
         // popup lays over the trigger.
         .when_some(parts.cover, |row, cover| {
             row.child(when(
-                move || selected.get(),
+                move || selected.get() && cover.on.get(),
                 move || {
                     view()
                         .absolute()

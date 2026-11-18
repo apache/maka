@@ -35,11 +35,10 @@ fn is_node(owner: u32) -> bool {
     owner < DISPOSED
 }
 
+const FAILED: u8 = 3;
 const CLEAN: u8 = 0;
 const STALE: u8 = 1;
 const PENDING: u8 = 2;
-/// A failed memo still needs recomputing, but is no longer queued.
-const FAILED: u8 = 3;
 
 /// Runs of computations in one flush before it counts as an infinite loop.
 const MAX_RUNS: u64 = 1_000_000;
@@ -162,8 +161,11 @@ struct Node<H: Host> {
     /// The owner (for a root, the one it was made under: context and
     /// `runTop` look through it, but it does not own the root).
     owner: u32,
-    /// A root can outlive its owner and the slot that held it.
-    root_owner_generation: u32,
+    /// The owner's generation when the node was made under it. A root
+    /// outlives the owner it was made under (that owner does not own it):
+    /// once the owner is freed its slot may name another node, which the
+    /// root must not take for its owner in `runTop` ([`Graph::owner_of`]).
+    owner_generation: u32,
     owned: Vec<u32>,
     cleanups: Vec<H::Cleanup>,
     context: Option<Rc<Frame<H>>>,
@@ -190,7 +192,7 @@ impl<H: Host> Node<H> {
             sources: Vec::new(),
             observers: Vec::new(),
             owner: NONE,
-            root_owner_generation: 0,
+            owner_generation: 0,
             owned: Vec::new(),
             cleanups: Vec::new(),
             context: None,
@@ -337,6 +339,7 @@ impl<H: Host> Graph<H> {
         n.owner = if is_node(owner) { owner } else { NONE };
         drop(old);
         if is_node(owner) {
+            self.nodes[id as usize].owner_generation = self.nodes[owner as usize].generation;
             self.nodes[owner as usize].owned.push(id);
         }
         id
@@ -356,6 +359,7 @@ impl<H: Host> Graph<H> {
         n.owner = if is_node(owner) { owner } else { NONE };
         n.context = context;
         if is_node(owner) {
+            self.nodes[id as usize].owner_generation = self.nodes[owner as usize].generation;
             self.nodes[owner as usize].owned.push(id);
         }
         id
@@ -365,17 +369,14 @@ impl<H: Host> Graph<H> {
     /// it; the current owner does not own it).
     pub fn root(&mut self) -> u32 {
         let current = self.owner;
-        let generation = if is_node(current) {
-            self.generation(current)
-        } else {
-            0
-        };
         let id = self.alloc(Kind::Root);
         let context = self.context_of(current);
         let n = &mut self.nodes[id as usize];
         n.owner = if current == DISPOSED { NONE } else { current };
-        n.root_owner_generation = generation;
         n.context = context;
+        if is_node(current) {
+            self.nodes[id as usize].owner_generation = self.nodes[current as usize].generation;
+        }
         id
     }
 
@@ -425,16 +426,28 @@ impl<H: Host> Graph<H> {
         self.nodes[id as usize].generation
     }
 
-    /// The owner of node `id` (for a root, the one it was made under while
-    /// its slot still names it).
+    /// The owner of node `id` (for a root, the slot it was made under: an
+    /// owner that re-makes its root in place, as a region does, is found
+    /// through it again).
     pub fn parent(&self, id: u32) -> u32 {
-        let node = &self.nodes[id as usize];
-        if node.root_owner_generation != 0
-            && !self.live(node.owner, node.root_owner_generation, u32::MAX)
-        {
+        self.owner_of(id)
+    }
+
+    /// Node `id`'s owner for `runTop`, or [`NONE`] once the slot it named
+    /// was freed (a root whose owner went: the slot may name another node
+    /// now, maybe one under the root itself, which would close the walk up
+    /// the owners into a loop).
+    fn owner_of(&self, id: u32) -> u32 {
+        let n = &self.nodes[id as usize];
+        let owner = n.owner;
+        if !is_node(owner) {
+            return owner;
+        }
+        let o = &self.nodes[owner as usize];
+        if o.kind == Kind::Free || o.generation != n.owner_generation {
             NONE
         } else {
-            node.owner
+            owner
         }
     }
 
@@ -448,13 +461,19 @@ impl<H: Host> Graph<H> {
         self.nodes[id as usize].disposed
     }
 
+    /// Whether computation `id` is to run again before its value is
+    /// current (what it reads changed, here or upstream).
+    pub(crate) fn outdated(&self, id: u32) -> bool {
+        self.nodes[id as usize].state != CLEAN
+    }
+
     /// Node `id`'s value (untracked; a disposed memo keeps its last one).
     pub fn value(&self, id: u32) -> &H::Value {
         &self.nodes[id as usize].value
     }
 
     /// Replaces node `id`'s value with `value`, without notifying: the old
-    /// one, to change and write back ([`write()`]).
+    /// one, to change and write back ([`write`]).
     pub fn replace_value(&mut self, id: u32, value: H::Value) -> H::Value {
         std::mem::replace(&mut self.nodes[id as usize].value, value)
     }
@@ -873,7 +892,7 @@ fn run_top<H: Host>(h: H, id: u32) {
     }
     let exec = graph.exec;
     let mut ancestors = vec![id];
-    let mut at = graph.parent(id);
+    let mut at = graph.owner_of(id);
     while is_node(at) {
         let n = &graph.nodes[at as usize];
         if n.updated_at.is_some_and(|t| t >= exec) {
@@ -882,14 +901,14 @@ fn run_top<H: Host>(h: H, id: u32) {
         if n.state != CLEAN && n.is_computation() {
             ancestors.push(at);
         }
-        at = graph.parent(at);
+        at = graph.owner_of(at);
     }
     for &node in ancestors.iter().rev() {
         let n = &g(h).nodes[node as usize];
         if n.disposed {
             continue;
         }
-        if n.state == STALE || n.state == FAILED {
+        if matches!(n.state, STALE | FAILED) {
             update_computation(h, node);
         } else if n.state == PENDING {
             let updates = g(h).updates.take();
@@ -913,7 +932,7 @@ fn look_upstream<H: Host>(h: H, id: u32, ignore: u32) {
         if s.kind != Kind::Memo {
             continue;
         }
-        if s.state == STALE || s.state == FAILED {
+        if matches!(s.state, STALE | FAILED) {
             if source != ignore && s.updated_at.is_none_or(|t| t < graph.exec) {
                 run_top(h, source);
             }
@@ -952,6 +971,7 @@ fn run_computation<H: Host>(h: H, id: u32, time: u64) {
     let Some(next) = result else {
         let n = &mut graph.nodes[id as usize];
         if n.kind == Kind::Memo {
+            // Direct reads retry a failed memo, and a dependency write queues it again.
             n.state = FAILED;
             let owned = std::mem::take(&mut n.owned);
             for c in owned {
@@ -1019,7 +1039,7 @@ pub fn write<H: Host>(h: H, id: u32, next: H::Value) {
             if graph.nodes[o as usize].disposed {
                 continue;
             }
-            if graph.nodes[o as usize].state == CLEAN || graph.nodes[o as usize].state == FAILED {
+            if matches!(graph.nodes[o as usize].state, CLEAN | FAILED) {
                 if graph.nodes[o as usize].kind == Kind::Memo {
                     graph.queue_update(o);
                 } else {
@@ -1039,7 +1059,7 @@ pub fn write<H: Host>(h: H, id: u32, next: H::Value) {
 pub fn read<H: Host>(h: H, id: u32) -> H::Value {
     let n = &g(h).nodes[id as usize];
     if n.kind == Kind::Memo && !n.disposed && n.state != CLEAN {
-        if n.state == STALE || n.state == FAILED {
+        if matches!(n.state, STALE | FAILED) {
             update_computation(h, id);
         } else {
             let updates = g(h).updates.take();

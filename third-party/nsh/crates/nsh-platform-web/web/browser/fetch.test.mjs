@@ -32,6 +32,20 @@ test("outside tests HTTP stays the browser's, handed over as it came", async () 
   assert.deepEqual(host.state.ops, []);
 });
 
+test("a relative URL is the site's where the page names its base", async () => {
+  const target = realm(), host = engine();
+  const asked = [];
+  target.fetch = async input => { asked.push(input); return "native"; };
+  installFetch(target, host.call, { base: "https://a.test/apps/notes/" });
+  await target.fetch("api/items?x=1");
+  await target.fetch("/api/items");
+  await target.fetch(new URL("https://b.test/x"));
+  // A request made in the realm resolved its URL as it was made.
+  const request = new Request("https://a.test/r");
+  await target.fetch(request);
+  assert.deepEqual(asked, ["https://a.test/apps/notes/api/items?x=1", "https://a.test/api/items", "https://b.test/x", request]);
+});
+
 test("fetch reads the app's files through the engine in every session", async () => {
   const target = realm(), host = engine();
   installFetch(target, host.call);

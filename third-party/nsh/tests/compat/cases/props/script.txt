@@ -336,6 +336,13 @@ prop id:hint accessibilityHint Opens the settings
 noprop id:plain accessibilityHint
 prop id:description accessibilityDescription Letters and digits only
 noprop id:plain accessibilityDescription
+# The error line describing a field: its text is the field's description
+# while it is there, the field's own after.
+prop id:described accessibilityDescription Enter a name
+tap id:fix
+absent Enter a name
+prop id:described accessibilityDescription Your name
+covers [props] accessibilityDescribedBy
 prop id:state accessibilityState disabled=true checked=mixed expanded=false
 prop id:plain accessibilityState {}
 # A popup's trigger: `hasPopup` beside `expanded` (nsh-compat's values.rs

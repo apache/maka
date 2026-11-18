@@ -380,6 +380,12 @@ impl ModuleCx {
             .push(super::services::set_clipboard(text.into()));
     }
 
+    /// Puts `item`, its text and its HTML, on the system clipboard (TS:
+    /// `Clipboard.write`).
+    pub fn set_clipboard_item(&mut self, item: super::ClipboardItem) {
+        self.actions.push(super::services::set_clipboard_item(item));
+    }
+
     /// Puts the image of a `data:` URI on the system clipboard (TS:
     /// `Clipboard.writeImage`).
     pub fn set_clipboard_image(&mut self, uri: impl Into<String>) {

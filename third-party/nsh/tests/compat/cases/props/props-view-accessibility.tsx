@@ -9,11 +9,15 @@
 // option `selected`, and the structural roles of `nsh/base`'s accordions,
 // toolbars, paginations, trees and checkable menu items (`"group"`,
 // `"region"`, `"navigation"`, `"tree"`, `"treeitem"`, `"menuitemcheckbox"`,
-// `"menuitemradio"`) and of dialogs (`"dialog"`, `"alertdialog"`). Its
+// `"menuitemradio"`) and of dialogs (`"dialog"`, `"alertdialog"`), and
+// `accessibilityDescribedBy`: a field whose error line's text is its
+// description while the line is there, its own description after. Its
 // script checks each.
-import { Text, View } from "nsh";
+import { Text, View, type ViewRef, signal } from "nsh";
 
 function App() {
+  const error = signal<ViewRef>();
+  const failed = signal(true);
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <View testID="group" accessible={true} style={{ height: 20 }}>
@@ -25,6 +29,20 @@ function App() {
         accessibilityDescription="Letters and digits only"
         style={{ height: 20 }}
       />
+      <View
+        testID="described"
+        accessibilityDescription="Your name"
+        accessibilityDescribedBy={error() ?? null}
+        style={{ height: 20 }}
+      />
+      <If when={failed()}>
+        <View ref={error} style={{ height: 20 }}>
+          <Text>Enter a name</Text>
+        </View>
+      </If>
+      <View testID="fix" onPress={() => failed.set(false)} style={{ height: 20 }}>
+        <Text>Fix</Text>
+      </View>
       <View
         testID="state"
         accessibilityState={{ disabled: true, checked: "mixed", expanded: false }}

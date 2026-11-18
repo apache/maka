@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::WindowMode;
 use crate::{
     element::{JsHost, JsIn, JsObject, JsOwned, JsValue, PropError, TsTypes},
-    geometry::{Bounds, Point, Points, Size},
+    geometry::{Bounds, Point, Points, Size, point, size},
 };
 
 /// A display, the same from one launch of the app to the next on the same
@@ -78,11 +78,14 @@ pub struct Display {
     pub scale_factor: f32,
     /// Frames per second it shows, where the platform tells.
     pub refresh_rate: Option<f32>,
+    /// The parts of the display a camera housing hides (a MacBook's notch),
+    /// in screen coordinates; empty where it has none.
+    pub cutouts: Vec<Bounds<Points>>,
 }
 
 impl Display {
-    /// A display with `id`, `bounds` and `visible_bounds`, at a scale of 1
-    /// and with no name.
+    /// A display with `id`, `bounds` and `visible_bounds`, at a scale of 1,
+    /// with no name and no cutouts.
     pub fn new(
         id: DisplayId,
         bounds: Bounds<Points>,
@@ -97,8 +100,39 @@ impl Display {
             name: String::new(),
             scale_factor: 1.0,
             refresh_rate: None,
+            cutouts: Vec::new(),
         }
     }
+}
+
+/// The notch of a display of `bounds` (screen coordinates), for the macOS
+/// backends, which read its inputs from `NSScreen`: the gap between the
+/// menu bar's two parts beside the camera housing (`left` and `right`, the
+/// sizes of its auxiliary top left and top right areas), at the display's
+/// top and as tall as its safe area's top inset (`top_inset`). Only the
+/// areas' sizes are read, measured in from the display's edges, so the
+/// coordinate space their origins are in does not matter. `None` on a
+/// display without one: an area missing (empty), no inset, no gap.
+#[doc(hidden)]
+pub fn notch(
+    bounds: Bounds<Points>,
+    left: Size<Points>,
+    right: Size<Points>,
+    top_inset: Points,
+) -> Option<Bounds<Points>> {
+    let present = |area: Size<Points>| area.width > Points::ZERO && area.height > Points::ZERO;
+    if !present(left) || !present(right) || top_inset <= Points::ZERO {
+        return None;
+    }
+    let start = bounds.left() + left.width;
+    let end = bounds.right() - right.width;
+    if end <= start {
+        return None;
+    }
+    Some(Bounds::new(
+        point(start, bounds.top()),
+        size(end - start, top_inset),
+    ))
 }
 
 /// A window's mode and its normal bounds (GPUI's `WindowBounds`): what an
@@ -253,10 +287,48 @@ impl WindowState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{point, px, size};
+    use crate::geometry::px;
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Bounds<Points> {
         Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn a_notch_is_the_gap_between_the_auxiliary_areas() {
+        // A 14-inch MacBook Pro's built-in screen, the primary one.
+        let left = size(px(664.0), px(32.0));
+        let right = size(px(663.0), px(32.0));
+        assert_eq!(
+            notch(rect(0.0, 0.0, 1512.0, 982.0), left, right, px(32.0)),
+            Some(rect(664.0, 0.0, 185.0, 32.0)),
+        );
+    }
+
+    #[test]
+    fn a_display_without_a_notch_has_none() {
+        let bounds = rect(0.0, 0.0, 2560.0, 1440.0);
+        let none = Size::default();
+        assert_eq!(notch(bounds, none, none, px(0.0)), None);
+        // Areas without an inset, or an inset without areas.
+        let left = size(px(1200.0), px(25.0));
+        let right = size(px(1200.0), px(25.0));
+        assert_eq!(notch(bounds, left, right, px(0.0)), None);
+        assert_eq!(notch(bounds, none, none, px(25.0)), None);
+        // Areas that meet leave no gap.
+        let right = size(px(1360.0), px(25.0));
+        assert_eq!(notch(bounds, left, right, px(25.0)), None);
+    }
+
+    #[test]
+    fn a_notch_on_a_secondary_display_is_in_screen_coordinates() {
+        // The built-in screen right of a 2560 × 1440 primary display, its
+        // top 658 points below the primary's.
+        let left = size(px(664.0), px(32.0));
+        let right = size(px(663.0), px(32.0));
+        assert_eq!(
+            notch(rect(2560.0, 658.0, 1512.0, 982.0), left, right, px(32.0)),
+            Some(rect(3224.0, 658.0, 185.0, 32.0)),
+        );
     }
 
     fn displays() -> Vec<Display> {

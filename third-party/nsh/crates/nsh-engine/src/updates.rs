@@ -50,11 +50,14 @@ pub const TRYING: &str = "trying.nshpkg";
 const TRUST: &str = "trust";
 const PACKAGES: &str = "packages";
 
-/// The update state of app `app_id` keeping its data in `data_dir` (the
-/// directory each app has a directory of its own in, as
-/// [`crate::EngineConfig::data_dir`]): `<data_dir>/<app id>/updates`.
-pub fn updates_dir(data_dir: &Path, app_id: &str) -> PathBuf {
-    data_dir.join(crate::app_dir_name(Some(app_id))).join(DIR)
+/// The update state of app `app_id` under `support_dir` (the directory
+/// each app has a directory of its own in, as
+/// [`crate::EngineConfig::support_dir`]): `<support_dir>/<app id>/updates`,
+/// wherever the app's data directory is.
+pub fn updates_dir(support_dir: &Path, app_id: &str) -> PathBuf {
+    support_dir
+        .join(crate::app_dir_name(Some(app_id)))
+        .join(DIR)
 }
 
 /// What a packaged app's launcher runs ([`launch`]).
@@ -74,13 +77,14 @@ pub struct Launch {
 /// directory `resources` (`nsh`, holding `assets/nsh-updater.json`), or a
 /// newer signed package from its updates when its `nsh.json` trusts
 /// package roots (`"updater": { "packages": { "roots": [...] } }`) and
-/// `data_dir` is where its engine keeps the apps' data. Never fails: any
-/// problem with a package is logged and the shipped bundle runs.
-pub fn launch(shipped: Bundle, resources: &Path, data_dir: Option<&Path>) -> Launch {
+/// `support_dir` is its engine's [`crate::EngineConfig::support_dir`].
+/// Never fails: any problem with a package is
+/// logged and the shipped bundle runs.
+pub fn launch(shipped: Bundle, resources: &Path, support_dir: Option<&Path>) -> Launch {
     let assets = resources.join("assets");
     let config = std::fs::read(assets.join(nsh_updater::CONFIG_ASSET)).ok();
     let mut shipped = shipped;
-    match package_to_run(&mut shipped, config, data_dir) {
+    match package_to_run(&mut shipped, config, support_dir) {
         Some(run) => Launch {
             bundle: run.bundle,
             assets: run.assets,
@@ -113,7 +117,7 @@ pub struct PackageRun {
 pub fn package_to_run(
     shipped: &mut Bundle,
     config: Option<Vec<u8>>,
-    data_dir: Option<&Path>,
+    support_dir: Option<&Path>,
 ) -> Option<PackageRun> {
     // `nsh/updater` reads the shipped configuration, whatever runs.
     shipped.updater_config = config.map(Arc::from);
@@ -121,7 +125,7 @@ pub fn package_to_run(
         shipped.updater_config.as_deref()?,
         shipped.app_id.as_deref(),
     )?;
-    let dir = updates_dir(data_dir?, &update.app_id);
+    let dir = updates_dir(support_dir?, &update.app_id);
     let chosen = choose(&dir, &update)?;
     let app = chosen.loaded.app.clone();
     log::info!(

@@ -101,12 +101,12 @@ jobs:
         run: echo "check=${{ github.event_name != 'pull_request' || steps.changes.outputs.compat == 'true' }}" >> "$GITHUB_OUTPUT"
 
       # Side by side: nsh-compat's crates depend on `../nsh`.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: steps.run.outputs.check == 'true'
         with:
           path: nsh
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: steps.run.outputs.check == 'true'
         with:
           repository: longbridge/nsh-compat
@@ -135,10 +135,11 @@ jobs:
         run: cargo build -p nsh-cli
 
       # The checkout's versions, so the cache serves both. The cases compile
-      # shaders, which nsh-core leaves out without its `shader` feature.
+      # shaders, which nsh-core leaves out without its `shader` feature, and
+      # connect WebSockets, which nsh-engine refuses without `websocket`.
       - name: Check
         if: steps.run.outputs.check == 'true'
         working-directory: nsh-compat
         run: |
           cp ../nsh/Cargo.lock .
-          cargo test --target-dir ../nsh/target --features nsh-core/shader,nsh-base/emoji-picker
+          cargo test --target-dir ../nsh/target --features nsh-core/shader,nsh-base/emoji-picker,nsh-engine/websocket

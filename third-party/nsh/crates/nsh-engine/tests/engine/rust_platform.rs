@@ -62,7 +62,7 @@ fn config(app: App) -> EngineConfig {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -75,6 +75,8 @@ fn config(app: App) -> EngineConfig {
         chunk_loader: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     }
 }
 
@@ -871,6 +873,64 @@ fn components_read_the_window_once_it_stops_and_the_displays() {
     assert_eq!(last_text(&rx, &mut last), "no window, displays 0");
 }
 
+/// A login item the system keeps on until it is turned off.
+struct FakeLoginItem(Mutex<bool>);
+
+impl nsh_core::desktop::LoginItemBackend for FakeLoginItem {
+    fn status(&self) -> std::io::Result<nsh_core::desktop::LoginItemStatus> {
+        Ok(match *self.0.lock().unwrap() {
+            true => nsh_core::desktop::LoginItemStatus::Enabled,
+            false => nsh_core::desktop::LoginItemStatus::Disabled,
+        })
+    }
+
+    fn set(&self, enabled: bool) -> std::io::Result<nsh_core::desktop::LoginItemStatus> {
+        *self.0.lock().unwrap() = enabled;
+        self.status()
+    }
+}
+
+/// Reads whether the app launches at login, turns it off and shows both
+/// answers.
+#[component]
+fn LoginItemInfo() -> impl IntoElement {
+    use nsh_core::element::desktop::{launch_at_login, set_launch_at_login};
+    let shown = signal(String::from("login"));
+    spawn(async move {
+        let read = launch_at_login().await;
+        let set = set_launch_at_login(false).await;
+        shown.set(format!("login {read} {set:?}"));
+    });
+    view().child(text(move || shown.get()))
+}
+
+#[test]
+fn a_rust_app_reads_and_changes_launch_at_login() {
+    // The last text the app shows, once it is `expected` (or 5 seconds
+    // passed).
+    let shown = |backend: Option<Arc<dyn nsh_core::desktop::LoginItemBackend>>, expected| {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let config = EngineConfig {
+            login_item: backend,
+            ..config(App::Rust(Root::of::<LoginItemInfo>()))
+        };
+        let sink = FrameSink {
+            batches: tx,
+            frames: Arc::default(),
+        };
+        let _engine = Engine::start(config, || ApproxTextEngine, sink).unwrap();
+        let (texts, ..) = until(&rx, expected);
+        texts.last().cloned().unwrap_or_default()
+    };
+    let backend = Arc::new(FakeLoginItem(Mutex::new(true)));
+    let expected = "login true Ok(())";
+    assert_eq!(shown(Some(backend), expected), expected);
+    // Without one (a view embedded in another app, `nsh run`) it is off and
+    // cannot be turned on.
+    let expected = "login false Err(Unavailable)";
+    assert_eq!(shown(None, expected), expected);
+}
+
 /// Shows whether the performance monitor measures and turns it on.
 #[component]
 fn FpsSwitch() -> impl IntoElement {
@@ -924,12 +984,13 @@ fn components_turn_the_performance_monitor_on_and_follow_it() {
 
 /// A Rust app's `nsh.json` `"window"` (its root's, as the generated code
 /// sets it) reaches the main window as a TSX app's bundle's does: its
-/// attributes with the first frame, the options for the runners.
+/// attributes with the first frame, the options for the runners. A phone's
+/// surface has no window: nothing is sent there.
 #[test]
 fn a_rust_apps_main_window_takes_its_launch_options() {
     use nsh_core::desktop::DesktopCommand;
     let root = Root::of::<Label>().main_window_json(
-        r#"{"title":"Notes","defaultSize":{"width":900,"height":600},"restoreBounds":true}"#,
+        r#"{"title":"Notes","titleBar":{"style":"hidden","height":40},"defaultSize":{"width":900,"height":600},"restoreBounds":true}"#,
     );
     let options = root
         .main_window_ref()
@@ -937,32 +998,37 @@ fn a_rust_apps_main_window_takes_its_launch_options() {
         .expect("the window's options");
     assert_eq!(options.attributes.title.as_deref(), Some("Notes"));
     assert!(options.restore_bounds);
-    let config = EngineConfig {
-        environment: Environment {
-            os: Os::MacOs,
-            idiom: Idiom::Desktop,
-            ..Environment::default()
-        },
-        ..config(App::Rust(root))
-    };
-    // What the runners read before they make the window.
-    assert_eq!(config.app.main_window(), Some(&options));
-    let (tx, rx) = crossbeam_channel::unbounded();
-    let _engine = Engine::start(
-        config,
-        || ApproxTextEngine,
-        FrameSink {
-            batches: tx,
-            frames: Arc::default(),
-        },
-    )
-    .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut set = None;
-    while set.is_none()
-        && let Ok(batch) = rx.recv_deadline(deadline)
-    {
-        set = batch.items.into_iter().find_map(|item| match item {
+    for (os, idiom) in [
+        (Os::MacOs, Idiom::Desktop),
+        (Os::Web, Idiom::Desktop),
+        (Os::Ios, Idiom::Phone),
+        (Os::Android, Idiom::Phone),
+    ] {
+        let config = EngineConfig {
+            environment: Environment {
+                os,
+                idiom,
+                ..Environment::default()
+            },
+            ..config(App::Rust(root.clone()))
+        };
+        // What the runners read before they make the window.
+        assert_eq!(config.app.main_window(), Some(&options));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let _engine = Engine::start(
+            config,
+            || ApproxTextEngine,
+            FrameSink {
+                batches: tx,
+                frames: Arc::default(),
+            },
+        )
+        .unwrap();
+        // The first frame: the label, and the attributes where they go.
+        let batch = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the first frame");
+        let set = batch.items.into_iter().find_map(|item| match item {
             MountItem::Command {
                 id: ROOT_ID,
                 command: Command::Desktop(command),
@@ -972,7 +1038,11 @@ fn a_rust_apps_main_window_takes_its_launch_options() {
             },
             _ => None,
         });
+        if os.is_desktop() || os == Os::Web {
+            let set = set.unwrap_or_else(|| panic!("{os:?}: the main window's attributes"));
+            assert_eq!(set.title.as_deref(), Some("Notes"), "{os:?}");
+        } else {
+            assert_eq!(set, None, "{os:?}");
+        }
     }
-    let set = set.expect("the main window's attributes");
-    assert_eq!(set.title.as_deref(), Some("Notes"));
 }

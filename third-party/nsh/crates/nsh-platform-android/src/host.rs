@@ -6,7 +6,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -19,6 +19,7 @@ use jni::{
 };
 use nsh_core::{
     EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, Points, Size,
+    canvas::render::RenderFailure,
     geometry::{DevicePixels, point, px, size},
 };
 use nsh_engine::{
@@ -63,11 +64,14 @@ pub(crate) struct Host {
     granted: Mutex<Option<nsh_engine::Capabilities>>,
     /// The VM limits of loaded apps (`NshView.setLimits`).
     limits: Mutex<nsh_engine::Limits>,
+    /// Whether scroll views make their content's native views only near
+    /// their viewport (`NshView.setContentCulling`, on by default).
+    content_culling: AtomicBool,
     /// The embedding app's runtime for apps loaded from now on.
     runtime: Mutex<Option<tokio::runtime::Handle>>,
     /// Where loaded apps keep their data, each in a directory named by its
-    /// id ([`EngineConfig::data_dir`]): `nsh` in the files directory.
-    pub(crate) data_dir: Option<std::path::PathBuf>,
+    /// id ([`EngineConfig::support_dir`]): `nsh` in the files directory.
+    pub(crate) support_dir: Option<std::path::PathBuf>,
     /// The directory loaded apps keep their storage in, overriding their own
     /// (`NshView.setStorageDirectory`); `None`: theirs.
     storage: Mutex<Option<std::path::PathBuf>>,
@@ -96,7 +100,8 @@ pub(crate) struct Host {
     /// The embedding app's channel with the apps (`nsh/host`; Java
     /// `NshView.setParams`, `send`, `handle`).
     host: nsh_engine::HostChannel,
-    /// The app's keyboard shortcuts, matched on the UI thread.
+    /// The app's keyboard shortcuts, and the keys consumed by them or by
+    /// a capture rule, matched on the UI thread.
     pub(crate) keymap: Mutex<crate::keymap::KeymapState>,
     #[cfg(feature = "dev")]
     pub(crate) dev: Mutex<Option<crate::dev::DevSession>>,
@@ -143,6 +148,15 @@ impl Host {
     /// The VM limits of the apps loaded from now on.
     pub(crate) fn set_limits(&self, limits: nsh_engine::Limits) {
         *self.limits.lock().expect("limits") = limits;
+    }
+
+    /// Turns content culling on or off for the running app and the apps
+    /// loaded from now on.
+    pub(crate) fn set_content_culling(&self, enabled: bool) {
+        self.content_culling.store(enabled, Ordering::Relaxed);
+        if let Some(control) = self.control() {
+            control.set_content_culling(enabled);
+        }
     }
 
     /// The embedding app's theme overrides (`None`: the app's own theme):
@@ -220,7 +234,7 @@ impl Host {
             app,
             viewport,
             trace: self.trace,
-            content_culling: true,
+            content_culling: self.content_culling.load(Ordering::Relaxed),
             network: Some(crate::net::network()),
             websocket: None,
             refuse_connections: None,
@@ -233,7 +247,8 @@ impl Host {
             limits: *self.limits.lock().expect("limits"),
             ui_sets: crate::ui_sets(),
             runtime: self.runtime.lock().expect("runtime").clone(),
-            data_dir: self.data_dir.clone(),
+            support_dir: self.support_dir.clone(),
+            data_dir: None,
             cache,
             storage: self.storage.lock().expect("storage").as_ref().map(|dir| {
                 nsh_engine::FileStorage::open(dir) as Arc<dyn nsh_engine::StorageBackend>
@@ -247,6 +262,7 @@ impl Host {
             speech: None,
             audio: None,
             windows: None,
+            login_item: None,
         };
         let density = self.density.clone();
         let sink = Sink(self.clone(), web_generation);
@@ -604,6 +620,57 @@ pub(crate) unsafe fn host<'a>(handle: jlong) -> &'a Arc<Host> {
     unsafe { &*(handle as *const Arc<Host>) }
 }
 
+/// Gives the WebSocket client's TLS verifier (rustls-platform-verifier,
+/// `CertificateVerifier.java`) the app's Context, once per process, so
+/// `wss://` trusts the system's roots (and those a user or administrator
+/// installed) rather than a compiled-in set (#914).
+#[cfg(feature = "websocket")]
+fn init_tls_verifier(env: &mut JNIEnv<'_>, view: &JObject<'_>) {
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        let context = env
+            .call_method(view, "getContext", "()Landroid/content/Context;", &[])
+            .and_then(|context| context.l())
+            .and_then(|context| {
+                env.call_method(
+                    &context,
+                    "getApplicationContext",
+                    "()Landroid/content/Context;",
+                    &[],
+                )
+            })
+            .and_then(|context| context.l());
+        let context = match context {
+            Ok(context) => context,
+            Err(err) => {
+                let _ = env.exception_clear();
+                log::error!("nsh: no Context for the TLS verifier: {err}");
+                return;
+            }
+        };
+        // SAFETY: the verifier's jni 0.22 wraps this thread's attached
+        // JNIEnv and a live local reference of this native call's frame.
+        let mut unowned = unsafe { jni_verifier::EnvUnowned::from_raw(env.get_raw().cast()) };
+        let outcome = unowned
+            .with_env(|env| {
+                // SAFETY: as above; the 0.21 wrapper keeps the reference.
+                let context = unsafe {
+                    jni_verifier::objects::JObject::from_raw(env, context.as_raw().cast())
+                };
+                rustls_platform_verifier::android::init_with_env(env, context)
+            })
+            .into_outcome();
+        match outcome {
+            jni_verifier::Outcome::Ok(()) => {}
+            jni_verifier::Outcome::Err(err) => {
+                let _ = env.exception_clear();
+                log::error!("nsh: TLS verifier setup failed: {err}");
+            }
+            jni_verifier::Outcome::Panic(_) => log::error!("nsh: TLS verifier setup panicked"),
+        }
+    });
+}
+
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_create(
     mut env: JNIEnv<'_>,
@@ -611,14 +678,16 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
     view: JObject<'_>,
     density: jfloat,
     trace: jboolean,
-    data_dir: JString<'_>,
+    support_dir: JString<'_>,
     cache_dir: JString<'_>,
 ) -> jlong {
+    #[cfg(feature = "websocket")]
+    init_tls_verifier(&mut env, &view);
     let Ok(view) = env.new_global_ref(view) else {
         return 0;
     };
-    let data_dir = env
-        .get_string(&data_dir)
+    let support_dir = env
+        .get_string(&support_dir)
         .ok()
         .map(|dir| std::path::PathBuf::from(String::from(dir)));
     let cache_dir = (!cache_dir.is_null())
@@ -639,6 +708,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
             // the system's viewer reads it through the FilesProvider. The
             // dialogs have no answer here.
             file_requests: true,
+            // `OffscreenCanvas`: `CanvasRender.java` replays drawings into
+            // bitmaps with the on-screen canvas's painter.
+            canvas_render: true,
             web_evaluate: true,
             // wgpu on Vulkan or GLES, in builds with it, until it finds no
             // GPU.
@@ -652,8 +724,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
         epoch: Instant::now(),
         granted: Mutex::new(None),
         limits: Mutex::new(nsh_engine::Limits::default()),
+        content_culling: AtomicBool::new(true),
         runtime: Mutex::new(None),
-        data_dir,
+        support_dir,
         storage: Mutex::new(None),
         access: Mutex::new(Arc::default()),
         host_tokens: Mutex::new(None),
@@ -744,6 +817,20 @@ extern "system" fn Java_com_longbridge_nsh_Native_setStandaloneLimits(
     host.set_limits(nsh_engine::Limits::standalone());
 }
 
+/// Whether scroll views make the native views of their content only near
+/// their viewport (the default), or all of it (`NshView.setContentCulling`).
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_setContentCulling(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    enabled: jboolean,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    host.set_content_culling(enabled != 0);
+}
+
 /// The directory the storage of the apps loaded next is kept in (null: each
 /// app's own in the data directory).
 #[unsafe(no_mangle)]
@@ -802,7 +889,8 @@ extern "system" fn Java_com_longbridge_nsh_Native_setCache(
 /// What the running app's disk cache holds for `url`: its bytes (`byte[]`)
 /// when they are fresh, the conditional request headers to revalidate a
 /// stale copy with (`String[]`, names and values; empty: none), or null (a
-/// miss, or no disk cache). Called on the image threads.
+/// miss, or no disk cache). A copy that came through a redirect the app may
+/// no longer follow is dropped, and a miss. Called on the image threads.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_imageCacheLookup<'local>(
     mut env: JNIEnv<'local>,
@@ -819,7 +907,8 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheLookup<'local>(
     let Ok(url) = env.get_string(&url).map(String::from) else {
         return JObject::null();
     };
-    match cache.lookup(&url) {
+    let access = host.access.lock().expect("access").clone();
+    match cache.lookup(&url, &access) {
         Lookup::Fresh(bytes) => env
             .byte_array_from_slice(&bytes)
             .map(JObject::from)
@@ -836,6 +925,23 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheLookup<'local>(
     }
 }
 
+/// The strings of a Java `String[]` (null: none; a null element: empty).
+fn read_strings(env: &mut JNIEnv<'_>, array: &JObjectArray<'_>) -> Vec<String> {
+    if array.is_null() {
+        return Vec::new();
+    }
+    let len = env.get_array_length(array).unwrap_or(0);
+    (0..len)
+        .map(|i| {
+            env.get_object_array_element(array, i)
+                .ok()
+                .filter(|o| !o.is_null())
+                .and_then(|o| env.get_string(&JString::from(o)).ok().map(String::from))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// `strings` as a Java `String[]`.
 fn string_array<'local>(env: &mut JNIEnv<'local>, strings: &[&str]) -> Option<JObject<'local>> {
     let array = env
@@ -850,7 +956,8 @@ fn string_array<'local>(env: &mut JNIEnv<'local>, strings: &[&str]) -> Option<JO
 
 /// Ends the download of `url` that `imageCacheLookup` started: `status` 0
 /// when the request failed, else the response's status, `headers` (names
-/// and values) and body (null without one). Stores, updates or drops the
+/// and values), body (null without one) and `redirects`, the URLs the
+/// download was redirected to (null: none). Stores, updates or drops the
 /// cached copy, and returns the cached bytes when they are what to show
 /// (a `304`; a stale copy when the request failed or the server erred), or
 /// null: the response's own body (a `2xx`), or an error. Called on the
@@ -864,6 +971,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheComplete<'local>(
     status: jint,
     headers: JObjectArray<'local>,
     body: JByteArray<'local>,
+    redirects: JObjectArray<'local>,
 ) -> JByteArray<'local> {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
@@ -876,18 +984,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheComplete<'local>(
     let response = if status <= 0 {
         Err("the request failed".to_owned())
     } else {
-        let mut strings = Vec::new();
-        if !headers.is_null() {
-            let len = env.get_array_length(&headers).unwrap_or(0);
-            for i in 0..len {
-                let value = env
-                    .get_object_array_element(&headers, i)
-                    .ok()
-                    .filter(|o| !o.is_null())
-                    .and_then(|o| env.get_string(&JString::from(o)).ok().map(String::from));
-                strings.push(value.unwrap_or_default());
-            }
-        }
+        let strings = read_strings(&mut env, &headers);
         let pairs = strings
             .as_chunks::<2>()
             .0
@@ -898,15 +995,17 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheComplete<'local>(
         } else {
             env.convert_byte_array(&body).unwrap_or_default()
         };
-        Ok(nsh_core::image::Fetched::new(
+        let fetched = nsh_core::image::Fetched::new(
             status as u16,
             nsh_core::image::CacheHeaders::from_pairs(pairs),
             body,
-        ))
+        );
+        Ok(fetched.redirected(read_strings(&mut env, &redirects)))
     };
     // A 2xx's bytes are the body Java has.
     let own = (200..300).contains(&status);
-    match cache.complete(&url, response) {
+    let access = host.access.lock().expect("access").clone();
+    match cache.complete(&url, &access, response) {
         Ok(bytes) if !own => env
             .byte_array_from_slice(&bytes)
             .unwrap_or_else(|_| JByteArray::default()),
@@ -1265,6 +1364,10 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
     environment.os = nsh_engine::Os::Android;
     environment.notifications = true;
     environment.audio = true;
+    // A chooser over `ACTION_SEND` (`Share.java`).
+    environment.share = true;
+    // A Custom Tab, ended by the callback link (`AuthSession.java`).
+    environment.auth_session = true;
     environment.os_version = (v[11] as u16, 0);
     environment.idiom = match v[12] as u8 {
         1 => Idiom::Pad,
@@ -1502,7 +1605,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_touch(
         ints(&paths),
     );
     let n = ids.len();
-    let mut c = vec![0.0; n * 4];
+    let mut c = vec![0.0; n * 8];
     let mut flags = vec![0u8; n];
     if targets.len() != n
         || path_lengths.len() != n
@@ -1526,10 +1629,22 @@ extern "system" fn Java_com_longbridge_nsh_Native_touch(
                 id: ids[i] as u32,
                 target: targets[i] as NodeId,
                 path,
-                page: point(px(c[i * 4]), px(c[i * 4 + 1])),
-                location: point(px(c[i * 4 + 2]), px(c[i * 4 + 3])),
+                page: point(px(c[i * 8]), px(c[i * 8 + 1])),
+                location: point(px(c[i * 8 + 2]), px(c[i * 8 + 3])),
                 changed: flags[i] != 0,
-                pointer_type: nsh_core::PointerType::Touch,
+                pointer_type: match c[i * 8 + 7] as u8 {
+                    1 => nsh_core::PointerType::Pen,
+                    2 => nsh_core::PointerType::Mouse,
+                    _ => nsh_core::PointerType::Touch,
+                },
+                // The lifted finger reports its last pressure: 0 as the DOM.
+                pressure: if flags[i] != 0 && phase >= 2 {
+                    0.0
+                } else {
+                    c[i * 8 + 4].clamp(0.0, 1.0)
+                },
+                tilt_x: c[i * 8 + 5],
+                tilt_y: c[i * 8 + 6],
             }
         })
         .collect();
@@ -1550,6 +1665,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_touch(
                 phase,
                 timestamp: time as f64,
                 points,
+                modifiers: Default::default(),
                 activated: (activated >= 0).then_some(activated as NodeId),
             })),
         );
@@ -1594,6 +1710,64 @@ extern "system" fn Java_com_longbridge_nsh_Native_paste(
             id as NodeId,
             EventKind::Paste,
             EventPayload::Paste(Box::new(paste)),
+        );
+    }
+}
+
+/// `Native.canvasImage`'s `failure`: the image could not be drawn or
+/// encoded. `CanvasRender.java`'s `RENDER_FAILED`.
+const RENDER_FAILED: jint = 0;
+/// `Native.canvasImage`'s `failure`: the system could not make a bitmap
+/// this large. `CanvasRender.java`'s `RENDER_TOO_LARGE`.
+const RENDER_TOO_LARGE: jint = 1;
+
+/// The failure `Native.canvasImage` reports: its `failure` kind
+/// ([`RENDER_FAILED`], [`RENDER_TOO_LARGE`]; an unknown one is a plain
+/// failure) and message.
+fn render_failure(failure: jint, message: String) -> RenderFailure {
+    match failure {
+        RENDER_TOO_LARGE => RenderFailure::TooLarge(message),
+        RENDER_FAILED => RenderFailure::Failed(message),
+        _ => RenderFailure::Failed(message),
+    }
+}
+
+/// The answer to an offscreen canvas render (`CanvasRender.java`): the
+/// encoded image's bytes, or when they are null why not, `failure`
+/// ([`RENDER_FAILED`], [`RENDER_TOO_LARGE`]) and `error`. The bytes cross
+/// as a `byte[]`, never through the event map's boxed values.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_canvasImage(
+    mut env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    request: jint,
+    bytes: JByteArray<'_>,
+    failure: jint,
+    error: JString<'_>,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let result = if bytes.is_null() {
+        let error = (!error.is_null())
+            .then(|| env.get_string(&error).ok().map(String::from))
+            .flatten();
+        Err(render_failure(
+            failure,
+            error.unwrap_or_else(|| "the canvas could not be drawn".into()),
+        ))
+    } else {
+        env.convert_byte_array(&bytes)
+            .map_err(|e| format!("the image could not be read: {e}").into())
+    };
+    if let Some(control) = host.control() {
+        control.dispatch_event(
+            nsh_core::ROOT_ID,
+            EventKind::CanvasImage,
+            EventPayload::CanvasImage {
+                id: request as u32,
+                result,
+            },
         );
     }
 }
@@ -1718,8 +1892,8 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
         Some(PayloadValue::Number(n))
     };
     let payload = if kind == EventKind::FileRequest {
-        // "id", "error": the answer to an `OpenPath` (`SystemUi.openPath`;
-        // the paths of the request say nothing new, an open answers none).
+        // "id", "error", and repeated "path" keys: no path separator can
+        // be mistaken for a filename character, including newlines.
         let len = if keys.is_null() {
             0
         } else {
@@ -1727,6 +1901,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
         };
         let mut id = None;
         let mut error = None;
+        let mut paths = Vec::new();
         for i in 0..len {
             let Ok(key) = env.get_object_array_element(&keys, i) else {
                 continue;
@@ -1740,6 +1915,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
             match (key.as_str(), v) {
                 ("id", PayloadValue::Number(n)) => id = Some(n as u32),
                 ("error", PayloadValue::Str(message)) => error = Some(message),
+                ("path", PayloadValue::Str(path)) => paths.push(path.into()),
                 ("error", PayloadValue::Null) => {}
                 _ => {}
             }
@@ -1749,11 +1925,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
         let Some(id) = id else {
             return;
         };
-        EventPayload::FileRequest {
-            id,
-            paths: Vec::new(),
-            error,
-        }
+        EventPayload::FileRequest { id, paths, error }
     } else if keys.is_null() {
         match read(&mut env, 0) {
             Some(v) => EventPayload::Value(v),
@@ -1814,6 +1986,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
                 "positionMs" => "positionMs",
                 "truncated" => "truncated",
                 "buffering" => "buffering",
+                "action" => "action",
+                "target" => "target",
+                "value" => "value",
                 _ => continue,
             };
             if let Some(v) = read(&mut env, i) {

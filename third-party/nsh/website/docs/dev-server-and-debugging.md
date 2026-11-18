@@ -231,6 +231,59 @@ console shows them while Xcode runs it, also with `OS_ACTIVITY_MODE=disable` in 
 Android apps log to logcat (`adb logcat -s nsh`), Windows apps to the debugger's output (`OutputDebugString`, which
 DebugView and Visual Studio show) and Linux apps to their standard error.
 
+#### Log files and levels on the desktop
+
+A packaged macOS, Windows or Linux app also writes its log lines to a file in its data directory, `logs/app.log`,
+beside the platform's log:
+
+| Platform | Log file |
+|---|---|
+| macOS | `~/Library/Application Support/<app id>/logs/app.log` |
+| Windows | `%APPDATA%\<app id>\logs\app.log` |
+| Linux | `$XDG_DATA_HOME/<app id>/logs/app.log` (`~/.local/share/<app id>/logs/app.log`) |
+
+Each line has the time in UTC, the level, the target and the message:
+`2026-11-12T08:30:05.123Z INFO  js: signed in`. At 5 MB the file becomes `app.1.log` and a new `app.log` starts; the
+three files before it are kept (`app.1.log` to `app.3.log`). The app runs on as usual when the file cannot be written.
+
+`log_file()` in Rust and `process.logFile` in TSX give the file's path, so the app can attach it to a diagnostics
+report or offer to open its folder; it is `None` (`null`) where the lines go to the platform's log only (development
+hosts, embedding apps, mobile, the web).
+
+```rust tabs
+use nsh_core::prelude::*;
+
+// The log file shown selected in Finder, File Explorer or the file manager.
+if let Some(file) = log_file() {
+    spawn(async move {
+        let _ = reveal_path(file).await;
+    });
+}
+```
+
+```tsx tabs
+import process from "process";
+
+const report = { logFile: process.logFile, version: "1.4.0" };
+```
+
+By default a packaged app logs its warnings, errors and `js` lines (every line from info up under `nsh run`). The
+`RUST_LOG` environment variable sets the levels instead, in `env_logger`'s syntax, for the file and the platform's
+log alike:
+
+```sh
+RUST_LOG=info ./notes                                  # every line from info up
+RUST_LOG=warn,notes=debug,js=info ./notes              # the app's crate in detail
+```
+
+On Windows set it for one run in PowerShell (`$env:RUST_LOG="info"; .\Notes.exe`), or for the user in the system's
+environment variables.
+
+When Rust code panics, the file records it whatever the levels: an `ERROR panic:` line with the words Rust prints (the
+thread, the place and the message), and the backtrace when `RUST_BACKTRACE=1` is set. A packaged app's standard error
+is often out of sight (a Windows GUI program, a Mac app opened from Finder), so this file is where a crash's cause can
+be read.
+
 ## The error overlay
 
 These errors show a red overlay over the app on the host, with the message and stack:

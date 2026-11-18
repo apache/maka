@@ -50,6 +50,29 @@ fn line_limit_and_alignment_use_cell_metrics() {
     assert_eq!(lines[0].x, Points(8.0));
 }
 
+/// A line clamp cuts its last row at the box, inside a word if need be,
+/// not after the last word that fit there: a `truncate`d name in a row
+/// ended at a space with the box empty past it.
+#[test]
+fn a_clamped_last_row_is_cut_at_the_box() {
+    let engine = CellTextEngine::default();
+    // 8 points a Cell: "Christopher Mon…" fills 16 Cells, "Montgomery We…" 14.
+    for (max_lines, columns, starts) in [(1, 16, [0, 0]), (2, 14, [0, 12])] {
+        let mut text = AttributedText::default();
+        text.push("Christopher Montgomery Wellington", Default::default());
+        text.max_lines = max_lines;
+        let prepared = engine.prepare(&text);
+        let width = Points(8.0 * columns as f32);
+        let measured = engine.measure(&prepared, Some(width));
+        assert_eq!(measured.width, width, "{max_lines} lines");
+        let lines = engine.lines(&engine.layout(&prepared, measured));
+        assert_eq!(lines.len(), max_lines as usize);
+        let last = lines.last().unwrap();
+        assert_eq!(last.start, starts[max_lines as usize - 1]);
+        assert_eq!(last.width, width, "{max_lines} lines: {last:?}");
+    }
+}
+
 #[test]
 fn explicit_lines_empty_text_and_narrow_boxes_are_finite() {
     let engine = CellTextEngine::default();
@@ -280,6 +303,51 @@ fn aligned_attachments_grow_the_line_above_and_below_its_cell_baseline() {
                 Some(Point::new(Points(8.0), Points(0.0))),
                 Some(Point::new(Points(24.0), Points(small_top))),
             ],
+            "{align:?}"
+        );
+    }
+}
+
+/// A text's first baseline is the bottom of its first row's Cells, what
+/// the row's attachments reach above it included, at the width it wraps
+/// to.
+#[test]
+fn the_first_baseline_is_the_bottom_of_the_first_rows_cells() {
+    use nsh_core::{AttachmentAlignments, Size, VerticalAlign};
+    let engine = CellTextEngine::default();
+    let mut text = AttributedText::default();
+    text.push("ab cd", Default::default());
+    let prepared = engine.prepare(&text);
+    assert_eq!(
+        engine.first_baseline(&prepared, Points(200.0)),
+        Some(Points(16.0))
+    );
+    // Wrapped to two rows: still the first one's.
+    assert_eq!(
+        engine.first_baseline(&prepared, Points(32.0)),
+        Some(Points(16.0))
+    );
+    // A 48 pt attachment on the baseline: three Cells above it; in the
+    // middle, two.
+    for (align, baseline) in [
+        (VerticalAlign::Baseline, 48.0),
+        (VerticalAlign::Middle, 32.0),
+    ] {
+        let mut text = AttributedText::default();
+        text.push("A", Default::default());
+        text.push_attachment(Size::new(Points(16.0), Points(48.0)), Default::default());
+        let mut alignments = AttachmentAlignments::default();
+        alignments.set(1, align);
+        let prepared = engine.prepare_aligned(&text, &alignments);
+        assert_eq!(
+            engine.first_baseline(&prepared, Points(200.0)),
+            Some(Points(baseline)),
+            "{align:?}"
+        );
+        let layout = engine.layout(&prepared, engine.measure(&prepared, None));
+        assert_eq!(
+            engine.lines(&layout)[0].ascender,
+            Points(baseline),
             "{align:?}"
         );
     }

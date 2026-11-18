@@ -33,6 +33,30 @@ pub struct Frame {
     pub serial: u64,
 }
 
+/// Windows: the texture of a view's frame, shared with the backend's
+/// Direct3D 11 device (`ShaderView::surface`).
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SharedTexture {
+    /// The view's textures and fence for one frame size, unique in the
+    /// process: handles of another set are other objects, even when equal.
+    pub set: u64,
+    /// The texture's NT handle (`ID3D11Device1::OpenSharedResource1`), valid
+    /// while the view keeps frames of this size.
+    pub texture: windows_sys::Win32::Foundation::HANDLE,
+    /// The NT handle of the view's fence (`ID3D11Device5::OpenSharedFence`),
+    /// valid while the view keeps frames of this size.
+    pub fence: windows_sys::Win32::Foundation::HANDLE,
+    /// What to signal on the fence once the frame that draws the texture is
+    /// submitted: until then the view renders into none of its others.
+    pub value: u64,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
 impl Frame {
     /// The rows, without their padding.
     pub fn rows(&self) -> impl Iterator<Item = &[u8]> {

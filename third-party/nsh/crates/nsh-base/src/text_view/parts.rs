@@ -119,7 +119,7 @@ parts! {
     /// The language a code block names (```` ```rust ````), at the start of
     /// its header; empty when it names none.
     code_block_language => CodeBlockLanguage,
-    /// The horizontal scroll view of a code block's code.
+    /// The horizontal scroll view of unwrapped code (`wrap: false`).
     code_block_scroll => CodeBlockScroll,
     /// The code of a code block (monospace, as written).
     code_block_code => CodeBlockCode,

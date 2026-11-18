@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn names_are_lower_case() {
         assert!(valid_name("miniprogram"));
-        assert!(valid_name("harmony-os2"));
+        assert!(valid_name("example-os2"));
         assert!(!valid_name("Mini"));
         assert!(!valid_name("../x"));
         assert!(!valid_name("2d"));

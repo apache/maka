@@ -221,8 +221,9 @@ fn clang_target(triple: &str) -> &str {
     }
 }
 
-/// A cargo command set up to cross-compile for `triple` with the NDK.
-fn ndk_cargo(sdk: &Sdk, triple: &str) -> Command {
+/// `cargo <subcommand> --locked` set up to cross-compile for `triple` with
+/// the NDK.
+fn ndk_cargo(sdk: &Sdk, triple: &str, subcommand: &str) -> Command {
     let toolchain = sdk.toolchain();
     let bin = toolchain.join("bin");
     // On Windows the NDK's per-target compilers are batch files.
@@ -257,7 +258,7 @@ fn ndk_cargo(sdk: &Sdk, triple: &str) -> Command {
         let include = include.display().to_string().replace('\\', "/");
         extra.push_str(format!(" -idirafter \"{include}\"").as_str());
     }
-    let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let mut cmd = crate::cargo::command(subcommand);
     cmd.current_dir(root())
         .env(format!("CC_{env_triple}"), &clang)
         .env(format!("AR_{env_triple}"), bin.join("llvm-ar"))
@@ -289,9 +290,8 @@ fn ndk_cargo(sdk: &Sdk, triple: &str) -> Command {
 pub(crate) fn clippy() -> anyhow::Result<()> {
     let sdk = Sdk::find()?;
     for features in ["--all-features", "--no-default-features"] {
-        let status = ndk_cargo(&sdk, "aarch64-linux-android")
+        let status = ndk_cargo(&sdk, "aarch64-linux-android", "clippy")
             .args([
-                "clippy",
                 "-p",
                 "nsh-platform-android",
                 "--target",
@@ -316,8 +316,8 @@ fn cargo_lib(
     release: bool,
     dev: bool,
 ) -> anyhow::Result<PathBuf> {
-    let mut cmd = ndk_cargo(sdk, triple);
-    cmd.args(["build", "-p", "nsh-platform-android", "--target", triple]);
+    let mut cmd = ndk_cargo(sdk, triple, "build");
+    cmd.args(["-p", "nsh-platform-android", "--target", triple]);
     if release {
         cmd.arg("--release");
     }

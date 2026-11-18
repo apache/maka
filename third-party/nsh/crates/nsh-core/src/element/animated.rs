@@ -162,8 +162,8 @@ impl DerivedKey {
                 input, min, max, ..
             } => {
                 input.hash(&mut h);
-                number(&mut h, *min);
-                number(&mut h, *max);
+                operand(&mut h, min);
+                operand(&mut h, max);
             }
             _ => {}
         }
@@ -298,18 +298,18 @@ impl AnimatedNode {
         &self,
         key: DerivedKey,
         now: Option<AnimationOp>,
-        other: Option<AnimatedNode>,
+        others: &[Option<AnimatedNode>],
     ) -> (AnimatedNode, bool) {
         let Some(node) = self.live() else {
             return (Self::gone(), false);
         };
-        let other = match other {
-            Some(other) => match other.live() {
-                Some(other) => Some(other),
+        let mut live = Vec::new();
+        for other in others.iter().flatten() {
+            match other.live() {
+                Some(other) => live.push(other),
                 None => return (Self::gone(), false),
-            },
-            None => None,
-        };
+            }
+        }
         let Some(executor) = node.executor() else {
             // The surface is gone: a node nothing reads.
             return (*self, false);
@@ -330,7 +330,7 @@ impl AnimatedNode {
         }
         drop(derived);
         let mut inputs = vec![node.0];
-        inputs.extend(other.map(|o| o.0));
+        inputs.extend(live.into_iter().map(|o| o.0));
         let op = now.unwrap_or_else(|| key.op.clone());
         let node = Node::new(&executor, |id| with_node(op, id), inputs);
         let weak = Rc::downgrade(&node);
@@ -444,7 +444,7 @@ impl AnimatedNode {
                 dark,
             },
             now,
-            None,
+            &[],
         )
     }
 
@@ -452,7 +452,7 @@ impl AnimatedNode {
         let a = Operand::Node(self.id());
         let b = other.operand;
         let op = AnimationOp::CreateMath { node: 0, op, a, b };
-        self.derive(DerivedKey { op, dark: None }, None, other.node)
+        self.derive(DerivedKey { op, dark: None }, None, &[other.node])
             .0
     }
 
@@ -482,23 +482,36 @@ impl AnimatedNode {
     }
 
     /// Follows the value's changes but stays within `min..=max` (a header
-    /// hiding as content scrolls up).
-    pub fn diff_clamp(&self, min: f32, max: f32) -> AnimatedNode {
+    /// hiding as content scrolls up). Each bound is a number or another
+    /// animated value, read at each evaluation: a range that changes while
+    /// dragging clamps at its current bounds.
+    pub fn diff_clamp(
+        &self,
+        min: impl Into<AnimationOperand>,
+        max: impl Into<AnimationOperand>,
+    ) -> AnimatedNode {
         self.diff_clamp_with(min, max, DiffClamp::default())
     }
 
     /// [`Self::diff_clamp`] with options: [`DiffClamp::snapping`] settles at
     /// the nearer bound when the scroll view the value follows comes to rest
     /// (TS: `diffClamp(min, max, { snap: true })`).
-    pub fn diff_clamp_with(&self, min: f32, max: f32, options: DiffClamp) -> AnimatedNode {
+    pub fn diff_clamp_with(
+        &self,
+        min: impl Into<AnimationOperand>,
+        max: impl Into<AnimationOperand>,
+        options: DiffClamp,
+    ) -> AnimatedNode {
+        let (min, max) = (min.into(), max.into());
         let op = AnimationOp::CreateDiffClamp {
             node: 0,
             input: self.id(),
-            min,
-            max,
+            min: min.operand,
+            max: max.operand,
             snap: options.snap,
         };
-        self.derive(DerivedKey { op, dark: None }, None, None).0
+        self.derive(DerivedKey { op, dark: None }, None, &[min.node, max.node])
+            .0
     }
 }
 
@@ -1072,12 +1085,21 @@ impl AnimatedValue {
     }
 
     /// See [`AnimatedNode::diff_clamp`].
-    pub fn diff_clamp(&self, min: f32, max: f32) -> AnimatedNode {
+    pub fn diff_clamp(
+        &self,
+        min: impl Into<AnimationOperand>,
+        max: impl Into<AnimationOperand>,
+    ) -> AnimatedNode {
         self.0.diff_clamp(min, max)
     }
 
     /// See [`AnimatedNode::diff_clamp_with`].
-    pub fn diff_clamp_with(&self, min: f32, max: f32, options: DiffClamp) -> AnimatedNode {
+    pub fn diff_clamp_with(
+        &self,
+        min: impl Into<AnimationOperand>,
+        max: impl Into<AnimationOperand>,
+        options: DiffClamp,
+    ) -> AnimatedNode {
         self.0.diff_clamp_with(min, max, options)
     }
 

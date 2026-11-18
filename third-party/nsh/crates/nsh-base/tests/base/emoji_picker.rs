@@ -173,6 +173,13 @@ fn type_in(app: &mut Headless, text: &str) {
     app.type_text("text:Search emoji", text).unwrap();
 }
 
+/// Escape clears the query: waits until the search field is empty again
+/// (its placeholder shows), so the next step finds it as the user sees it.
+fn clear_query(app: &mut Headless) {
+    key(app, "escape");
+    app.wait_for("text:Search emoji").unwrap();
+}
+
 #[test]
 fn screen_readers_hear_a_list_box_of_emoji_by_name_under_named_groups() {
     let app = start(props());
@@ -202,14 +209,14 @@ fn typing_filters_by_names_and_keywords_and_highlights_the_first_match() {
     assert_eq!(app.screen().count("role:header"), Ok(0));
     see(&mut app, "highlighted:👍");
     // A keyword, not in the name.
-    key(&mut app, "escape");
+    clear_query(&mut app);
     type_in(&mut app, "cheerful");
     app.wait_for("role:option[grinning face]").unwrap();
     see(&mut app, "highlighted:😀");
     key(&mut app, "f7");
     log_ends(&mut app, "count=1");
     // Nothing.
-    key(&mut app, "escape");
+    clear_query(&mut app);
     type_in(&mut app, "zzzz");
     see(&mut app, "Nothing found");
     see(&mut app, "highlighted:none");
@@ -233,6 +240,7 @@ fn the_keys_move_along_the_cells_and_down_the_columns() {
     assert!(!log(&app).contains("select="), "moving chooses nothing");
     // While a query shows, Left and Right are the caret's.
     type_in(&mut app, "face");
+    log_ends(&mut app, "query=face");
     app.wait_for_gone("role:option[waving hand]", Duration::from_secs(1))
         .ok();
     let first = app
@@ -257,7 +265,8 @@ fn return_and_a_press_choose_with_the_skin_tone() {
     see(&mut app, "highlighted:👍🏽");
     key(&mut app, "enter");
     log_ends(&mut app, "select=👍🏽|👍|Medium|thumbs up");
-    key(&mut app, "escape");
+    clear_query(&mut app);
+    app.wait_for("role:option[grinning face]").unwrap();
     app.press("role:option[grinning face]").unwrap();
     log_ends(&mut app, "select=😀|😀|Medium|grinning face");
 }
@@ -301,7 +310,7 @@ fn the_apps_recent_emoji_lead_and_its_annotations_name_them() {
     app.wait_for_gone("role:option[thumbs up]", Duration::from_secs(5))
         .unwrap();
     see(&mut app, "highlighted:😂");
-    key(&mut app, "escape");
+    clear_query(&mut app);
     type_in(&mut app, "tears of joy");
     see(&mut app, "highlighted:😂");
 }
@@ -315,11 +324,11 @@ fn groups_and_the_newest_version_choose_what_shows() {
     // Melting face is 14, cracking face 18.
     type_in(&mut app, "melting");
     see(&mut app, "highlighted:🫠");
-    key(&mut app, "escape");
+    clear_query(&mut app);
     type_in(&mut app, "cracking face");
     see(&mut app, "Nothing found");
     // Groups not chosen are not searched either.
-    key(&mut app, "escape");
+    clear_query(&mut app);
     type_in(&mut app, "pizza");
     see(&mut app, "Nothing found");
 }

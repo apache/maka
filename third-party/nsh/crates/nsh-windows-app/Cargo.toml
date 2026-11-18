@@ -13,7 +13,7 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "svg", "net", "webview", "media"]
 # JS apps (the bundle in the package). Without it the runner runs a Rust
 # app only (`run_rust`) and links no QuickJS.
 js = ["nsh-platform-windows/js", "nsh-engine/js-core"]
@@ -31,10 +31,22 @@ emoji-picker = ["nsh-platform-windows/emoji-picker"]
 zlib = ["nsh-platform-windows/zlib"]
 crypto = ["nsh-platform-windows/crypto"]
 
+# The native WebSocket client and app self-updates (`docs/dev/features.md`).
+websocket = ["nsh-platform-windows/websocket"]
+updater = ["nsh-platform-windows/updater"]
+# SVG images and (Linux, Windows) HTTP for `fetch` and remote images.
+svg = ["nsh-platform-windows/svg"]
+net = ["nsh-platform-windows/net"]
+# WebView2 web views.
+webview = ["nsh-platform-windows/webview"]
+# Video and sound (Media Foundation, XAudio2).
+media = ["nsh-platform-windows/media"]
+
 [dependencies]
 log.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+nsh-base.workspace = true
 nsh-platform-windows.workspace = true
 # Over-the-air packages of the app's code (`nsh_engine::updates`).
 nsh-engine.workspace = true

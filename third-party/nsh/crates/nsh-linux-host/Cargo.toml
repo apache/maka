@@ -22,6 +22,7 @@ webview = ["nsh-platform-linux/webview"]
 log.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+nsh-base.workspace = true
 nsh-platform-linux = { workspace = true, features = ["dev"] }
 nsh-dev.workspace = true
 nsh-engine = { workspace = true, features = ["js"] }

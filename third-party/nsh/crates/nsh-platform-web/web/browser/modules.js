@@ -129,6 +129,10 @@ export function createModules(invoke, values, live, wake, makeComponent) {
     refresh() { if (live()) apply(invoke(200, [])); },
     /** `ref.measure()`, or with `"scrollPosition"` a list's `ref.measureScrollPosition()`. */
     measure(node, what) { return call(315, [], node, what ? [what] : [], true, false); },
+    /** Runtime op `op` on `receiver` and `args` answered by a reply: its promise, which rejects for what the op refuses. */
+    request(op, receiver, args) {
+      try { return call(op, [], receiver, args, true); } catch (error) { return Promise.reject(error); }
+    },
     reply(id, ok, value) {
       const waiter = pending.get(id);
       if (!waiter) return;

@@ -13,8 +13,9 @@
 //! - Mouse, touch and pen input becomes [`crate::input::PointerEvent`]s
 //!   (with capture while a button is down, and double-click counting),
 //!   the wheel [`crate::input::WheelEvent`]s, keys
-//!   [`crate::input::KeyEvent`]s; characters and IME messages go to the
-//!   focused field ([`crate::text_input`]).
+//!   [`crate::input::KeyEvent`]s: the focused custom view hears them as
+//!   `KeyDown` / `KeyUp` ([`crate::keyboard`]); characters and IME
+//!   messages go to the focused field ([`crate::text_input`]).
 
 use std::{
     cell::{Cell, RefCell},
@@ -38,7 +39,7 @@ use windows::{
                 ValidateRect,
             },
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             Controls::WM_MOUSELEAVE,
             HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
@@ -90,6 +91,12 @@ pub(crate) const WM_NSH_BLUR: u32 = WM_APP + 10;
 /// from a pool thread, so it is handled before any `WM_PAINT` (which comes
 /// last in a thread's queue and, with several windows to draw, late).
 pub(crate) const WM_NSH_PAINT: u32 = WM_APP + 11;
+/// A key down a mounted capture took (`crate::keyboard`): the message the
+/// thread's `GetMessage` hook made of `WM_KEYDOWN` so `TranslateMessage`
+/// would not make its characters. Handled as the key down it was.
+pub(crate) const WM_NSH_KEYDOWN: u32 = WM_APP + 12;
+/// A captured `WM_SYSKEYDOWN`, as [`WM_NSH_KEYDOWN`].
+pub(crate) const WM_NSH_SYSKEYDOWN: u32 = WM_APP + 13;
 
 /// How often the ticker asks for the compositor again while nothing
 /// composes ([`Ticker`]): frames resume within this once it does.
@@ -115,6 +122,14 @@ struct WindowData {
     /// makes one) must not reach `DefWindowProc`, which beeps for a menu
     /// mnemonic it cannot find.
     sys_char: Cell<bool>,
+    /// What its frame took around its client area when last measured
+    /// ([`frame_extents`]): while it has no client area (minimized, or not
+    /// placed again yet) its rects say nothing about it, and the system
+    /// asks for its track sizes then.
+    extents: Cell<Option<(i32, i32, i32, i32)>>,
+    /// What its rectangle took beyond its visible edge the last time it was
+    /// in the normal mode, and at what DPI ([`normal_margins`]).
+    margins: Cell<Option<(crate::window_state::Margins, u32)>>,
     /// Where the window was before it went full screen.
     windowed: Cell<Option<WINDOWPLACEMENT>>,
     /// Its frame's style bits before it went full screen.
@@ -127,6 +142,9 @@ struct WindowData {
     /// The dialog root a window of the app's own shows
     /// ([`crate::app_window`]); none for the surface's window.
     window: Option<NodeId>,
+    /// What the surface's window registered for to follow whether the user
+    /// can see it ([`crate::presence`]); none for the app's other windows.
+    presence: Cell<Option<crate::presence::Watch>>,
 }
 
 thread_local! {
@@ -176,6 +194,18 @@ fn register_classes() {
             ..Default::default()
         };
         RegisterClassExW(&dispatch);
+        // A key a mounted capture takes must not become text. The hook
+        // sees the key down before the caller's `TranslateMessage` (a
+        // thread hook needs no DLL), and the private message it leaves
+        // carries the key to the window procedure untranslated.
+        if let Err(error) =
+            SetWindowsHookExW(WH_GETMESSAGE, Some(get_message), None, GetCurrentThreadId())
+        {
+            log::warn!(
+                target: "nsh::window",
+                "the key pretranslation hook was not installed: {error}"
+            );
+        }
         if let Ok(hwnd) = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             DISPATCH_CLASS,
@@ -215,11 +245,14 @@ pub(crate) fn create(
         last_press: Cell::new((0, (0, 0), 0)),
         surrogate: Cell::new(0),
         sys_char: Cell::new(false),
+        extents: Cell::new(None),
+        margins: Cell::new(None),
         windowed: Cell::new(None),
         windowed_style: Cell::new(0),
         shell: crate::shell::Shell::new(nsh_core::desktop::WindowKind::Normal),
         root: Cell::new(None),
         window: None,
+        presence: Cell::new(None),
     });
     let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
     let (style, ex_style) = match parent {
@@ -251,10 +284,16 @@ pub(crate) fn create(
         )?
     };
     surface.set_hwnd(hwnd);
-    if parent.is_some()
-        && let Some(window) = self::data(hwnd)
-    {
-        window.root.set(observe_root(hwnd));
+    if transparent && parent.is_none() {
+        // SetWindowPos can synchronously paint through WM_SIZE. Composition
+        // must exist before that first frame chooses its swap chain.
+        *surface.base.borrow_mut() = Some(crate::compose::Composition::new(hwnd)?);
+    }
+    if let Some(window) = self::data(hwnd) {
+        if parent.is_some() {
+            window.root.set(observe_root(hwnd));
+        }
+        window.presence.set(Some(crate::presence::watch(hwnd)));
     }
     if parent.is_none() {
         OPEN.with(|o| o.set(o.get() + 1));
@@ -314,11 +353,14 @@ pub(crate) fn create_app_window(
         last_press: Cell::new((0, (0, 0), 0)),
         surrogate: Cell::new(0),
         sys_char: Cell::new(false),
+        extents: Cell::new(None),
+        margins: Cell::new(None),
         windowed: Cell::new(None),
         windowed_style: Cell::new(0),
         shell,
         root: Cell::new(None),
         window: Some(id),
+        presence: Cell::new(None),
     });
     let title = attributes.title.clone().unwrap_or_default();
     let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
@@ -366,8 +408,13 @@ pub(crate) fn fit_content(hwnd: HWND, content: (i32, i32)) {
 }
 
 /// What `hwnd`'s frame takes around its client area, in pixels: left, top,
-/// right, bottom.
+/// right, bottom. A minimized window (an icon parked off screen) and one
+/// the system has not placed again yet have no client area: their rects
+/// say nothing about their frame, which the system asks for all the while
+/// (it restores them to the track sizes it gets). What the frame took the
+/// last time it could be measured is what it takes.
 pub(crate) fn frame_extents(hwnd: HWND) -> (i32, i32, i32, i32) {
+    let data = data(hwnd);
     let (mut window, mut client) = (RECT::default(), RECT::default());
     let mut origin = POINT::default();
     // SAFETY: queries with local out values.
@@ -376,15 +423,26 @@ pub(crate) fn frame_extents(hwnd: HWND) -> (i32, i32, i32, i32) {
             || GetClientRect(hwnd, &mut client).is_err()
             || !windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut origin).as_bool()
         {
-            return (0, 0, 0, 0);
+            return data.and_then(|d| d.extents.get()).unwrap_or((0, 0, 0, 0));
         }
     }
-    (
+    let collapsed = client.right <= client.left || client.bottom <= client.top;
+    if collapsed && let Some(extents) = data.and_then(|d| d.extents.get()) {
+        return extents;
+    }
+    let extents = (
         origin.x - window.left,
         origin.y - window.top,
         window.right - (origin.x + client.right),
         window.bottom - (origin.y + client.bottom),
-    )
+    );
+    // A measurement of no client area is not one of the frame.
+    if let Some(data) = data
+        && !collapsed
+    {
+        data.extents.set(Some(extents));
+    }
+    extents
 }
 
 /// What `hwnd` holds of the app's window API.
@@ -404,6 +462,22 @@ pub(crate) fn app_window_root(hwnd: HWND) -> Option<NodeId> {
 pub(crate) fn set_windowed_style(hwnd: HWND, style: isize) {
     if let Some(data) = data(hwnd) {
         data.windowed_style.set(style);
+    }
+}
+
+/// What `hwnd`'s rectangle took beyond its visible edge the last time it
+/// was in the normal mode, at `dpi` (the frame scales with the window).
+pub(crate) fn normal_margins(hwnd: HWND, dpi: u32) -> Option<crate::window_state::Margins> {
+    let ((l, t, r, b), at) = data(hwnd)?.margins.get()?;
+    let scale = |v: i32| (v as f32 * dpi as f32 / at as f32).round() as i32;
+    Some((scale(l), scale(t), scale(r), scale(b)))
+}
+
+/// Keeps what `hwnd`'s rectangle takes beyond its visible edge in the
+/// normal mode, at `dpi` ([`normal_margins`]).
+pub(crate) fn set_normal_margins(hwnd: HWND, margins: crate::window_state::Margins, dpi: u32) {
+    if let Some(data) = data(hwnd) {
+        data.margins.set(Some((margins, dpi)));
     }
 }
 
@@ -527,18 +601,112 @@ fn toggle_full_screen_inner(hwnd: HWND) {
 }
 
 /// Shows a top-level window (without activating it when its attributes
-/// say so), and keeps it out of the taskbar if it is.
+/// say so), and keeps it out of the taskbar if it is. A background app's
+/// shows without activating, the window that would have the keyboard.
 pub(crate) fn show(hwnd: HWND) {
     let activate = shell(hwnd).is_none_or(|s| {
         let a = s.attrs();
         a.activate && a.focusable
     });
+    let background = in_background();
     // SAFETY: plain calls on a live window.
     unsafe {
-        let _ = ShowWindow(hwnd, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
+        let _ = ShowWindow(
+            hwnd,
+            if activate && !background {
+                SW_SHOW
+            } else {
+                SW_SHOWNOACTIVATE
+            },
+        );
         let _ = UpdateWindow(hwnd);
     }
     crate::shell::shown(hwnd);
+    if activate && background {
+        set_foreground(hwnd);
+    }
+}
+
+// --- Running in the background ------------------------------------------------------------
+
+thread_local! {
+    /// The standalone app runs in the background ([`run_in_background`]).
+    static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    /// The window that would have the keyboard in a background app.
+    static BACKGROUND_KEY: Cell<Option<HWND>> = const { Cell::new(None) };
+}
+
+/// The standalone app runs in the background from now on
+/// ([`crate::AppOptions::background`], `nsh test`'s apps): its windows show
+/// without activating and nothing activates them (no `SetForegroundWindow`,
+/// no `SetFocus`, which activates the window it focuses), so the keyboard
+/// stays with the app the user works in. The window that would have the
+/// keyboard is kept here: the app sees it as focused (its state, its
+/// focused field's caret), and the test agent's keys go to it.
+pub(crate) fn run_in_background() {
+    BACKGROUND.set(true);
+}
+
+/// Whether the app runs in the background ([`run_in_background`]).
+pub(crate) fn in_background() -> bool {
+    BACKGROUND.get()
+}
+
+/// The window with the keyboard: the foreground window, or in a background
+/// app the one that would be (none while it is hidden or gone).
+pub(crate) fn foreground() -> HWND {
+    if !in_background() {
+        // SAFETY: a plain query.
+        return unsafe { GetForegroundWindow() };
+    }
+    BACKGROUND_KEY
+        .get()
+        // SAFETY: plain queries; a handle that is no window answers false.
+        .filter(|&h| unsafe { IsWindow(Some(h)).as_bool() && IsWindowVisible(h).as_bool() })
+        .unwrap_or_default()
+}
+
+/// Brings top-level `hwnd` to the foreground (a press in it, its
+/// `focus()`); in a background app it only becomes the window that would
+/// have the keyboard: the surface's fields act as in a focused window (as
+/// on `WM_SETFOCUS`), and it and the window that had it report their state.
+pub(crate) fn set_foreground(hwnd: HWND) {
+    if !in_background() {
+        // SAFETY: a plain call on a live window.
+        let _ = unsafe { SetForegroundWindow(hwnd) };
+        return;
+    }
+    let old = BACKGROUND_KEY.replace(Some(hwnd));
+    if old == Some(hwnd) {
+        return;
+    }
+    if let Some(surface) = surface_of(hwnd) {
+        crate::text_input::window_focus(&surface, true);
+    }
+    for h in old.into_iter().chain([hwnd]) {
+        let Some(surface) = surface_of(h) else {
+            continue;
+        };
+        match app_window_root(h) {
+            Some(id) => crate::app_window::state_changed(&surface, id),
+            None => crate::window_state::report_main(&surface),
+        }
+    }
+}
+
+/// Window `hwnd` hides or goes: in a background app, when it was the
+/// window that would have the keyboard, the main window `main` becomes it
+/// while it shows, as the system gives the keyboard to the next window.
+fn lost_key(hwnd: HWND, main: HWND) {
+    if !in_background() || BACKGROUND_KEY.get() != Some(hwnd) {
+        return;
+    }
+    BACKGROUND_KEY.set(None);
+    // SAFETY: plain queries; a handle that is no window answers false.
+    if main != hwnd && unsafe { IsWindow(Some(main)).as_bool() && IsWindowVisible(main).as_bool() }
+    {
+        set_foreground(main);
+    }
 }
 
 /// True when the executable has an icon of its own (resource 1, which
@@ -782,11 +950,39 @@ pub(crate) fn run_loop() -> i32 {
     // SAFETY: the standard message loop.
     unsafe {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            // The thread hook does this before `GetMessage` returns; this
+            // also covers a hook that could not be installed.
+            crate::keyboard::suppress_translation(&mut msg);
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
     msg.wParam.0 as i32
+}
+
+/// The key event a `WM_KEY*` message (or its untranslated private form
+/// [`WM_NSH_KEYDOWN`] / [`WM_NSH_SYSKEYDOWN`]) describes: its virtual key,
+/// the scan code and extended bit (`crate::keyboard` makes the physical
+/// key of them), the message's previous-key-state bit as an auto-repeat,
+/// and whether it came as a system (Alt) key.
+fn key_event(msg: u32, wparam: WPARAM, lparam: LPARAM) -> KeyEvent {
+    let bits = lparam.0 as usize;
+    let down = matches!(
+        msg,
+        WM_KEYDOWN | WM_SYSKEYDOWN | WM_NSH_KEYDOWN | WM_NSH_SYSKEYDOWN
+    );
+    KeyEvent {
+        vk: wparam.0 as u16,
+        down,
+        repeat: down && (bits >> 30) & 1 == 1,
+        modifiers: modifiers(),
+        scan: ((bits >> 16) & 0xFF) as u16,
+        extended: (bits >> 24) & 1 == 1,
+        sys: matches!(msg, WM_SYSKEYDOWN | WM_SYSKEYUP | WM_NSH_SYSKEYDOWN),
+        // A `WM_KEY*` message from the queue went through the caller's
+        // `TranslateMessage`; its private, captured form did not.
+        translated: matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP),
+    }
 }
 
 /// The modifiers held now.
@@ -904,6 +1100,21 @@ unsafe extern "system" fn root_proc(
     }
 }
 
+/// The thread's `WH_GETMESSAGE` hook: sees each message just before the
+/// caller's `TranslateMessage`, and takes a captured key down's text away
+/// ([`crate::keyboard::suppress_translation`]).
+unsafe extern "system" fn get_message(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: for a thread `WH_GETMESSAGE` hook with `nCode >= 0`, `lParam`
+    // is the `MSG` about to be returned to the caller.
+    if code >= 0
+        && let Some(msg) = unsafe { (lparam.0 as *mut MSG).as_mut() }
+    {
+        crate::keyboard::suppress_translation(msg);
+    }
+    // SAFETY: the next hook, with the values this one got.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
@@ -934,6 +1145,14 @@ unsafe extern "system" fn window_proc(
     let terminal = surface
         .as_ref()
         .is_some_and(|surface| surface.terminal_active.get().is_some());
+    // A window of the app's own hides or goes: in a background app the
+    // main window gets the keyboard if this one would have had it.
+    if data.window.is_some()
+        && (msg == WM_DESTROY || (msg == WM_SHOWWINDOW && wparam.0 == 0))
+        && let Some(surface) = &surface
+    {
+        lost_key(hwnd, surface.hwnd());
+    }
     if let Some(surface) = surface
         && let Some(result) = handle(&surface, data, hwnd, msg, wparam, lparam)
     {
@@ -943,6 +1162,11 @@ unsafe extern "system" fn window_proc(
         && let Some(root) = data.root.take()
     {
         unobserve_root(root, hwnd);
+    }
+    if msg == WM_DESTROY
+        && let Some(watch) = data.presence.take()
+    {
+        crate::presence::unwatch(hwnd, watch);
     }
     if msg == WM_DESTROY && data.top_level {
         let left = OPEN.with(|o| {
@@ -968,6 +1192,46 @@ fn handle(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<LRESULT> {
+    // A captured key down, as the thread's hook left it: its characters
+    // were never made. Report it and run the key logic as for any other
+    // key down; with no characters to swallow, nothing of the queue is
+    // touched.
+    if matches!(msg, WM_NSH_KEYDOWN | WM_NSH_SYSKEYDOWN) {
+        // A window of the app's own handles its input in its own root, as
+        // the key arm below does.
+        let _root = data
+            .window
+            .and_then(|id| crate::app_window::enter(surface, id));
+        let event = key_event(msg, wparam, lparam);
+        let sys = event.sys;
+        if crate::input::key(surface, event) {
+            return Some(LRESULT(0));
+        }
+        // The capture rule went away between the hook and this dispatch (a
+        // message in between changed the focus): give the key back to the
+        // system, with the characters `TranslateMessage` would have made.
+        let original = if sys { WM_SYSKEYDOWN } else { WM_KEYDOWN };
+        let key = MSG {
+            hwnd,
+            message: original,
+            wParam: wparam,
+            lParam: lparam,
+            // SAFETY: the time of the message being dispatched.
+            time: unsafe { GetMessageTime() as u32 },
+            ..Default::default()
+        };
+        // The app's window API first (Alt+F4's close policy), as for the
+        // message it was.
+        if let Some(result) = window_api(surface, data, hwnd, original, wparam, lparam) {
+            return result;
+        }
+        // SAFETY: translating the key down the hook took away, then the
+        // system's default handling of it.
+        unsafe {
+            let _ = TranslateMessage(&key);
+            return Some(DefWindowProcW(hwnd, original, wparam, lparam));
+        }
+    }
     // What the app's window API asks of a top-level window: its limits,
     // policies and state.
     if (data.top_level || data.window.is_some())
@@ -1241,6 +1505,8 @@ fn handle(
                 WM_POINTERCAPTURECHANGED => PointerKind::Cancel,
                 _ => PointerKind::Move,
             };
+            let sample = pen_sample(id, info.pointerType.0 == 3);
+            crate::input::set_pen_sample(id + 2, Some(sample));
             crate::input::pointer(
                 surface,
                 PointerEvent {
@@ -1257,20 +1523,23 @@ fn handle(
                     clicks: 1,
                 },
             );
+            if matches!(kind, PointerKind::Up | PointerKind::Cancel) {
+                crate::input::set_pen_sample(id + 2, None);
+            }
             return Some(LRESULT(0));
         }
         WM_SETCURSOR if lo(lparam.0) == HTCLIENT as i32 => {
             update_cursor(surface, hwnd, scale);
             return Some(LRESULT(1));
         }
+        // The Menu key's or Shift+F10's own request (no pointer: -1) after
+        // the key opened NSH's menu: answered here, as `DefWindowProc` would
+        // pass it on to the parent window of an embedded surface.
+        WM_CONTEXTMENU if lparam.0 == -1 && crate::input::keyboard_context_menu_opened(surface) => {
+            return Some(LRESULT(0));
+        }
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
-            let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
-            let event = KeyEvent {
-                vk: wparam.0 as u16,
-                down,
-                repeat: down && (lparam.0 >> 30) & 1 == 1,
-                modifiers: modifiers(),
-            };
+            let event = key_event(msg, wparam, lparam);
             let handled = crate::input::key(surface, event);
             if msg == WM_SYSKEYDOWN {
                 data.sys_char.set(handled);
@@ -1343,12 +1612,24 @@ fn handle(
         {
             crate::system::woke(surface);
         }
+        // The display turned off or on (the surface's window registered
+        // for it: [`crate::presence`]).
+        WM_POWERBROADCAST
+            if data.window.is_none() && wparam.0 == PBT_POWERSETTINGCHANGE as usize =>
+        {
+            crate::presence::power_setting_changed(surface, lparam);
+        }
+        // The session was locked, unlocked, switched away from or back to.
+        WM_WTSSESSION_CHANGE if data.window.is_none() => {
+            crate::presence::session_changed(surface, wparam.0 as u32);
+        }
         WM_DESTROY => {
             surface.activation_changed(false);
             crate::window_close::destroyed(surface);
             crate::tray::destroyed(hwnd);
             crate::global_shortcut::destroyed(hwnd);
             surface.stop();
+            crate::text_input::destroyed(surface);
             surface.set_hwnd(HWND::default());
         }
         _ => {}
@@ -1517,6 +1798,49 @@ fn sys_close(hwnd: HWND, lparam: LPARAM) -> crate::shell::SysClose {
             SysClose::Menu
         }
     }
+}
+
+/// The pressure and tilt contact `id` reports (`pen`: a pen, else a
+/// finger), from `GetPointerPenInfo` / `GetPointerTouchInfo`.
+fn pen_sample(id: u32, pen: bool) -> crate::input::PenSample {
+    use windows::Win32::UI::Input::Pointer::{
+        GetPointerPenInfo, GetPointerTouchInfo, POINTER_PEN_INFO, POINTER_TOUCH_INFO,
+    };
+    // PEN_MASK_PRESSURE, PEN_MASK_TILT_X, PEN_MASK_TILT_Y; TOUCH_MASK_PRESSURE.
+    const PRESSURE: u32 = 0x1;
+    const TILT_X: u32 = 0x4;
+    const TILT_Y: u32 = 0x8;
+    const TOUCH_PRESSURE: u32 = 0x4;
+    let mut sample = crate::input::PenSample {
+        pen,
+        pressure: None,
+        tilt: (0.0, 0.0),
+    };
+    if pen {
+        let mut info = POINTER_PEN_INFO::default();
+        // SAFETY: a local out value.
+        if unsafe { GetPointerPenInfo(id, &mut info) }.is_ok() {
+            let mask = info.penMask;
+            if mask & PRESSURE != 0 {
+                sample.pressure = Some((info.pressure as f32 / 1024.0).clamp(0.0, 1.0));
+            }
+            if mask & TILT_X != 0 {
+                sample.tilt.0 = info.tiltX as f32;
+            }
+            if mask & TILT_Y != 0 {
+                sample.tilt.1 = info.tiltY as f32;
+            }
+        }
+    } else {
+        let mut info = POINTER_TOUCH_INFO::default();
+        // SAFETY: a local out value.
+        if unsafe { GetPointerTouchInfo(id, &mut info) }.is_ok()
+            && info.touchMask & TOUCH_PRESSURE != 0
+        {
+            sample.pressure = Some((info.pressure as f32 / 1024.0).clamp(0.0, 1.0));
+        }
+    }
+    sample
 }
 
 /// True when a mouse message was synthesized from touch or pen input,
@@ -1858,6 +2182,12 @@ fn activation_active(wparam: WPARAM) -> bool {
 mod tests {
     use super::*;
 
+    fn apply(surface: &Rc<Surface>, items: &[nsh_core::MountItem]) {
+        for item in items {
+            surface.mounter.borrow_mut().apply(surface, item);
+        }
+    }
+
     thread_local! {
         /// What the test's windows heard: window, message, `wparam` and
         /// `lparam` (the root's own procedure records too).
@@ -2006,6 +2336,317 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    /// Posts a key down for `hwnd` with `vk` and `scan`, as the system
+    /// would.
+    fn post_key(hwnd: HWND, vk: u16, scan: usize) {
+        // SAFETY: posting to a window of this thread; repeat count 1 and
+        // the scan code.
+        unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_KEYDOWN,
+                WPARAM(vk as usize),
+                LPARAM((1 | (scan << 16)) as isize),
+            )
+            .unwrap();
+        }
+    }
+
+    /// The next message of `hwnd`, as the caller's loop gets it (the thread
+    /// hook runs on it).
+    fn next_message(hwnd: HWND) -> Option<MSG> {
+        let mut msg = MSG::default();
+        // SAFETY: a removal from this thread's queue.
+        unsafe { PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE) }
+            .as_bool()
+            .then_some(msg)
+    }
+
+    /// Whether a `WM_CHAR` waits in `hwnd`'s queue.
+    fn char_queued(hwnd: HWND) -> bool {
+        let mut msg = MSG::default();
+        // SAFETY: a look at this thread's queue (no removal).
+        unsafe { PeekMessageW(&mut msg, Some(hwnd), WM_CHAR, WM_CHAR, PM_NOREMOVE).as_bool() }
+    }
+
+    /// `TranslateMessage` and `DispatchMessage` for `msg`, as the message
+    /// loop does them; whether it made a character message.
+    fn translate_and_dispatch(msg: &MSG) -> bool {
+        // SAFETY: a message this test made for a window of this thread.
+        let translated = unsafe { TranslateMessage(msg).as_bool() };
+        // SAFETY: as above.
+        unsafe { DispatchMessageW(msg) };
+        translated
+    }
+
+    /// Dispatch what is already queued for `hwnd`, so a test's posted
+    /// messages are what it looks at.
+    fn drain_messages(hwnd: HWND) {
+        while let Some(msg) = next_message(hwnd) {
+            let _ = translate_and_dispatch(&msg);
+        }
+    }
+
+    /// Drain one `WM_CHAR`.
+    fn drain_char(hwnd: HWND) {
+        let mut msg = MSG::default();
+        // SAFETY: a removal from this thread's queue.
+        unsafe {
+            let _ = PeekMessageW(&mut msg, Some(hwnd), WM_CHAR, WM_CHAR, PM_REMOVE);
+        }
+    }
+
+    /// A capture takes its key out of translation: the thread hook gives
+    /// the window procedure a private key down, `TranslateMessage` makes no
+    /// `WM_CHAR`, and an uncaptured key still types.
+    #[test]
+    fn a_captured_key_is_never_translated() {
+        use nsh_core::{KeyCapture, MountItem, ROOT_ID, ViewKind};
+
+        let surface = Surface::new(Default::default());
+        surface.root.state_mut().frame = crate::geom::rect(0.0, 0.0, 200.0, 150.0);
+        let hwnd = create(&surface, "NSH key capture test", (200, 150), None, false).unwrap();
+        apply(
+            &surface,
+            &[
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::View,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::Frame {
+                    id: 2,
+                    frame: crate::geom::rect(0.0, 0.0, 100.0, 40.0),
+                },
+            ],
+        );
+        let view = surface.view(2).expect("the view");
+        let set_capture = |capture: KeyCapture| {
+            let mut props: nsh_core::ViewProps = (*view.state().props).clone();
+            props.focusable = Some(true);
+            props.key_capture = capture;
+            apply(
+                &surface,
+                &[MountItem::ViewProps {
+                    id: 2,
+                    props: Box::new(props),
+                }],
+            );
+        };
+        set_capture(KeyCapture::All);
+        assert!(crate::keyboard::focus_control(&surface, &view));
+        drain_messages(hwnd);
+        // The hook changed the key down before the caller translated it.
+        post_key(hwnd, 0x41, 0x1E);
+        let down = next_message(hwnd).expect("the key down");
+        assert_eq!(down.message, WM_NSH_KEYDOWN, "the capture took its text");
+        assert!(
+            !translate_and_dispatch(&down),
+            "a private key down is not translated"
+        );
+        assert!(!char_queued(hwnd), "a captured key types nothing");
+        // A key no capture takes translates and types as usual.
+        set_capture(KeyCapture::None);
+        post_key(hwnd, 0x42, 0x30);
+        let down = next_message(hwnd).expect("the key down");
+        assert_eq!(down.message, WM_KEYDOWN);
+        assert!(
+            translate_and_dispatch(&down),
+            "the key translates to a character"
+        );
+        assert!(char_queued(hwnd), "an uncaptured key still types");
+        drain_char(hwnd);
+        // A captured key that types nothing is taken out too, and leaves
+        // nothing behind for the next key.
+        set_capture(KeyCapture::All);
+        post_key(hwnd, 0x25, 0x4B);
+        let down = next_message(hwnd).expect("the key down");
+        assert_eq!(down.message, WM_NSH_KEYDOWN);
+        let _ = translate_and_dispatch(&down);
+        assert!(!char_queued(hwnd));
+        set_capture(KeyCapture::None);
+        post_key(hwnd, 0x43, 0x2E);
+        let down = next_message(hwnd).expect("the key down");
+        assert!(
+            translate_and_dispatch(&down),
+            "the key translates to a character"
+        );
+        assert!(char_queued(hwnd), "the next key's character is untouched");
+        drain_char(hwnd);
+        // SAFETY: the test's own window.
+        unsafe { DestroyWindow(hwnd).unwrap() };
+    }
+
+    /// A captured key down does not touch the queue: a character posted
+    /// around it keeps its place before a later engine/focus message and a
+    /// later key, and no characters are made for either key.
+    #[test]
+    fn a_captured_key_keeps_queued_messages_in_place() {
+        use nsh_core::{KeyCapture, MountItem, ROOT_ID, ViewKind};
+
+        let surface = Surface::new(Default::default());
+        surface.root.state_mut().frame = crate::geom::rect(0.0, 0.0, 200.0, 150.0);
+        let hwnd = create(&surface, "NSH key order test", (200, 150), None, false).unwrap();
+        apply(
+            &surface,
+            &[
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::View,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::Frame {
+                    id: 2,
+                    frame: crate::geom::rect(0.0, 0.0, 100.0, 40.0),
+                },
+            ],
+        );
+        let view = surface.view(2).expect("the view");
+        let mut props: nsh_core::ViewProps = (*view.state().props).clone();
+        props.focusable = Some(true);
+        props.key_capture = KeyCapture::All;
+        apply(
+            &surface,
+            &[MountItem::ViewProps {
+                id: 2,
+                props: Box::new(props),
+            }],
+        );
+        assert!(crate::keyboard::focus_control(&surface, &view));
+        drain_messages(hwnd);
+        // The key, then a character and a wake (an engine/focus update)
+        // queued around it, then a later key.
+        post_key(hwnd, 0x44, 0x20);
+        // SAFETY: posting to a window of this thread.
+        unsafe {
+            PostMessageW(Some(hwnd), WM_CHAR, WPARAM('x' as usize), LPARAM(0)).unwrap();
+            PostMessageW(Some(hwnd), WM_NSH_WAKE, WPARAM(0), LPARAM(0)).unwrap();
+        }
+        post_key(hwnd, 0x42, 0x30);
+        let down = next_message(hwnd).expect("the captured key");
+        assert_eq!(down.message, WM_NSH_KEYDOWN);
+        assert!(!translate_and_dispatch(&down));
+        // The queued character is still next, ahead of the wake and the
+        // later key, exactly where it was posted.
+        let character = next_message(hwnd).expect("the queued character");
+        assert_eq!(character.message, WM_CHAR);
+        assert_eq!(character.wParam.0, 'x' as usize);
+        let _ = translate_and_dispatch(&character);
+        let wake = next_message(hwnd).expect("the wake");
+        assert_eq!(wake.message, WM_NSH_WAKE);
+        let _ = translate_and_dispatch(&wake);
+        let later = next_message(hwnd).expect("the later key");
+        assert_eq!(later.message, WM_NSH_KEYDOWN);
+        assert!(!translate_and_dispatch(&later));
+        assert!(!char_queued(hwnd), "neither captured key made a character");
+        // SAFETY: the test's own window.
+        unsafe { DestroyWindow(hwnd).unwrap() };
+    }
+
+    /// A private, untranslated captured key down consumed by an app
+    /// binding never scavenges a character it did not make: one posted
+    /// after translation would have run and before the dispatch stays.
+    #[test]
+    fn a_binding_consuming_an_untranslated_key_keeps_an_unrelated_character() {
+        use nsh_core::{
+            KeyCapture, MountItem, ROOT_ID, ViewKind,
+            keymap::{KeyBinding, Keymap, Keystroke, When},
+        };
+
+        let surface = Surface::new(Default::default());
+        surface.root.state_mut().frame = crate::geom::rect(0.0, 0.0, 200.0, 150.0);
+        let hwnd = create(
+            &surface,
+            "NSH key capture binding test",
+            (200, 150),
+            None,
+            false,
+        )
+        .unwrap();
+        apply(
+            &surface,
+            &[
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::View,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::Frame {
+                    id: 2,
+                    frame: crate::geom::rect(0.0, 0.0, 100.0, 40.0),
+                },
+            ],
+        );
+        let view = surface.view(2).expect("the view");
+        let set_capture = |capture: KeyCapture| {
+            let mut props: nsh_core::ViewProps = (*view.state().props).clone();
+            props.focusable = Some(true);
+            props.key_capture = capture;
+            apply(
+                &surface,
+                &[MountItem::ViewProps {
+                    id: 2,
+                    props: Box::new(props),
+                }],
+            );
+        };
+        set_capture(KeyCapture::All);
+        assert!(crate::keyboard::focus_control(&surface, &view));
+        // A consuming binding of the same key, as an app's keymap has.
+        let binding = KeyBinding::new(
+            1,
+            Keystroke::parse_with("a", false).expect("a stroke"),
+            When::Always,
+            false,
+        );
+        apply(
+            &surface,
+            &[MountItem::Keymap(std::sync::Arc::new(Keymap::new(vec![
+                binding,
+            ])))],
+        );
+        drain_messages(hwnd);
+        post_key(hwnd, 0x41, 0x1E);
+        let down = next_message(hwnd).expect("the key down");
+        assert_eq!(down.message, WM_NSH_KEYDOWN, "the capture took its text");
+        // The capture rule is gone before dispatch: the app's binding takes
+        // the (still untranslated) key, and a character posted after the
+        // translation would have run is not its.
+        set_capture(KeyCapture::None);
+        // SAFETY: posting to a window of this thread.
+        unsafe {
+            PostMessageW(Some(hwnd), WM_CHAR, WPARAM('x' as usize), LPARAM(0)).unwrap();
+        }
+        assert!(
+            !translate_and_dispatch(&down),
+            "a private key down is not translated"
+        );
+        // The binding consumed the key (no fallback translation made it
+        // type), and the unrelated character is still there, first.
+        let character = next_message(hwnd).expect("the unrelated character");
+        assert_eq!(character.message, WM_CHAR);
+        assert_eq!(character.wParam.0, 'x' as usize);
+        let _ = translate_and_dispatch(&character);
+        assert!(
+            !char_queued(hwnd),
+            "the consumed key made no character, and none was taken"
+        );
+        // SAFETY: the test's own window.
+        unsafe { DestroyWindow(hwnd).unwrap() };
     }
 
     #[test]

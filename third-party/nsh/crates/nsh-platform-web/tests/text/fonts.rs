@@ -49,10 +49,22 @@ fn stacks_keep_each_family_as_written() {
     );
     assert_eq!(
         family_list("Menlo, 'DejaVu Sans Mono', monospace"),
-        "\"Menlo\", 'DejaVu Sans Mono', monospace"
+        "\"Menlo\", \"DejaVu Sans Mono\", monospace"
     );
-    // A comma inside quotes is part of the name.
+    // A comma, quote or backslash inside quotes stays part of the name and
+    // round-trips through CanvasFont::parse -> text_style -> family_list.
     assert_eq!(family_list("\"A, B\", serif"), "\"A, B\", serif");
+    for raw in ["'A\"B', serif", "'A\\\\B', monospace"] {
+        let css = family_list(raw);
+        let parsed =
+            nsh_core::canvas::CanvasFont::parse(&format!("14px {css}")).expect("valid CSS font");
+        let style_family = parsed.text_style().font_family.expect("has font_family");
+        assert_eq!(family_list(&style_family.name()), css);
+        assert_eq!(
+            decoded_families(&style_family.name()),
+            decoded_families(raw)
+        );
+    }
     assert_eq!(family_list(" , "), "");
 }
 
@@ -113,14 +125,13 @@ fn numeric_variants_name_their_css() {
 
 #[test]
 fn quotes_that_do_not_close_a_name_are_quoted_again() {
-    // As written when the quotes close it.
-    assert_eq!(family_list("'DejaVu Sans Mono'"), "'DejaVu Sans Mono'");
+    // Valid quoted names normalize to double quotes and escape interior quotes/backslashes.
+    assert_eq!(family_list("'DejaVu Sans Mono'"), "\"DejaVu Sans Mono\"");
     assert_eq!(family_list("\"Fira Code\""), "\"Fira Code\"");
-    // Otherwise the name is quoted here, escaped, so the class's rule
-    // stays one CSS declaration.
+    // Unclosed or malformed quotes are closed and escaped so the declaration
+    // stays one valid CSS string.
     assert_eq!(family_list("\"Fira Code"), "\"Fira Code\"");
-    assert_eq!(family_list("'a'b'"), "\"a'b\"");
-    assert_eq!(family_list("\"a\\\""), "\"a\\\\\"");
+    assert_eq!(family_list("\"a\\\""), "\"a\\\"\"");
     assert_eq!(family_list("Line\nBreak"), "\"LineBreak\"");
 }
 
@@ -231,4 +242,10 @@ fn emoji_excess_adds_each_emoji_cluster_once() {
     );
     // Text without emoji is not split at all.
     assert!(clusters("Hello 世界 ไทย 123 #*").is_empty());
+}
+
+fn decoded_families(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    nsh_core::for_each_font_family(value, |f| out.push(format!("{f:?}")));
+    out
 }

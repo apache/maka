@@ -82,8 +82,9 @@ pub(crate) struct AppWindow {
     /// What shows it, see-through where the app draws nothing (transparent
     /// windows, system backdrops, click-through windows).
     composition: Option<Rc<Composition>>,
-    /// The composition of its web views while it has some (each holds
-    /// it): the see-through one, else one over its swap chain.
+    /// The composition of its web views and composed components while it
+    /// has some (each holds it): the see-through one, else one over its
+    /// swap chain.
     web: RefCell<Weak<Composition>>,
     /// The hosted items and the composed items (web views) its last frame
     /// drew.
@@ -166,8 +167,10 @@ pub(crate) fn hwnd_showing(surface: &Surface, view: &NshView) -> HWND {
     }
 }
 
-/// The composition the web views of the window showing dialog root `id`
-/// are in, and its native window: made with the first of them.
+/// The composition the web views and composed components of the window
+/// showing dialog root `id` are in, and its native window: made with the
+/// first of them.
+#[cfg_attr(not(feature = "webview"), allow(dead_code))]
 pub(crate) fn compose(
     surface: &Surface,
     id: NodeId,
@@ -640,8 +643,10 @@ pub(crate) fn escape(surface: &Surface, event: &KeyEvent) -> bool {
 /// popup of its own) or nowhere of the system's (a menu of its own).
 fn blur(surface: &Surface, window: &AppWindow) {
     let hwnd = window.hwnd;
-    // SAFETY: plain queries.
-    let (visible, mut active) = unsafe { (IsWindowVisible(hwnd).as_bool(), GetForegroundWindow()) };
+    // SAFETY: a plain query.
+    let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+    // In a background app: the window that would have the keyboard.
+    let mut active = crate::window::foreground();
     if !visible || window.closed.get() {
         return;
     }
@@ -883,6 +888,9 @@ pub(crate) fn close_all(surface: &Surface) {
 
 fn destroy(surface: &Surface, window: &AppWindow) {
     release_owner(window);
+    // Its views keep their trees, but the window that showed them is gone:
+    // no view of it holds the keyboard focus any more.
+    crate::keyboard::forget_window(surface, window.id);
     window.view.clear_invalidate();
     // What it hosts does not go with its native window: web views close,
     // components' windows go back to the main window, hidden.

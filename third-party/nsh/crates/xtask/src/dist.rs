@@ -59,6 +59,20 @@ pub(crate) fn dist() -> anyhow::Result<()> {
     }
     let release = root.join("target");
 
+    // The GPUI host comes after every other build, `--locked` as they all
+    // are: its workspace's lock is checked first, so that a stale one fails
+    // in seconds rather than once the long builds are done.
+    if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+        let step = term::Step::start("checking crates/gpui/Cargo.lock");
+        term::run(
+            crate::cargo::command("fetch")
+                .current_dir(&root)
+                .args(["--manifest-path", "crates/gpui/Cargo.toml"]),
+        )
+        .context("crates/gpui/Cargo.lock is not current: refresh it (docs/dev/gpui.md)")?;
+        step.done("crates/gpui/Cargo.lock is current");
+    }
+
     // The CLI for this machine.
     cargo(&["build", "--release", "-p", "nsh-cli"], "nsh")?;
     copy_executable(
@@ -105,7 +119,7 @@ pub(crate) fn dist() -> anyhow::Result<()> {
                 if package == "nsh-linux-app" {
                     args.extend([
                         "--features",
-                        "js,shader,editor,highlight,math,plot,rich-editor,zlib,crypto",
+                        "js,shader,editor,highlight,math,plot,rich-editor,zlib,crypto,websocket,updater,svg,net,sound",
                     ]);
                 }
             }
@@ -376,9 +390,9 @@ fn web_runtimes(root: &Path, out: &Path, release: &Path) -> anyhow::Result<()> {
             "nsh-dev.wasm",
         ),
     ] {
-        let mut web = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        let mut web = crate::cargo::command("build");
         web.current_dir(root)
-            .args(["build", "--profile", "web", "-p", "nsh-platform-web"])
+            .args(["--profile", "web", "-p", "nsh-platform-web"])
             .args(features)
             .args(["--target", "wasm32-unknown-unknown"]);
         if env::var_os("AR_wasm32_unknown_unknown").is_none() && env::var_os("AR").is_none() {
@@ -465,6 +479,9 @@ const AAR_KEEP_RULES: &str = "\
 # Native Shell: libnsh.so finds these classes and members by name over JNI
 # and binds native methods by their Java names.
 -keep class com.longbridge.nsh.** { *; }
+# The WebSocket client's TLS verifier (rustls-platform-verifier) calls these
+# over JNI.
+-keep class org.rustls.platformverifier.** { *; }
 ";
 
 /// An Android library archive: the Java runtime and `libnsh.so` per ABI,
@@ -551,11 +568,13 @@ fn zip_dir(dir: &Path, archive: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cargo <args>` in the workspace: the step "building <what>".
+/// `cargo <args>` in the workspace, `--locked`: the step "building <what>".
 pub(crate) fn cargo(args: &[&str], what: &str) -> anyhow::Result<()> {
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let (subcommand, args) = args.split_first().context("no cargo command")?;
     term::cargo(
-        Command::new(cargo).current_dir(android::root()).args(args),
+        crate::cargo::command(subcommand)
+            .current_dir(android::root())
+            .args(args),
         what,
     )
 }
@@ -569,9 +588,10 @@ fn exe(name: &str) -> String {
 /// The directory of package `name` as the workspace at `root` resolves
 /// it (`cargo metadata`).
 fn package_dir(root: &Path, name: &str) -> anyhow::Result<std::path::PathBuf> {
-    let output = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+    // `--locked`: `cargo metadata` writes a stale lock too.
+    let output = crate::cargo::command("metadata")
         .current_dir(root)
-        .args(["metadata", "--format-version", "1"])
+        .args(["--format-version", "1"])
         .output()
         .context("run cargo metadata")?;
     anyhow::ensure!(

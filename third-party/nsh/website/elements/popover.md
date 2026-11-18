@@ -89,7 +89,8 @@ A popover leaves the keyboard focus where it is when it opens. For a popover tha
 focus its content in `onOpen`: it comes once the content is rendered, so refs inside it reach their views. Make the
 view `focusable` (or give it a press handler) so it can hold the focus. When the popover closes with the focus inside
 it, by Escape or by the app, the focus goes back to the trigger on the desktops as it starts to go, so a key pressed
-during its exit is the trigger's; a press outside leaves it where the press put it.
+during its exit is the trigger's; a press outside leaves it where the press put it, and so does a `focus()` of a
+view outside the popover that your app calls in the same turn as it closes the popover.
 
 ```rust tabs
 let panel = element_ref();

@@ -85,7 +85,7 @@ WORKFLOWS = {
         # The macOS check also tests nsh-platform-apple.
         "packages": [
             "gallery-native", "rust-exports-native", "post-editor-native", "tasks-rs",
-            "nsh-cli", "nsh-platform-web", "nsh-platform-apple",
+            "nsh-cli", "nsh-platform-web", "nsh-platform-apple", "nsh-platform-ios",
         ],
         # `nsh test` runs the examples' tests.
         "files": [

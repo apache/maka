@@ -21,7 +21,9 @@ export { configureAddress } from "./address.js";
 
 
 // Public wrappers must share the app's Function/Error/Promise intrinsics.
-export function configureAPIs(nsh, modules, dom, active, env) {
+// `page.setWindowTitle` hands the main window's title to the player, which
+// titles the document with it.
+export function configureAPIs(nsh, modules, dom, active, env, page = {}) {
   nsh.nextTick = (callback, ...args) => {
     if (typeof callback !== "function") throw new TypeError("nextTick: callback must be a function");
     queueMicrotask(() => { if (active()) callback(...args); });
@@ -29,12 +31,17 @@ export function configureAPIs(nsh, modules, dom, active, env) {
   const process = modules.exports.get("process");
   if (process) { process.nextTick = nsh.nextTick; if (process.default) process.default.nextTick = nsh.nextTick; }
   const desktop = modules.exports.get("nsh/desktop");
-  // The browser keeps its own window: the page is the main window, which
-  // apps cannot move or change; `<Window>` renders nothing and
-  // `Window.open` throws, as on mobile.
+  // The browser keeps its own window: the page is the main window, whose
+  // title is the page's title, as Rust's `main_window().set(..)` makes it;
+  // the browser places and sizes the page, so its other attributes go
+  // nowhere. `<Window>` renders nothing and `Window.open` throws, as on
+  // mobile.
   const main = Object.freeze({
     id: "main", main: true, parent: null,
-    state: () => null, titleBar: env.titleBar, set() {},
+    state: () => null, titleBar: env.titleBar,
+    set(attributes) {
+      if (typeof attributes?.title === "string") page.setWindowTitle?.(attributes.title);
+    },
     show() {}, hide() {}, focus() {}, close() {}, minimize() {}, restore() {},
     setMode() {}, setBounds() {}, setPlacement() {}, center() {}, requestAttention() {},
     on: () => () => {},

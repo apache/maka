@@ -266,6 +266,26 @@ mod tests {
         );
     }
 
+    /// A copied row is wrapped in the table and body HTML needs around it,
+    /// counted in `data-pm-slice`, and read back as the row.
+    #[test]
+    fn copied_table_rows_are_wrapped_and_read_back() {
+        let s = schema();
+        let row = tr(vec![td("a"), td("b")]);
+        let slice = crate::rich_editor::model::Slice::new(Fragment::from(row.clone()), 0, 0);
+        let html = DomSerializer::from_schema(&s).serialize_for_clipboard(&slice);
+        assert_eq!(
+            html,
+            "<table data-pm-slice=\"0 0 -2 []\"><tbody><tr><td><p>a</p></td><td><p>b</p></td></tr></tbody></table>"
+        );
+        let d = doc(vec![table(vec![tr(vec![td("x"), td("y")])])]);
+        let at = d.resolve(in_cell(&d, "x")).unwrap();
+        let back = DomParser::from_schema(&s).parse_from_clipboard(&html, &at);
+        assert_eq!(back.content.child_count(), 1);
+        assert_eq!(back.content.child(0), &row, "{:?}", back.content);
+        assert_eq!((back.open_start, back.open_end), (0, 0));
+    }
+
     #[test]
     fn tables_are_read_from_html() {
         let s = schema();

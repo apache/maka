@@ -2,6 +2,9 @@
 //! `style` applied on top) and resolving them again when what they depend
 //! on changes: the appearance, the window size, the layout direction, the
 //! node's interaction states, its group's states or its sibling position.
+//! A sibling-position change restyles, in one pass over the parent's
+//! children (`positions_changed`), only those whose position bits moved;
+//! ordinary restyling queries its position.
 
 use super::{Core, Key, Kind, NO_KEY, dirty, disabling_changes};
 use crate::{
@@ -108,6 +111,21 @@ pub(super) struct NodeParts {
     styles: Vec<(Part, std::rc::Rc<StylePatch>)>,
     /// The classes of the other parts.
     classes: Vec<(Part, std::rc::Rc<ClassList>)>,
+    /// The names a part's classes were set by (`headerClass`,
+    /// `contentClass`; a typed list has none): they are parsed again when
+    /// the theme or the design tokens they read change.
+    class_names: Vec<(Part, Box<str>)>,
+    /// The group whose press it shows as a part (`Prop::ProjectedActive`).
+    active_group: Option<&'static str>,
+    /// It was last styled with that group's press.
+    group_pressed: bool,
+}
+
+impl NodeParts {
+    /// The group whose press it shows as a part.
+    pub(super) fn active_group(&self) -> Option<&'static str> {
+        self.active_group
+    }
 }
 
 /// The [`state`] bits an element is in by its accessibility state `s`:
@@ -248,6 +266,38 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// A span of a text heard the pointer come or go, or a press go in or
+    /// out (`kind`): its hover and press states, which no view reports
+    /// for it.
+    pub(super) fn span_state(&mut self, id: NodeId, kind: crate::ops::EventKind) {
+        use crate::ops::EventKind;
+        let (bit, on) = match kind {
+            EventKind::MouseEnter => (state::HOVERED, true),
+            EventKind::MouseLeave => (state::HOVERED, false),
+            EventKind::PressDown => (state::PRESSED, true),
+            EventKind::PressUp => (state::PRESSED, false),
+            _ => return,
+        };
+        let Ok(key) = self.key(id) else { return };
+        let tracked = self.nodes[key as usize]
+            .classes
+            .as_ref()
+            .map_or(0, |c| c.tracked_states());
+        if tracked & bit == 0 || !self.is_text_span(key) {
+            return;
+        }
+        let node = &mut self.nodes[key as usize];
+        let new = if on {
+            node.states | bit
+        } else {
+            node.states & !bit
+        };
+        if new != node.states {
+            node.states = new;
+            self.states_changed(key);
+        }
+    }
+
     /// View `key` took (or lost) the keyboard focus. A surface has one: a
     /// view taking it is the focus whether or not the one before reported
     /// losing it yet, and a view losing it that is not the focus changes
@@ -264,7 +314,7 @@ impl<M: TextEngine> Core<M> {
         if focused {
             self.focus = (key != self.root).then_some((key, id));
             self.focus_visible = self.focus_shows(key);
-            self.focus_by_keyboard = self.keyboard_moves_focus();
+            self.focus_by_keyboard = self.keyboard_moves_focus() && !self.restoring_modal_focus;
             self.blur_held = false;
         } else if self.focus == Some((key, id)) {
             self.focus = None;
@@ -284,6 +334,7 @@ impl<M: TextEngine> Core<M> {
     /// ([`Self::keyboard_moves_focus`]): a key typed after a press shows
     /// the focus, never the hint of the view it is on.
     pub fn set_input_modality(&mut self, modality: InputModality) {
+        self.restoring_modal_focus = false;
         self.modality = Some(modality);
         if modality == InputModality::Keyboard && self.focus.is_some() && !self.focus_visible {
             self.focus_visible = true;
@@ -352,14 +403,19 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// The states `key` is styled by: its own and those it shows as a
-    /// part of a control, with `FOCUS_VISIBLE` on a part projected focused
-    /// while the focus shows. Virtual focus is projected while its control
-    /// has the focus, so on its rows `focus:` is the cursor and
-    /// `focus-visible:` the cursor the keyboard is on.
+    /// The states `key` is styled by: its own, those it shows as a part
+    /// of a control and a hover a component passes on to it, with
+    /// `FOCUS_VISIBLE` on a part projected focused while the focus shows.
+    /// Virtual focus is projected while its control has the focus, so on
+    /// its rows `focus:` is the cursor and `focus-visible:` the cursor the
+    /// keyboard is on.
     pub(super) fn styled_states(&self, key: Key) -> u16 {
         let node = &self.nodes[key as usize];
-        let states = node.states | node.projected;
+        let passed = if node.passed_hover { state::HOVERED } else { 0 };
+        let mut states = node.states | node.projected | passed;
+        if let Some(group) = node.parts.as_ref().and_then(|p| p.active_group) {
+            states |= self.group_states(key, group) & state::PRESSED;
+        }
         if node.projected & state::FOCUSED != 0 && self.focus_visible_on.is_some() {
             states | state::FOCUS_VISIBLE
         } else {
@@ -545,6 +601,52 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// The group whose press `key` shows as a part of a control
+    /// (`Prop::ProjectedActive`).
+    pub(super) fn set_projected_active(&mut self, key: Key, group: Option<&'static str>) {
+        let node = &mut self.nodes[key as usize];
+        if node.parts.as_ref().and_then(|p| p.active_group) == group {
+            return;
+        }
+        let base = node.classes.clone();
+        let parts = node.parts.get_or_insert_with(|| {
+            Box::new(NodeParts {
+                base,
+                ..NodeParts::default()
+            })
+        });
+        parts.active_group = group;
+        parts.group_pressed = false;
+        self.states_changed(key);
+    }
+
+    /// A group around part `key` that shows its press changed its states:
+    /// restyled when the press it shows came or went.
+    fn group_press_changed(&mut self, key: Key) {
+        let Some(group) = self.nodes[key as usize]
+            .parts
+            .as_ref()
+            .and_then(|p| p.active_group)
+        else {
+            return;
+        };
+        let pressed = self.group_states(key, group) & state::PRESSED != 0;
+        let node = &mut self.nodes[key as usize];
+        let parts = node.parts.as_mut().expect("a part with its group");
+        if parts.group_pressed == pressed {
+            return;
+        }
+        parts.group_pressed = pressed;
+        if !node
+            .classes
+            .as_ref()
+            .is_some_and(|c| c.deps() & deps::STATE != 0)
+        {
+            return;
+        }
+        self.restyle(key);
+    }
+
     /// The `data-*` attributes `key` shows as a part of a component
     /// (`Prop::ProjectedData`): its `data-*:` classes read them, and the
     /// `group-data-*:` classes inside it when it is a group. A node whose
@@ -692,7 +794,33 @@ impl<M: TextEngine> Core<M> {
     /// content).
     pub(super) fn set_part_class(&mut self, key: Key, part: Part, names: &str) {
         let classes = (!names.trim().is_empty()).then(|| self.tailwind.classes(names));
+        let named = classes.is_some();
         self.set_part_class_list(key, part, classes);
+        if named && let Some(parts) = self.nodes[key as usize].parts.as_deref_mut() {
+            parts.class_names.push((part, names.into()));
+        }
+    }
+
+    /// Parses again the parts' classes set by name whose rules `reads`
+    /// (the theme was replaced, or design tokens they name changed).
+    fn part_classes_again(&mut self, reads: impl Fn(&ClassList) -> bool) {
+        let named: Vec<(Key, Part, Box<str>)> = self
+            .nodes
+            .iter()
+            .filter_map(|(k, n)| Some((k as Key, n.parts.as_deref()?)))
+            .flat_map(|(k, p)| {
+                let reads = &reads;
+                p.class_names
+                    .iter()
+                    .filter(move |(part, _)| {
+                        p.classes.iter().any(|(of, list)| of == part && reads(list))
+                    })
+                    .map(move |(part, names)| (k, *part, names.clone()))
+            })
+            .collect();
+        for (key, part, names) in named {
+            self.set_part_class(key, part, &names);
+        }
     }
 
     /// Sets `part`'s classes of `key` to `classes`, already parsed (typed
@@ -711,6 +839,7 @@ impl<M: TextEngine> Core<M> {
                 ..NodeParts::default()
             })
         });
+        parts.class_names.retain(|(p, _)| *p != part);
         let at = parts.classes.iter().position(|(p, _)| *p == part);
         match (at, classes) {
             (Some(i), Some(c)) => parts.classes[i].1 = c,
@@ -733,8 +862,10 @@ impl<M: TextEngine> Core<M> {
             }
             Part::Content => {
                 let content = self.list_content(key);
-                if let Some(list) = self.nodes[key as usize].list.as_mut() {
-                    list.set_class_content(content);
+                if let Some(list) = self.nodes[key as usize].list.as_mut()
+                    && list.set_class_content(content)
+                {
+                    self.needs_layout = true;
                 }
             }
             _ => {}
@@ -903,9 +1034,7 @@ impl<M: TextEngine> Core<M> {
             .transition
             .filter(|t| t.properties.0 != 0)
             .map_or(std::time::Duration::ZERO, |t| {
-                std::time::Duration::from_secs_f32(
-                    (t.duration.max(0.0) + t.delay.max(0.0)) / 1000.0,
-                )
+                std::time::Duration::from_secs_f32((t.run_ms() + t.delay.max(0.0)) / 1000.0)
             })
     }
 
@@ -935,10 +1064,12 @@ impl<M: TextEngine> Core<M> {
         for key in keys {
             self.set_classes(key, None, None);
         }
+        self.part_classes_again(|_| true);
     }
 
     /// The design tokens changed: classes naming them
-    /// (`bg-primary`) are resolved again, on nodes and on Rust components.
+    /// (`bg-primary`) are resolved again, on nodes, on their parts (a
+    /// page's header, a list's content) and on Rust components.
     pub(super) fn class_tokens_changed(&mut self) {
         let tokens = self.components.tokens.clone();
         let Some(changed) = self.tailwind.set_tokens(&tokens) else {
@@ -956,6 +1087,7 @@ impl<M: TextEngine> Core<M> {
         for key in keys {
             self.set_classes(key, None, None);
         }
+        self.part_classes_again(|c| changed == u16::MAX || c.deps() & changed != 0);
         let hosts: Vec<NodeId> = self
             .components
             .instances
@@ -1059,12 +1191,20 @@ impl<M: TextEngine> Core<M> {
         while let Some(k) = stack.pop() {
             let node = &self.nodes[k as usize];
             stack.extend_from_slice(&node.children);
+            let follows = changed & deps::GROUP != 0
+                && node
+                    .parts
+                    .as_ref()
+                    .is_some_and(|p| p.active_group.is_some());
             if node
                 .classes
                 .as_ref()
                 .is_some_and(|c| c.deps() & changed != 0)
             {
                 self.restyle(k);
+            }
+            if follows {
+                self.group_press_changed(k);
             }
         }
     }
@@ -1089,7 +1229,7 @@ impl<M: TextEngine> Core<M> {
                 return;
             }
             let n = &self.nodes[k as usize];
-            if (n.states | n.projected != 0 || !n.data.is_empty())
+            if (n.states | n.projected != 0 || n.passed_hover || !n.data.is_empty())
                 && n.classes.as_ref().is_some_and(|c| !c.groups().is_empty())
             {
                 break;
@@ -1105,13 +1245,32 @@ impl<M: TextEngine> Core<M> {
     /// Restyles the children of `parent` that depend on their position.
     pub(super) fn positions_changed(&mut self, parent: Key) {
         let children = self.nodes[parent as usize].children.clone();
+        let count = children
+            .iter()
+            .filter(|&&c| self.is_element_child(c))
+            .count();
+        let mut next = 0;
         for c in children {
-            if self.nodes[c as usize]
+            let index = if self.is_element_child(c) {
+                let index = next;
+                next += 1;
+                index
+            } else {
+                // Keep position_bits' fallback for a child that does not count.
+                0
+            };
+            let node = &self.nodes[c as usize];
+            if node
                 .classes
                 .as_ref()
                 .is_some_and(|c| c.deps() & deps::POSITION != 0)
             {
-                self.restyle(c);
+                // Only the children whose bits moved: an append restyles the
+                // old last row and the new one, not every sibling.
+                let bits = Self::position_at(index, count);
+                if node.position_used != bits {
+                    self.restyle_at(c, Some(bits));
+                }
             }
         }
     }
@@ -1137,8 +1296,11 @@ impl<M: TextEngine> Core<M> {
             .filter(|&c| self.is_element_child(c))
             .collect();
         let i = siblings.iter().position(|&c| c == key).unwrap_or(0);
-        let n = siblings.len();
-        let mut bits = if i % 2 == 0 {
+        Self::position_at(i, siblings.len())
+    }
+
+    fn position_at(i: usize, n: usize) -> u8 {
+        let mut bits = if i.is_multiple_of(2) {
             position::ODD
         } else {
             position::EVEN
@@ -1252,6 +1414,11 @@ impl<M: TextEngine> Core<M> {
 
     /// Resolves `key`'s style from its classes and inline style.
     pub(super) fn restyle(&mut self, key: Key) {
+        self.restyle_at(key, None);
+    }
+
+    /// [`Self::restyle`] with `position` already known (`None`: query it).
+    fn restyle_at(&mut self, key: Key, position: Option<u8>) {
         let mut base = Style::default();
         // Under its own classes and style, as `:where()` is in CSS.
         let space = self.space_of(key);
@@ -1289,13 +1456,13 @@ impl<M: TextEngine> Core<M> {
             None => {
                 style = base;
                 props = ClassProps::default();
-                self.resolve_classes(key, ch, &mut style, &mut props);
+                self.resolve_classes(key, ch, position, &mut style, &mut props);
             }
             // Again with its own font's, once its classes set one.
             Some(inherited) => loop {
                 style = base.clone();
                 props = ClassProps::default();
-                self.resolve_classes(key, ch, &mut style, &mut props);
+                self.resolve_classes(key, ch, position, &mut style, &mut props);
                 let own = self.zero_advance(inherited.inherit(&style.text));
                 if own == ch {
                     break;
@@ -1401,7 +1568,14 @@ impl<M: TextEngine> Core<M> {
 
     /// `key`'s classes and inline style over `style`, `ch` the advance of
     /// its font's `0`.
-    fn resolve_classes(&mut self, key: Key, ch: f32, style: &mut Style, props: &mut ClassProps) {
+    fn resolve_classes(
+        &mut self,
+        key: Key,
+        ch: f32,
+        position: Option<u8>,
+        style: &mut Style,
+        props: &mut ClassProps,
+    ) {
         let node = &self.nodes[key as usize];
         if let Some(classes) = node.classes.clone() {
             let group = |name: &str| self.group_states(key, name);
@@ -1410,7 +1584,7 @@ impl<M: TextEngine> Core<M> {
                 Some(group) => self.group_data(key, group).contains(&name),
             };
             let pos = if classes.deps() & deps::POSITION != 0 {
-                self.position_bits(key)
+                position.unwrap_or_else(|| self.position_bits(key))
             } else {
                 0
             };
@@ -1451,6 +1625,7 @@ impl<M: TextEngine> Core<M> {
                     }
                 },
             );
+            self.nodes[key as usize].position_used = if positional { pos } else { 0 };
             if positional {
                 let parent = self.nodes[key as usize].parent;
                 self.nodes[parent as usize].positional_children = true;

@@ -278,8 +278,8 @@ look once closed, so the reader never sees stray `**` or `[`. A last line whose 
 appears once its line ends: a list marker alone, a `-` or `=` line under a paragraph, a code fence's opening line or a
 closer half typed, so each list item, heading and code block appears as what it will be. A `*` inside a word (`a*b`)
 stays as written. Once the reply ends (`streaming` off), the text is read as written. Blocks are kept by position: the
-blocks that are complete keep their views, and only the block being written is made again, so a long reply stays
-cheap to update.
+blocks that are complete are read once and keep their views, and each update reads and makes again only the block
+being written, so a long reply stays cheap to update.
 
 `streamingCaret` follows the end of the document: inline at the end of the last text, wherever the last block ends (a
 paragraph, a list item, a code block, a table's last cell), else on a line of its own after the last block (a rule,
@@ -642,7 +642,7 @@ the types of `nsh_base::text_view` (`Document`, `Block`, `Inline`, `CodeBlock`, 
 | `heading` | `level` (1–6), `content`, `anchor?` |
 | `blockquote` | `children`, `alert?` (`"note"`, `"tip"`, `"important"`, `"warning"`, `"caution"`) |
 | `list` | `ordered?`, `start?`, `loose?`, `items` (`{ checked?, children }`) |
-| `codeBlock` | `language?`, `meta?`, `code` |
+| `codeBlock` | `language?`, `meta?`, `code`, `id?`, `content?`, `wrap?` |
 | `math` | `tex` |
 | `table` | `align?` (`"none"`, `"left"`, `"center"`, `"right"` per column), `head` (cells), `rows?` (rows of cells); a cell is `{ content }` |
 | `rule` | |
@@ -665,6 +665,8 @@ the types of `nsh_base::text_view` (`Document`, `Block`, `Inline`, `CodeBlock`, 
 A document also has `footnotes?`: `{ label, index, children }`, shown after the blocks in the order of their first
 reference. An app can store replies as documents, build them from its own data, or mix in custom nodes that
 `renderCustom` shows.
+
+A code block's `id` is the app's: `onCodeBlockAction` hands the block back with it, so an action knows which block it acts on. `wrap: true` fits the code to the view instead of scrolling it sideways. `content` is the code as inline content (the app's annotations: emphasis, highlights, custom nodes shown as their content in the `custom` part); it shows in place of the highlighted code when its plain text is `code`, so what shows is what copying takes.
 
 ### Parsing and plain text
 
@@ -845,6 +847,7 @@ parts with [`TextViewParts`](#typed-part-styles).
 |---|---|---|
 | `selectedText({ format? })` | `selected_text(Option<TextSelectionOptions>)` | The selection of a `selectable` view: `format` `"plain"` (default, as Copy takes it), `"markdown"` or `"html"`, the selected nodes rebuilt; the source as written when all of it is selected ([As Markdown or HTML](./text-selection.md#as-markdown-or-html)). `""` when nothing is selected. |
 | `onImagePress` | `.on_image_press(\|image: &Image\| ..)` | An image not in a link was pressed: `{ image }`, for the app to show it larger (a zoomable viewer of its own). |
+| `onTaskPress` | `.on_task_press(\|event: &TextViewTaskPressEvent\| ..)` | The box of a task item was pressed: `{ index, checked }`, which task of the document (from 0, in reading order) and the state the press asks for. The document does not change: the app gives the view its edited source. |
 
 ## Accessibility
 

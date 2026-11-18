@@ -781,13 +781,12 @@ fn StockRow(props: StockRowProps, cx: Scope<StockRowEvent>) -> impl IntoElement 
         .role(AccessibilityRole::Button)
         .label(name)
         .when(props.wide, |v| {
-            v.cursor_pointer()
-                .accessibility_state(move || AccessibilityState {
-                    selected: active.get(),
-                    ..AccessibilityState::default()
-                })
-                .style_when(active, |s| s.bg(fill))
-                .hover(|s| s.bg(move || if active.get() { fill } else { colors::SURFACE }))
+            v.accessibility_state(move || AccessibilityState {
+                selected: active.get(),
+                ..AccessibilityState::default()
+            })
+            .style_when(active, |s| s.bg(fill))
+            .hover(|s| s.bg(move || if active.get() { fill } else { colors::SURFACE }))
         })
         .child(when(active, || {
             view()

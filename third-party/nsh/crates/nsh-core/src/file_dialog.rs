@@ -21,8 +21,10 @@
 //!
 //! Only platforms whose
 //! [`Environment::file_requests`](crate::platform::Environment::file_requests)
-//! is set get these commands (the desktops: AppKit, GTK, Win32, GPUI); on
-//! the others (iOS, Android, the web) every request answers at once with
+//! is set get these commands. Desktops support the full set; iOS and
+//! Android support the open dialog, returning app-owned copies without
+//! reading their contents into memory. Android also supports opening paths.
+//! Unsupported requests (including all requests on the web) answer with
 //! an error.
 //!
 //! These services are Rust's only: no module of the runtime exposes them to

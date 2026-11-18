@@ -180,7 +180,7 @@ fn node_sources(text: &str) -> Vec<String> {
     let tree = super::tree(&Parser::new(), super::mapped::Source::original(text), true);
     assert_eq!(&*tree.source, text);
     let mut out = Vec::new();
-    let mut stack = vec![&tree.root];
+    let mut stack: Vec<&mdast::Node> = vec![&tree.root];
     while let Some(node) = stack.pop() {
         let position = node.position().expect("a position");
         for point in [&position.start, &position.end] {
@@ -628,6 +628,7 @@ fn code_blocks_and_rules() {
                 language: Some("rust".into()),
                 meta: Some("title=\"main.rs\"".into()),
                 code: "fn main() {}".into(),
+                ..Default::default()
             }),
             Block::CodeBlock(CodeBlock::new(None, "indented")),
             Block::Rule,
@@ -1370,6 +1371,7 @@ fn streamed_fences_never_flash_empty_code_or_their_closer() {
             language: Some("py".into()),
             meta: None,
             code: "x\n``".into(),
+            ..Default::default()
         })]
     );
 }
@@ -1457,6 +1459,25 @@ fn never_panics() {
         let _ = mdx.markdown(source);
         let _ = md(source);
     }
+}
+
+/// Thousands of nested quotes and lists (a degenerate reply) are read on a
+/// thread of a common stack size: what is past the depth read is gathered
+/// as text without recursion.
+#[test]
+fn deep_nesting_past_the_bound_is_read_as_text() {
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            // 5000 levels, a list in a quote in each: gathered recursively,
+            // their text ran the stack out (lists alone do too, but
+            // `markdown-rs` takes seconds to parse them this deep).
+            let doc = md(&format!("{}deep", "> - ".repeat(2_500)));
+            assert!(format!("{doc:?}").contains("deep"));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]

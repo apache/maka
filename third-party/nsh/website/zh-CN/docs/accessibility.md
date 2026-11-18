@@ -54,6 +54,7 @@ view()
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | 范围类或文本类元素的值。 |
 | `.accessibility_active_descendant(..)` | `accessibilityActiveDescendant` | `ViewRef \| null` | 获得焦点的元素里当前活动的那一项：组合框高亮的选项、列表的光标行。 |
 | `.accessibility_controls(..)` | `accessibilityControls` | `ViewRef \| null` | 内容由这个元素控制的元素：组合框的列表。 |
+| `.accessibility_described_by(..)` | `accessibilityDescribedBy` | `ViewRef \| null` | 文字用来说明这个元素的元素：输入框的错误提示行。 |
 | | `accessibilityActions` | `{ name, label? }[]` | 提供给辅助技术的操作。 |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | 执行了某个操作（Rust：操作名称）。 |
 | `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | 对辅助技术隐藏该视图及其子树。 |
@@ -194,6 +195,44 @@ const rows = signal<ViewRef[]>([]);
 
 在 Web 上它们是 `aria-activedescendant` 和 `aria-controls`；在 macOS 上 VoiceOver 把活动项当作控件的选中子元素读出。`Select`、`Combobox` 和 `Command` 用这种方式指出高亮的项和它们的列表，在其他平台上它们自己把高亮的项读给屏幕阅读器。
 
+### 说明另一个元素的元素
+
+表单把输入框的错误或帮助写在单独的一行里，与输入框分开。在输入框上用 `accessibilityDescribedBy` 指出这一行，屏幕阅读器每次焦点来到输入框时都会在它的名称之后读出这行文字，这行文字变了也会读新的。它和 `accessibilityControls` 一样接受被指出元素的 ref；那个元素里的标签和文字就是输入框的说明，代替输入框自己的 `accessibilityDescription`，被指出的元素不在屏幕上时，输入框自己的说明又回来。这一行可以设 `accessibilityHidden`，让它只随输入框读一次：被指出的元素照样读出它的文字。每个平台都在读说明的地方读它；在 Web 上它是 `aria-describedby`。
+
+```rust tabs
+// 输入框和它下面的错误行。
+let error = element_ref();
+view()
+    .child(
+        input()
+            .label("Name")
+            .accessibility_state(move || AccessibilityState {
+                invalid: message.get().is_some(),
+                ..AccessibilityState::default()
+            })
+            .accessibility_described_by(move || message.get().map(|_| error)),
+    )
+    .child(when(
+        move || message.get().is_some(),
+        move || text(move || message.get().unwrap_or_default()).element_ref(&error),
+    ))
+```
+
+```tsx tabs
+// 输入框和它下面的错误行。
+const error = signal<ViewRef>();
+<View>
+  <Input
+    accessibilityLabel="Name"
+    accessibilityState={{ invalid: message() != null }}
+    accessibilityDescribedBy={message() != null ? error() ?? null : null}
+  />
+  <If when={message()}>
+    <Text ref={error}>{message()}</Text>
+  </If>
+</View>
+```
+
 ## 操作
 
 可按压视图已经支持激活。其他操作用 `accessibilityActions` 声明，用 `onAccessibilityAction` 处理；Rust 组件用 `.on_accessibility_action(|name: &str| ..)` 收到所执行操作的名称：
@@ -268,6 +307,8 @@ view()
   <Text>$120</Text>
 </View>
 ```
+
+带标签的容器仍是容器：`"list"`、`"listbox"`、`"group"`、`"toolbar"`、`"radiogroup"`、`"tablist"`、`"navigation"`、`"region"` 或 `"dialog"` 的标签是读屏进入时念出的名字，里面的元素仍然一个个读到。VoiceOver 还会告诉用户列表从哪里开始、到哪里结束。只有要整体朗读时，才把容器设为无障碍元素。
 
 隐藏没有信息量的东西：装饰性图片、分隔线、旁边文字已经表达了同样意思的图标。
 

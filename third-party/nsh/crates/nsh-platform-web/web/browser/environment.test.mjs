@@ -33,11 +33,12 @@ const settings = (changes = {}) => ({
 
 /** What the engine sends (`set_environment` in `src/browser/engine.rs`). */
 const engine = (changes = {}) => ({
+  horizontalSizeClass: "compact", verticalSizeClass: "regular",
   window: { width: 390, height: 844 }, safeArea: { top: 0, right: 0, bottom: 0, left: 0 },
   titleBar: { height: 0, left: 0, right: 0 }, keyboard: { height: 0, duration: 250 },
   colorScheme: "light", fontScale: 1, rtl: false, reduceMotion: false, pixelRatio: 2, screenReader: false,
   locale: "de-AT", host: false, lifecycle: "active", shaders: true, wakeCount: 0, localeSettings: settings(),
-  platform: { os: "web", version: "0.0", idiom: "desktop", desktop: true, appleKeyboard: false },
+  platform: { name: "web", os: "web", version: "0.0", idiom: "desktop", desktop: true, appleKeyboard: false },
   ...changes,
 });
 
@@ -67,6 +68,14 @@ test("the environment serves every export of nsh/device and nsh/accessibility", 
       assert.equal(namespace[name], env.api[name], `${specifier}'s \`${name}\` is nsh's`);
     }
   }
+});
+
+test("the browser reports no system wakes", () => {
+  const { env } = environment();
+  assert.equal(env.api.wakeCount(), 0);
+  env.update(engine({ lifecycle: "background" }));
+  env.update(engine({ lifecycle: "active" }));
+  assert.equal(env.modules["nsh/device"].wakeCount(), 0);
 });
 
 test("setTheme hands the theme to the engine and reads the tokens again once it took", () => {
@@ -152,4 +161,37 @@ test("setup hands over what appInfo reports, as the build wrote it", () => {
   // The entry's own setup, without the fifth argument, keeps it.
   env.setup(null, null, null, null);
   assert.equal(env.api.appInfo().version, "1.2.0");
+});
+
+test("platform.select checks platform.name before platform.os and reads a built-in OS key once", () => {
+  const { env } = environment();
+  assert.equal(env.api.platform.name, "web");
+  let reads = 0;
+  assert.equal(env.api.platform.select({ get web() { reads += 1; return undefined; }, desktop: "d", default: "-" }), "d");
+  assert.equal(reads, 1);
+  assert.equal(env.api.platform.select({ web: null, default: "-" }), null);
+  assert.equal(env.api.platform.select(null), undefined);
+
+  env.update(engine({
+    platform: { name: "miniprogram", os: "ios", version: "18.0", idiom: "phone", desktop: false, appleKeyboard: true },
+  }));
+  assert.equal(env.api.platform.name, "miniprogram");
+  assert.equal(env.api.platform.select({ miniprogram: "mp", ios: "i", mobile: "m", native: "n", default: "d" }), "mp");
+  assert.equal(env.api.platform.select({ miniprogram: undefined, ios: "i", mobile: "m", default: "d" }), "i");
+  assert.equal(env.api.platform.select({ web: "w", mobile: "m", default: "d" }), "m");
+  assert.equal(env.api.platform.select({ web: "w", native: "n", default: "d" }), "n");
+});
+
+
+test("size classes follow the engine, with no write for a resize inside one class", () => {
+  const { env, writes } = environment();
+  env.update(engine());
+  assert.equal(env.api.horizontalSizeClass(), "compact");
+  assert.equal(env.api.verticalSizeClass(), "regular");
+  writes.length = 0;
+  env.update(engine({ window: { width: 599, height: 844 } }));
+  assert.deepEqual(writes, [{ width: 599, height: 844 }]);
+  env.update(engine({ window: { width: 844, height: 390 }, horizontalSizeClass: "regular", verticalSizeClass: "compact" }));
+  assert.equal(env.api.horizontalSizeClass(), "regular");
+  assert.equal(env.api.verticalSizeClass(), "compact");
 });

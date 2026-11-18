@@ -999,6 +999,51 @@ impl From<&nsh_core::picker::Pick> for PickRequest {
     }
 }
 
+/// How the user answers the share sheet (`app.onShare`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PropEnum)]
+pub enum ShareAnswerAction {
+    /// The user shares.
+    Shared,
+    /// The user closes the sheet without sharing.
+    #[default]
+    Dismissed,
+}
+
+/// How the user answers every share sheet (`app.onShare`).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[prop(exact)]
+pub struct ShareAnswer {
+    /// `"shared"` or `"dismissed"`.
+    pub action: ShareAnswerAction,
+    /// The target chosen when shared (`"com.apple.UIKit.activity.Mail"`);
+    /// none: the platform names none.
+    pub target: Option<String>,
+}
+
+/// What the app shared (`Share.show`), as a test reads it.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+pub struct SharedContent {
+    /// The title; `null` when none was given.
+    pub title: Option<String>,
+    /// The text; `null` when none was given.
+    pub text: Option<String>,
+    /// The link; `null` when none was given.
+    pub url: Option<String>,
+    /// The files' real paths.
+    pub files: Vec<String>,
+}
+
+impl From<&nsh_core::share::ShareSheet> for SharedContent {
+    fn from(sheet: &nsh_core::share::ShareSheet) -> Self {
+        SharedContent {
+            title: sheet.title.clone(),
+            text: sheet.text.clone(),
+            url: sheet.url.clone(),
+            files: sheet.files.clone(),
+        }
+    }
+}
+
 /// A speech recognition session the app started (`Speech.start`), as a
 /// test reads it.
 #[derive(Debug, Clone, PartialEq, JsObject)]
@@ -1201,6 +1246,32 @@ impl From<nsh_core::ResolvedTextStyle> for SpanStyle {
             italic: style.italic,
             underline: style.decoration.underline,
             line_through: style.decoration.line_through,
+        }
+    }
+}
+
+/// The style of a view as the app set it (`app.viewStyle`). Colors are
+/// `#rrggbbaa`. The values are those the app set last: while an animation
+/// runs, its end value. A background the platform draws itself (a native
+/// control's) is not here; check it with a screenshot.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct ViewStyle {
+    /// Its `backgroundColor`, absent when transparent.
+    #[prop(skip_none)]
+    pub background_color: Option<String>,
+    /// Its own `opacity`.
+    pub opacity: f64,
+    /// The opacity it shows with: its own times every view's around it.
+    pub effective_opacity: f64,
+}
+
+impl From<crate::screen::ViewStyle> for ViewStyle {
+    fn from(style: crate::screen::ViewStyle) -> Self {
+        ViewStyle {
+            background_color: style.background_color.map(|c| format!("#{c:08x}")),
+            opacity: f64::from(style.opacity),
+            effective_opacity: f64::from(style.effective_opacity),
         }
     }
 }
@@ -1890,7 +1961,8 @@ impl Keyboard {
 
     /// Holds modifier keys down (`"mod"`, `"shift"`, `"alt"`, `"ctrl"`,
     /// `"meta"`, joined by `+`) until `up`: the presses, drags and hovers
-    /// meanwhile carry them (a Mod-click, a Shift-drag). Headless and on Linux.
+    /// meanwhile carry them (a Mod-click, a Shift-drag). Headless and on Linux;
+    /// elsewhere it rejects (`ERR_NSH_TEST_UNSUPPORTED`).
     pub async fn down(this: Instance<Self>, keys: String) -> Result<(), JsError> {
         let steps = this.with(|k| k.steps.clone());
         steps.run(move |app| app.hold_keys(&keys, true)).await
@@ -1918,7 +1990,9 @@ const CLOSED: &str = "the app is closed: the test that opened it ended";
 #[class]
 impl App {
     /// Presses what `selector` names (or the nearest view around it that
-    /// hears presses, as a tap on a button's text does).
+    /// hears presses, as a tap on a button's text does). On iOS, a header
+    /// button of `ios.headerRightItems` is pressed too, by `id:<key>` or
+    /// its label: it presses it, or opens its menu.
     pub async fn press(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.press(&selector)).await
     }
@@ -1978,7 +2052,8 @@ impl App {
 
     /// Drops local files (`file:` URLs, as a file manager drags them) on
     /// the middle of what `selector` names: it, or the nearest view around
-    /// it listening, hears `onFileDrop`. Desktops, headless and on Linux for now.
+    /// it listening, hears `onFileDrop`. Desktops, headless, on Linux and
+    /// on macOS for now.
     pub async fn drop_files(
         this: Instance<Self>,
         selector: String,
@@ -2031,7 +2106,9 @@ impl App {
 
     /// Chooses the open context menu's action labelled `label` (a
     /// submenu's: `"Share > Mail"`), as a click on it: the app hears
-    /// `onMenu`, then the menu closes.
+    /// `onMenu`, then the menu closes. On iOS it is a menu the system
+    /// shows (a `MenuButton`'s, a `ContextMenu`'s, a header button's),
+    /// chosen from as a tap does.
     pub async fn choose_menu_item(this: Instance<Self>, label: String) -> Result<(), JsError> {
         step(&this, move |app| app.choose_menu_item(&label)).await
     }
@@ -2194,6 +2271,14 @@ impl App {
         self.with(|app| app.span_style(&selector).map(SpanStyle::from))
     }
 
+    /// The style of the view `selector` names: `backgroundColor` (absent
+    /// when transparent), its own `opacity` and `effectiveOpacity` (times
+    /// every view's around it); `null` when none matches. The values are
+    /// those the app set last, an animation's end value while it runs.
+    pub fn view_style(&self, selector: String) -> Result<Option<ViewStyle>, JsError> {
+        self.with(|app| app.view_style(&selector).map(|s| s.map(ViewStyle::from)))
+    }
+
     /// What the app's storage holds now.
     pub fn storage(&self) -> Result<Entries, String> {
         if let Some(storage) = &self.storage {
@@ -2206,7 +2291,8 @@ impl App {
     }
 
     /// Goes back as the user does (a header's back button, swiping a sheet
-    /// down): the innermost stack of the newest modal (else of the screen)
+    /// down; in a sheet showing a pushed page, its header's back button):
+    /// the innermost stack of the newest modal (else of the screen)
     /// pops its top screen, or asks it when it prevents going back; without
     /// one, the newest modal asks to close. Rejects (`ERR_NSH_TEST_NO_BACK`)
     /// when there is nothing to go back from.
@@ -2431,6 +2517,37 @@ impl App {
         step(&this, move |app| app.fail_images(&url)).await
     }
 
+    /// The URLs the app opens that match `url` fail to open from now on:
+    /// `openUrl` resolves `{ opened: false }`, as on a device with no app
+    /// for the URL, so a test checks what the app shows then. `url` is
+    /// matched whole and `*` in it matches anything
+    /// (`"https://example.com/*"`), as `open`'s `network` routes are. They
+    /// are still listed by `openedUrls`. Then waits until the app is
+    /// quiet. Headless only.
+    pub async fn fail_open_urls(this: Instance<Self>, url: String) -> Result<(), JsError> {
+        step(&this, move |app| app.fail_open_urls(&url)).await
+    }
+
+    /// The platform shows a share sheet from now on (`Share.available()`
+    /// resolves `true`), and the user answers every one the app shows
+    /// (`Share.show`) as `answer` says: shared, to its `target` if it names
+    /// one, or dismissed. What the app shares is listed by `shares`. Then
+    /// waits until the app is quiet. Headless only: a real platform shows
+    /// its own sheet.
+    pub async fn on_share(this: Instance<Self>, answer: ShareAnswer) -> Result<(), JsError> {
+        let outcome = match answer.action {
+            ShareAnswerAction::Shared => nsh_core::share::ShareOutcome::shared(answer.target),
+            ShareAnswerAction::Dismissed => nsh_core::share::ShareOutcome::dismissed(),
+        };
+        step(&this, move |app| app.on_share(outcome)).await
+    }
+
+    /// What the app shared (`Share.show`), in order: recorded, never
+    /// shared, and answered as `onShare` says. Headless only.
+    pub fn shares(&self) -> Result<Vec<SharedContent>, JsError> {
+        self.with(|app| Ok(app.shares()?.iter().map(SharedContent::from).collect()))
+    }
+
     /// Moves the app to `state`, as the system does when the user leaves it
     /// (`"background"`), switches to another app or window (`"inactive"`)
     /// and comes back (`"active"`); `lifecycle()` follows. Headless only.
@@ -2461,6 +2578,13 @@ impl App {
     /// The text on the clipboard now, `null` when it holds none.
     pub fn clipboard(&self) -> Result<Option<String>, JsError> {
         self.with(|app| app.clipboard())
+    }
+
+    /// The item on the clipboard now, `{ text, html? }` (`Clipboard.write`;
+    /// text alone has no `html`), `null` when it holds none. Headless tests
+    /// only.
+    pub fn clipboard_item(&self) -> Result<Option<ClipboardItem>, JsError> {
+        self.with(|app| app.clipboard_item())
     }
 
     /// `f` with the app as it is now (the batches that came applied); a

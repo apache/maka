@@ -471,6 +471,48 @@ fn concealing_a_hovered_view_clears_hover_without_more_mouse_motion() {
 }
 
 #[test]
+fn a_view_removed_under_the_pointer_hears_no_leave() {
+    use nsh_platform_tui::MouseButton::Left;
+    // The ref holds the view from its handler: a cycle that keeps panel A
+    // alive after it is removed, until a collection.
+    let code = nsh_bundler::compile_module(
+        "App.tsx",
+        r#"
+        import { mount, signal, View, Text } from "nsh";
+        const open = signal("a"), entered = signal("-");
+        function Panel(props: { name: string }) {
+            let view: unknown;
+            return <View ref={(node) => (view = node)} style={{ width: 80, height: 32 }}
+                onPress={() => open.set("b")}
+                onMouseEnter={() => entered.set(props.name)}
+                onMouseLeave={() => view && open.set("none")}><Text>{props.name}</Text></View>;
+        }
+        mount(() => <View>
+            <If when={open() === "a"}><Panel name="a" /></If>
+            <If when={open() === "b"}><Panel name="b" /></If>
+            <Text>{`${open()}:${entered()}`}</Text>
+        </View>);
+    "#,
+        &[],
+    )
+    .unwrap();
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+    view.load(Bundle::source(code)).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "a:-");
+    view.handle(mouse(MouseKind::Move, 1, 0));
+    draw_until(&mut view, &mut terminal, &rx, "a:a");
+    view.handle(mouse(MouseKind::Down(Left), 1, 0));
+    view.handle(mouse(MouseKind::Up(Left), 1, 0));
+    // B, under the resting pointer, is entered; A, removed, hears no leave
+    // (which would close B).
+    draw_until(&mut view, &mut terminal, &rx, "b:b");
+    view.handle(mouse(MouseKind::Move, 2, 0));
+    view.handle(mouse(MouseKind::Move, 30, 6));
+    draw_until(&mut view, &mut terminal, &rx, "none:b");
+}
+
+#[test]
 fn a_secondary_press_asks_the_nearest_listener_for_a_context_menu() {
     use nsh_platform_tui::MouseButton::Right;
     let code = nsh_bundler::compile_module(

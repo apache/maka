@@ -6,7 +6,7 @@ order: 12.5
 
 # nsh/desktop
 
-`nsh/desktop` holds what only desktops have: the app's windows and their title bars, the displays, the application menu and context menus, the tray and global shortcuts. It works on macOS, Windows and Linux. Rust code finds the same in `nsh_core::element::desktop`: windows of the app's own (`window()`), the window a component renders in (`current_window()`, a `WindowRef`), the displays (`displays`), `quit`, `restart`, the application menu and context menus (`set_application_menu`, `popup_menu`, made of `MenuItem`s), the tray (`set_tray`) and global shortcuts (`register_global_shortcut`), and marks draggable views with `.window_drag(true)`; TSX imports `nsh/desktop`. The module can be imported on every platform, so one bundle runs everywhere: on iOS and Android its functions do nothing, and `isAvailable` tells you whether its windows and menus are there.
+`nsh/desktop` holds what only desktops have: the app's windows and their title bars, the displays, the application menu and context menus, the tray and global shortcuts. It works on macOS, Windows and Linux. Rust code finds the same in `nsh_core::element::desktop`: windows of the app's own (`window()`), the window a component renders in (`current_window()`, a `WindowRef`), the displays (`displays`), `quit`, `restart`, opening at login (`launch_at_login`, `set_launch_at_login`), the application menu and context menus (`set_application_menu`, `popup_menu`, made of `MenuItem`s), the tray (`set_tray`) and global shortcuts (`register_global_shortcut`), and marks draggable views with `.window_drag(true)`; TSX imports `nsh/desktop`. The module can be imported on every platform, so one bundle runs everywhere: on iOS and Android its functions do nothing, and `isAvailable` tells you whether its windows and menus are there. An app that declares capabilities needs `"application": true` for the main window, the application menu, the tray, global shortcuts, `quit` and quit requests, `restart` and launching at login ([capabilities](../docs/sandbox-and-capabilities.md#application)); without it they do nothing. Context menus and the windows the app opens (granted by `windows`) need no `application`.
 
 ```rust tabs
 use nsh_core::{
@@ -195,7 +195,7 @@ Each platform shows a kind as its own windows of that role: an `NSPanel` on macO
 
 | Group | Attribute | Description |
 |---|---|---|
-| Chrome | `title` | Shown in the title bar, the taskbar, the window switcher and to assistive technologies. |
+| Chrome | `title` | Shown in the title bar, the taskbar, the window switcher and to assistive technologies. In a browser, the main window's title is the page's title, shown on its tab (under a [`Head`](./nsh-web.md#head)'s title). |
 | | `titleBar` | `{ style: "default" \| "hidden"; height?; controlsOffset? }`: the system's title bar, or a title bar of the app's own ([below](#a-title-bar-of-your-own)). `controlsOffset` (`{ x, y }`) places macOS's traffic lights in a hidden title bar. |
 | | `frame` | `"default"`, or `"none"`: no title bar or border, the app draws everything. |
 | Size | `minSize`, `maxSize` | The least and largest content size the user may give it, `{ width, height }` in points; `null` clears it. |
@@ -274,7 +274,7 @@ The Rust column names the methods of `WindowRef`.
 | `state()` | `state()` | What the platform reports of it (reactive; [below](#the-windows-state-and-the-displays)). `null` off desktops, before it shows and once it closed. |
 | `titleBar()` | `title_bar()` | Its hidden title bar's area ([below](#titlebar)). |
 | `set(attributes)` | `set(WindowAttributes)` | Changes the [attributes](#attributes) it names; the others keep their values. An attribute the app's capabilities do not grant is left as it is, with a warning. |
-| `show()`, `hide()` | `show()`, `hide()` | Shows it (restoring it when minimized), or hides it. |
+| `show()`, `hide()` | `show()`, `hide()` | Shows it (restoring it when minimized), or hides it. On macOS a full screen window leaves full screen before it hides, as macOS apps' windows do, and shows again as a window. |
 | `focus()` | `focus()` | Shows it, brings it to the front of its level and gives it the keyboard focus; the app activates. The window keeps its level. |
 | `close()` | `close()` | Closes it, whatever `closeOnPress` says. A window of the app's own unmounts its content (`<Window>`: `onOpenChange` with `reason: "close"`); the main window closes as when the user closes it, and the app ends with its last window. |
 | `minimize()`, `restore()` | `minimize()`, `restore()` | Minimizes it, or brings it back in the mode it had: a maximized window minimized comes back maximized. |
@@ -338,7 +338,7 @@ The main window is there when the app starts. nsh.json's `window` holds its laun
 }
 ```
 
-It takes the [options](#options) `defaultSize`, `defaultPosition`, `display` and `defaultMode`, and every [attribute](#attributes). While the app runs, `currentWindow()` outside any `<Window>` (or `Window.get("main")`) is the main window, and its `set()` changes the same attributes.
+It takes the [options](#options) `defaultSize`, `defaultPosition`, `display` and `defaultMode`, and every [attribute](#attributes). While the app runs, `currentWindow()` outside any `<Window>` (or `Window.get("main")`) is the main window, and its `set()` changes the same attributes. One nsh.json serves every build: the desktops apply these settings, a web page takes `title` as its title, and on iOS and Android the app fills its view in the screen.
 
 `"defaultVisible": false` starts the app with its main window hidden: the window is made and the app runs in it, unseen and without taking the keyboard, until the app shows it with `show()` or `focus()`, as a [tray](#tray) app does when its icon is clicked. Until then `state()` reports it hidden; the first time it shows, it opens in its `defaultMode`. A link of one of the app's [URL schemes](./nsh.md#urlscheme) opened while the app runs shows it too, and so does opening the app again on macOS (its Dock icon, the Finder). `nsh run` and `nsh test --target` start it hidden as well. Their development host opens the window as it does for every app: with `--target windows` (`nsh run`'s default on Windows) at the app's `defaultSize` and in its `defaultMode`, with `--target macos`, `linux` or `gpui` at the host's size in the normal mode; GPUI shows a window as it opens on Linux, so with `--target gpui` there it shows. Under `nsh run` an error shows it, so the error is seen.
 
@@ -377,6 +377,8 @@ An app without `"capabilities"` in nsh.json may open windows of every kind excep
 const Application: {
   quit(): void;
   restart(): void;
+  launchAtLogin(): Promise<boolean>;
+  setLaunchAtLogin(enabled: boolean): Promise<void>;
   on(event: "secondInstance", listener: (launch: { args: string[]; cwd: string }) => void): () => void;
   on(event: "openFiles", listener: (files: { paths: string[] }) => void): () => void;
   on(event: "quit", listener: () => void): () => void;
@@ -388,6 +390,8 @@ const Application: {
 |---|---|---|
 | `quit()` | `quit()` | Quits the app, as the application menu's Quit item (`{ role: "quit" }`) and the platform's quit key do. |
 | `restart()` | `restart()` | Quits the app as `quit()` does, then starts it again with the same arguments. |
+| `launchAtLogin()` | `launch_at_login()` | Whether the system opens the app when the user logs in ([Opening at login](#opening-at-login)). |
+| `setLaunchAtLogin(enabled)` | `set_launch_at_login(enabled)` | Turns opening the app at login on or off. |
 | `on("secondInstance", listener)` | `next_second_instance()` | The app was launched again while it runs ([Single instance](#single-instance)). |
 | `on("openFiles", listener)` | `next_open_files()` | The system opened the app with files of the types it declares ([Opening files](#opening-files)). |
 | `on("quit", listener)` | `on_app_quit(f)` | The app is quitting: its cleanup runs ([Quitting](#quitting)). |
@@ -425,9 +429,48 @@ platform's quit key (Cmd+Q, Ctrl+Q) quit at once while nothing listens to `quitR
 (unsaved changes, a running upload) listens to it with `Application.on("quitRequest", listener)` (Rust:
 `on_quit_request`), as AppKit's `applicationShouldTerminate:`: the Quit item, the quit key and the Dock's Quit then
 reach the listener and nothing quits; the app asks, then calls `quit()`, which always quits. Once the last listener
-stops, the Quit item and the key quit at once again. The system ending the app (the user logging out, the machine
-shutting down) never asks. It applies to standalone apps on macOS, Windows and Linux; a GPUI app that owns the window
+stops, the Quit item and the key quit at once again. By default, the system ending the app (the user logging out, the machine
+shutting down) runs the app's cleanup and quits. It applies to standalone apps on macOS, Windows and Linux; a GPUI app that owns the window
 gets the request as `CloseRequest::Quit`.
+
+Standalone macOS apps can include system requests and main-window closes in the same confirmation:
+
+```tsx
+Application.setQuitRequestOptions({ system: true, mainWindowClose: true });
+Application.on("quitRequest", async () => {
+  if (await confirmSaveAndQuit()) Application.quit();
+  else Application.cancelQuitRequest();
+});
+```
+
+Both options default to `false`, and each `setQuitRequestOptions` call replaces them. Rust uses
+`set_quit_request_options(QuitRequestOptions)` and `cancel_quit_request()` from `nsh_core::element::desktop`;
+`QuitRequestOptions` is in `nsh_core::desktop`. The options apply while a quit request listener is registered.
+Rust callers can build the options with `QuitRequestOptions::default().system(true).main_window_close(true)`.
+Replacing the app cancels its pending confirmation and restores the default options.
+
+With `system: true`, logout, restart and shutdown wait for the app's answer. `quit()` approves the request after the
+app's cleanup runs, then AppKit terminates the process. Rust hosts put that cleanup in `on_app_quit`, rather than
+after `run_app`. `cancelQuitRequest()` cancels the system request and keeps the app running. An unanswered system
+request is cancelled after 110 seconds, before AppKit's logout timeout. Removing the last listener or changing the
+options also cancels a pending request.
+
+With `mainWindowClose: true`, a user closing the main window asks the quit listener when that close would end the
+app. A window configured to stay running on close still hides. A window with `closeOnPress: false` keeps using
+`closePress` instead, so one close uses one confirmation handler. Closing the main window, rather than counting
+every window, follows the standalone runner's existing exit rule. An explicit `WindowRef.close()` keeps its existing
+behavior. While a confirmation is pending, repeated Quit or eligible main-window close requests share it. If a system request arrives
+during that confirmation, the same answer also approves or cancels the system request.
+
+On the web, the user leaving the page (closing its tab, reloading, going to another site) is the quit request: it
+reaches the listener as the user leaves, so the example below works there as it is. A listener that calls `quit()` right
+away lets the page go without a question. A listener that asks first (here `askToSave()`) has the browser ask the user
+whether to leave; when the user stays, the app's own question is on the page, and once the work is saved the next leave
+goes at once. Desktop browsers show their question after the user has interacted with the page. However the user leaves,
+the app's `quit` listeners start once as the page goes: what they do synchronously completes, and work they await runs
+for as long as the page remains. A page the browser keeps in its back / forward cache keeps its app running, and the app
+goes on when the user comes back. This works whatever `isAvailable` says; an app that declares capabilities lists
+`"application": true` for it.
 
 ```rust tabs
 use nsh_core::{
@@ -466,7 +509,7 @@ function Editor() {
 
 `Application.on("quit", listener)` (Rust: `on_app_quit`) is the app's cleanup, as GPUI's `on_app_quit`: it runs
 however the app stops (its Quit item, `quit()`, its last window closing, the Dock's Quit, the system ending it when the
-user logs out, a host app removing its view), and cannot keep it running. A promise the listener returns is awaited,
+user logs out, a host app removing its view, the web page going), and cannot keep it running. A promise the listener returns is awaited,
 200 ms at most for all of them, while the platform waits for the app; past that the app stops. A listener added while a
 component renders goes with the component; the function `on` returns stops it.
 
@@ -550,6 +593,63 @@ also come through `UrlScheme.on("open")`.
 | iOS, Android, web | The system runs the app once; `secondInstance` is not reported |
 
 The release runners of `nsh package` read the setting; `nsh run` starts its development host as before.
+
+### Opening at login
+
+`Application.launchAtLogin()` says whether the system opens the app when the user logs in, as the system has it now,
+and `Application.setLaunchAtLogin(enabled)` turns it on or off. Rust code awaits `launch_at_login()` and
+`set_launch_at_login(enabled)` in a task. Like `quit` and `restart`, an app that declares capabilities needs
+`"application": true` for them: without it `launchAtLogin()` resolves `false` and `setLaunchAtLogin` rejects with
+`ERR_ACCESS_DENIED`.
+
+```tsx
+import { signal } from "nsh";
+import { Application } from "nsh/desktop";
+
+const openAtLogin = signal(false);
+// Read when the app shows its setting: the user may change it in the system's settings.
+Application.launchAtLogin().then(openAtLogin.set);
+
+async function setOpenAtLogin(enabled: boolean) {
+  await Application.setLaunchAtLogin(enabled);
+  openAtLogin.set(await Application.launchAtLogin());
+}
+```
+
+```rust
+use nsh_core::element::desktop::{launch_at_login, set_launch_at_login};
+use nsh_core::prelude::*;
+
+let open_at_login = signal(false);
+spawn(async move { open_at_login.set(launch_at_login().await) });
+// When the user turns the app's own setting on or off:
+let turn = move |enabled: bool| {
+    spawn(async move {
+        if let Err(error) = set_launch_at_login(enabled).await {
+            log::warn!("{error}");
+        }
+        open_at_login.set(launch_at_login().await);
+    });
+};
+```
+
+Call `setLaunchAtLogin` when the user turns the app's own setting on or off, never on the app's own (at every start,
+say): what the user chose in the system's settings stands. Turning on what is on and off what is off succeed, and the
+changes run in the order the app makes them. `launchAtLogin()` is `false` wherever the app cannot launch at login (a
+view embedded in another app, `nsh run`, iOS, Android and the web), and on macOS while the system waits for the user to
+approve the app in Login Items. `setLaunchAtLogin` rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the app
+cannot launch at login, and a failure of the system with its code, among them `EACCES` when the system does not permit
+the change, `ENAMETOOLONG` when the app's quoted path is longer than a Windows login item holds (260 characters),
+`EINVAL` when the app's id or path cannot name a login item, and `EIO` when the failure has no code of its own.
+
+| Platform | What it sets | Shown in |
+|---|---|---|
+| macOS | The app bundle's login item (`SMAppService.mainApp`), kept for its bundle id: every copy of the app shares it. | System Settings, Login Items |
+| Windows | A value of the current user's `Run` key named by the app id, holding this executable's path. A value naming another copy reads as `false`; the installer `nsh package` builds removes it when it uninstalls the copy it names. | Settings' startup apps, Task Manager's Startup apps |
+| Linux | An XDG autostart entry, `~/.config/autostart/<app id>.desktop`, starting this executable. One the desktop's settings turned off reads as `false`, and turning it on writes it on again. Not in a Flatpak or Snap sandbox. | The desktop's autostart settings |
+
+It works in standalone apps, those `nsh package` builds among them; under `nsh run` it reads `false`, so check it in a
+packaged app. [`examples/tray`](https://github.com/longbridge/nsh/tree/main/examples/tray) offers it in its tray's menu.
 
 ## A title bar of your own
 
@@ -686,10 +786,17 @@ interface Display {
   primary: boolean;
   scaleFactor: number;
   refreshRate: number | null;  // in hertz
+  cutouts: Bounds[];           // what a camera housing hides: a MacBook's notch
 }
 ```
 
 `win.state()` is a window as the platform reports it, `windowState()` the current window's, and `displays()` the displays, the primary one first; all are reactive. Every rectangle is in points, in screen coordinates: from the primary display's top left corner, with `y` growing down, as `setBounds` takes them. A change of mode, of display, of focus, or of being minimized or visible is reported at once; a move or a resize once the window stops for a moment, so what reads them runs once per move rather than at every step. Rust: `WindowRef::state() -> Option<WindowState>` and `displays() -> Vec<Display>` (`nsh_core::desktop`'s types); reading them subscribes to changes.
+
+A display's `cutouts` are the parts of it a camera housing covers, in the same screen coordinates: on a MacBook with a notch, one rectangle at the top's middle, as tall as the menu bar. A window can sit beside the notch, or show content that grows out of it; on every other display the list is empty.
+
+```tsx
+const notch = () => displays().flatMap((d) => d.cutouts)[0] ?? null;
+```
 
 While the window is on the screen, [`lifecycle()`](./nsh.md#device) reporting `"background"` means other windows cover it.
 
@@ -763,7 +870,11 @@ type MenuItem =
       disabled?: boolean;
       checked?: boolean;
       onSelect?: () => void;
+      icon?: ImageAsset | string;
+      symbol?: string;
+      destructive?: boolean;
       submenu?: MenuItem[];
+      inline?: boolean;
     };
 ```
 
@@ -775,12 +886,16 @@ type MenuItem =
 | `when` | When the shortcut chooses the item while a text field has the keyboard focus, on the GPUI backend: `"always"` (the default), `"auto"` (unless the field uses the key itself: keys that type, move the caret or delete, and the editing shortcuts, as with [`keymap`](./nsh.md#keymap)'s bindings) or `"notEditing"`. A key the item leaves goes to the field. |
 | `disabled` | `true` grays the item out (default `false`). |
 | `checked` | Set (to `true` or `false`) for an item with a check mark. |
-| `submenu` | Makes the item a submenu (it needs a `label`). |
+| `icon` | The image beside its label, as `<Image>`'s `src` takes it (an imported file or a URL). Fitted to the menu's icon size; see the TypeScript declaration for platform notes. For an SF Symbol name in iOS header menus, use `symbol` instead. |
+| `symbol` | An SF Symbol name beside its label in iOS header menus; ignored elsewhere (including macOS). Takes the place of `icon` when both are set. |
+| `destructive` | `true` marks a destructive action: iOS draws it red (`UIMenuElementAttributesDestructive`). The desktops ignore it. |
+| `submenu` | Makes the item a submenu (it needs a `label`). With `inline: true`, an inline section: on iOS, `UIMenuOptions.displayInline` with `label` as the section title; on the desktops, its items between separators, its label not shown. |
+| `inline` | An inline section when `submenu` is set (see `submenu`). |
 | `role` | A standard item the platform carries out (below). |
 
 `null`, `undefined` and `false` items are left out, so `cond && { … }` works in a list.
 
-In Rust, an item is `MenuItem::new(label)`, `MenuItem::role(role)`, `MenuItem::separator()` or `MenuItem::submenu(label, items)`, with the fields as methods: `.shortcut("mod+n")` (it panics on an invalid shortcut, with the right spelling), `.shortcut_when(When::Auto)`, `.disabled(true)`, `.checked(on)`, `.on_select(f)`, and `.label(..)` for a role's item.
+In Rust, an item is `MenuItem::new(label)`, `MenuItem::role(role)`, `MenuItem::separator()` or `MenuItem::submenu(label, items)`, with the fields as methods: `.shortcut("mod+n")` (it panics on an invalid shortcut, with the right spelling), `.shortcut_when(When::Auto)`, `.disabled(true)`, `.checked(on)`, `.on_select(f)`, `.icon(..)`, `.symbol(..)`, `.destructive(true)`, `.inline(true)` on a submenu, and `.label(..)` for a role's item.
 
 Modifiers:
 
@@ -802,6 +917,8 @@ Roles:
 | `quit` | Quits the app | All |
 | `undo`, `redo`, `cut`, `copy`, `paste`, `selectAll` | Edit the focused text field (its own shortcuts stay its own) | All |
 | `minimize`, `zoom`, `toggleFullScreen`, `close` | The window | All |
+
+On macOS, the first top-level menu holding a window role is the app's Window menu: macOS adds "Bring All to Front" and the open windows (by title) at its end, and keeps them up to date. The default menu bar's Window menu does the same. Other platforms have no such list.
 
 A role's item has the platform's label and shortcut unless it sets its own (macOS adds the app's name to `about`, `hide` and `quit`).
 

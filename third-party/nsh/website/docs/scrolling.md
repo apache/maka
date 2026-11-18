@@ -535,6 +535,8 @@ mount(Photo);
 
 Text and canvases inside a zoomed scroll view are drawn again at the new resolution when the zoom ends, so they stay sharp on iOS. On Android, NSH zooms with a scroll view of its own, which scales around the pinch's focal point, pans with any number of fingers, flings and rubber-bands at the edges and zoom limits. Android starts a pinch once the fingers are about 27 mm apart, as the system's gesture detector does.
 
+A zoomable scroll view inside another scroll view, such as an image viewer's horizontal pager, works as photo viewers do on touch screens (iOS, Android and the web): a swipe on an image that is not zoomed in turns the page, a swipe on a zoomed image pans it, and at the image's edge the rest of the swipe goes on to the next or previous page.
+
 ## Scrolling from code
 
 Give the scroll view a ref (`element_ref()` and `.element_ref(&scroller)` in Rust, a [`ref`](./jsx-and-components.md) in TSX) and call its methods. Commands run after the rest of the changes in the same update, so scrolling to content you just added works.
@@ -601,7 +603,7 @@ Two props decide how scrolling and taps interact with the keyboard:
 
 `keyboardShouldPersistTaps`:
 
-- `"never"`: a tap outside the focused input only hides the keyboard, and buttons get the next tap. The user taps once to dismiss, again to press.
+- `"never"`: a tap outside the focused input only hides the keyboard, and buttons get the next tap. The user taps once to dismiss, again to press. Nothing inside acts on that tap: no `onPress` (`onPressIn` / `onPressOut` and `active:` styles still show while the finger is down), a responder's touch ends with `onResponderTerminate` instead of `onResponderRelease`, and native views such as a web view get no click. Only taps are held back and hide it: long presses (`onLongPress`, context menus), drags and scrolling work as they do with the keyboard down.
 - `"handled"`: a tap on something that handles it (a button) goes through and the keyboard stays; a tap on empty space hides it. Usually the right choice for forms.
 - `"always"`: the keyboard stays up through every tap.
 

@@ -25,8 +25,8 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let data_dir = options.data_dir.clone().or_else(nsh_engine::data_dir);
-    let launch = nsh_engine::updates::launch(bundle, &dir, data_dir.as_deref());
+    let support_dir = nsh_engine::support_dir();
+    let launch = nsh_engine::updates::launch(bundle, &dir, support_dir.as_deref());
     options.asset_base = Some(AssetBase::Directory(launch.assets));
     run_app(AppSource::Bundle(launch.bundle), options)
 }
@@ -46,20 +46,16 @@ pub fn main() -> std::process::ExitCode {
     std::process::ExitCode::FAILURE
 }
 
-/// Installs the logger and reads the app's resources: its `nsh` directory
+/// Reads the app's resources and installs the logger: its `nsh` directory
 /// (in the app bundle, or `NSH_APP_DIR`: `nsh run` of a Rust app) and the
 /// window's options.
 #[cfg(target_os = "macos")]
 fn setup() -> (std::path::PathBuf, nsh_platform_macos::AppOptions) {
     use nsh_platform_macos::{ActivationPolicy, AppOptions, Appearance, AssetBase, Limits};
 
-    // Warnings, errors and the app's `js` lines go to the unified log (an
-    // app opened from Finder or the Dock writes stderr to /dev/null). Run by
-    // `nsh run`, the app's own logs go there too, and to its terminal.
+    // Run by `nsh run`: the app's own logs go to its terminal too.
     let development = std::env::var_os("NSH_APP_DIR");
-    let mut logging = nsh_platform_apple::unified_log::Options::default();
-    logging.development = development.is_some();
-    nsh_platform_apple::unified_log::install(logging);
+    let developing = development.is_some();
 
     // `<App>.app/Contents/MacOS/<exe>` -> `<App>.app/Contents/Resources/nsh`.
     let dir = match development {
@@ -77,6 +73,9 @@ fn setup() -> (std::path::PathBuf, nsh_platform_macos::AppOptions) {
         asset_base: Some(AssetBase::Directory(dir.join("assets"))),
         // An app on its own, not a module embedded in another app.
         limits: Limits::standalone(),
+        // The packaged app's login item: a Rust app `nsh run` runs in
+        // place has none, so it never registers a development build.
+        login_item: !developing,
         ..AppOptions::default()
     };
     let info = std::fs::read_to_string(dir.join("app.json"))
@@ -89,6 +88,11 @@ fn setup() -> (std::path::PathBuf, nsh_platform_macos::AppOptions) {
     if let Some(id) = field("id") {
         options.app_id = id;
     }
+    // `nsh.json` `"dataDir"`: the app's data directory (its storage, logs
+    // and `${dataDir}`) rather than the one under its id.
+    options.data_dir = field("dataDir")
+        .as_deref()
+        .and_then(nsh_engine::resolve_data_dir);
     if let Some(name) = field("name") {
         options.title = name;
     }
@@ -103,6 +107,11 @@ fn setup() -> (std::path::PathBuf, nsh_platform_macos::AppOptions) {
     if field("activationPolicy").as_deref() == Some("accessory") {
         options.activation_policy = ActivationPolicy::Accessory;
     }
+    // `nsh run` of a Rust app runs the runner outside an app bundle and
+    // names the app's icon; a packaged app's bundle has its own.
+    if developing {
+        options.icon = field("icon").map(std::path::PathBuf::from);
+    }
     // `open -a <App> --args --fps` shows the performance monitor, and so
     // does `NSHPerformanceMonitor` (a boolean) in the bundle's Info.plist:
     // a build that opens with it however it is launched (the Dock, Finder,
@@ -112,7 +121,31 @@ fn setup() -> (std::path::PathBuf, nsh_platform_macos::AppOptions) {
     // app's own runtime-delivered modules (the bundle's resources are
     // read-only).
     options.chunks = std::env::var_os("NSH_CHUNK_DIR").map(std::path::PathBuf::from);
+    install_logger(developing, &options.app_id, options.data_dir.as_deref());
     (dir, options)
+}
+
+/// Installs the runners' logger (`nsh_engine::logging`): `RUST_LOG`'s
+/// levels or the default ones (warnings, errors and the app's `js` lines;
+/// from info up when run by `nsh run`), the rolling file in the app's data
+/// directory, and the unified log, as an app opened from Finder or the Dock
+/// writes stderr to /dev/null (and run by `nsh run`, its terminal too). An
+/// app that installed its own logger (from its native module, which runs
+/// first) keeps it, and its level.
+#[cfg(target_os = "macos")]
+fn install_logger(development: bool, app_id: &str, data_dir: Option<&std::path::Path>) {
+    let mut unified = nsh_platform_apple::unified_log::Options::default();
+    unified.development = development;
+    unified.filtered = true;
+    let unified = nsh_platform_apple::unified_log::logger(unified);
+    let mut logging = nsh_engine::logging::LogOptions::default();
+    logging.development = development;
+    logging.directory = match data_dir {
+        Some(dir) => Some(dir.join("logs")),
+        None => nsh_engine::logging::log_dir(app_id),
+    };
+    logging.output = Some(Box::new(move |r: &log::Record<'_>| unified.log(r)));
+    nsh_engine::logging::install(logging);
 }
 
 /// Whether the bundle's Info.plist has `NSHPerformanceMonitor` true.
