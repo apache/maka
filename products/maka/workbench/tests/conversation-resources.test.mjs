@@ -28,7 +28,7 @@ const native = {
   nsh: 'let tracking;\n    export const signal = initial => {\n      let value = initial;\n      const observers = new Set();\n      const read = () => { if (tracking) observers.add(tracking); return value; };\n      read.set = next => {\n        if (Object.is(value, next)) return;\n        value = next;\n        for (const observer of [...observers]) observer();\n      };\n      return read;\n    };\n    export const computed = fn => fn;\n    export const untracked = fn => { const previous = tracking; tracking = undefined; try { return fn(); } finally { tracking = previous; } };\n    export const effect = fn => {\n      let alive = true;\n      const run = () => {\n        if (!alive) return;\n        const previous = tracking;\n        tracking = run;\n        try { fn(); } finally { tracking = previous; }\n      };\n      globalThis.resourceScope.push(() => { alive = false; });\n      run();\n    };\n    export const cleanup = fn => globalThis.resourceScope.push(fn);',
   locale: `export const tr = key => key;`,
   workspaceFileState: `export const createWorkspaceFiles = (_host, options) => ({ sessionId: options.sessionId });`,
-  CurrentFile: `export const createCurrentFile = (_host, target) => ({target, anchorValue: target.anchor, setAnchor(next) { this.anchorValue = next; }, activate() {}, suspend() {}, dispose() {this.disposed = true;}});`,
+  CurrentFile: `export const createCurrentFile = (_host, target) => ({target, anchorValue: target.anchor, setAnchor(next) { this.anchorValue = next; }, dirty() { return Boolean(this.isDirty); }, saving() { return false; }, async save() { this.isDirty = false; return true; }, activate() {}, suspend() { this.suspended = true; }, dispose() {this.disposed = true;}});`,
   currentDiffState: `
     export const resolveDiffSource = (target) => target.source ?? { kind: 'working', area: target.area ?? 'worktree' };
     export const resolveDiffSourceKey = (target) => {
@@ -186,6 +186,22 @@ test('preview close restores the source pane and removing that session releases 
   assert.equal(resources.sessionId(), null);
   resources.openImage(image('B'));
   assert.equal(resources.shown(), false);
+});
+
+test('dirty file drafts park across workspace switches and dispose when their session leaves', (t) => {
+  const { resources, sessions } = setup(t);
+  resources.openFile(file('A'));
+  const draft = resources.activeTab().model;
+  draft.isDirty = true;
+  resources.openFile(file('B'));
+  assert.equal(draft.suspended, true);
+  assert.equal(draft.disposed, undefined);
+  resources.openFiles({ sessionId: 'A' });
+  assert.equal(resources.tabs().length, 1);
+  assert.equal(resources.tabs()[0].model, draft);
+  resources.openFile(file('B'));
+  sessions.set(['B']);
+  assert.equal(draft.disposed, true);
 });
 
 test('window commands follow the focused pane and stop targeting a removed pane', () => {

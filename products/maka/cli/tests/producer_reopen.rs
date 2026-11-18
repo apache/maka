@@ -1784,23 +1784,27 @@ async fn automation_delivery(
     .await?;
     assert_eq!(completed["runId"], queued_run["runId"]);
     let mut check_after = steered["task"]["nextFireAt"].as_i64().unwrap();
-    for state in ["ready", "waiting"] {
+    // A check already in flight when waiting is written could still observe the
+    // previous ready file; two advances on waiting guarantee a fresh check saw false.
+    for (state, advances) in [("ready", 1), ("waiting", 2)] {
         tokio::fs::write(&condition, state)
             .await
             .map_err(|e| e.to_string())?;
-        check_after = phase("advance script check without another message", async {
-            loop {
-                let task = schedule(client, &steering).await?;
-                assert_eq!(task["task"]["fireCount"], 1, "{task}");
-                assert!(task["task"]["lastError"].is_null(), "{task}");
-                let next = task["task"]["nextFireAt"].as_i64().unwrap();
-                if next > check_after {
-                    return Ok(next);
+        for _ in 0..advances {
+            check_after = phase("advance script check without another message", async {
+                loop {
+                    let task = schedule(client, &steering).await?;
+                    assert_eq!(task["task"]["fireCount"], 1, "{task}");
+                    assert!(task["task"]["lastError"].is_null(), "{task}");
+                    let next = task["task"]["nextFireAt"].as_i64().unwrap();
+                    if next > check_after {
+                        return Ok(next);
+                    }
+                    tokio::time::sleep(Duration::from_millis(30)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(30)).await;
-            }
-        })
-        .await?;
+            })
+            .await?;
+        }
     }
     tokio::fs::write(&condition, "ready")
         .await

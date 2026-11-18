@@ -273,7 +273,7 @@ impl Owner {
                 | InteractionAnswer::SystemPermissionCancel {},
             ) => Ok(true),
             (
-                InteractionRequest::Permissions { .. },
+                InteractionRequest::Permissions { request, .. },
                 InteractionAnswer::Permissions {
                     decision:
                         PermissionDecision::Allow {
@@ -285,7 +285,7 @@ impl Owner {
                 let grants = self
                     .durable
                     .interactions()
-                    .permission_grants(execution, None, &parent.permission_basis())
+                    .permission_grants(execution, None, &parent.permission_basis(), request.source)
                     .await
                     .map_err(|error| error.to_string())?;
                 let workspace = parent.workspace.clone();

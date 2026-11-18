@@ -24,9 +24,11 @@
     "@biomejs/biome": "2.6.3",
     "esbuild": "0.28.2",
     "husky": "^9.1.7",
-    "patch-package": "8.0.1",
     "typescript": "7.0.2",
     "yaml": "2.9.1",
     "zod": "4.6.7"
+  },
+  "overrides": {
+    "tinyglobby": "npm:glob@14.0.6"
   }
 }

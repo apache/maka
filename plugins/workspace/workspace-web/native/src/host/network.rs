@@ -20,7 +20,7 @@
 use super::*;
 use futures_util::FutureExt;
 use maka_agent_authority::computer::NativeCallContext;
-use maka_agent_facts::interaction::PermissionRequest;
+use maka_agent_facts::interaction::{PermissionRequest, PermissionSource};
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call::Scope;
 use maka_capabilities::http::Error;
@@ -212,6 +212,7 @@ impl Access {
             .permission_grants(
                 self.native.access().target(),
                 &configuration.permission_basis(),
+                PermissionSource::Web,
             )
             .await
             .map_err(|error| {
@@ -248,6 +249,7 @@ impl Access {
                         filesystem: Vec::new(),
                         network: Network::destination(destination.clone()),
                     },
+                    source: PermissionSource::Web,
                 },
                 self.native.access().target(),
                 &cancellation,

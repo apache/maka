@@ -50,6 +50,14 @@ pub struct WriteCoordinator {
     pub(crate) mutation: Mutex<()>,
 }
 
+impl WriteCoordinator {
+    pub fn shared() -> Arc<Self> {
+        static WRITES: std::sync::LazyLock<Arc<WriteCoordinator>> =
+            std::sync::LazyLock::new(Default::default);
+        WRITES.clone()
+    }
+}
+
 pub struct MutationExecutor {
     authority: Option<Arc<Authority>>,
     coordinator: Arc<WriteCoordinator>,

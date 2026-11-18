@@ -20,6 +20,7 @@
 //! The composer edits Markdown source. Formatting changes what the editor
 //! draws; references also define native editing boundaries.
 
+pub(crate) mod file;
 mod markdown;
 mod message;
 mod model;
@@ -438,17 +439,7 @@ impl PluginSpec for ComposerBehavior {
                 .emit(ComposerInputEvent::Submit(ComposerSubmit { text: source }));
             return true;
         }
-        if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("z") {
-            return if event.shift {
-                redo(state, Some(dispatch))
-            } else {
-                undo(state, Some(dispatch))
-            };
-        }
-        if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("y") {
-            return redo(state, Some(dispatch));
-        }
-        false
+        history_key(state, event, dispatch)
     }
 
     fn handle_paste(
@@ -669,4 +660,22 @@ fn source(props: ComposerInputProps) -> message::Source {
         id: props.source_id.get(),
         offset: props.source_offset.get(),
     }
+}
+
+fn history_key(
+    state: &EditorState,
+    event: &KeyEvent,
+    dispatch: &mut dyn FnMut(Transaction),
+) -> bool {
+    if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("z") {
+        return if event.shift {
+            redo(state, Some(dispatch))
+        } else {
+            undo(state, Some(dispatch))
+        };
+    }
+    if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("y") {
+        return redo(state, Some(dispatch));
+    }
+    false
 }

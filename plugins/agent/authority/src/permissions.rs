@@ -25,6 +25,7 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::PermissionDecision;
 use maka_agent_facts::interaction::PermissionRequest;
+use maka_agent_facts::interaction::PermissionSource;
 use maka_agent_facts::tools::ToolError;
 use maka_event_log::{StoreError, sessions::SessionRecord};
 use sha2::{Digest, Sha256};
@@ -43,10 +44,12 @@ pub trait Access: maka_agent_ports::execution::Interactions {
     ) -> futures_util::future::BoxFuture<'_, Result<ResolvedConfiguration, ToolError>>;
     /// Observation only. Preparation once approvals are consumed by the original
     /// admission; Host grants are usable only within that active original scope.
+    /// Each grant holds only the part that covers a request from `source`.
     fn permission_grants<'a>(
         &'a self,
         target: &'a maka_agent_facts::durable::AuthorizationObligation,
         basis: &'a maka_sandbox::workspace::PermissionBasis,
+        source: PermissionSource,
     ) -> futures_util::future::BoxFuture<'a, Result<Vec<PermissionGrant>, ToolError>>;
 }
 
@@ -70,6 +73,7 @@ pub async fn request(
             "Workspace policy does not allow requesting additional permissions",
         ));
     }
+    let source = request.source;
     let identity = (
         &access.execution().run_id,
         target,
@@ -136,7 +140,7 @@ pub async fn request(
         return Err(failed("Additional permissions were not granted"));
     }
     access
-        .permission_grants(target, &configuration.permission_basis())
+        .permission_grants(target, &configuration.permission_basis(), source)
         .await
         .map_err(|_| failed("Permission observation unavailable"))?
         .into_iter()

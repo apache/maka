@@ -1,0 +1,261 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use nsh_core::prelude::*;
+use serde::Deserialize;
+use std::time::Duration;
+
+#[derive(Clone, JsObject)]
+pub struct Repository {
+    pub name: String,
+    pub id: Option<String>,
+    pub description: String,
+    pub installable: bool,
+    pub category: String,
+    pub title: String,
+}
+
+#[derive(Clone, JsObject)]
+pub struct Page {
+    pub repositories: Vec<Repository>,
+    pub more: bool,
+}
+
+#[derive(Deserialize)]
+struct Response {
+    items: Vec<Item>,
+    total_count: usize,
+}
+#[derive(Deserialize)]
+struct Item {
+    full_name: String,
+    description: Option<String>,
+    topics: Vec<String>,
+}
+
+pub async fn search(text: String, page: u32, locale: String) -> Result<Page, String> {
+    const SIZE: u32 = 25;
+    if !(1..=1000 / SIZE).contains(&page) {
+        return Err("Invalid GitHub search page".into());
+    }
+    // Keep the topic and archive filters under the application's control.
+    let keywords: String = text
+        .chars()
+        .take(120)
+        .map(|c| {
+            if c.is_alphanumeric() || "-_.".contains(c) {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let query = format!("topic:maka-plugin archived:false fork:true {keywords}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("Maka-community-discovery")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut url =
+        url::Url::parse("https://api.github.com/search/repositories").expect("GitHub API URL");
+    url.query_pairs_mut()
+        .append_pair("q", &query)
+        .append_pair("page", &page.to_string())
+        .append_pair("per_page", &SIZE.to_string())
+        .append_pair("sort", "stars")
+        .append_pair("order", "desc");
+    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if matches!(response.status().as_u16(), 403 | 429) {
+        return Err("GitHub rate limit reached. Try again later.".into());
+    }
+    let body = response
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    let result: Response = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    let more =
+        result.items.len() == SIZE as usize && (page * SIZE) < result.total_count.min(1000) as u32;
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, item) in result.items.into_iter().enumerate() {
+        if !item.topics.iter().any(|t| t == "maka-plugin") {
+            continue;
+        }
+        let client = client.clone();
+        let locale = locale.clone();
+        tasks.spawn(async move {
+            let bundle_url = format!(
+                "https://github.com/{}/releases/latest/download/plugin.maka-plugin",
+                item.full_name
+            );
+            let (manifest, installable) = tokio::join!(
+                manifest(&client, &item.full_name),
+                bundle_available(&client, &bundle_url),
+            );
+            let field = |key: &str| {
+                manifest["localizations"][&locale][key]
+                    .as_str()
+                    .or_else(|| manifest[key].as_str())
+                    .filter(|text| !text.trim().is_empty())
+            };
+            (
+                index,
+                Repository {
+                    category: category(&manifest).into(),
+                    title: field("displayName").unwrap_or_default().into(),
+                    installable,
+                    name: item.full_name,
+                    id: manifest["id"].as_str().map(str::to_owned),
+                    description: field("description")
+                        .map(str::to_owned)
+                        .or(item.description)
+                        .unwrap_or_default(),
+                },
+            )
+        });
+    }
+    let mut rows = Vec::new();
+    while let Some(row) = tasks.join_next().await {
+        rows.push(row.map_err(|e| e.to_string())?);
+    }
+    rows.sort_by_key(|(index, _)| *index);
+    Ok(Page {
+        more,
+        repositories: rows.into_iter().map(|(_, repo)| repo).collect(),
+    })
+}
+
+// Follow GitHub's latest-release and asset redirects without downloading the package.
+async fn bundle_available(client: &reqwest::Client, url: &str) -> bool {
+    client
+        .head(url)
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
+}
+
+fn category(manifest: &serde_json::Value) -> &'static str {
+    let Some(app) = manifest["application"].as_object() else {
+        return "unknown";
+    };
+    if app
+        .get("ui")
+        .and_then(|ui| ui.pointer("/contributions"))
+        .and_then(|value| value.as_object())
+        .is_some_and(|items| {
+            items.values().any(|item| {
+                item["kind"] == "view" && item["contract"] == "maka.quick-launcher.tool"
+            })
+        })
+    {
+        return "quick";
+    }
+    if ["ui", "host", "composition"]
+        .iter()
+        .any(|key| app.contains_key(*key))
+    {
+        return "other";
+    }
+    "unknown"
+}
+
+async fn manifest(client: &reqwest::Client, repo: &str) -> serde_json::Value {
+    let url = format!("https://raw.githubusercontent.com/{repo}/HEAD/maka.extension.json");
+    let Ok(mut response) = client.get(url).send().await else {
+        return serde_json::Value::Null;
+    };
+    let mut bytes = Vec::new();
+    if response.status().is_success() {
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) if bytes.len() + chunk.len() <= 1024 * 1024 => {
+                    bytes.extend_from_slice(&chunk)
+                }
+                Ok(None) => break,
+                _ => return serde_json::Value::Null,
+            }
+        }
+    }
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::category;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn availability_checks_the_asset_without_downloading_it() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", server.local_addr().unwrap());
+        let worker = tokio::spawn(async move {
+            for (path, response) in [
+                ("/latest", "302 Found\r\nLocation: /asset"),
+                ("/asset", "200 OK"),
+                ("/missing", "404 Not Found"),
+            ] {
+                let (socket, _) = server.accept().await.unwrap();
+                let mut socket = BufReader::new(socket);
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                assert_eq!(line, format!("HEAD {path} HTTP/1.1\r\n"));
+                loop {
+                    line.clear();
+                    socket.read_line(&mut line).await.unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                socket
+                    .get_mut()
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {response}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        assert!(super::bundle_available(&client, &format!("{url}/latest")).await);
+        assert!(!super::bundle_available(&client, &format!("{url}/missing")).await);
+        worker.await.unwrap();
+    }
+
+    #[test]
+    fn marketplace_categories_follow_declared_contributions() {
+        let mixed = json!({"application":{"ui":{"contributions":{
+            "preferences":{"kind":"settings"},
+            "capture":{"kind":"view","contract":"maka.quick-launcher.tool"}
+        }}}});
+        assert_eq!(category(&mixed), "quick");
+        assert_eq!(category(&json!({"application":{"host":{}}})), "other");
+        assert_eq!(
+            category(&json!({"application":{"ui":{"contributions":{
+                "tool":{"kind":"view","contract":"example.other"}
+            }}}})),
+            "other"
+        );
+        assert_eq!(category(&serde_json::Value::Null), "unknown");
+    }
+}
