@@ -30,7 +30,12 @@ import {
   type ViewRef,
 } from 'nsh';
 import { Button } from 'nsh/base';
-import { controlsRight, windowDrag } from '../../../../products/maka/workbench/app/chrome';
+import { ChangesStudio } from '../../../../products/maka/workbench/app/ChangesStudio';
+import {
+  controlsRight,
+  PANEL_INSET,
+  windowDrag,
+} from '../../../../products/maka/workbench/app/chrome';
 import { CurrentDiff } from '../../../../products/maka/workbench/app/CurrentDiff';
 import { CurrentFile } from '../../../../products/maka/workbench/app/CurrentFile';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
@@ -40,10 +45,13 @@ import {
   type OpenImageViewer,
 } from '../../../../products/maka/workbench/app/ImageViewer';
 import { tr } from '../../../../products/maka/workbench/app/locale';
+import { PullRequestTab } from '../../../../products/maka/workbench/app/PullRequestTab';
 import {
   ReviewBatchBar,
   SymbolLocationsDrawer,
 } from '../../../../products/maka/workbench/app/ReviewComposer';
+import { basenameLabel } from '../../../../products/maka/workbench/app/reviewState';
+import { StageLaunchpad } from '../../../../products/maka/workbench/app/StageLaunchpad';
 import { Terminal } from '../../../../products/maka/workbench/app/Terminal';
 import {
   AgentTerminals,
@@ -57,13 +65,14 @@ import {
   controlFocusStyle,
   controlHoverStyle,
   controlStyle,
+  quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  shortcut,
   textTooltip,
 } from '../../../../products/maka/workbench/app/ui';
 import { WorkspaceFiles } from '../../../../products/maka/workbench/app/WorkspaceFiles';
-import type { Resources } from './resources';
-import { WorkspaceChanges } from './WorkspaceChanges';
+import type { Resources, StageSectionTab } from './resources';
 
 export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const resources = props.resources;
@@ -71,30 +80,83 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const agent = () => resources.terminalSection() === 'agent-terminals';
   const personal = () => resources.terminalSection() === 'terminals';
   const terminal = () => resources.activeTerminal();
+  const inTerminalSurface = () => resources.terminalSection() !== null;
+
   const showTerminals = (kind: 'terminals' | 'agent-terminals') =>
     inputAction(resources.inventory, {
       sessionId: closeTarget.sessionId,
       kind,
     });
-  const previews = () => resources.tabs().filter((tab) => tab.kind !== 'terminal');
+
+  const nonTerminalTabs = () => resources.tabs().filter((tab) => tab.kind !== 'terminal');
   const closeTarget = {
     sessionId,
     instance: resources.instance(),
   };
   const symbolBatch = () => resources.reviewStore.symbolBatch(sessionId);
 
-  let control: ViewRef | undefined;
+  let firstControl: ViewRef | undefined;
   let unbinds: (() => void)[] = [];
   cleanup(() => {
     for (const fn of unbinds) fn();
   });
 
   effect(() => {
-    if (resources.focusRequest() && control) {
+    if (resources.focusRequest() && firstControl) {
       resources.focusHandled();
-      if (props.docked) control.focus();
+      if (props.docked) firstControl.focus();
     }
   });
+
+  const sectionMeta = (
+    section: StageSectionTab,
+  ): { icon: Parameters<typeof Icon>[0]['name']; label: string; a11y: string } => {
+    switch (section) {
+      case 'launchpad':
+        return { icon: 'globe', label: tr('New tab'), a11y: tr('New tab') };
+      case 'changes':
+        return { icon: 'diff', label: tr('Changes'), a11y: tr('Review workspace changes') };
+      case 'files':
+        return { icon: 'folder', label: tr('Files'), a11y: tr('Browse files') };
+      case 'terminals':
+        return {
+          icon: 'terminal',
+          label: terminal()?.entry().result.cmd
+            ? basenameLabel(terminal()!.entry().result.cmd)
+            : tr('Terminal'),
+          a11y: tr('Terminal'),
+        };
+    }
+  };
+
+  const isSectionSelected = (section: StageSectionTab): boolean => {
+    if (section === 'terminals') return inTerminalSurface();
+    return resources.active() === section;
+  };
+
+  const tabDisplayTitle = (tab: ReturnType<typeof nonTerminalTabs>[number]): string => {
+    if (tab.kind === 'pr' || tab.kind === 'image') return tab.title;
+    if (tab.kind === 'diff') return basenameLabel(tab.model.target.title);
+    return basenameLabel(tab.title);
+  };
+
+  const tabIcon = (
+    tab: ReturnType<typeof nonTerminalTabs>[number],
+  ): Parameters<typeof Icon>[0]['name'] => {
+    if (tab.kind === 'pr') return 'pullRequest';
+    if (tab.kind === 'image') return 'image';
+    if (tab.kind === 'diff') return 'diff';
+    return 'file';
+  };
+
+  const paddingRight = () =>
+    props.docked ? Math.max(8, controlsRight(true) - PANEL_INSET) : controlsRight(false);
+
+  const inChangesOrPr = () => {
+    if (resources.active() === 'changes') return true;
+    const t = resources.activeTab();
+    return t?.kind === 'pr';
+  };
 
   return (
     <View
@@ -107,6 +169,10 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             () => {
               if (resources.reviewStore.symbolBatch(sessionId) !== null) {
                 resources.reviewStore.setSymbolBatch(sessionId, null);
+                return;
+              }
+              if (resources.fullscreen()) {
+                resources.setFullscreen(false);
                 return;
               }
               resources.close(closeTarget);
@@ -124,18 +190,21 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         flex: 1,
         minHeight: 0,
         backgroundColor: C.panel,
-        padding: 8,
-        gap: 8,
       }}
     >
+      {/* Unified Browser-Style Stage Tab Bar (32pt high, centered on 24pt title-bar line) */}
       <View
         desktop={props.docked ? windowDrag : undefined}
         style={{
+          height: 36,
+          paddingLeft: 8,
+          paddingRight: paddingRight(),
+          borderBottomWidth: 1,
+          borderBottomColor: C.line,
           flexDirection: 'row',
           alignItems: 'center',
           flexShrink: 0,
           gap: 4,
-          paddingRight: controlsRight(props.docked),
         }}
       >
         <If when={resources.canGoBack() || resources.canGoForward()}>
@@ -148,7 +217,9 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               ...controlStyle,
               width: 28,
               minHeight: 28,
-              paddingHorizontal: 6,
+              height: 28,
+              paddingHorizontal: 0,
+              paddingVertical: 0,
               alignItems: 'center',
             }}
             hoverStyle={quietHoverStyle()}
@@ -166,7 +237,9 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               ...controlStyle,
               width: 28,
               minHeight: 28,
-              paddingHorizontal: 6,
+              height: 28,
+              paddingHorizontal: 0,
+              paddingVertical: 0,
               alignItems: 'center',
             }}
             hoverStyle={quietHoverStyle()}
@@ -179,235 +252,421 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
 
         <Scroll horizontal focusable={false} style={{ flex: 1, minWidth: 0 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <Button
-              accessibilityLabel={tr('Review workspace changes')}
-              selected={resources.active() === 'changes'}
-              onPress={inputAction(resources.inventory, {
-                sessionId,
-                kind: 'changes',
-              })}
-              style={{ ...controlStyle, paddingHorizontal: 8 }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-            >
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: resources.active() === 'changes' ? C.text : C.muted,
-                }}
-              >
-                {tr('Changes')}
-              </Text>
-            </Button>
-
-            <Button
-              accessibilityLabel={tr('Browse files')}
-              selected={resources.active() === 'files'}
-              ref={(node) => {
-                control = node;
-                if (resources.focusRequest()) {
-                  resources.focusHandled();
-                  if (props.docked) node.focus();
-                }
-              }}
-              onPress={inputAction(resources.inventory, {
-                sessionId,
-                kind: 'files',
-              })}
-              style={{ ...controlStyle, paddingHorizontal: 8 }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-            >
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: resources.active() === 'files' ? C.text : C.muted,
-                }}
-              >
-                {tr('Files')}
-              </Text>
-            </Button>
-
-            <Button
-              accessibilityLabel={tr('Show conversation terminals')}
-              selected={personal()}
-              onPress={showTerminals('terminals')}
-              style={{
-                ...controlStyle,
-                paddingHorizontal: 8,
-              }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-            >
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: personal() ? C.text : C.muted,
-                }}
-              >
-                {tr('Terminal')}
-              </Text>
-            </Button>
-
-            <Each of={previews()} key={(tab) => tab.instance}>
-              {(tab) => (
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    borderRadius: 8,
-                    backgroundColor: resources.active() === tab().instance ? C.cardRaised : C.card,
-                  }}
-                >
-                  <Button
-                    selected={resources.active() === tab().instance}
-                    onPress={inputAction(resources.select, {
-                      sessionId: tab().sessionId,
-                      instance: tab().instance,
-                    })}
-                    accessibilityLabel={tr('Preview {name}', {
-                      name: tab().title,
-                    })}
-                    tooltip={textTooltip(() => tab().title)}
+            {/* Section Stage Tabs */}
+            <Each of={resources.openSections()} key={(sec) => sec}>
+              {(sec, idx) => {
+                const selected = () => isSectionSelected(sec());
+                const meta = () => sectionMeta(sec());
+                return (
+                  <View
                     style={{
-                      ...controlStyle,
+                      height: 28,
                       flexDirection: 'row',
                       alignItems: 'center',
-                      gap: 6,
+                      borderRadius: 8,
+                      backgroundColor: selected() ? C.cardRaised : C.card,
                     }}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
                   >
-                    <Icon
-                      name={
-                        tab().kind === 'image' ? 'image' : tab().kind === 'diff' ? 'code' : 'file'
+                    <Button
+                      ref={
+                        idx() === 0
+                          ? (node) => {
+                              firstControl = node;
+                              if (resources.focusRequest()) {
+                                resources.focusHandled();
+                                if (props.docked) node.focus();
+                              }
+                            }
+                          : undefined
                       }
-                      size={13}
-                      color={C.muted}
-                    />
-                    <Text
-                      style={[
-                        {
-                          ...captionTextStyle,
-                          color: resources.active() === tab().instance ? C.text : C.muted,
-                          maxWidth: 160,
-                        },
-                        { numberOfLines: 1 },
-                      ]}
+                      selected={selected()}
+                      accessibilityLabel={meta().a11y}
+                      onPress={inputAction(resources.inventory, {
+                        sessionId,
+                        kind: sec(),
+                      })}
+                      style={{
+                        minHeight: 28,
+                        height: 28,
+                        paddingLeft: 8,
+                        paddingRight: 4,
+                        borderRadius: 8,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'flex-start',
+                        gap: 6,
+                        maxWidth: 176,
+                      }}
+                      hoverStyle={{ opacity: 0.9 }}
+                      focusStyle={quietFocusStyle()}
                     >
-                      {tab().title}
-                    </Text>
-                  </Button>
-                  <Button
-                    onPress={inputAction(resources.closeTab, {
-                      sessionId: tab().sessionId,
-                      instance: tab().instance,
-                    })}
-                    accessibilityLabel={tr('Close {name}', {
-                      name: tab().title,
-                    })}
-                    tooltip={textTooltip(() => tr('Close {name}', { name: tab().title }))}
-                    style={{
-                      ...controlStyle,
-                      width: 28,
-                      minHeight: 28,
-                      paddingHorizontal: 5,
-                      paddingVertical: 5,
-                      alignItems: 'center',
-                    }}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Icon name="close" color={C.muted} />
-                  </Button>
-                </View>
-              )}
+                      <Icon name={meta().icon} size={13} color={selected() ? C.text : C.muted} />
+                      <Text
+                        style={[
+                          {
+                            ...captionTextStyle,
+                            color: selected() ? C.text : C.secondary,
+                            fontWeight: selected() ? '500' : undefined,
+                            flexShrink: 1,
+                            minWidth: 0,
+                          },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {meta().label}
+                      </Text>
+                    </Button>
+                    <Button
+                      accessibilityLabel={tr('Close {name}', { name: meta().label })}
+                      onPress={inputAction(resources.closeSection, {
+                        sessionId,
+                        section: sec(),
+                      })}
+                      style={{
+                        width: 22,
+                        height: 22,
+                        marginRight: 2,
+                        borderRadius: 4,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                      hoverStyle={{ backgroundColor: C.line }}
+                      focusStyle={quietFocusStyle()}
+                    >
+                      <Icon name="close" size={12} color={C.muted} />
+                    </Button>
+                  </View>
+                );
+              }}
             </Each>
+
+            {/* File / PR / Diff / Image Stage Tabs */}
+            <Each of={nonTerminalTabs()} key={(tab) => tab.instance}>
+              {(tab, idx) => {
+                const selected = () => resources.active() === tab().instance;
+                const shortTitle = () => tabDisplayTitle(tab());
+                return (
+                  <View
+                    style={{
+                      height: 28,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      borderRadius: 8,
+                      backgroundColor: selected() ? C.cardRaised : C.card,
+                    }}
+                  >
+                    <Button
+                      ref={
+                        resources.openSections().length === 0 && idx() === 0
+                          ? (node) => {
+                              firstControl = node;
+                              if (resources.focusRequest()) {
+                                resources.focusHandled();
+                                if (props.docked) node.focus();
+                              }
+                            }
+                          : undefined
+                      }
+                      selected={selected()}
+                      onPress={inputAction(resources.select, {
+                        sessionId: tab().sessionId,
+                        instance: tab().instance,
+                      })}
+                      accessibilityLabel={tr('Preview {name}', {
+                        name: tab().title,
+                      })}
+                      tooltip={textTooltip(() => tab().title)}
+                      style={{
+                        minHeight: 28,
+                        height: 28,
+                        paddingLeft: 8,
+                        paddingRight: 4,
+                        borderRadius: 8,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'flex-start',
+                        gap: 6,
+                        maxWidth: 192,
+                      }}
+                      hoverStyle={{ opacity: 0.9 }}
+                      focusStyle={quietFocusStyle()}
+                    >
+                      <Icon
+                        name={tabIcon(tab())}
+                        size={13}
+                        color={tab().kind === 'pr' ? C.accent : selected() ? C.text : C.muted}
+                      />
+                      <Text
+                        style={[
+                          {
+                            ...captionTextStyle,
+                            color: selected() ? C.text : C.secondary,
+                            fontWeight: selected() ? '500' : undefined,
+                            flexShrink: 1,
+                            minWidth: 0,
+                          },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {shortTitle()}
+                      </Text>
+                    </Button>
+                    <Button
+                      onPress={inputAction(resources.closeTab, {
+                        sessionId: tab().sessionId,
+                        instance: tab().instance,
+                      })}
+                      accessibilityLabel={tr('Close {name}', {
+                        name: tab().title,
+                      })}
+                      tooltip={textTooltip(() => tr('Close {name}', { name: tab().title }))}
+                      style={{
+                        width: 22,
+                        height: 22,
+                        marginRight: 2,
+                        borderRadius: 4,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                      hoverStyle={{ backgroundColor: C.line }}
+                      focusStyle={quietFocusStyle()}
+                    >
+                      <Icon name="close" size={12} color={C.muted} />
+                    </Button>
+                  </View>
+                );
+              }}
+            </Each>
+
+            {/* + New Tab Button right after the last tab */}
+            <Button
+              accessibilityLabel={tr('New tab')}
+              tooltip={textTooltip(() => tr('New tab'))}
+              onPress={inputAction(resources.openLaunchpad, { sessionId })}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              hoverStyle={quietHoverStyle()}
+              activeStyle={quietActiveStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Icon name="plus" size={14} color={C.muted} />
+            </Button>
           </View>
         </Scroll>
 
-        <Button
-          accessibilityLabel={tr('Agent terminals')}
-          selected={agent()}
-          onPress={showTerminals('agent-terminals')}
+        {/* Right Stage Controls: Fullscreen / Exit Fullscreen + Close */}
+        <If
+          when={props.docked && resources.fullscreen()}
+          else={
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+              <If when={props.docked}>
+                <Button
+                  accessibilityLabel={tr('Enter fullscreen')}
+                  tooltip={textTooltip(() => shortcut(tr('Enter fullscreen'), 'shift+mod+f'))}
+                  onPress={() => resources.setFullscreen(true)}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 8,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  hoverStyle={quietHoverStyle()}
+                  activeStyle={quietActiveStyle()}
+                  focusStyle={quietFocusStyle()}
+                >
+                  <Icon name="expand" size={14} color={C.muted} />
+                </Button>
+              </If>
+              <Button
+                accessibilityLabel={tr('Close workspace preview')}
+                onPress={inputAction(resources.close, closeTarget)}
+                tooltip={textTooltip(() => tr('Close workspace preview · Esc'))}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                hoverStyle={quietHoverStyle()}
+                activeStyle={quietActiveStyle()}
+                focusStyle={quietFocusStyle()}
+              >
+                <Icon name="close" size={14} color={C.muted} />
+              </Button>
+            </View>
+          }
+        >
+          <Button
+            accessibilityLabel={tr('Exit fullscreen')}
+            tooltip={textTooltip(() => shortcut(tr('Exit fullscreen'), 'shift+mod+f'))}
+            onPress={() => resources.setFullscreen(false)}
+            style={{
+              height: 28,
+              paddingHorizontal: 8,
+              borderRadius: 8,
+              backgroundColor: C.card,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              flexShrink: 0,
+            }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
+            activeStyle={quietActiveStyle()}
+            focusStyle={quietFocusStyle()}
+          >
+            <Icon name="minimize" size={13} color={C.secondary} />
+            <Text style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}>
+              {tr('Exit fullscreen')}
+            </Text>
+          </Button>
+        </If>
+      </View>
+
+      {/* New Tab Launchpad */}
+      <If when={resources.active() === 'launchpad'}>
+        <StageLaunchpad
+          sessionId={sessionId}
+          reviewStore={resources.reviewStore}
+          openTerminals={showTerminals('terminals')}
+          openAgentTerminals={showTerminals('agent-terminals')}
+          openChanges={(wt) => resources.openChanges({ sessionId, worktreePath: wt })}
+          openFiles={() => resources.openFiles({ sessionId })}
+          openFile={(target) => resources.openFile(target)}
+          openPullRequest={(target) => resources.openPullRequest({ sessionId, ...target })}
+        />
+      </If>
+
+      {/* Unified Multi-File Changes Studio */}
+      <If when={resources.active() === 'changes'}>
+        <ChangesStudio
+          sessionId={sessionId}
+          reviewStore={resources.reviewStore}
+          canPrompt={resources.canPrompt}
+          deliverPrompt={(text, mode) => resources.deliverPrompt(sessionId, text, mode)}
+          openFile={(target) => resources.openFile(target)}
+        />
+      </If>
+
+      {/* Workspace Files Browser */}
+      <If when={resources.active() === 'files'}>
+        <View style={{ flex: 1, minHeight: 0, padding: 8 }}>
+          <WorkspaceFiles model={resources.files} />
+        </View>
+      </If>
+
+      {/* Terminal Surface (Personal & Agent Terminals with Sub-Header Switcher) */}
+      <If when={inTerminalSurface()}>
+        <View
           style={{
-            ...controlStyle,
+            height: 36,
+            paddingHorizontal: 12,
+            borderBottomWidth: 1,
+            borderBottomColor: C.line,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 4,
+            flexShrink: 0,
           }}
-          selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
         >
-          <Icon name="bot" size={14} color={C.muted} />
-          <Text style={{ ...captionTextStyle, color: agent() ? C.text : C.muted }}>Agent</Text>
-          <If
-            when={
-              resources.terminalSection() !== null && resources.runningAgentTerminals().length > 0
-            }
+          <Button
+            accessibilityLabel={tr('Show conversation terminals')}
+            selected={personal()}
+            onPress={showTerminals('terminals')}
+            style={{
+              height: 28,
+              paddingHorizontal: 8,
+              borderRadius: 8,
+              backgroundColor: personal() ? C.card : 'transparent',
+              justifyContent: 'center',
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
           >
             <Text
-              accessibilityLabel={tr('{count} running commands', {
-                count: resources.runningAgentTerminals().length,
-              })}
               style={{
                 ...captionTextStyle,
-                color: C.accent,
-                fontWeight: '600',
+                color: personal() ? C.text : C.secondary,
+                fontWeight: personal() ? '500' : undefined,
               }}
             >
-              {resources.runningAgentTerminals().length}
+              {tr('Terminal')}
             </Text>
-          </If>
-        </Button>
-        <Button
-          accessibilityLabel={tr('Close workspace preview')}
-          onPress={inputAction(resources.close, closeTarget)}
-          tooltip={textTooltip(() => tr('Close workspace preview · Esc'))}
-          style={{
-            ...controlStyle,
-            width: 32,
-            paddingHorizontal: 8,
-            alignItems: 'center',
-          }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-        >
-          <Icon name="close" color={C.muted} />
-        </Button>
-      </View>
+          </Button>
+
+          <Button
+            accessibilityLabel={tr('Agent terminals')}
+            selected={agent()}
+            onPress={showTerminals('agent-terminals')}
+            style={{
+              height: 28,
+              paddingHorizontal: 8,
+              borderRadius: 8,
+              backgroundColor: agent() ? C.card : 'transparent',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+            }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+          >
+            <Icon name="bot" size={14} color={agent() ? C.text : C.muted} />
+            <Text
+              style={{
+                ...captionTextStyle,
+                color: agent() ? C.text : C.secondary,
+                fontWeight: agent() ? '500' : undefined,
+              }}
+            >
+              Agent
+            </Text>
+            <If when={resources.runningAgentTerminals().length > 0}>
+              <Text
+                accessibilityLabel={tr('{count} running commands', {
+                  count: resources.runningAgentTerminals().length,
+                })}
+                style={{
+                  ...captionTextStyle,
+                  color: C.accent,
+                  fontWeight: '600',
+                }}
+              >
+                {resources.runningAgentTerminals().length}
+              </Text>
+            </If>
+          </Button>
+        </View>
+      </If>
 
       <If when={personal()}>
-        <PersonalTerminals
-          model={resources.terminals}
-          entries={resources.personalTerminals()}
-          selected={terminal()?.target.ref}
-          cwd={resources.directory()}
-          open={resources.showTerminal}
-        />
+        <View style={{ flex: 1, minHeight: 0, padding: 8 }}>
+          <PersonalTerminals
+            model={resources.terminals}
+            entries={resources.personalTerminals()}
+            selected={terminal()?.target.ref}
+            cwd={resources.directory()}
+            open={resources.showTerminal}
+          />
+        </View>
       </If>
       <If when={agent() && !terminal()}>
-        <AgentTerminals
-          model={resources.terminals}
-          running={resources.runningAgentTerminals()}
-          finished={resources.finishedAgentTerminals()}
-          open={resources.showTerminal}
-        />
+        <View style={{ flex: 1, minHeight: 0, padding: 8 }}>
+          <AgentTerminals
+            model={resources.terminals}
+            running={resources.runningAgentTerminals()}
+            finished={resources.finishedAgentTerminals()}
+            open={resources.showTerminal}
+          />
+        </View>
       </If>
-      <If when={resources.active() === 'changes'}>
-        <WorkspaceChanges
-          sessionId={sessionId}
-          reviewStore={resources.reviewStore}
-          openDiff={(target) => resources.openDiff(target)}
-        />
-      </If>
-      <If when={resources.active() === 'files'}>
-        <WorkspaceFiles model={resources.files} />
-      </If>
+
+      {/* Active Tab Content: PR / File / Single Diff / Terminal / Image */}
       <Each of={resources.activeTab() ? [resources.activeTab()!] : []} key={(tab) => tab.instance}>
         {(tab) => {
           const current = tab();
@@ -420,24 +679,43 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               },
               restoreFocus,
             );
+          if (current.kind === 'pr')
+            return (
+              <PullRequestTab
+                sessionId={current.sessionId}
+                repo={current.repo}
+                number={current.number}
+                reviewStore={resources.reviewStore}
+                canPrompt={resources.canPrompt}
+                deliverPrompt={(text, mode) =>
+                  resources.deliverPrompt(current.sessionId, text, mode)
+                }
+                openFile={(target) => resources.openFile(target)}
+                onTitleResolved={(resolved) => resources.updateTabTitle(current.instance, resolved)}
+              />
+            );
           if (current.kind === 'file')
             return (
-              <CurrentFile
-                model={current.model}
-                openImageViewer={openImageViewer}
-                navigation={resources.fileNavigation(current.model.target)}
-              />
+              <View style={{ flex: 1, minHeight: 0, padding: 8 }}>
+                <CurrentFile
+                  model={current.model}
+                  openImageViewer={openImageViewer}
+                  navigation={resources.fileNavigation(current.model.target)}
+                />
+              </View>
             );
           if (current.kind === 'diff')
             return (
-              <CurrentDiff
-                model={current.model}
-                review={resources.diffReview(current.model.target)}
-              />
+              <View style={{ flex: 1, minHeight: 0, padding: 8 }}>
+                <CurrentDiff
+                  model={current.model}
+                  review={resources.diffReview(current.model.target)}
+                />
+              </View>
             );
           if (current.kind === 'terminal')
             return (
-              <>
+              <View style={{ flex: 1, minHeight: 0, padding: 8, gap: 8 }}>
                 <If when={current.model.agentOwned()}>
                   <View
                     style={{
@@ -473,9 +751,13 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                   </View>
                 </If>
                 <Terminal model={current.model} />
-              </>
+              </View>
             );
-          return <OriginalImage image={current.image} openImageViewer={openImageViewer} />;
+          return (
+            <View style={{ flex: 1, minHeight: 0, padding: 8 }}>
+              <OriginalImage image={current.image} openImageViewer={openImageViewer} />
+            </View>
+          );
         }}
       </Each>
 
@@ -491,13 +773,15 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         />
       </If>
 
-      <ReviewBatchBar
-        sessionId={sessionId}
-        store={resources.reviewStore}
-        canPrompt={resources.canPrompt()}
-        onJumpToNote={resources.jumpToNote}
-        onDeliver={(text, mode) => resources.deliverPrompt(sessionId, text, mode)}
-      />
+      <If when={!inChangesOrPr()}>
+        <ReviewBatchBar
+          sessionId={sessionId}
+          store={resources.reviewStore}
+          canPrompt={resources.canPrompt()}
+          onJumpToNote={resources.jumpToNote}
+          onDeliver={(text, mode) => resources.deliverPrompt(sessionId, text, mode)}
+        />
+      </If>
     </View>
   );
 }

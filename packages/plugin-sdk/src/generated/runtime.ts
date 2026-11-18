@@ -6795,6 +6795,7 @@ export interface ConnectionCredentialTarget {
   };
 }
 export interface SettingsConnectionEditingFacts {
+  discoveredModelIds: string[];
   enabledModelIds: string[];
   modelOverrides: {
     [k: string]: ModelOverride | undefined;
@@ -8064,6 +8065,7 @@ export interface AgentGitDiffRead {
   sessionId: string;
   area: GitArea;
   path: WorkspacePath;
+  worktreePath?: string | null;
 }
 export interface TerminalList {
   sessionId: string;

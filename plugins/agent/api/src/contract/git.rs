@@ -21,10 +21,19 @@ use super::WorkspacePath;
 pub use maka_fs_tools::git::{
     GitArea, GitBranchEntry, GitChangeKind, GitCommitSummary, GitCompare, GitCompareEntry,
     GitCompareSpec, GitDiff, GitRemoteRepo, GitRevisions, GitStatus, GitStatusEntry,
-    GitWorkspaceDiff,
+    GitWorkspaceDiff, GitWorktreeEntry,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitSessionRead")]
+pub struct GitSessionRead {
+    pub session_id: String,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
+}
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,6 +42,8 @@ pub struct GitDiffRead {
     pub session_id: String,
     pub area: GitArea,
     pub path: WorkspacePath,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -42,6 +53,8 @@ pub struct GitWorkspaceDiffRead {
     pub session_id: String,
     #[serde(default)]
     pub area: Option<GitArea>,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -52,6 +65,8 @@ pub struct GitCompareRead {
     pub spec: GitCompareSpec,
     #[serde(default)]
     pub include_patch: bool,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -61,4 +76,6 @@ pub struct GitCompareDiffRead {
     pub session_id: String,
     pub spec: GitCompareSpec,
     pub path: WorkspacePath,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
 }

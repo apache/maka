@@ -2269,7 +2269,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "gitStatus".into(),
-                    method::<SessionRead, Option<GitStatus>>(MethodMode::Query),
+                    method::<GitSessionRead, Option<GitStatus>>(MethodMode::Query),
                 ),
                 (
                     "gitDiff".into(),
@@ -2281,7 +2281,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "gitRevisions".into(),
-                    method::<SessionRead, Option<GitRevisions>>(MethodMode::Query),
+                    method::<GitSessionRead, Option<GitRevisions>>(MethodMode::Query),
                 ),
                 (
                     "gitCompare".into(),
@@ -2312,6 +2312,12 @@ pub fn contract() -> Contract {
                 (
                     "githubReplyComment".into(),
                     method::<GitHubReplyCommentInput, GitHubReplyCommentResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "githubCommentPullRequest".into(),
+                    method::<GitHubIssueCommentInput, GitHubReplyCommentResult>(
                         MethodMode::Mutation,
                     ),
                 ),

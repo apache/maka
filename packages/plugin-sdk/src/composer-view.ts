@@ -303,6 +303,9 @@ export interface ComposerViewInput<Element = unknown> {
   chooseWorkspace(): void;
   /** Optional product-owned directory switcher, in the existing composer location. */
   readonly workspacePicker?: Element;
+  /** Opens workspace files in an established conversation, at the same slot as workspacePicker. */
+  openFiles?(): void;
+  filesOpener?(node: { focus(): void }): void;
   settings(): void;
   /** The Host has no model connection: a desktop start pane asks for one first. */
   needsConnection?(): boolean;

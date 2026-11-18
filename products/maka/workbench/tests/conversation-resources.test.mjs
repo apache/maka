@@ -476,3 +476,86 @@ test('patch line bijection, viewed digest invalidation, and GitHub PR review sta
   assert.ok(promptText.includes('GitHub PR #6974 review thread on `src/lib.rs#L41-L42`'));
   assert.ok(promptText.includes('**@reviewer**: Handle empty slice.'));
 });
+
+test('workspace stage launchpad, PR tabs, fullscreen, worktree selection, and scroll/collapse persistence', async (t) => {
+  const { basenameLabel, isAutoCollapsedPath } = await import(new URL('reviewState.ts', appRoot));
+  const { resources, sessions } = setup(t);
+
+  assert.equal(basenameLabel('plugins/agent/native/src/owner/github.rs'), 'github.rs');
+  assert.equal(isAutoCollapsedPath('Cargo.lock'), true);
+  assert.equal(isAutoCollapsedPath('packages/app/package-lock.json'), true);
+  assert.equal(isAutoCollapsedPath('src/main.rs'), false);
+
+  // Toggling an empty stage opens the New Tab launchpad; toggling again hides without destroying tabs.
+  resources.toggleStage({ sessionId: 'A' });
+  assert.equal(resources.shown(), true);
+  assert.equal(resources.active(), 'launchpad');
+  assert.deepEqual(resources.openSections(), ['launchpad']);
+
+  resources.setFullscreen(true);
+  assert.equal(resources.fullscreen(), true);
+
+  resources.toggleStage({ sessionId: 'A' });
+  assert.equal(resources.shown(), false);
+  assert.equal(resources.fullscreen(), false);
+  assert.deepEqual(resources.openSections(), ['launchpad']);
+
+  // Opening a GitHub PR creates a deduplicated PR tab, updates title, and surfaces in sources().
+  resources.openPullRequest({
+    sessionId: 'A',
+    repo: { host: 'github.com', owner: 'apache', repo: 'maka' },
+    number: 6962,
+    title: 'fix(agent): pair late tool results',
+  });
+  assert.equal(resources.shown(), true);
+  assert.equal(resources.activeTab().kind, 'pr');
+  assert.equal(resources.activeTab().number, 6962);
+  assert.equal(resources.sources('A').length, 1);
+  assert.equal(resources.sources('A')[0].kind, 'pr');
+
+  const prInstance = resources.activeTab().instance;
+  resources.updateTabTitle(prInstance, '#6962 fix(agent): pair late tool results in model history');
+  assert.equal(
+    resources.activeTab().title,
+    '#6962 fix(agent): pair late tool results in model history',
+  );
+
+  // Worktree selection and studio scroll/collapse state persist across tab switches.
+  resources.openChanges({ sessionId: 'A', worktreePath: '/tmp/repo/.worktrees/feature-a' });
+  assert.equal(resources.active(), 'changes');
+  assert.equal(resources.activeWorktree('A'), '/tmp/repo/.worktrees/feature-a');
+
+  resources.reviewStore.patchStudioViewState('A', 'working:/tmp/repo/.worktrees/feature-a', {
+    scrollOffset: 480,
+    collapsedPaths: { 'Cargo.lock': true, 'src/lib.rs': false },
+    filterQuery: 'src/',
+  });
+  resources.select({ sessionId: 'A', instance: prInstance });
+  assert.equal(resources.activeTab().kind, 'pr');
+  resources.goBack();
+  assert.equal(resources.active(), 'changes');
+  const studio = resources.reviewStore.studioViewState(
+    'A',
+    'working:/tmp/repo/.worktrees/feature-a',
+  );
+  assert.equal(studio.scrollOffset, 480);
+  assert.equal(studio.collapsedPaths['Cargo.lock'], true);
+  assert.equal(studio.filterQuery, 'src/');
+
+  // Closing sections & tabs falls back cleanly and hides stage when the last tab closes.
+  resources.closeSection({ sessionId: 'A', section: 'changes' });
+  assert.equal(resources.active(), prInstance);
+  resources.closeTab({ sessionId: 'A', instance: prInstance });
+  assert.equal(resources.active(), 'launchpad');
+  resources.closeSection({ sessionId: 'A', section: 'launchpad' });
+  assert.equal(resources.shown(), false);
+
+  // Pruning session A cleans up worktree & studio state.
+  sessions.set(['B']);
+  assert.equal(resources.activeWorktree('A'), null);
+  assert.equal(
+    resources.reviewStore.studioViewState('A', 'working:/tmp/repo/.worktrees/feature-a')
+      .scrollOffset,
+    0,
+  );
+});

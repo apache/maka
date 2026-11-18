@@ -111,7 +111,12 @@ function Preview() {
       provider,
       configuration: definition.descriptor.configurationDefaults,
     },
-    editing: { enabledModelIds: modelIds, modelOverrides: overrides, requestBodyOverlay: overlay },
+    editing: {
+      discoveredModelIds: discoveries >= 2 ? ['gpt-6.2-sol', 'gpt-4.1', 'gpt-4.1-mini'] : [],
+      enabledModelIds: modelIds,
+      modelOverrides: overrides,
+      requestBodyOverlay: overlay,
+    },
   });
   const receipt = (value: unknown) => ({
     reply: {

@@ -237,6 +237,7 @@ pub struct GitHubPullDetail {
     pub files: Vec<GitHubPullFile>,
     pub threads: Vec<GitHubReviewThread>,
     pub reviews: Vec<GitHubReviewSummary>,
+    pub issue_comments: Vec<GitHubReviewComment>,
     #[schemars(with = "RequiredNullable<GitWorkspaceDiff>")]
     pub patch: Option<GitWorkspaceDiff>,
 }
@@ -383,6 +384,17 @@ pub struct GitHubReplyCommentInput {
     pub repo: Option<GitHubRepoRef>,
     pub number: u64,
     pub comment_id: u64,
+    pub body: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGitHubIssueCommentInput")]
+pub struct GitHubIssueCommentInput {
+    pub session_id: String,
+    #[serde(default)]
+    pub repo: Option<GitHubRepoRef>,
+    pub number: u64,
     pub body: String,
 }
 
