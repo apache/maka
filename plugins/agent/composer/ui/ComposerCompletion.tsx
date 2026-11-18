@@ -83,6 +83,7 @@ type Read = {
   context: string;
   commands: ComposerCommand[];
 };
+type IconName = Parameters<typeof Icon>[0]['name'];
 type Row = {
   id: string;
   title: string;
@@ -93,16 +94,7 @@ type Row = {
   heading?: string;
   /** A separator above the row, between unnamed groups. */
   divider?: boolean;
-  icon:
-    | 'paperclip'
-    | 'file'
-    | 'folder'
-    | 'book'
-    | 'code'
-    | 'command'
-    | 'goal'
-    | 'symbol'
-    | 'conversation';
+  icon: IconName;
   disabled?: boolean;
   action: { read: number; id: string };
 } & (
@@ -259,7 +251,7 @@ export function createComposerCompletion(options: Options) {
           get heading() {
             return tr('Commands');
           },
-          icon: 'command',
+          icon: commandIcons[command.trigger] ?? 'command',
         }),
       );
   const localRows = (read: Read): Row[] => {
@@ -994,21 +986,27 @@ export type ComposerCompletionView = Pick<
 
 export function ComposerCompletion(props: { state: ComposerCompletionView }) {
   const state = props.state;
+  // The room on the side the menu went: held to it, the list scrolls instead of
+  // the menu sliding over the line being typed.
+  const room = signal<number | null>(null);
+  const noteHeight = signal(0);
   return (
     <If when={state.opened() !== null && state.anchor() != null}>
       <Overlay
         anchor={state.anchor()}
         placement="top"
         align="start"
-        offset={8}
+        // From the first line: the composer's top padding, then an 8pt gap.
+        offset={20}
         margin={16}
+        onPosition={({ available }) => room.set(available.height)}
         onPressOutside={state.close}
         onCancel={state.dismiss}
         accessibilityLabel={state.title()}
         style={{
           ...floatingStyle(),
           width: Math.min(480, Math.max(0, windowSize().width - 32)),
-          maxHeight: Math.max(0, windowSize().height - 32),
+          maxHeight: room() ?? Math.max(0, windowSize().height - 32),
         }}
       >
         <If when={state.opened()?.explicit && state.opened()?.source !== 'add'}>
@@ -1036,20 +1034,25 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
           </View>
           <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
         </If>
-        <If when={state.loading()}>
-          <Text style={noteStyle()}>
-            {state.opened()?.source === 'references'
-              ? tr('Loading…')
-              : state.opened()?.source === 'files'
-                ? tr('Searching files…')
-                : tr('Loading skills…')}
-          </Text>
-        </If>
-        <If when={state.error()}>
-          <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
-            {state.error()}
-          </Text>
-        </If>
+        <View
+          style={{ flexShrink: 0 }}
+          onLayout={({ bounds }) => noteHeight.set(bounds.size.height)}
+        >
+          <If when={state.loading()}>
+            <Text style={noteStyle()}>
+              {state.opened()?.source === 'references'
+                ? tr('Loading…')
+                : state.opened()?.source === 'files'
+                  ? tr('Searching files…')
+                  : tr('Loading skills…')}
+            </Text>
+          </If>
+          <If when={state.error()}>
+            <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
+              {state.error()}
+            </Text>
+          </If>
+        </View>
         <If when={!state.queryComposing()}>
           <List
             each={state.rows()}
@@ -1057,7 +1060,19 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
             ref={state.list}
             estimatedItemSize={ROW}
             style={{
-              height: Math.min(Math.max(ROW, listHeight(state.rows())), windowSize().height / 2),
+              height: shownListHeight(
+                state.rows(),
+                Math.min(
+                  windowSize().height / 2,
+                  // The menu frame, status notes and search row sit above the list.
+                  (room() ?? Infinity) -
+                    10 -
+                    noteHeight() -
+                    (state.opened()?.explicit && state.opened()?.source !== 'add'
+                      ? ROW + DIVIDER
+                      : 0),
+                ),
+              ),
               flexShrink: 1,
               minHeight: 0,
             }}
@@ -1127,20 +1142,41 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
   );
 }
 
+/** Maka's own commands by what they do; a plugin's keep the command mark. */
+const commandIcons: Partial<Record<string, IconName>> = {
+  resume: 'conversation',
+  find: 'search',
+  new: 'plus',
+  bot: 'bot',
+  workspace: 'folder',
+  model: 'thinking',
+  settings: 'settings',
+  files: 'file',
+  goal: 'goal',
+  compact: 'compaction',
+  latest: 'latest',
+  history: 'up',
+  activity: 'activity',
+  stop: 'stop',
+};
+
 const ROW = 32;
 const HEADING = 28;
 const DIVIDER = 9;
 const opensSection = (rows: readonly ComposerCompletionRow[], index: number) =>
   !!rows[index]?.heading && rows[index]?.heading !== rows[index - 1]?.heading;
-const listHeight = (rows: readonly ComposerCompletionRow[]) =>
-  rows.reduce(
-    (height, row, index) =>
-      height +
-      ROW +
-      (opensSection(rows, index) ? HEADING : 0) +
-      (row.divider && index > 0 ? DIVIDER : 0),
-    0,
-  );
+/** The list's height within `room`: all of it when it fits, else as many whole
+ * rows as fit, so the menu's edge falls between rows rather than through one. */
+const shownListHeight = (rows: readonly ComposerCompletionRow[], room: number) => {
+  let bottom = 0;
+  let shown = 0;
+  rows.forEach((row, index) => {
+    bottom +=
+      ROW + (opensSection(rows, index) ? HEADING : 0) + (row.divider && index > 0 ? DIVIDER : 0);
+    if (bottom <= room) shown = bottom;
+  });
+  return Math.max(ROW, shown);
+};
 const noteStyle = () => ({
   ...menuDetailTextStyle,
   color: C.muted,

@@ -348,6 +348,9 @@ impl Owner {
                         driver::NativeBackend::Model { model, cells: cells.clone() }
                     }
                     (None, Some(accepted)) => {
+                        if let Some(exit) = self.interrupt_lost_bridge(&state, &claim, &view, cells.as_deref()).await? {
+                            return Ok(exit);
+                        }
                         let mut backend = match self.executors.restore(accepted) {
                             Ok(backend) => backend,
                             Err(error @ crate::executor::RestoreError::Changed)

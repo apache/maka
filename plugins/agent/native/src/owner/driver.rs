@@ -185,6 +185,21 @@ impl PreparedTool {
         cancellation: CancellationToken,
         semantics: ToolSemantics,
     ) -> Result<Self, ToolRejection> {
+        if name == "Shell"
+            && let Some(command) = input.get("command").and_then(serde_json::Value::as_str)
+            && let Some(original) =
+                super::external_recovery::previous_shell(&owner.durable, access, command)
+                    .await
+                    .map_err(|error| ToolRejection::PreparationFailed {
+                        message: error.to_string(),
+                    })?
+        {
+            return Err(ToolRejection::PolicyDenied {
+                message: format!(
+                    "Shell call {original} already dispatched this command and its outcome is unknown. Inspect its state before taking further action."
+                ),
+            });
+        }
         let todo: Arc<dyn maka_agent_facts::tools::ToolPreparer> = owner.todo.clone();
         if catalog.is_prepared_by(&name, &todo) {
             catalog.validate(&name, &input)?;

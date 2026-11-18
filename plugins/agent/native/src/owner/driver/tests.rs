@@ -5799,6 +5799,18 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
         let [notice] = pending.entries.as_slice() else {
             return Err("original caller did not get the pending notification".into());
         };
+        let recovery = owner
+            .prepare_notification(
+                &source,
+                &route,
+                &crate::owner::external_recovery::recovery_request_id(source.run_id),
+                |_| "Continue the interrupted turn.".into(),
+                maka_agent_facts::message::MessageOrigin::Session {
+                    execution: source.clone(),
+                },
+            )
+            .await?
+            .ok_or("recovery notification was not prepared")?;
         rig.append(
             vec![Fact::StopRequested {
                 diagnostic: "user_requested_stop".into(),
@@ -5814,10 +5826,12 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
             maka_agent_state::queue::MessageResolution::Cancelled
         );
         queue.rebuild(session.clone()).await?;
-        assert_eq!(
-            queue.resolve_message(session, message).await?,
-            maka_agent_state::queue::MessageResolution::Cancelled
-        );
+        for id in [message, recovery.message_id] {
+            assert_eq!(
+                queue.resolve_message(session.clone(), id).await?,
+                maka_agent_state::queue::MessageResolution::Cancelled
+            );
+        }
         Ok(())
     }
     .await;

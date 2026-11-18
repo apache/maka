@@ -46,6 +46,7 @@ mod driver_executor;
 mod driver_executor_inputs;
 mod driver_executor_publication;
 mod driver_external_effects;
+mod external_recovery;
 mod rooms;
 mod send;
 pub(crate) mod session_tools;

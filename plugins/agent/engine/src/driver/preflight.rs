@@ -62,6 +62,41 @@ fn portless_reconciliation(view: &RunView, at: UnixMillis, complete_at_budget: b
 }
 
 impl Engine {
+    /// Close the lost conversation turn without acknowledging the original tool's physical cleanup.
+    pub async fn interrupt_external_returns(
+        &self,
+        claim: &DriverClaim,
+        view: &RunView,
+        task: ExternalTaskId,
+        calls: &std::collections::BTreeMap<uuid::Uuid, maka_agent_facts::cells::CellId>,
+        at: UnixMillis,
+    ) -> Result<Option<DriverExit>, RunError> {
+        use maka_agent_facts::external_effects::{ExternalEffectEvent, ExternalEffectKey};
+        let mut facts: Vec<_> = calls
+            .iter()
+            .map(|(&operation, &cell)| Fact::ExternalEffect {
+                event: ExternalEffectEvent::ReturnUnavailable {
+                    key: ExternalEffectKey { task, operation },
+                    cell,
+                },
+            })
+            .collect();
+        let terminal = if view.stopped || view.cancelled_by_risk {
+            Terminal::Cancelled
+        } else {
+            Terminal::Failed
+        };
+        facts.extend(termination_facts(
+            view,
+            terminal,
+            Some("The original tool result could not be recovered.".into()),
+        ));
+        if self.publish(Some(claim), view, facts, vec![], at).await? {
+            return Ok(Some(exit(&self.store.frontier(claim.run()).await?)));
+        }
+        Ok(None)
+    }
+
     /// Settle an old native executor Run using only its canonical state. A
     /// different executor must never observe or submit work as the old one.
     pub async fn retire_replaced_native_executor(

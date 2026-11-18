@@ -76,6 +76,14 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   event loops while honoring menu labels, quit requests and system session
   termination. Stopping an engine revokes its input and frame receipts.
 
+## Applied ahead of a sync
+
+- **TextView `tableGrid` part:** upstream longbridge/nsh#2342, merged as
+  `6c278f748f36d1bc5f4ccb26cd9ed0a6bfa06164`, so Maka can frame a Markdown
+  table. Its source, docs and compat case are applied here; its headless test
+  (`a_tables_grid_takes_the_apps_frame`) is not, since this copy's
+  `tests/base/text_view.rs` differs. A sync through that revision replaces it.
+
 ## Maintenance and verification
 
 Compare retained changes against each recorded upstream baseline. Remove local

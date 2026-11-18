@@ -192,7 +192,7 @@ impl Owner {
         parent: &Scope,
     ) -> Result<(RunSpec, Vec<ContentBlob>), String> {
         let session = self.mutable_session(session_id).await?;
-        let configuration = session.configuration;
+        let mut configuration = session.configuration;
         if parent.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err("agent_request_cancelled".into());
         }
@@ -205,6 +205,17 @@ impl Owner {
             &self.managed_worktrees,
         )
         .await?;
+        let permission_basis = configuration.permission_basis();
+        if let RunInput::Message {
+            source_messages, ..
+        } = &input
+            && source_messages.iter().any(|source| {
+                super::external_recovery::is_recovery_message(&source.message, session_id)
+            })
+        {
+            configuration.permissions.access = WorkspaceAccess::ReadOnly;
+            configuration.permissions.request_permissions = false;
+        }
         let permission_ceiling = maka_sandbox::Permissions {
             sandbox: self
                 .capture_sandbox(&configuration, parent.sandbox_floor())
@@ -292,7 +303,7 @@ impl Owner {
             origin: RunOrigin::Local,
             trigger,
             workspace: configuration.workspace.path.clone(),
-            permission_basis: configuration.permission_basis(),
+            permission_basis,
             permission_ceiling,
             network_approval_ceiling,
             backend,

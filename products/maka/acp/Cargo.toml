@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
 [package]
 name = "maka-acp"
 version.workspace = true
@@ -33,7 +32,6 @@ futures-util.workspace = true
 maka-settings-native.workspace = true
 maka-host-runtime.workspace = true
 maka-plugin-core.workspace = true
-maka-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -45,5 +43,4 @@ base64 = "0.23.1"
 libc.workspace = true
 
 [dev-dependencies]
-maka-event-log.workspace = true
 tempfile.workspace = true

@@ -73,9 +73,6 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
-[dev-dependencies]
-maka-session-state.workspace = true
-
 [build-dependencies]
 sys_traits = { version = "0.1", features = ["real", "getrandom", "filetime", "libc", "serde_json", "strip_unc", "winapi"] }
 deno_crypto = "=0.274.0"

@@ -422,6 +422,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     >
       <If when={hero()}>
         <View style={{ flexShrink: 0, gap: compact() ? 8 : 16, paddingBottom: 12 }}>
+          {/* The completion menu opens over the greeting: it steps aside rather than show cut. */}
           <View
             style={{
               flexDirection: 'row',
@@ -430,6 +431,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               justifyContent: 'center',
               gap: 12,
               paddingVertical: compact() ? 8 : 16,
+              ...(platform.idiom === 'terminal'
+                ? {}
+                : {
+                    opacity: completion.opened() === null ? 1 : 0,
+                    transitionProperty: 'opacity',
+                    transitionDuration: 120,
+                  }),
             }}
           >
             <If when={windowSize().height >= 336}>

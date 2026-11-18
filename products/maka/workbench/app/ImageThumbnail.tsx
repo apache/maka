@@ -44,6 +44,9 @@ export type ImagePreview = {
   restoreFocus?(): boolean;
 };
 
+/** The largest a hovered image is drawn; its bubble carries it whole. */
+const HOVER_MAX = { width: 480, height: 320 };
+
 export function ImageThumbnail(props: {
   source: PreviewSource;
   uri: string;
@@ -93,7 +96,7 @@ export function ImageThumbnail(props: {
   const hoverSize = () => {
     const value = size();
     if (!value) return { width: 0, height: 0 };
-    const scale = Math.min(1, 480 / value.width, 320 / value.height);
+    const scale = Math.min(1, HOVER_MAX.width / value.width, HOVER_MAX.height / value.height);
     return { width: Math.round(value.width * scale), height: Math.round(value.height * scale) };
   };
   const caption = () =>
@@ -125,7 +128,12 @@ export function ImageThumbnail(props: {
           props.mini ? (
             <Tooltip
               disabled={!size() && !error()}
-              style={{ ...richTooltipStyle(), padding: 4, gap: 4 }}
+              style={{
+                ...richTooltipStyle(),
+                padding: 4,
+                gap: 4,
+                maxWidth: HOVER_MAX.width + 8,
+              }}
             >
               <View style={{ gap: 4 }}>
                 <If when={size()}>

@@ -28,7 +28,6 @@ thiserror.workspace = true
 rusqlite.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
-dunce = "1.0.5"
 tempfile.workspace = true
 fastrand.workspace = true
 unicode-normalization = "0.1.25"
@@ -95,20 +94,7 @@ uuid.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 maka-packages.workspace = true
-sqlx.workspace = true
-maka-host-js.workspace = true
+maka-processes-native.workspace = true
 rusqlite = { workspace = true, features = ["functions"] }
 maka-settings-native.workspace = true
-maka-ui-support.workspace = true
-maka-transport.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
-
-maka-skills-native.workspace = true
-
-maka-acp-native.workspace = true
-
-maka-processes-native.workspace = true
-
-maka-interactions-native.workspace = true
-
-maka-decisions-api-native.workspace = true

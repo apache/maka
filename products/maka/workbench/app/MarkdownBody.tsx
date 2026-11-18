@@ -27,7 +27,7 @@ import { SpecView, markdownExtensions } from './SpecView';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
 import { splitSpecMarkdown } from './spec/session.ts';
-import { C, bodyTextStyle, secondaryTextStyle } from './ui';
+import { C, bodyTextStyle, isDark, secondaryTextStyle } from './ui';
 
 export function MarkdownBody(props: {
   row: () => Row;
@@ -175,32 +175,52 @@ export function MarkdownBody(props: {
                         fontWeight: props.compact ? '600' : '700',
                         color: color(),
                       },
-                      heading1: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      // A reply's sections step down from 20 to the body's size.
+                      heading1: { fontSize: props.compact ? secondaryTextStyle.fontSize : 20 },
                       heading2: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-                      heading3: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-                      heading4: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-                      heading5: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
-                      heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
+                      heading3: { fontSize: props.compact ? secondaryTextStyle.fontSize : 16 },
+                      heading4: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
+                      heading5: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
+                      heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
                       blockquote: { borderLeftColor: C.line, color: C.secondary },
                       link: { color: C.accent },
                       code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
                       ...codeBlockStyles(color(), props.compact ? 8 : 12),
-                      // The desktop starts a table's text where a code block's starts.
+                      // On the desktop a table is framed as a code block is and ruled only
+                      // between rows: each body cell draws the line above it and the header
+                      // none, so no rule meets the frame. A light table's rules sit a step
+                      // under the frame. Its text starts where a code block's starts.
+                      ...(platform.idiom === 'terminal'
+                        ? {}
+                        : {
+                            tableGrid: {
+                              borderWidth: 1,
+                              borderColor: C.line,
+                              borderRadius: props.compact ? 8 : 12,
+                            },
+                          }),
                       tableCell: {
                         ...readingStyle,
-                        ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
+                        ...(platform.idiom === 'terminal' ? {} : tableRule(1)),
                         color: color(),
-                        borderColor: C.line,
                       },
                       tableHeaderCell: {
                         ...readingStyle,
-                        ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
+                        ...(platform.idiom === 'terminal' ? {} : tableRule(0)),
                         color: color(),
                         fontWeight: '600',
-                        borderColor: C.line,
                       },
-                      tableHead: { backgroundColor: C.cardRaised },
-                      tableRow: { backgroundColor: C.card },
+                      // Rows lie on the panel; only the header is tinted, so inline code in a
+                      // cell keeps its own fill. Its top corners follow the frame's.
+                      tableHead: {
+                        backgroundColor: C.card,
+                        ...(platform.idiom === 'terminal'
+                          ? {}
+                          : {
+                              borderTopLeftRadius: props.compact ? 7 : 11,
+                              borderTopRightRadius: props.compact ? 7 : 11,
+                            }),
+                      },
                       rule: { backgroundColor: C.line },
                     }}
                   />
@@ -231,3 +251,12 @@ export function MarkdownBody(props: {
     </View>
   );
 }
+
+/** A desktop table cell's lines: a rule `top` wide above it, none beside or below. */
+const tableRule = (top: number) => ({
+  paddingHorizontal: 16,
+  borderTopWidth: top,
+  borderRightWidth: 0,
+  borderBottomWidth: 0,
+  borderColor: isDark() ? C.line : C.raised,
+});

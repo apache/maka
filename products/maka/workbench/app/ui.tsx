@@ -34,7 +34,10 @@ import {
 import { appearance } from './appearance';
 import { paletteTokens, type PaletteRecipe, type PaletteTokens } from './colorPalette';
 
-/** NSH's tooltip bubble in Maka's colors: one line, or `richTooltipStyle` for more. */
+/** A text wraps only within a width it is held to; the narrowest window is 640. */
+const TOOLTIP_MAX_WIDTH = 280;
+
+/** NSH's tooltip bubble in Maka's colors: a line, or `richTooltipStyle` for more. */
 export const tooltipStyle = () => ({
   borderRadius: 6,
   paddingHorizontal: 8,
@@ -42,6 +45,7 @@ export const tooltipStyle = () => ({
   backgroundColor: C.floating,
   borderWidth: 1,
   borderColor: C.line,
+  maxWidth: TOOLTIP_MAX_WIDTH,
 });
 export const richTooltipStyle = () => ({
   borderRadius: 8,
@@ -50,8 +54,14 @@ export const richTooltipStyle = () => ({
   backgroundColor: C.floating,
   borderWidth: 1,
   borderColor: C.line,
+  maxWidth: TOOLTIP_MAX_WIDTH,
 });
-export const tooltipTextStyle = () => ({ fontSize: 12, lineHeight: 16, color: C.text });
+export const tooltipTextStyle = () => ({
+  fontSize: 12,
+  lineHeight: 16,
+  color: C.text,
+  numberOfLines: 4,
+});
 
 export function textTooltip(text: () => string | undefined): JSX.Element {
   return (

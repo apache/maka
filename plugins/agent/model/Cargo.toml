@@ -48,5 +48,4 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 tokio = { workspace = true, features = ["net", "io-util", "test-util"] }

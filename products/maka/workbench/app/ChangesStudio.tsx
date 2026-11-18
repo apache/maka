@@ -39,6 +39,8 @@ import {
   workspacePathFromUtf8,
 } from './currentDiffState';
 import { useHost } from './host';
+import { NativeFileTree } from './NativeFileTree';
+import { pathTree } from './fileTreePaths';
 import { Icon } from './Icon';
 import { LoadingState } from './Loading';
 import { tr } from './locale';
@@ -183,12 +185,33 @@ function parseMultiFilePatch(patch: string): PatchSection[] {
   return sections;
 }
 
+function gitMark(status: string | undefined) {
+  switch (status) {
+    case 'added':
+      return 'A';
+    case 'removed':
+    case 'deleted':
+      return 'D';
+    case 'modified':
+    case 'changed':
+      return 'M';
+    case 'renamed':
+      return 'R';
+    case 'copied':
+      return 'C';
+    case 'type_changed':
+      return 'T';
+    case 'conflicted':
+      return 'U';
+    default:
+      return '';
+  }
+}
+
 type FileRowItem = {
-  key: string;
   diffPath: string;
   displayPath: string;
-  dirPrefix: string;
-  basename: string;
+  status: string;
   added: number;
   deleted: number;
   statusColor: string;
@@ -421,15 +444,10 @@ export function ChangesStudio(props: {
           path: wsPath,
           title: file.path,
         };
-        const base = basenameLabel(file.path);
-        const dirPrefix =
-          file.path.length > base.length ? file.path.slice(0, file.path.length - base.length) : '';
         return {
-          key: `pr:${detail.number}:${file.path}`,
           diffPath: file.path,
           displayPath: file.previousPath ? `${file.previousPath} → ${file.path}` : file.path,
-          dirPrefix,
-          basename: base,
+          status: file.status,
           added: file.additions,
           deleted: file.deletions,
           statusColor:
@@ -455,8 +473,8 @@ export function ChangesStudio(props: {
       const out: FileRowItem[] = [];
       for (const entry of entries) {
         const pathStr = host.pathLabel(entry.path);
-        if (seen.has(pathStr)) continue;
-        seen.add(pathStr);
+        if (seen.has(entry.path.bytesBase64)) continue;
+        seen.add(entry.path.bytesBase64);
         const sec = secMap.get(pathStr);
         const target: CurrentDiffTarget = {
           sessionId: sid,
@@ -467,15 +485,10 @@ export function ChangesStudio(props: {
           path: entry.path,
           title: pathStr,
         };
-        const base = basenameLabel(pathStr);
-        const dirPrefix =
-          pathStr.length > base.length ? pathStr.slice(0, pathStr.length - base.length) : '';
         out.push({
-          key: `working:${entry.path.bytesBase64}`,
           diffPath: pathStr,
           displayPath: pathStr,
-          dirPrefix,
-          basename: base,
+          status: entry.kind,
           added: sec?.added ?? 0,
           deleted: sec?.deleted ?? 0,
           statusColor:
@@ -515,15 +528,10 @@ export function ChangesStudio(props: {
         path: entry.path,
         title: pathStr,
       };
-      const base = basenameLabel(pathStr);
-      const dirPrefix =
-        pathStr.length > base.length ? pathStr.slice(0, pathStr.length - base.length) : '';
       return {
-        key: `compare:${label}:${entry.path.bytesBase64}`,
         diffPath: pathStr,
         displayPath: pathStr,
-        dirPrefix,
-        basename: base,
+        status: entry.kind,
         added: sec?.added ?? 0,
         deleted: sec?.deleted ?? 0,
         statusColor:
@@ -1281,6 +1289,30 @@ export function ChangesStudio(props: {
     const q = branchSearch().trim().toLowerCase();
     if (!q) return branches;
     return branches.filter((b) => b.name.toLowerCase().includes(q));
+  });
+
+  const fileTree = computed(() =>
+    pathTree(filteredFileRows(), (row) => row.wsPath, host.pathLabel),
+  );
+  const fileIndex = computed(
+    () => new Map(filteredFileRows().map((row, index) => [row.pathKey, { row, index }])),
+  );
+  const foldedFolders = signal<string[]>([]);
+  const foldedMatches = signal<string[]>([]);
+  const filter = computed(() => studio().filterQuery.trim());
+  effect(() => {
+    void props.sessionId;
+    scopeKey();
+    foldedFolders.set([]);
+  });
+  effect(() => {
+    filter();
+    foldedMatches.set([]);
+  });
+  const folds = () => (filter() ? foldedMatches : foldedFolders);
+  const expandedFolders = computed(() => {
+    const closed = new Set(folds()());
+    return fileTree().folders.filter((id) => !closed.has(id));
   });
 
   const filteredCommits = computed(() => {
@@ -2290,89 +2322,57 @@ export function ChangesStudio(props: {
               </View>
             </View>
 
-            <Scroll style={{ flex: 1, minHeight: 0 }}>
-              <View style={{ padding: 4, gap: 2 }}>
-                <Each of={filteredFileRows()} key={(row) => row.key}>
-                  {(row, idx) => {
-                    const viewed = () =>
-                      props.reviewStore.isViewed(
-                        props.sessionId,
-                        row().sourceKey,
-                        row().pathKey,
-                        row().digest,
-                      );
-                    const isSelectedSingle = () => singleFileMode() && clampedFileIndex() === idx();
-                    return (
-                      <Button
-                        accessibilityLabel={row().displayPath}
-                        tooltip={textTooltip(() => row().displayPath)}
-                        selected={isSelectedSingle()}
-                        onPress={() => selectFileRow(row(), idx())}
-                        style={{
-                          minHeight: 28,
-                          paddingHorizontal: 8,
-                          paddingVertical: 4,
-                          borderRadius: 8,
-                          backgroundColor: isSelectedSingle() ? C.card : 'transparent',
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'flex-start',
-                          gap: 8,
-                        }}
-                        hoverStyle={{ backgroundColor: C.card }}
-                        activeStyle={quietActiveStyle()}
-                        focusStyle={quietFocusStyle()}
-                      >
-                        <Icon
-                          name={viewed() ? 'check' : 'file'}
-                          size={13}
-                          color={viewed() ? C.success : row().statusColor}
-                        />
-                        <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text
-                            style={[
-                              {
-                                fontSize: 12,
-                                lineHeight: 16,
-                                color: viewed() ? C.muted : C.text,
-                                fontWeight: isSelectedSingle() ? '500' : undefined,
-                              },
-                              { numberOfLines: 1 },
-                            ]}
-                          >
-                            {row().basename}
-                          </Text>
-                          <If when={Boolean(row().dirPrefix)}>
-                            <Text
-                              style={[
-                                { fontSize: 11, lineHeight: 14, color: C.muted },
-                                { numberOfLines: 1 },
-                              ]}
-                            >
-                              {row().dirPrefix}
-                            </Text>
-                          </If>
-                        </View>
-                        <If when={row().added > 0 || row().deleted > 0}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
-                            <If when={row().added > 0}>
-                              <Text style={{ fontSize: 11, lineHeight: 14, color: C.success }}>
-                                {`+${row().added}`}
-                              </Text>
-                            </If>
-                            <If when={row().deleted > 0}>
-                              <Text style={{ fontSize: 11, lineHeight: 14, color: C.danger }}>
-                                {`-${row().deleted}`}
-                              </Text>
-                            </If>
-                          </View>
-                        </If>
-                      </Button>
-                    );
-                  }}
-                </Each>
-              </View>
-            </Scroll>
+            <NativeFileTree
+              label={tr('Changed files')}
+              items={fileTree().items}
+              expanded={expandedFolders()}
+              setExpanded={(ids) => {
+                const open = new Set(ids);
+                folds().set(fileTree().folders.filter((id) => !open.has(id)));
+              }}
+              selected={
+                singleFileMode() ? filteredFileRows()[clampedFileIndex()]?.pathKey : undefined
+              }
+              open={(id) => {
+                const file = fileIndex().get(id);
+                if (file) selectFileRow(file.row, file.index);
+              }}
+              detail={(id) => {
+                const row = () => fileIndex().get(id)?.row;
+                const viewed = () => {
+                  const file = row();
+                  return (
+                    file &&
+                    props.reviewStore.isViewed(
+                      props.sessionId,
+                      file.sourceKey,
+                      file.pathKey,
+                      file.digest,
+                    )
+                  );
+                };
+                return (
+                  <If when={!!row()}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <If when={viewed()}>
+                        <Icon name="check" size={12} color={C.success} />
+                      </If>
+                      <If when={(row()?.added ?? 0) > 0}>
+                        <Text style={{ fontSize: 11, color: C.success }}>{`+${row()?.added}`}</Text>
+                      </If>
+                      <If when={(row()?.deleted ?? 0) > 0}>
+                        <Text
+                          style={{ fontSize: 11, color: C.danger }}
+                        >{`−${row()?.deleted}`}</Text>
+                      </If>
+                      <Text style={{ fontSize: 11, color: row()?.statusColor }}>
+                        {gitMark(row()?.status)}
+                      </Text>
+                    </View>
+                  </If>
+                );
+              }}
+            />
           </View>
         </If>
       </View>
