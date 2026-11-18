@@ -591,8 +591,19 @@ struct SubmittedInput {
     prompt: String,
     images: usize,
 }
+/// Claude records a pasted prompt between `<pasted_content id="…">` tags that
+/// were not part of the input.
+fn unwrap_pasted(text: &str) -> Option<&str> {
+    let rest = text
+        .trim_start_matches('\n')
+        .strip_prefix("<pasted_content id=\"")?;
+    let (id, rest) = rest.split_once("\">\n")?;
+    rest.trim_end_matches('\n')
+        .strip_suffix(&format!("\n</pasted_content id=\"{id}\">"))
+}
 fn matches_input(content: &Value, prompt: &str, images: usize) -> bool {
-    content_text(content) == prompt
+    let text = content_text(content);
+    (text == prompt || unwrap_pasted(&text) == Some(prompt))
         && content.as_array().map_or(images == 0, |blocks| {
             !blocks.iter().any(|b| b["type"] == "tool_result")
                 && blocks.iter().filter(|b| b["type"] == "image").count() == images
@@ -888,5 +899,55 @@ impl LiveTurn<'_> {
             }));
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    struct Sink;
+    impl OutputSink for Sink {
+        fn emit(&self, _: Output) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prompt_recorded_as_pasted_content_is_admitted() {
+        let mut turn = LiveTurn {
+            session: "session",
+            prompt: "first line\nsecond line",
+            images: 0,
+            admitted: false,
+            pending: Default::default(),
+            assistant: false,
+            open_message: None,
+            final_message_id: None,
+            closed_message_ids: Default::default(),
+            row_ids: Default::default(),
+            host_tool_calls: Default::default(),
+            api_failure: None,
+            usage: Default::default(),
+            duration_ms: 0,
+        };
+        for row in [
+            json!({"type":"user","sessionId":"session","isSidechain":false,"message":{"role":"user","content":"\n\n<pasted_content id=\"4f3e\">\nfirst line\nsecond line\n</pasted_content id=\"4f3e\">\n"}}),
+            json!({"type":"assistant","sessionId":"session","uuid":"row","message":{"id":"message","content":[{"type":"text","text":"Ready."}]}}),
+        ] {
+            assert!(turn.row(row, &Sink).await.unwrap().is_none());
+        }
+        assert!(turn.admitted);
+        let outcome = turn
+            .row(
+                json!({"type":"system","subtype":"turn_duration","sessionId":"session","durationMs":10}),
+                &Sink,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, Some(Outcome::Completed { message_id: Some(id) }) if id == "message")
+        );
     }
 }
