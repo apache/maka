@@ -26,6 +26,12 @@ fn observation(
 ) -> maka_agent_facts::context::ModelRequestContext {
     let mut context = replay_observation(binding, model);
     model.info.capabilities.as_mut().unwrap().native_compaction = Some(true);
+    let downshift = binding.connection_slug == "switch-downshift";
+    if downshift {
+        context.model_context_window = Some(8_000);
+        context.context_window = Some(8_000);
+        context.declared_window = Some(6_000);
+    }
     context
         .codex
         .as_mut()
@@ -33,7 +39,11 @@ fn observation(
         .compatibility
         .as_mut()
         .unwrap()
-        .comp_hash = binding.model.clone();
+        .comp_hash = if downshift {
+        "llama3.2".into()
+    } else {
+        binding.model.clone()
+    };
     context
 }
 
@@ -177,7 +187,7 @@ async fn switching_compacts_with_previous_model_before_target_input() {
         rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true, Some(observation)).await?;
         let client = rig.client.as_ref().ok_or("client missing")?;
         let mut selections = Vec::new();
-        for (slug, model) in [("switch-source", "llama3.2"), ("switch-target", "llama3.1")] {
+        for (slug, model) in [("switch-source", "llama3.2"), ("switch-target", "llama3.1"), ("switch-downshift", "llama3.1")] {
             let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
             let connection = call(client, "settings", "create", json!({"expectedCatalogRevision":catalog["revision"],"connection":{"slug":slug,"name":slug,"provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},"configuration":{"baseUrl":format!("http://{}/v1", rig.model_listener.local_addr()?)},"enabled":true,"enabledModelIds":[model],"modelOverrides":{(model):{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}})).await?;
             let models = call(client, "agent", "models", json!({"kind":"start"})).await?;
@@ -191,10 +201,12 @@ async fn switching_compacts_with_previous_model_before_target_input() {
             };
             let mut stopped_request = None;
             let mut stopped_execution = None;
-            for (index, message) in [format!("old-input-{scenario}"), format!("new-input-{scenario}")].into_iter().enumerate() {
+            let mut old_input = format!("old-input-{scenario}");
+            if scenario == "stopped" { old_input.push_str(&" padding".repeat(8_000)); }
+            for (index, message) in [old_input, format!("new-input-{scenario}")].into_iter().enumerate() {
                 if scenario == "stopped" && index == 1 {
                     let original: &Value = stopped_execution.as_ref().unwrap();
-                    let resumed = call(client, "agent", "continueRun", json!({"sessionId":session,"sourceRunId":original["runId"],"sourceHighWater":original["highWater"],"model":{"connectionId":selections[1]["connectionId"],"modelId":selections[1]["modelId"]}})).await?;
+                    let resumed = call(client, "agent", "continueRun", json!({"sessionId":session,"sourceRunId":original["runId"],"sourceHighWater":original["highWater"],"model":{"connectionId":selections[2]["connectionId"],"modelId":selections[2]["modelId"]}})).await?;
                     assert_eq!(resumed["kind"], "started", "{resumed}");
                     loop {
                         let work = call(client, "agent", "work", json!({"sessionId":session,"target":{"kind":"run","runId":resumed["execution"]["runId"]}})).await?;

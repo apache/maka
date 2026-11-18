@@ -172,7 +172,6 @@ impl DriverModel {
         };
         let run = previous.run;
         let request = reader.request(run, previous.step).await?;
-        let tokens = previous.tokens;
         let continuation = previous.continuation;
         let evidence: RequestContextEvidence = reader.decode(run, &request.provenance).await?;
         let Some(old) = continuation
@@ -204,18 +203,19 @@ impl DriverModel {
                 .as_ref()
                 .and_then(|c| c.model_context_window),
         };
+        let tokens = previous.tokens.unwrap_or(evidence.estimated_input_tokens);
+        let limit_reached = target
+            .context
+            .as_ref()
+            .and_then(|c| c.declared_window)
+            .is_some_and(|limit| tokens >= limit);
         let downshift = previous_model != destination.model
             && previous_window
                 .zip(target.context.as_ref().and_then(|c| c.model_context_window))
                 .is_some_and(|(a, b)| a > b)
-            && tokens
-                .zip(target.context.as_ref().and_then(|c| c.declared_window))
-                .is_some_and(|(tokens, limit)| tokens >= limit);
+            && limit_reached;
         if !changed && !downshift {
-            if tokens
-                .zip(target.context.as_ref().and_then(|c| c.declared_window))
-                .is_some_and(|(tokens, limit)| tokens >= limit)
-            {
+            if limit_reached {
                 return Ok(Some(Plan {
                     previous: None,
                     evidence: CodexPreflight {
