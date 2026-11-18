@@ -492,6 +492,9 @@ pub struct Chunk {
     pub order: HistoryOrder,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<ModelPartIdentity>,
+    /// Provider citation evidence, not assistant prose.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_citation: bool,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

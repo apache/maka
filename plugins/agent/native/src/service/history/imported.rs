@@ -282,6 +282,7 @@ pub(super) async fn row(
             position: address,
             run_id: None,
             model_part: None,
+            source_citation: false,
             has_references: false,
             quotes: Vec::new(),
             final_output: false,

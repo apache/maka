@@ -8494,6 +8494,10 @@ export interface AgentHistoryChunk {
   runId?: RunId | null;
   modelPart?: ModelPartIdentity | null;
   /**
+   * Provider citation evidence, not assistant prose.
+   */
+  sourceCitation?: boolean;
+  /**
    * The original user input has quotes, directory references or inline references.
    * Present only on the first fragment; display text cannot reconstruct these references.
    */

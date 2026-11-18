@@ -15983,6 +15983,10 @@ export const contracts: {
                       },
                     ],
                   },
+                  sourceCitation: {
+                    description: 'Provider citation evidence, not assistant prose.',
+                    type: 'boolean',
+                  },
                   hasReferences: {
                     description:
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
@@ -24574,6 +24578,10 @@ export const contracts: {
                         type: 'null',
                       },
                     ],
+                  },
+                  sourceCitation: {
+                    description: 'Provider citation evidence, not assistant prose.',
+                    type: 'boolean',
                   },
                   hasReferences: {
                     description:

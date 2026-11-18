@@ -98,6 +98,7 @@ fn base(
             },
             position,
             model_part: None,
+            source_citation: false,
             has_references: false,
             quotes: Vec::new(),
             final_output: false,
@@ -445,6 +446,7 @@ pub(super) async fn project(
                     *text_kind == TextKind::Text && phase != Some("commentary")
                 }
                 ModelPart::Source { source } => {
+                    row.chunk.source_citation = true;
                     let body = match source {
                         maka_agent_facts::model::ModelSource::Url { url, title, .. } => match title
                         {
