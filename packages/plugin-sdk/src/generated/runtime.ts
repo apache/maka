@@ -3659,6 +3659,10 @@ export type AuthorizationObligation =
       cell: CellId;
       operation: string;
     };
+/**
+ * The tool family whose authority raised a permission request.
+ */
+export type PermissionSource = 'processes' | 'web' | 'files';
 export type FormField = {
   name: string;
   label: string;
@@ -4894,6 +4898,10 @@ export type AgentToolImagePage = {
   data: string;
 };
 export type AgentAttachmentImageSource =
+  | {
+      kind: 'artifact';
+      id: string;
+    }
   | {
       kind: 'room';
       messageId: string;
@@ -7925,6 +7933,13 @@ export interface PermissionRequest {
   reason: string;
   command?: PermissionCommand | null;
   permissions: Permissions;
+  /**
+   * Network access granted for this request covers only later requests from
+   * the same source; filesystem access covers all of them. Requests stored
+   * before sources were recorded decode as Web, the only source that could
+   * be granted network access then.
+   */
+  source?: PermissionSource & string;
 }
 export interface PermissionCommand {
   command: string;

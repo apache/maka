@@ -744,7 +744,6 @@ function createTerminal(
         !alive ||
         !active ||
         !hooks.admitted() ||
-        agentOwned() ||
         !local() ||
         !terminalRunning(entry()) ||
         stopping()

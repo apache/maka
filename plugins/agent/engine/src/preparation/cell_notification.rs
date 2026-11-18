@@ -293,10 +293,14 @@ async fn render(
         check(cancellation)?;
         match part {
             CellOutput::Text { text } => content.push(ContentPart::text(text)),
-            CellOutput::Image { .. } if !vision => content.push(ContentPart::text(
-                crate::history::images::no_vision(language),
-            )),
             CellOutput::Image { image } => {
+                content.push(super::image_reference(&image.reference)?);
+                if !vision {
+                    content.push(ContentPart::text(crate::history::images::no_vision(
+                        language,
+                    )));
+                    continue;
+                }
                 let data = super::projection_media_from(
                     &media,
                     &image.reference,

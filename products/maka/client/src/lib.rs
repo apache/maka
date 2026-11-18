@@ -52,6 +52,7 @@ use uuid::Uuid;
 pub type Result<T> = std::result::Result<T, String>;
 
 const CONTROL_METHODS: &[&str] = &[
+    "saveFile",
     "create",
     "predictNextMessage",
     "trustProjectMcp",
@@ -138,7 +139,10 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
         || (endpoint == "management"
-            && matches!(method, "setEnabled" | "configure" | "configureBatch"))
+            && matches!(
+                method,
+                "setEnabled" | "configure" | "configureBatch" | "installUrl" | "editComposition"
+            ))
         || (endpoint == "authentication" && method == "loginCredential")
         || (endpoint == "web" && matches!(method, "save" | "saveKey" | "deleteKey" | "checkKey"))
 }
@@ -843,6 +847,16 @@ impl Client {
     }
     /// Reserve a shell control attempt separately from composer draft sends.
     pub async fn control(&self, id: Uuid, method: &str, input: Value) -> Result<Mutation> {
+        self.control_with_resources(id, method, input, Attachments::new())
+            .await
+    }
+    pub async fn control_with_resources(
+        &self,
+        id: Uuid,
+        method: &str,
+        input: Value,
+        resources: Attachments,
+    ) -> Result<Mutation> {
         if !CONTROL_METHODS.contains(&method) {
             return Err("unsupported agent control method".into());
         }
@@ -865,7 +879,7 @@ impl Client {
             "agent",
             method,
             input,
-            Attachments::new(),
+            resources,
             session_id,
             correlation,
         )

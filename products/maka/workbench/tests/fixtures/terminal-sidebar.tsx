@@ -199,6 +199,15 @@ const host = {
             value = shell;
             break;
           }
+          case 'stop': {
+            if (input.sessionId !== sessionId || input.ref !== running.result.ref)
+              throw new Error('Unexpected stop target');
+            value = {
+              applied: true,
+              resource: { ...running, result: { ...running.result, status: 'cancelled' } },
+            };
+            break;
+          }
           case 'control': {
             const ref = input.controller.target.ref;
             for (const action of input.actions) {

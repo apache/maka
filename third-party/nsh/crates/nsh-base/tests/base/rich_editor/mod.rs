@@ -173,6 +173,18 @@ fn paragraphs(texts: &[&str]) -> Value {
     json!({"type": "doc", "content": content})
 }
 
+// ApproxTextEngine advances ASCII glyphs by 0.55 em even in a wide paragraph.
+fn text_point(app: &Headless, line: &str, offset: usize) -> Point<Points> {
+    let paragraph = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find_map(|node| node.text.filter(|value| value.text.text == line))
+        .unwrap();
+    let advance = paragraph.text.spans[0].style.font_size.0 * 0.55;
+    Point::new(px(offset as f32 * advance + 1.0), px(1.0))
+}
+
 fn see(app: &mut Headless, text: &str) {
     app.wait_for(&format!("text:{text}")).unwrap();
 }
@@ -326,20 +338,8 @@ fn a_link_marks_hint_shows_its_destination_and_leaves_editing_alone() {
     assert!(app.shows("The site"), "the title, above the URL");
     // A press on the link is the editor's: the caret goes before its
     // first character (no link plugin here opens it).
-    // Headless span bounds are the paragraph's bounds, and its approximate
-    // TextLine fills that width. Place the pointer after "go " in that line.
-    let paragraph = app
-        .screen()
-        .layout_nodes()
-        .into_iter()
-        .find_map(|node| node.text.filter(|text| text.text.text == "go the site now"))
-        .unwrap();
-    let advance = paragraph.content.size.width.0 / paragraph.text.text.chars().count() as f32;
-    app.press_at(
-        "text:go the site now",
-        Point::new(px(3.0 * advance + 1.0), px(1.0)),
-    )
-    .unwrap();
+    let at = text_point(&app, "go the site now", 3);
+    app.press_at("text:go the site now", at).unwrap();
     see(&mut app, "Sel 4-4");
     see(&mut app, &doc("go the site now"));
     // Typing inside the link goes into it.

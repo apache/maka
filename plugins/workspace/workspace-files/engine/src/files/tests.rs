@@ -57,6 +57,59 @@ impl Fixture {
         )
     }
 }
+#[test]
+fn markdown_paths_refer_to_the_bound_workspace_and_follow_its_read_policy() {
+    use crate::path::FileReadPath;
+    use maka_sandbox::filesystem::{Access, Policy, Rule};
+    let f = Fixture::new();
+    let dir = f.open(None).unwrap();
+    let file = f.root.join("screen shot.png");
+    let path = WorkspacePath::from_bytes(b"screen shot.png").unwrap();
+    for spelling in [
+        b"./nested/../screen shot.png".as_slice(),
+        file.as_os_str().as_encoded_bytes(),
+    ] {
+        assert_eq!(
+            dir.resolve_link(spelling.to_vec(), None).unwrap(),
+            FileReadPath::Workspace(path.clone())
+        );
+    }
+    let external = f.temp.path().canonicalize().unwrap().join("outside.png");
+    let denied = Policy {
+        default: Access::Deny,
+        rules: vec![Rule::subtree(&f.root, Access::Read)],
+        deny_globs: vec![],
+    }
+    .compile()
+    .unwrap();
+    assert!(
+        dir.resolve_link(
+            external.as_os_str().as_encoded_bytes().into(),
+            Some(&denied)
+        )
+        .is_err()
+    );
+    assert!(
+        dir.read_external_image(&external, Some(&denied), None, &AtomicBool::new(false))
+            .is_err()
+    );
+    assert!(matches!(
+        dir.resolve_link(external.as_os_str().as_encoded_bytes().into(), None),
+        Ok(FileReadPath::External { .. })
+    ));
+    assert!(
+        dir.resolve_link(
+            f.private
+                .join("state")
+                .as_os_str()
+                .as_encoded_bytes()
+                .into(),
+            None
+        )
+        .is_err()
+    );
+}
+
 fn names(page: &FilePage) -> Vec<Vec<u8>> {
     page.entries
         .iter()
@@ -102,6 +155,26 @@ fn bounded_live_pages_preserve_names_and_reject_foreign_directory_cursors() {
     );
 }
 
+#[test]
+fn root_rgignore_overrides_nested_gitignore_in_candidate_search() {
+    let f = Fixture::new();
+    fs::create_dir(f.root.join("src")).unwrap();
+    fs::write(f.root.join(".rgignore"), "!keep.cache\n").unwrap();
+    fs::write(f.root.join("src/.gitignore"), "*.cache\n").unwrap();
+    fs::write(f.root.join("src/keep.cache"), "").unwrap();
+    fs::write(f.root.join("src/skip.cache"), "").unwrap();
+
+    let mut paths = Vec::new();
+    f.open(None)
+        .unwrap()
+        .candidates(".cache", &AtomicBool::new(false), |entry| {
+            paths.push(entry.path.bytes().unwrap());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(paths, [b"src/keep.cache".to_vec()]);
+}
+
 #[cfg(unix)]
 #[test]
 fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private_roots() {
@@ -138,7 +211,11 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
     fs::create_dir_all(f.root.join("skipped")).unwrap();
     fs::create_dir_all(f.root.join(".git/info")).unwrap();
     fs::write(f.root.join(".gitignore"), "ignored.rs\n*.cache\nskipped/\n").unwrap();
-    fs::write(f.root.join(".ignore"), "ignored-by-ignore.rs\n").unwrap();
+    fs::write(
+        f.root.join(".ignore"),
+        format!("#{}\nignored-by-ignore.rs\n", "x".repeat(1024 * 1024)),
+    )
+    .unwrap();
     fs::write(f.root.join(".rgignore"), "ignored-by-rg.rs\n!keep.cache\n").unwrap();
     fs::write(f.root.join(".git/info/exclude"), "from-exclude.rs\n").unwrap();
     fs::write(f.root.join("src/nested/.gitignore"), "!ignored.rs\n").unwrap();

@@ -1963,6 +1963,10 @@ pub struct AttachmentImageRead {
 )]
 #[schemars(rename = "AgentAttachmentImageSource")]
 pub enum AttachmentImageSource {
+    Artifact {
+        #[schemars(length(min = 1))]
+        id: String,
+    },
     Room {
         #[schemars(length(min = 1))]
         message_id: String,
@@ -2272,6 +2276,19 @@ pub fn contract() -> Contract {
                 (
                     "watchFiles".into(),
                     method::<FileWatch, FileChange>(MethodMode::Subscription),
+                ),
+                (
+                    "saveFile".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "content".into(), maka_plugin_core::contract::text_resource_type().required(),
+                        )]),
+                        ..method::<SaveFile, SaveFileResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "resolveFileLink".into(),
+                    method::<FileLinkRead, FileReadPath>(MethodMode::Query),
                 ),
                 (
                     "readFile".into(),

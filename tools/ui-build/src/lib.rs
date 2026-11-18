@@ -135,6 +135,7 @@ pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result
         "host",
         "AttachmentPicker",
         "ComposerInput",
+        "MarkdownFileEditor",
         "TerminalGrid",
         "UploadIntake",
     ]);

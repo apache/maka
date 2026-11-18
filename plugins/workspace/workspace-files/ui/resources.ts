@@ -49,7 +49,6 @@ import {
   formatPrKey,
   type GitHubReplyCommentResult,
   parentPathOf,
-  relativizeWorkspaceFileUrl,
   type ReviewNote,
 } from '../../../../products/maka/workbench/app/reviewState';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
@@ -78,7 +77,7 @@ export type ResourceTab = {
 } & (
   | { kind: 'file'; model: CurrentFileModel }
   | { kind: 'diff'; model: CurrentDiffModel }
-  | { kind: 'image'; image: ImagePreview }
+  | { kind: 'image'; image: Pick<ImagePreview, 'uri'> }
   | { kind: 'terminal'; model: TerminalModel }
   | {
       kind: 'pr';
@@ -112,6 +111,7 @@ export function createResources(
   const fullscreen = signal(false);
   const openSections = signal<StageSectionTab[]>([]);
   const tabs = signal<ResourceTab[]>([]);
+  const parked = new Map<string, ResourceTab[]>();
   const active = signal<number | ResourceSection>('launchpad');
   const focusRequest = signal(false);
   const instance = signal(0);
@@ -176,8 +176,17 @@ export function createResources(
       imageViewer.set(null);
       fullscreen.set(false);
       openSections.set([]);
-      tabs().forEach(dispose);
-      tabs.set([]);
+      const drafts = tabs().filter(
+        (tab) => tab.kind === 'file' && (tab.model.dirty() || tab.model.saving()),
+      );
+      for (const tab of tabs()) {
+        if (tab.kind === 'file' && drafts.includes(tab)) {
+          tab.model.suspend();
+        } else dispose(tab);
+      }
+      if (session() && drafts.length) parked.set(session()!, drafts);
+      tabs.set(selected ? (parked.get(selected) ?? []) : []);
+      if (selected) parked.delete(selected);
       resetHistory();
       shown.set(false);
       active.set('launchpad');
@@ -195,6 +204,11 @@ export function createResources(
       if (pendingPreview && !sessions.includes(pendingPreview.sessionId)) pendingPreview = null;
       for (const id of headers.keys()) if (!sessions.includes(id)) headers.delete(id);
       for (const id of lastTerminal.keys()) if (!sessions.includes(id)) lastTerminal.delete(id);
+      for (const [id, drafts] of parked)
+        if (!sessions.includes(id)) {
+          drafts.forEach(dispose);
+          parked.delete(id);
+        }
       reviewStore.pruneSessions(sessions);
     });
   });
@@ -348,32 +362,34 @@ export function createResources(
     };
   };
 
-  const openImage = (image: ImagePreview) => {
-    const { sessionId } = image.source.read;
-    const identity = image.uri;
+  const showImage = (sessionId: string, uri: string, restoreFocus?: () => boolean) => {
     if (!admits(sessionId)) return;
-    open(sessionId, identity, (instance) => ({
+    open(sessionId, uri, (instance) => ({
       kind: 'image',
       instance,
-      identity,
+      identity: uri,
       sessionId,
       get title() {
         return tr('Original image');
       },
-      image,
+      image: { uri },
     }));
     const fallback = headerOpener(sessionId);
-    opener = () => image.restoreFocus?.() || fallback();
+    opener = () => restoreFocus?.() || fallback();
   };
-
+  const openImage = (image: ImagePreview) =>
+    showImage(image.source.read.sessionId, image.uri, image.restoreFocus);
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!admits(sessionId)) return;
     const request = { sessionId };
     pendingPreview = request;
     try {
-      const normalized = relativizeWorkspaceFileUrl(target, options.directory(sessionId));
-      const link = await host.openLink(normalized);
+      const link = await host.openLink(target, sessionId);
       if (link && pendingPreview === request && admits(sessionId)) {
+        if ('uri' in link) {
+          showImage(sessionId, link.uri, restoreFocus);
+          return;
+        }
         const anchor: WorkspaceFileAnchor | undefined =
           typeof link.line === 'number'
             ? {
@@ -386,7 +402,7 @@ export function createResources(
           {
             sessionId,
             path: link.path,
-            parent: link.parent,
+            parent: parentPathOf(link.path),
             title: host.pathLabel(link.path),
             ...(anchor ? { anchor } : {}),
           },
@@ -475,10 +491,18 @@ export function createResources(
     return null;
   };
 
-  const closeTab = (target: { sessionId: string; instance: number }) => {
+  const closeTab = async (target: { sessionId: string; instance: number }) => {
     if (!admits(target.sessionId)) return;
     const tab = tabs().find((tab) => tab.instance === target.instance);
     if (!tab) return;
+    if (tab.kind === 'file' && (tab.model.dirty() || tab.model.saving())) {
+      const saved = await tab.model.save();
+      if (!tabs().includes(tab)) return;
+      if (!saved || tab.model.dirty()) {
+        active.set(tab.instance);
+        return;
+      }
+    }
     if (imageViewer()?.tab === tab) imageViewer.set(null);
     dispose(tab);
     tabs.set(tabs().filter((candidate) => candidate !== tab));
@@ -949,6 +973,7 @@ export function createResources(
     alive = false;
     imageViewer.set(null);
     tabs().forEach(dispose);
+    for (const drafts of parked.values()) drafts.forEach(dispose);
   });
   return {
     shown,

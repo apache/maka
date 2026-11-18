@@ -91,6 +91,7 @@ impl Handler for Agent {
                 | "stopComputerApp"
                 | "editQueue"
                 | "uploadAttachment"
+                | "saveFile"
                 | "snapshotPatch"
                 | "fork"
                 | "compact"
@@ -211,6 +212,9 @@ impl Handler for Agent {
                             .change_session(decode(input)?, operation)
                             .await?
                             .complete(&context),
+                        "saveFile" => Ok(HandlerValue::Json(encode(
+                            owner.save_file(decode(input)?, &context).await?,
+                        )?)),
                         "snapshotPatch" => owner
                             .snapshot_patch(decode(input)?, operation, context.scope())
                             .await?
@@ -650,6 +654,11 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "watchFiles" => owner.watch_files(decode(input)?, context).await,
+                "resolveFileLink" => encode(
+                    owner
+                        .resolve_file_link(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "readFile" => owner.read_file(decode(input)?, context).await,
                 "gitDiff" => encode(owner.git_diff(decode(input)?, context.scope()).await?),
                 "gitWorkspaceDiff" => encode(

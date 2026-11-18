@@ -411,3 +411,6 @@ where
 {
     T::deserialize(deserializer).map(Some)
 }
+
+#[cfg(test)]
+mod tests;

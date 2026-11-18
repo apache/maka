@@ -535,3 +535,6 @@ fn visible(files: &BTreeSet<String>, path: &Path) -> bool {
 fn invalid(error: impl ToString) -> ReadError {
     ReadError::Invalid(error.to_string())
 }
+
+#[cfg(test)]
+mod scoped;

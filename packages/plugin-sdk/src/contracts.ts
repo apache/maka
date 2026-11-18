@@ -174,6 +174,21 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'artifact',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'room',
                       },
                       messageId: {
@@ -383,6 +398,21 @@ export const contracts: {
             $defs: {
               AgentAttachmentImageSource: {
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'artifact',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -21540,6 +21570,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -21556,6 +21592,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -33351,7 +33392,7 @@ export const contracts: {
                 type: 'string',
               },
               path: {
-                $ref: '#/$defs/WorkspacePath',
+                $ref: '#/$defs/FileReadPath',
               },
               expectedVersion: {
                 type: ['string', 'null'],
@@ -33363,6 +33404,25 @@ export const contracts: {
             additionalProperties: false,
             required: ['sessionId', 'path'],
             $defs: {
+              FileReadPath: {
+                description:
+                  'A file selected for reading. Only workspace paths are accepted by editing APIs.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      absolute: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['absolute'],
+                  },
+                ],
+              },
               WorkspacePath: {
                 type: 'object',
                 properties: {
@@ -35520,6 +35580,59 @@ export const contracts: {
           },
           resources: {},
         },
+        resolveFileLink: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentFileLinkRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              pathBytes: {
+                description: 'Exact percent-decoded Markdown path bytes.',
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'pathBytes'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'FileReadPath',
+            description:
+              'A file selected for reading. Only workspace paths are accepted by editing APIs.',
+            anyOf: [
+              {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              {
+                type: 'object',
+                properties: {
+                  absolute: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['absolute'],
+              },
+            ],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          resources: {},
+        },
         respond: {
           mode: 'mutation',
           input: {
@@ -36527,6 +36640,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -36543,6 +36662,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -37550,6 +37674,79 @@ export const contracts: {
             },
           },
           resources: {},
+        },
+        saveFile: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFile',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              expectedVersion: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'expectedVersion'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFileResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  version: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'version'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {
+            content: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
         },
         saveGitHubToken: {
           mode: 'mutation',
@@ -46027,6 +46224,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -46043,6 +46246,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',

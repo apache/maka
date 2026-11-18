@@ -281,6 +281,11 @@ export const workspaceMessages = {
     '工作区预览不可用。',
     '工作區預覽無法使用。',
   ],
+  'This conversation cannot read that path.': [
+    'This conversation cannot read that path.',
+    '此会话无权读取这个路径。',
+    '此對話無權讀取這個路徑。',
+  ],
   'Image unavailable': ['Image unavailable', '图片不可用', '圖片無法使用'],
   'Image viewport': ['Image viewport', '图片视口', '圖片檢視區'],
   'Jump to turn: {label}': ['Jump to turn: {label}', '跳转到轮次：{label}', '跳至輪次：{label}'],
@@ -385,6 +390,19 @@ export const workspaceMessages = {
   'Refresh browser': ['Refresh browser', '刷新浏览器', '重新整理瀏覽器'],
   'Refresh current changes': ['Refresh current changes', '刷新当前更改', '重新整理目前變更'],
   'Refresh current diff': ['Refresh current diff', '刷新当前差异', '重新整理目前差異'],
+  'This file has multiple hard links. Saving would break the link between them.': [
+    'This file has multiple hard links. Saving would break the link between them.',
+    '多个硬链接指向这个文件。保存会让当前路径和其他路径指向不同的文件。',
+    '多個硬連結指向這個檔案。儲存會讓目前路徑和其他路徑指向不同的檔案。',
+  ],
+  'File changed on disk.': ['File changed on disk.', '文件已被外部修改。', '檔案已被外部修改。'],
+  'Could not save the file.': ['Could not save the file.', '无法保存文件。', '無法儲存檔案。'],
+  'Show Markdown source': ['Show Markdown source', '查看源码', '檢視原始碼'],
+  'Show formatted Markdown': ['Show formatted Markdown', '排版视图', '排版檢視'],
+  'File actions': ['File actions', '文件操作', '檔案操作'],
+  'Copy file contents': ['Copy file contents', '复制文件内容', '複製檔案內容'],
+  'Discard edits': ['Discard edits', '放弃修改', '捨棄修改'],
+  'Markdown document': ['Markdown document', 'Markdown 文档', 'Markdown 文件'],
   'Refresh current file': ['Refresh current file', '刷新当前文件', '重新整理目前檔案'],
   'Release input': ['Release input', '释放输入', '釋放輸入'],
   'Release terminal input · Ctrl+Shift+Space': [
@@ -431,6 +449,11 @@ export const workspaceMessages = {
   ],
   Staged: ['Staged', '已暂存', '已暫存'],
   'Stop terminal process': ['Stop terminal process', '停止终端进程', '停止終端程序'],
+  'Stop this agent command?': [
+    'Stop this agent command?',
+    '停止这条 agent 命令？',
+    '停止這條 agent 命令？',
+  ],
   'Stop this terminal and its running process?': [
     'Stop this terminal and its running process?',
     '停止此终端及其正在运行的进程？',
@@ -486,6 +509,11 @@ export const workspaceMessages = {
     'The Host returned a different directory view. Reopen the folder.',
     '主机返回了不同的目录视图。请重新打开文件夹。',
     '主機傳回了不同的目錄檢視。請重新開啟資料夾。',
+  ],
+  'The agent sees it as stopped and may start it again.': [
+    'The agent sees it as stopped and may start it again.',
+    'agent 会看到它已被停止，可能会重新启动它。',
+    'agent 會看到它已被停止，可能會重新啟動它。',
   ],
   'The current patch has no displayable rows.': [
     'The current patch has no displayable rows.',

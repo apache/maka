@@ -1024,6 +1024,14 @@ export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency =
 export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
 /**
+ * A file selected for reading. Only workspace paths are accepted by editing APIs.
+ */
+export type AgentReadFileInput_FileReadPath =
+  | AgentReadFileInput_WorkspacePath
+  | {
+      absolute: string;
+    };
+/**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
  */
@@ -1985,6 +1993,10 @@ export type AgentSessionReadOutput_AuthorizationObligation =
 export type AgentSessionReadOutput_ExternalTaskId = string;
 export type AgentSessionReadOutput_ModelAttemptId = string;
 export type AgentSessionReadOutput_CellId = string;
+/**
+ * The tool family whose authority raised a permission request.
+ */
+export type AgentSessionReadOutput_PermissionSource = 'processes' | 'web' | 'files';
 export type AgentSessionReadOutput_FormField = {
   name: string;
   label: string;
@@ -3722,7 +3734,7 @@ export interface ServiceMethods {
        */
       input: {
         sessionId: string;
-        path: Runtime.WorkspacePath;
+        path: AgentReadFileInput_FileReadPath;
         expectedVersion?: string | null;
       };
       output: AgentReadFileOutput_AgentFileReadPart | null;
@@ -3796,6 +3808,24 @@ export interface ServiceMethods {
         requestable: boolean;
       };
     };
+    resolveFileLink: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        /**
+         * Exact percent-decoded Markdown path bytes.
+         */
+        pathBytes: string;
+      };
+      /**
+       * A file selected for reading. Only workspace paths are accepted by editing APIs.
+       */
+      output:
+        | Runtime.WorkspacePath
+        | {
+            absolute: string;
+          };
+    };
     respond: {
       mode: 'mutation';
       input: Runtime.AgentInteractionRespond;
@@ -3825,6 +3855,22 @@ export interface ServiceMethods {
         workspace: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSnapshot;
         path: string;
       };
+    };
+    saveFile: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        path: Runtime.WorkspacePath;
+        expectedVersion: string;
+      };
+      output:
+        | {
+            kind: 'saved';
+            version: string;
+          }
+        | {
+            kind: 'conflict';
+          };
     };
     saveGitHubToken: {
       mode: 'mutation';
@@ -6064,6 +6110,9 @@ export interface AgentPublishCheckpointOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning;
 }
+export interface AgentReadFileInput_WorkspacePath {
+  bytesBase64: string;
+}
 export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;
   manifest: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
@@ -6531,6 +6580,13 @@ export interface AgentSessionReadOutput_PermissionRequest {
   reason: string;
   command?: AgentSessionReadOutput_PermissionCommand | null;
   permissions: AgentSessionReadOutput_Permissions;
+  /**
+   * Network access granted for this request covers only later requests from
+   * the same source; filesystem access covers all of them. Requests stored
+   * before sources were recorded decode as Web, the only source that could
+   * be granted network access then.
+   */
+  source?: AgentSessionReadOutput_PermissionSource & string;
 }
 export interface AgentSessionReadOutput_PermissionCommand {
   command: string;

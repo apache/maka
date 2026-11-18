@@ -413,7 +413,7 @@ export function Terminal(props: { model: TerminalModel }) {
         >
           <Icon name="copy" color={C.secondary} />
         </Button>
-        <If when={!model.agentOwned() && model.local() && model.running()}>
+        <If when={model.local() && model.running()}>
           <Button
             disabled={model.stopping()}
             onPress={() => confirmation.set(true)}
@@ -661,7 +661,15 @@ export function Terminal(props: { model: TerminalModel }) {
       </If>
       <If when={confirmation()}>
         <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>
-          <DialogHeader title={tr('Stop this terminal and its running process?')} />
+          <If
+            when={model.agentOwned()}
+            else={<DialogHeader title={tr('Stop this terminal and its running process?')} />}
+          >
+            <DialogHeader
+              title={tr('Stop this agent command?')}
+              detail={`${model.entry().result.cmd}\n${tr('The agent sees it as stopped and may start it again.')}`}
+            />
+          </If>
           <DialogFooter>
             <SettingsButton
               label={tr('Cancel')}

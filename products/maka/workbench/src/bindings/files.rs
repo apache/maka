@@ -310,9 +310,9 @@ mod tests {
     fn captured_text_keeps_original_lines_and_bytes_without_splitting_graphemes() {
         let source = FileRead {
             session_id: "original-session".into(),
-            path: WorkspacePath {
+            path: maka_agent_api::contract::FileReadPath::Workspace(WorkspacePath {
                 bytes_base64: STANDARD.encode(b"preview.txt"),
-            },
+            }),
             expected_version: None,
         };
         for text in [

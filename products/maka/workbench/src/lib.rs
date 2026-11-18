@@ -291,6 +291,27 @@ mod tests {
     }
 
     #[test]
+    fn stopping_an_agent_terminal_requires_confirmation() {
+        let mut app = fixture("terminal-sidebar.tsx");
+        app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
+        app.wait_for("role:button[View terminal]").unwrap();
+        app.press("role:button[View terminal]").unwrap();
+        app.wait_for("label:Back to Agent terminals").unwrap();
+        app.press("label:Back to Agent terminals").unwrap();
+        app.wait_for("label:Open terminal cargo test").unwrap();
+        app.press("label:Open terminal cargo test").unwrap();
+
+        app.wait_for("label:Stop terminal process").unwrap();
+        app.press("label:Stop terminal process").unwrap();
+        app.wait_for("text:Stop this agent command?").unwrap();
+        app.press("role:button[Cancel]").unwrap();
+        app.wait_for("text:/running.*Read only/").unwrap();
+        app.press("label:Stop terminal process").unwrap();
+        app.press("label:Confirm stop terminal process").unwrap();
+        app.wait_for("text:/cancelled.*Read only/").unwrap();
+    }
+
+    #[test]
     fn terminal_sidebar_restores_the_personal_shell_and_opens_the_exact_agent_resource() {
         let mut app = fixture("terminal-sidebar.tsx");
         app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
@@ -660,14 +681,13 @@ mod tests {
         app.press("label:Edit model gpt-4.1").unwrap();
         app.wait_for("label:Use provider reasoning efforts: On")
             .unwrap();
-        assert!(!app.screen().enabled("label:Support effort high").unwrap());
-        let remove_model_y = y_of(&app, "text:Remove model");
+        assert!(!app.screen().matches("label:Support effort high").unwrap());
         app.press("label:Use provider reasoning efforts: On")
             .unwrap();
         app.wait_for("label:Use provider reasoning efforts: Off")
             .unwrap();
         assert!(app.screen().enabled("label:Support effort high").unwrap());
-        assert_eq!(y_of(&app, "text:Remove model"), remove_model_y);
+        app.wait_for("text:Save").unwrap();
 
         app.press_key("f8").unwrap();
         app.wait_for("text:Discard unsaved changes?").unwrap();

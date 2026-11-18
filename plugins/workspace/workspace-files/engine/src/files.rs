@@ -131,6 +131,108 @@ pub struct Directory {
     managed: bool,
 }
 impl Directory {
+    /// Interpret Markdown paths on the Host that owns the workspace.
+    pub fn resolve_link(
+        &self,
+        bytes: Vec<u8>,
+        policy: Option<&maka_sandbox::filesystem::Compiled>,
+    ) -> io::Result<crate::path::FileReadPath> {
+        use crate::path::FileReadPath;
+        #[cfg(windows)]
+        let bytes = if bytes.starts_with(b"/") && bytes.get(2) == Some(&b':') {
+            bytes[1..].into()
+        } else {
+            bytes
+        };
+        let input = gix::path::from_bstring(bytes).map_err(|_| error("files_invalid_path"))?;
+        let path = gix::path::normalize(self.root_path().join(input).into(), self.root_path())
+            .ok_or_else(|| error("files_invalid_path"))?;
+        let path = path.as_ref();
+        if !path.is_absolute()
+            || path.components().any(|p| {
+                p.as_os_str()
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(b".git")
+            })
+        {
+            return Err(error("files_invalid_path"));
+        }
+        let workspace = |path: &Path| -> io::Result<Option<FileReadPath>> {
+            if self.excluded(path) || policy.is_some_and(|p| !p.access(path).can_read()) {
+                return Err(error("files_private"));
+            }
+            path.strip_prefix(self.root_path())
+                .ok()
+                .map(|p| WorkspacePath::from_path(p).map(FileReadPath::Workspace))
+                .transpose()
+        };
+        if let Some(relative) = workspace(path)? {
+            return Ok(relative);
+        }
+        // Resolve parent aliases (e.g. /tmp on macOS), keeping the final entry no-follow.
+        let parent =
+            dunce::canonicalize(path.parent().ok_or_else(|| error("files_invalid_path"))?)?;
+        let path = parent.join(
+            path.file_name()
+                .ok_or_else(|| error("files_invalid_path"))?,
+        );
+        if let Some(relative) = workspace(&path)? {
+            return Ok(relative);
+        }
+        Ok(FileReadPath::External {
+            absolute: path
+                .to_str()
+                .ok_or_else(|| error("files_invalid_path"))?
+                .to_owned(),
+        })
+    }
+
+    pub fn read_external_image(
+        &self,
+        path: &Path,
+        policy: Option<&maka_sandbox::filesystem::Compiled>,
+        version: Option<&str>,
+        cancel: &AtomicBool,
+    ) -> io::Result<FileCapture> {
+        if !path.is_absolute()
+            || self.excluded(path)
+            || path.components().any(|p| {
+                p.as_os_str()
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(b".git")
+            })
+            || policy.is_some_and(|p| !p.access(path).can_read())
+        {
+            return Err(error("files_private"));
+        }
+        let parent = path.parent().ok_or_else(|| error("files_invalid_path"))?;
+        let (canonical, identity) = crate::directory::capture(parent)?;
+        if canonical != parent {
+            return Err(error("files_changed"));
+        }
+        let directory = Self::open(
+            parent,
+            &identity,
+            &self.private_root,
+            &self.control,
+            None,
+            None,
+            cancel,
+        )?;
+        let name = WorkspacePath::from_path(Path::new(
+            path.file_name()
+                .ok_or_else(|| error("files_invalid_path"))?,
+        ))?;
+        match directory.read_file(&name, version, cancel)? {
+            FileCapture::Ready(file) if !matches!(file.content, FileContent::Image { .. }) => {
+                Ok(FileCapture::Binary {
+                    bytes: file.data.len() as u64,
+                })
+            }
+            capture => Ok(capture),
+        }
+    }
+
     /// Canonical path of the bound workspace root.
     pub fn root_path(&self) -> &Path {
         &self.anchors[0].path
@@ -410,3 +512,6 @@ fn interrupted(cancel: &AtomicBool) -> io::Result<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

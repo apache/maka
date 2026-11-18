@@ -342,10 +342,22 @@ impl Desktop {
     async fn copy_input(&self) -> String {
         self.target_after(None).await;
         let _ = self.platform.take_clipboard_write();
-        self.key("a", true);
-        self.key("c", true);
+        let mut acted = None::<std::time::Instant>;
         self.until("the selected draft was not copied", || {
-            self.platform.take_clipboard_write()
+            if let Some(copied) = self.platform.take_clipboard_write() {
+                return Some(copied);
+            }
+            if acted.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                if self.platform.text_input_target().is_none()
+                    && let [composer] = self.controls("Focus message composer").as_slice()
+                {
+                    self.press_at(composer.center());
+                }
+                self.key("a", true);
+                self.key("c", true);
+                acted = Some(std::time::Instant::now());
+            }
+            None
         })
         .await
     }
@@ -1030,30 +1042,84 @@ async fn desktop_composer_previews_markdown_and_sends_its_source() {
     assert_eq!(conversation["kind"], "created", "{conversation}");
     client.close().await.unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let previous = desktop.platform.text_input_target();
     desktop.press("Open conversation Markdown preview").await;
+    desktop.target_after(previous).await;
     let source = "# 发布说明\n\n这是**重点：**先看[文档](https://example.org/docs)，再看 https://example.org/status。\n\n- 检查构建\n- 提交结果";
     desktop.press("Focus message composer").await;
     desktop.paste(source).await;
     desktop.expect_text(source).await;
-    desktop.key("right", false);
-    desktop.artifact("composer-markdown-draft");
-
-    let tail = desktop.platform.input_caret_bounds().unwrap();
-    desktop.key("home", false);
-    let marker = desktop
-        .until("the caret did not reach the list marker", || {
+    let selected = desktop
+        .until("the composer did not settle its select-all anchor", || {
+            let &[composer] = desktop.controls("Focus message composer").as_slice() else {
+                return None;
+            };
             desktop.platform.input_caret_bounds().filter(|bounds| {
-                bounds.left() < tail.left() - px(24.) && bounds.top() == tail.top()
+                bounds.left() < composer.left() + px(32.) && bounds.top() < composer.top() + px(32.)
             })
         })
         .await;
-    desktop.key("end", false);
+    let mut collapsed = None::<std::time::Instant>;
+    let mut settled = None;
+    let tail = desktop
+        .until("the caret did not collapse to the draft end", || {
+            if collapsed.is_some()
+                && !desktop.platform.has_pending()
+                && let Some(bounds) = desktop.platform.input_caret_bounds()
+                && bounds.left() > selected.left() + px(24.)
+                && bounds.top() > selected.top()
+            {
+                if settled == Some(bounds) {
+                    return Some(bounds);
+                }
+                settled = Some(bounds);
+                return None;
+            }
+            settled = None;
+            if collapsed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                desktop.key("right", false);
+                collapsed = Some(std::time::Instant::now());
+            }
+            None
+        })
+        .await;
+    desktop.artifact("composer-markdown-draft");
+
+    let mut homed = None::<std::time::Instant>;
+    let mut home_tries = 0usize;
+    let marker = desktop
+        .until("the caret did not reach the list marker", || {
+            let cur = desktop.platform.input_caret_bounds();
+            if home_tries >= 6 {
+                panic!("PROBE_CARET selected={selected:?} tail={tail:?} after_home={cur:?}");
+            }
+            if let Some(bounds) = cur
+                && bounds.left() < tail.left() - px(24.)
+                && bounds.top() == tail.top()
+            {
+                return Some(bounds);
+            }
+            if homed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                desktop.key("home", false);
+                homed = Some(std::time::Instant::now());
+                home_tries += 1;
+            }
+            None
+        })
+        .await;
+    let mut ended = None::<std::time::Instant>;
     desktop
         .until("the caret did not leave the list marker", || {
-            desktop
-                .platform
-                .input_caret_bounds()
-                .filter(|bounds| bounds.left() > marker.left() + px(24.))
+            if let Some(bounds) = desktop.platform.input_caret_bounds()
+                && bounds.left() > marker.left() + px(24.)
+            {
+                return Some(());
+            }
+            if ended.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                desktop.key("end", false);
+                ended = Some(std::time::Instant::now());
+            }
+            None
         })
         .await;
     desktop.press_at(point(marker.left() + px(1.), marker.center().y));
@@ -1144,9 +1210,11 @@ async fn desktop_composer_references_a_conversation_without_waking_it() {
         nsh_core::platform::Appearance::Dark,
     )
     .await;
+    let previous = desktop.platform.text_input_target();
     desktop
         .press("Open conversation Current conversation")
         .await;
+    desktop.target_after(previous).await;
     desktop.press("Focus message composer").await;
     desktop.paste("Review @Release").await;
     desktop.control("Release checklist").await;
@@ -4402,9 +4470,9 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
         file_tab.size.width <= px(200.0),
         "Stage tab stretched abnormally wide: {file_tab:?}"
     );
-    let def_btn = desktop.control("Go to definition").await;
+    let find_button = desktop.control("Find in file").await;
     let editor_body_probe = Bounds::new(
-        point(def_btn.left(), def_btn.bottom() + px(24.0)),
+        point(file_tab.left(), find_button.bottom() + px(24.0)),
         size(px(280.0), px(180.0)),
     );
     desktop

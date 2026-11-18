@@ -32,7 +32,7 @@ type Presentation =
 
 export const mermaidExtensions = [{ name: 'mermaid', language: 'mermaid' }];
 
-export function MermaidView(props: { source(): string }) {
+export function MermaidView(props: { source(): string; editable?: boolean }) {
   const code = () => (
     <TextView
       document={{ blocks: [{ type: 'codeBlock', language: 'mermaid', code: props.source() }] }}
@@ -126,18 +126,22 @@ export function MermaidView(props: { source(): string }) {
       style={{ width: '100%', gap: 8 }}
       onLayout={({ bounds }) => width.set(Math.floor(bounds.size.width))}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>Mermaid</Text>
-        <Button
-          accessibilityLabel={sourceLabel()}
-          style={{ padding: 4 }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          onPress={() => sourceShown.set(!sourceShown())}
+      <If when={!props.editable}>
+        <View
+          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
         >
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>{sourceLabel()}</Text>
-        </Button>
-      </View>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>Mermaid</Text>
+          <Button
+            accessibilityLabel={sourceLabel()}
+            style={{ padding: 4 }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            onPress={() => sourceShown.set(!sourceShown())}
+          >
+            <Text style={{ ...captionTextStyle, color: C.secondary }}>{sourceLabel()}</Text>
+          </Button>
+        </View>
+      </If>
       <Each of={images()} key={(image) => image.uri}>
         {(image) => {
           const selected = image();
@@ -158,7 +162,7 @@ export function MermaidView(props: { source(): string }) {
           );
         }}
       </Each>
-      <If when={state().kind !== 'image'}>
+      <If when={state().kind === 'error' || (!props.editable && state().kind === 'loading')}>
         <Text style={{ ...captionTextStyle, color: state().kind === 'error' ? C.danger : C.muted }}>
           {status()}
         </Text>
