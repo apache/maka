@@ -18,7 +18,7 @@
  */
 
 use crate::{PreparationFuture, ToolCallContext};
-use jsonschema::{Validator, error::ValidationErrorKind};
+use jsonschema::{ValidationError, Validator, error::ValidationErrorKind};
 use maka_agent_facts::tool_call::ToolRejection;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -330,7 +330,7 @@ impl ToolCatalog {
         }
         if !entry.validator.is_valid(input) {
             return Err(ToolRejection::InvalidInput {
-                message: schema_mismatch(&entry.validator, input),
+                message: schema_mismatch(&entry.validator, &entry.definition.input_schema, input),
             });
         }
         Ok(())
@@ -342,7 +342,7 @@ const SHOWN_ERRORS: usize = 3;
 
 /// Why `input` fails its schema, so the model can correct the call: where each of
 /// the first errors is and what it is, with the values masked since they can be long.
-fn schema_mismatch(validator: &Validator, input: &Value) -> String {
+fn schema_mismatch(validator: &Validator, schema: &Value, input: &Value) -> String {
     let mut reasons = Vec::new();
     let mut more = 0;
     for error in validator.iter_errors(input) {
@@ -350,24 +350,7 @@ fn schema_mismatch(validator: &Validator, input: &Value) -> String {
             more += 1;
             continue;
         }
-        let path = error.instance_path().to_string();
-        let mut reason = if path.is_empty() {
-            error.masked().to_string()
-        } else {
-            format!("{path}: {}", error.masked())
-        };
-        // Only a value of the wrong kind can be a structure sent as its text; a string
-        // failing a string rule (length, pattern) is meant to be a string.
-        let wrong_kind = matches!(
-            error.kind(),
-            ValidationErrorKind::Type { .. }
-                | ValidationErrorKind::AnyOf { .. }
-                | ValidationErrorKind::OneOfNotValid { .. }
-        );
-        if wrong_kind && encodes_json(error.instance()) {
-            reason.push_str(" (it is a JSON-encoded string; pass the object or array itself)");
-        }
-        reasons.push(reason);
+        reasons.push(reason(&error, schema));
     }
     let mut message = String::from("arguments do not match the declared schema");
     if !reasons.is_empty() {
@@ -378,6 +361,123 @@ fn schema_mismatch(validator: &Validator, input: &Value) -> String {
         message.push_str(&format!("; and {more} more"));
     }
     message
+}
+
+/// One schema error: where it is and what is wrong there. A failed union says which
+/// alternative the input meant, since "not valid under any of the schemas" leaves
+/// the model guessing.
+fn reason(error: &ValidationError<'_>, schema: &Value) -> String {
+    let mut what = None;
+    if let ValidationErrorKind::AnyOf { context } | ValidationErrorKind::OneOfNotValid { context } =
+        error.kind()
+        && let Some(branches) = schema
+            .pointer(error.schema_path().as_str())
+            .and_then(Value::as_array)
+        && branches.len() == context.len()
+    {
+        // `X` or null: the input is not null, so say why it is not `X`.
+        if let [first, second] = branches.as_slice()
+            && let Some(other) = match (is_null(first), is_null(second)) {
+                (true, false) => Some(1),
+                (false, true) => Some(0),
+                _ => None,
+            }
+        {
+            return reasons(&context[other], schema);
+        }
+        if let Some((tag, values)) = tag(branches) {
+            let chosen = error.instance().get(tag).and_then(Value::as_str);
+            if let Some(index) = chosen.and_then(|chosen| values.iter().position(|v| *v == chosen))
+            {
+                return reasons(&context[index], schema);
+            }
+            what = Some(alternatives(branches, tag, &values));
+        }
+    }
+    let what = what.unwrap_or_else(|| error.masked().to_string());
+    let path = error.instance_path().as_str();
+    let mut reason = if path.is_empty() {
+        what
+    } else {
+        format!("{path}: {what}")
+    };
+    // Only a value of the wrong kind can be a structure sent as its text; a string
+    // failing a string rule (length, pattern) is meant to be a string.
+    let wrong_kind = matches!(
+        error.kind(),
+        ValidationErrorKind::Type { .. }
+            | ValidationErrorKind::AnyOf { .. }
+            | ValidationErrorKind::OneOfNotValid { .. }
+    );
+    if wrong_kind && encodes_json(error.instance()) {
+        reason.push_str(" (it is a JSON-encoded string; pass the object or array itself)");
+    }
+    reason
+}
+
+fn reasons(errors: &[ValidationError<'_>], schema: &Value) -> String {
+    let reasons: Vec<_> = errors.iter().map(|error| reason(error, schema)).collect();
+    reasons.join("; ")
+}
+
+fn is_null(branch: &Value) -> bool {
+    branch.get("type").is_some_and(|kind| kind == "null")
+}
+
+/// The property every alternative requires with its own constant, as a serde-tagged
+/// enum declares it, and that constant per alternative.
+fn tag(branches: &[Value]) -> Option<(&str, Vec<&str>)> {
+    let first = branches.first()?.get("properties")?.as_object()?;
+    first.keys().find_map(|name| {
+        let values = branches
+            .iter()
+            .map(|branch| {
+                let required = branch.get("required")?.as_array()?;
+                if !required.iter().any(|field| field == name.as_str()) {
+                    return None;
+                }
+                branch.get("properties")?.get(name)?.get("const")?.as_str()
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let distinct = values.iter().collect::<std::collections::BTreeSet<_>>();
+        (distinct.len() == values.len()).then_some((name.as_str(), values))
+    })
+}
+
+/// Each tag value with the fields it takes; `?` marks an optional field.
+fn alternatives(branches: &[Value], tag: &str, values: &[&str]) -> String {
+    let alternatives: Vec<_> = branches
+        .iter()
+        .zip(values)
+        .map(|(branch, value)| {
+            let required = branch.get("required").and_then(Value::as_array);
+            let fields: Vec<_> = branch
+                .get("properties")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter(|(name, _)| name.as_str() != tag)
+                .map(|(name, _)| {
+                    if required
+                        .is_some_and(|required| required.iter().any(|field| field == name.as_str()))
+                    {
+                        name.clone()
+                    } else {
+                        format!("{name}?")
+                    }
+                })
+                .collect();
+            if fields.is_empty() {
+                format!("{value:?}")
+            } else {
+                format!("{value:?} ({})", fields.join(", "))
+            }
+        })
+        .collect();
+    format!(
+        "expected an object with {tag:?} set to one of these values, each with its fields: {}",
+        alternatives.join(", ")
+    )
 }
 
 /// A string holding a JSON object or array, the usual way a model mistakes a

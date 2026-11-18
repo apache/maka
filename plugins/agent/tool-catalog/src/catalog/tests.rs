@@ -221,6 +221,66 @@ fn a_schema_rejection_names_where_the_input_is_wrong() {
 }
 
 #[test]
+fn a_tagged_union_rejection_names_the_tag_and_the_fields_it_selects() {
+    // The shape schemars gives a serde enum with `tag = "kind"`, behind a `$ref`.
+    let catalog = checked(json!({
+        "type": "object",
+        "properties": {
+            "workspace": {"$ref": "#/$defs/Workspace"},
+            "target": {"anyOf": [{"$ref": "#/$defs/Workspace"}, {"type": "null"}]},
+        },
+        "$defs": {"Workspace": {"oneOf": [
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string", "const": "project"}, "projectId": {"type": "string"}, "path": {"type": "string", "minLength": 1}},
+                "required": ["kind", "projectId", "path"],
+                "additionalProperties": false,
+            },
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string", "const": "worktree"}, "path": {"type": ["string", "null"]}},
+                "required": ["kind"],
+                "additionalProperties": false,
+            },
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string", "const": "same"}},
+                "required": ["kind"],
+                "additionalProperties": false,
+            },
+        ]}},
+    }));
+    let alternatives = r#"/workspace: expected an object with "kind" set to one of these values, each with its fields: "project" (projectId, path), "worktree" (path?), "same""#;
+    // The tag left out, and a bare string, both list what the tag selects.
+    let message = rejection(
+        &catalog,
+        json!({"workspace": {"projectId": "p", "path": "/repo"}}),
+    );
+    assert!(message.ends_with(alternatives), "{message}");
+    let message = rejection(&catalog, json!({"workspace": "/repo"}));
+    assert!(message.ends_with(alternatives), "{message}");
+    // An unknown tag value is not echoed back.
+    let message = rejection(&catalog, json!({"workspace": {"kind": "secret-kind"}}));
+    assert!(message.ends_with(alternatives), "{message}");
+    assert!(!message.contains("secret-kind"), "{message}");
+    // A known tag value narrows the error to that alternative.
+    let message = rejection(
+        &catalog,
+        json!({"workspace": {"kind": "project", "path": "/repo"}}),
+    );
+    assert_eq!(
+        message,
+        r#"arguments do not match the declared schema: /workspace: "projectId" is a required property"#
+    );
+    // An optional union explains the non-null alternative.
+    let message = rejection(&catalog, json!({"target": {"path": "/repo"}}));
+    assert!(
+        message.ends_with(&alternatives.replace("/workspace", "/target")),
+        "{message}"
+    );
+}
+
+#[test]
 fn a_schema_rejection_names_only_the_first_errors() {
     let catalog = checked(json!({
         "type": "object",
