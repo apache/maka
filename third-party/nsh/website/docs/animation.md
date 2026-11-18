@@ -313,6 +313,8 @@ mount(App);
 
 Properties that transition, by group: **colors** (background, border, outline, shadow and text colors, gradient stops), **opacity**, **transform**, **shadows** (`box-shadow`) and **shape** (border radius and width). CSS names and their camel-case forms both work (`background-color`, `backgroundColor`, `transform`, `scale`, ...). Layout changes animate with [layout animations](#layoutanimation).
 
+On macOS, a stable wrapper View can reveal an Image or LiveImage with a foreground blur. Set filter to "blur(18px)", transitionProperty to "filter", transitionDuration to 280 and transitionTimingFunction to "ease-out". Once the initial style is mounted, change filter to "blur(0px)" or "none" on the same View when the content becomes ready. A single blur transitions from its displayed radius and respects reduced motion. The wrapper applies the blur to its layer tree while the image keeps its decoded pixels. Filters set directly on Image still use its existing baked image pipeline; use the wrapper for this animation.
+
 With Tailwind, the same thing is `transition` (colors, opacity, shadows and transforms), `transition-all`, `transition-colors`, `transition-opacity`, `transition-transform`, `transition-shadow`, with `duration-*`, `delay-*` and `ease-*`. Combined with the pressed state (`.active(..)`, `active:`) it gives pressed states that animate:
 
 ```rust tabs

@@ -418,6 +418,8 @@ futures@0.3.34		X										X
 gdk-pixbuf-sys@0.22.9												X							
 gdk-pixbuf@0.22.0												X							
 gdk4-sys@0.11.5												X							
+gdk4-x11-sys@0.11.5												X							
+gdk4-x11@0.11.5												X							
 gdk4@0.11.5												X							
 generic-array@0.14.7												X							
 get-size-derive2@0.11.1		X										X							

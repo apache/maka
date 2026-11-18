@@ -436,6 +436,8 @@
     "cargo:gdk-pixbuf-sys@0.22.9 registry+https://github.com/rust-lang/crates.io-index": "20e71836267d991e388cd7744a18239d26436d661ec12289ef5adf64cfaade7e",
     "cargo:gdk-pixbuf@0.22.0 registry+https://github.com/rust-lang/crates.io-index": "fb1bb10fe8eff3fc0474acf1f7529ee3afc778a65108b3e696a4d38a4642bb7b",
     "cargo:gdk4-sys@0.11.5 registry+https://github.com/rust-lang/crates.io-index": "07969046446654f70208e84b45de52dbad93f7995022c255f8ad7bfc850706b4",
+    "cargo:gdk4-x11-sys@0.11.5 registry+https://github.com/rust-lang/crates.io-index": "f8b204b54b6d7b68f0c8d97670ee68d0e06cfc3a8349ac4e7a17be01e51a1670",
+    "cargo:gdk4-x11@0.11.5 registry+https://github.com/rust-lang/crates.io-index": "5b2e3a60a5776b8d4685ea11f7b28e538ec70e30d373680fcd01217508389347",
     "cargo:gdk4@0.11.5 registry+https://github.com/rust-lang/crates.io-index": "942bc720ad906d9991f8acc5bf55a9399652e0f61dfcdd5b2f2ff85062554d77",
     "cargo:generic-array@0.14.7 registry+https://github.com/rust-lang/crates.io-index": "80dbf4552e200280a3c62dff72097539ab0c5e810d98fd38cad4446b2bc7c199",
     "cargo:get-size-derive2@0.11.1 registry+https://github.com/rust-lang/crates.io-index": "467da761bc25eba7c9cd1170218a0b9a2604f4050048df37f29f382f3606d5f2",
@@ -663,7 +665,7 @@
     "cargo:libm@0.2.16 registry+https://github.com/rust-lang/crates.io-index": "66507f5119a32e62e2741ed7ecda7d793bd0d01603ae56243b3bc7047421fde0",
     "cargo:libnghttp2@1.68.0 registry+https://github.com/rust-lang/crates.io-index": "3142cc59460be4b53b33095311e5e2d1cbf8f2d1b094b789dc719a47b34a0497",
     "cargo:libsqlite3-sys@0.39.0 registry+https://github.com/rust-lang/crates.io-index": "c40ad48aba986a37a8055b6a907588b241056feb230148963adbab1f2ba1425a",
-    "cargo:libuv-sys-lite@1.48.4 registry+https://github.com/rust-lang/crates.io-index": "311a382927405b046a51d3157c357a83de640f20d23d0b47882aa5b80a2604ed",
+    "cargo:libuv-sys-lite@1.48.4 registry+https://github.com/rust-lang/crates.io-index": "86a73b0a0a3ed028abd0eb0663292ebd6cd6b797b4e2811361aa9f13297e5553",
     "cargo:libz-sys@1.1.33 registry+https://github.com/rust-lang/crates.io-index": "00fa05cb719f8b308f382d1253a168492290902ae679f7eb4295c5730083eb57",
     "cargo:line-clipping@0.3.8 registry+https://github.com/rust-lang/crates.io-index": "f4d8fc9c1ab2891757f50a783ac6a93fbb8695685af8a8d9a210366fd433672f",
     "cargo:linux-raw-sys@0.12.1 registry+https://github.com/rust-lang/crates.io-index": "059f0d8b5917922b140fc0678619257d950ea673207fa9995a623dce15bcdaf5",
@@ -1494,5 +1496,5 @@
     "npm:preact@11.0.0-beta.0 https://registry.npmjs.org/preact/-/preact-11.0.0-beta.0.tgz sha512-IcODoASASYwJ9kxz7+MJeiJhvLriwSb4y4mHIyxdgaRZp6kPUud7xytrk/6GZw8U3y6EFJaRb5wi9SrEK+8+lg==": "da4f7ecf86f57891c776c0bef60deac13ff94c989832f12b1b5df88826fdf5eb",
     "npm:zod@4.6.7 https://registry.npmjs.org/zod/-/zod-4.6.7.tgz sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==": "8d405b2be44c8f37150acc9a7b5f1cf6103ddc26b043e56d34625b1c45d3a2ff"
   },
-  "sha256": "29279d2a097a223050149526a4c9238973273e272bff4c567a486df90ec7cbd8"
+  "sha256": "fceff4b5fa313a72d92b57ef70173ecc9ab2306af5227febe7ae3261589084ee"
 }

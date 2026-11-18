@@ -3775,7 +3775,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         })
         .await;
     assert!(desktop.controls("Dismiss Goal").is_empty());
-    drop(first);
+    first.finish_stream().await;
     desktop.close().await;
     fixture.finish().await;
 }

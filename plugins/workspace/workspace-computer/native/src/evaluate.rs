@@ -112,6 +112,7 @@ impl Computer {
         }
         if name == "reset" {
             self.retire_kernel(&interaction, &mut kernels).await?;
+            interaction.native_owner.recover_cursor_renderer().await?;
             return self
                 .output(
                     &invocation,
@@ -136,6 +137,18 @@ impl Computer {
         let kernel = kernels.as_mut().expect("current Computer kernel");
         let epoch = kernel.epoch.clone();
         access::granted(self, &call, basis).await?;
+        let preview = super::preview::Authority::new(self, &call, basis).await?;
+        {
+            let mut authority = epoch.preview_authority.lock().unwrap();
+            if authority
+                .as_ref()
+                .is_none_or(|current| !current.same_scope(&preview))
+            {
+                epoch.preview.clear();
+            }
+            *authority = Some(Arc::new(preview));
+        }
+        self.sessions.preview_changed.notify_waiters();
         sessions::drain_ended_turns(self, &interaction, language).await?;
         sessions::watch_turn(self, &interaction, &call, language).await?;
         let platform = {

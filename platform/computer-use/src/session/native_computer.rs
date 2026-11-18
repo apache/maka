@@ -203,15 +203,41 @@ impl Session {
         }
         #[cfg(target_os = "windows")]
         {
-            return self
+            let result = self
                 .raw_windows(call, invocation, cancellation, language)
                 .await;
+            if let Ok(call) = &result
+                && let Some(approved) = invocation.app_target()
+                && let Some(binding) = approved.binding.clone()
+            {
+                self.publish_binding_preview(
+                    binding,
+                    approved.display.name.clone(),
+                    invocation,
+                    call.source.clone(),
+                );
+            }
+            return result.map(|call| call.value);
         }
         #[cfg(target_os = "macos")]
         {
-            return self
+            let result = self
                 .raw_macos(call, invocation, cancellation, language)
                 .await;
+            if result.is_ok()
+                && let Some(approved) = invocation.app_target()
+            {
+                let key = MacApplicationKey::of(approved);
+                if let Some(handle) = self
+                    .raw_computer
+                    .mac_targets
+                    .get(&key)
+                    .and_then(|record| record.window.retained())
+                {
+                    self.publish_native_preview(handle, invocation);
+                }
+            }
+            return result;
         }
         #[allow(unreachable_code)]
         Err(failed(
@@ -258,7 +284,7 @@ impl Session {
         #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
         let windows = self
             .windows(
-                _invocation.session(),
+                None,
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]

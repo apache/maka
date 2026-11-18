@@ -57,3 +57,9 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 ```
 
 系统输出音频录制默认关闭，需在 Host 配置中显式开启 `audio: true`（仅采集系统播放输出，绝不采集麦克风）。
+
+## Computer Stage
+
+`SessionOwner::preview()` 提供实际绑定应用/标签页的独立有界 registry。预览 JPEG 只保留最新帧，最长边 1600 像素、最大 2 MiB，不会自动进入模型的 canonical 输出。交付保留帧前必须核对当前 source revision 并调用 `authorize()`；原生 owner/window 和浏览器 document/claim 身份都会重查。epoch 退役后不能再发布旧来源或恢复旧像素与能力。
+
+Host 为原 producer execution 和 permission basis 提供只读 `PreviewAuthority`。前卡呈现使用独立 client mutation 与 `ForegroundAuthority`，具有自己的 work/effect custody。Windows 目标保留实际 accepted native child source 和完整 owner/application stamp；metadata-only 调用不能提供呈现来源。关闭 viewer 不会停止共享目标；Stop、reset、权限与执行换代会退役对应能力。

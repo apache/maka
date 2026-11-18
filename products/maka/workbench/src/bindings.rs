@@ -270,6 +270,7 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 pub fn ui_registry() -> Registry {
     let mut registry = Registry::ui_set("maka/host");
     registry.register::<crate::composer_input::ComposerInput>();
+    registry.register::<crate::live_image::LiveImage>();
     registry.register::<crate::composer_input::file::MarkdownFileEditor>();
     registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();

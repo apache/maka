@@ -38,6 +38,11 @@ import {
 } from 'nsh';
 import { Button, Dialog, TextView } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
+import { Window, isAvailable as desktopAvailable } from 'nsh/desktop';
+import { ComputerStageView } from './ComputerStageView';
+import { createComputerStage, type ComputerSnapshot } from './computerStageController';
+import type { ComputerFrameSource } from './computerFrames';
+import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
 import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
@@ -1762,6 +1767,7 @@ export function createConversationUi(
   };
   let sideKeys: ViewRef | undefined;
   let paneRoot: ViewRef | undefined;
+  const computerViewport = signal({ width: 0, height: 0 });
   if (!side) {
     bindKeys();
     watchNotifications({
@@ -2239,6 +2245,41 @@ export function createConversationUi(
       );
     },
   };
+  const computerSource = computed<ComputerFrameSource | null>(() => {
+    const sessionId = selected();
+    const service = context.services.computer?.[0];
+    if (
+      !desktopAvailable ||
+      !platform.desktop ||
+      platform.idiom === 'terminal' ||
+      !sessionId ||
+      !service
+    )
+      return null;
+    return {
+      sessionId,
+      service,
+      subscribe: () =>
+        service.subscribe('watchStage', { sessionId }) as Promise<UiSubscription<ComputerSnapshot>>,
+    };
+  });
+  const computerVisible = computed(() => {
+    const state = Window.get('main')?.state();
+    const surface = shell();
+    return (
+      platform.desktop &&
+      platform.idiom !== 'terminal' &&
+      state?.visible === true &&
+      !state.minimized &&
+      !reloading() &&
+      (surface?.paneVisible?.() ?? surface?.visible() ?? false)
+    );
+  });
+  const computer = createComputerStage({
+    source: computerSource,
+    visible: computerVisible,
+    report: (reason) => console.warn('Computer Stage:', reason),
+  });
   const deliverPrompt = (input: { text: string; mode: 'insert' | 'send' }): boolean => {
     const owner = handle();
     const sid = selected();
@@ -2276,7 +2317,7 @@ export function createConversationUi(
     preview(input: ConversationPreviewInput) {
       bind(input.shell);
       input.attach(previewHandle);
-      return runtime.renderView(
+      const workspaceView = runtime.renderView(
         context.configuration.workspace as UiTarget,
         workspaceViewContract,
         {
@@ -2304,6 +2345,7 @@ export function createConversationUi(
           },
         },
       );
+      return workspaceView;
     },
     session(input: ConversationSessionInput) {
       if (input.firstMessage !== undefined)
@@ -2566,8 +2608,34 @@ export function createConversationUi(
             }}
             onFileDragEnter={() => fileDragging.set(true)}
             onFileDragLeave={() => fileDragging.set(false)}
-            style={input.compact ? { flexShrink: 1, minHeight: 0 } : { flex: 1, minHeight: 0 }}
+            style={
+              input.compact
+                ? { flexShrink: 1, minHeight: 0 }
+                : { flex: 1, minHeight: 0, position: 'relative' }
+            }
           >
+            <If when={input.compact === undefined}>
+              <View
+                onLayout={({ bounds }) => computerViewport.set(bounds.size)}
+                style={{
+                  position: 'absolute',
+                  top: 32,
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  zIndex: 10,
+                  pointerEvents: 'box-none',
+                }}
+              >
+                <ComputerStageView
+                  controller={computer}
+                  source={computerSource}
+                  visible={computerVisible}
+                  viewport={computerViewport()}
+                  report={(reason) => console.warn('Computer Stage:', reason)}
+                />
+              </View>
+            </If>
             <If when={input.compact !== undefined}>
               <CompactComposer
                 session={composerSession}

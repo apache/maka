@@ -126,6 +126,29 @@ pub(crate) fn resolve_window(
     Ok(subject)
 }
 
+/// Validate a captured owner-only or permission-bound stamp against the real HWND.
+pub(crate) fn verify_binding(binding: &ComputerAppBinding) -> Result<(), ToolError> {
+    if platform_windows::win32::windows::window_owner_pid(binding.window_id) != Some(binding.pid) {
+        return Err(failed("native window owner changed"));
+    }
+    let generation = crate::identity::process(binding.pid)?;
+    if binding.process_generation == generation {
+        if platform_windows::win32::windows::window_owner_pid(binding.window_id)
+            != Some(binding.pid)
+            || crate::identity::process(binding.pid)? != generation
+        {
+            return Err(failed("native window identity changed"));
+        }
+        return Ok(());
+    }
+    // Permission-bound observations also fence the packaged app behind the HWND owner.
+    let observed = resolve_window(binding.window_id, Language::En)?;
+    if observed.binding.as_ref() != Some(binding) {
+        return Err(failed("native application binding changed"));
+    }
+    Ok(())
+}
+
 /// Requery immediately before dispatch after the real app consent completed.
 pub(crate) fn verify_window(
     approved: &ComputerAppTarget,
@@ -140,4 +163,80 @@ pub(crate) fn verify_window(
     current
         .binding
         .ok_or_else(|| failed("approved native window has no live binding"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_OVERLAPPEDWINDOW},
+    };
+
+    #[test]
+    fn preview_windows_bindings_require_current_owner_and_full_application_stamp() {
+        struct Window(HWND);
+        impl Drop for Window {
+            fn drop(&mut self) {
+                // SAFETY: this test owns the live HWND and destroys it on its creating thread.
+                assert_ne!(unsafe { DestroyWindow(self.0) }, 0);
+            }
+        }
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let title: Vec<u16> = "Maka preview binding contract\0".encode_utf16().collect();
+        // SAFETY: STATIC is a system class; both strings remain valid for this synchronous call.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                240,
+                160,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null(), "{}", std::io::Error::last_os_error());
+        let window = Window(hwnd);
+        let resolved = resolve_window(window.0 as usize as u64, Language::En).unwrap();
+        let composite = resolved.binding.unwrap();
+        let generation = crate::identity::process(std::process::id()).unwrap();
+        let raw = ComputerAppBinding {
+            process_generation: generation.clone(),
+            ..composite.clone()
+        };
+        verify_binding(&raw).unwrap();
+        verify_binding(&composite).unwrap();
+
+        for stamp in [
+            format!("{generation}:changed"),
+            format!("{generation}|app:0:{generation}"),
+            format!("{generation}|app:{}:{generation}:changed", composite.pid),
+            format!("{}|unexpected", composite.process_generation),
+        ] {
+            let changed = ComputerAppBinding {
+                process_generation: stamp,
+                ..composite.clone()
+            };
+            assert!(verify_binding(&changed).is_err());
+        }
+        let changed = ComputerAppBinding {
+            pid: 0,
+            ..raw.clone()
+        };
+        assert!(verify_binding(&changed).is_err());
+        let changed = ComputerAppBinding {
+            window_id: 0,
+            ..raw.clone()
+        };
+        assert!(verify_binding(&changed).is_err());
+        drop(window);
+        assert!(verify_binding(&raw).is_err());
+        assert!(verify_binding(&composite).is_err());
+    }
 }

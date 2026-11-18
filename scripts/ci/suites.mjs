@@ -110,7 +110,7 @@ export const suites = {
   },
   'native-build': {
     workspace: 'root',
-    packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
+    packages: ['maka-cli', 'maka-desktop-shell', 'maka-host-shell', 'maka-python-runtime'],
     extraInputs: [...embeddedInputs, ...distributionInputs, 'scripts/rust/build-cli.mjs'],
   },
   contracts: {
@@ -124,7 +124,13 @@ export const suites = {
   },
   product: {
     workspace: 'root',
-    packages: ['maka-ui-build', 'maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
+    packages: [
+      'maka-ui-build',
+      'maka-cli',
+      'maka-desktop-shell',
+      'maka-host-shell',
+      'maka-python-runtime',
+    ],
     extraInputs: [...productInputs, ...distributionInputs],
   },
   termina: {
@@ -325,6 +331,7 @@ export const suites = {
     filter: [
       'test(macos::controller::tests::)',
       'test(macos::tcc::tests::)',
+      'test(windows_permission_subject::tests::)',
       'test(system_permission::process::tests::)',
       'test(desktop::worker::macos::tests::)',
     ].join(' | '),

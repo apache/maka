@@ -58,6 +58,10 @@ export default {
         management: one(contracts.deploymentManager),
         receipts: one(contracts.receiptReader),
         hostLogs: one(contracts.hostLogs),
+        computer: {
+          contract: contracts.workspaceComputer,
+          cardinality: { kind: 'optional' },
+        },
         terminal: {
           contract: contracts.terminal,
           cardinality: { kind: 'optional' },

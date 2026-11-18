@@ -526,7 +526,9 @@ impl BrowserAuthorization for Access {
     }
 }
 
-async fn workspace_network(configuration: &ResolvedConfiguration) -> Result<Network, ToolError> {
+pub(super) async fn workspace_network(
+    configuration: &ResolvedConfiguration,
+) -> Result<Network, ToolError> {
     if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
         return Ok(Network::Allowed);
     }

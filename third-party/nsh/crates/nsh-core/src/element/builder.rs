@@ -2433,6 +2433,15 @@ impl Image {
         self
     }
 
+    /// Desktop: retain decoded pixels until a replacement loads; empty source
+    /// and errors clear them. Clear or remount when changing the pixel owner.
+    pub fn retain_previous(mut self, value: impl IntoReactive<bool>) -> Self {
+        super::host::bind_prop(&mut self.0, value, |value| {
+            Prop::Image(crate::ImageProp::RetainPrevious(value))
+        });
+        self
+    }
+
     /// It loaded: its size in pixels.
     pub fn on_load<M>(self, listener: impl IntoListener<Size<DevicePixels>, M>) -> Self {
         self.on(

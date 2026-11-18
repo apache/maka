@@ -9860,6 +9860,8 @@ cairo-sys-rs@0.22.9 (MIT); authors declared by package: The gtk-rs Project Devel
 gdk-pixbuf-sys@0.22.9 (MIT); authors declared by package: The gtk-rs Project Developers
 gdk-pixbuf@0.22.0 (MIT); authors declared by package: The gtk-rs Project Developers
 gdk4-sys@0.11.5 (MIT); authors declared by package: The gtk-rs Project Developers
+gdk4-x11-sys@0.11.5 (MIT); authors declared by package: The gtk-rs Project Developers
+gdk4-x11@0.11.5 (MIT); authors declared by package: The gtk-rs Project Developers
 gdk4@0.11.5 (MIT); authors declared by package: The gtk-rs Project Developers
 gio-sys@0.22.9 (MIT); authors declared by package: The gtk-rs Project Developers
 gio@0.22.10 (MIT); authors declared by package: The gtk-rs Project Developers
@@ -9937,6 +9939,8 @@ https://crates.io/api/v1/crates/cairo-sys-rs/0.22.9/download :: LICENSE
 https://crates.io/api/v1/crates/gdk-pixbuf-sys/0.22.9/download :: LICENSE
 https://crates.io/api/v1/crates/gdk-pixbuf/0.22.0/download :: LICENSE
 https://crates.io/api/v1/crates/gdk4-sys/0.11.5/download :: LICENSE
+https://crates.io/api/v1/crates/gdk4-x11-sys/0.11.5/download :: LICENSE
+https://crates.io/api/v1/crates/gdk4-x11/0.11.5/download :: LICENSE
 https://crates.io/api/v1/crates/gdk4/0.11.5/download :: LICENSE
 https://crates.io/api/v1/crates/gio-sys/0.22.9/download :: LICENSE
 https://crates.io/api/v1/crates/gio/0.22.10/download :: LICENSE
@@ -10031,6 +10035,7 @@ SOFTWARE.
 
 cairo-rs@0.22.9 (MIT); authors declared by package: The gtk-rs Project Developers
 gdk-pixbuf@0.22.0 (MIT); authors declared by package: The gtk-rs Project Developers
+gdk4-x11@0.11.5 (MIT); authors declared by package: The gtk-rs Project Developers
 gdk4@0.11.5 (MIT); authors declared by package: The gtk-rs Project Developers
 gio@0.22.10 (MIT); authors declared by package: The gtk-rs Project Developers
 glib-macros@0.22.9 (MIT); authors declared by package: The gtk-rs Project Developers
@@ -10044,6 +10049,7 @@ pangocairo@0.22.9 (MIT); authors declared by package: The gtk-rs Project Develop
 
 https://crates.io/api/v1/crates/cairo-rs/0.22.9/download :: COPYRIGHT
 https://crates.io/api/v1/crates/gdk-pixbuf/0.22.0/download :: COPYRIGHT
+https://crates.io/api/v1/crates/gdk4-x11/0.11.5/download :: COPYRIGHT
 https://crates.io/api/v1/crates/gdk4/0.11.5/download :: COPYRIGHT
 https://crates.io/api/v1/crates/gio/0.22.10/download :: COPYRIGHT
 https://crates.io/api/v1/crates/glib-macros/0.22.9/download :: COPYRIGHT
@@ -25679,6 +25685,66 @@ The externally maintained libraries used by libuv are:
   - inet_pton and inet_ntop implementations, contained in src/inet.c, are
     copyright the Internet Systems Consortium, Inc., and licensed under the ISC
     license.
+
+================================================================================
+
+libuv-sys-lite@1.48.4 (MIT; see upstream notice)
+
+https://github.com/nathanwhit/libuv-sys-lite/blob/b4e887d05625d32b63bb97842d7d978f4a7e4b17/crate/libuv-1.48.0-include/uv/tree.h ; https://github.com/libuv/libuv/blob/e9f29cb984231524e3931aa0ae2c5dae1a32884e/src/inet.c
+
+libuv-sys-lite 1.48.4 — additional notices
+
+The package LICENSE retains the MIT notices and identifies the following
+externally maintained portions. These full texts supplement those notices;
+they do not assert that every listed source file is compiled into every binary.
+
+BSD-2-Clause — libuv-1.48.0-include/uv/tree.h
+Source: https://github.com/nathanwhit/libuv-sys-lite/blob/b4e887d05625d32b63bb97842d7d978f4a7e4b17/crate/libuv-1.48.0-include/uv/tree.h
+
+/*-
+ * Copyright 2002 Niels Provos <provos@citi.umich.edu>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+ISC — libuv v1.48.0 src/inet.c
+Source: https://github.com/libuv/libuv/blob/e9f29cb984231524e3931aa0ae2c5dae1a32884e/src/inet.c
+
+/*
+ * Copyright (c) 2004 by Internet Systems Consortium, Inc. ("ISC")
+ * Copyright (c) 1996-1999 by Internet Software Consortium.
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS.  IN NO EVENT SHALL ISC BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
 
 ================================================================================
 

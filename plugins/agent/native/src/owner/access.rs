@@ -19,6 +19,8 @@
 
 //! Live authority for one actual driver and accepted Root work scope.
 mod computer;
+#[cfg(test)]
+pub(super) use computer::preview_fixture;
 mod model;
 
 use super::*;

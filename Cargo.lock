@@ -5219,6 +5219,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "gdk4-x11"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "519725adee2c62e6ae4cc39e2ec9137b04f0c894f1c673ce17ab8753850534a3"
+dependencies = [
+ "gdk4",
+ "gdk4-x11-sys",
+ "gio",
+ "glib",
+ "libc",
+]
+
+[[package]]
+name = "gdk4-x11-sys"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbf4849da10d077290e2bb8805278a0afd980af7928fbbb5a915821eb4b2b099"
+dependencies = [
+ "gdk4-sys",
+ "glib-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8571,6 +8596,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "image",
  "jiff",
  "libc",
  "log",
@@ -8649,6 +8675,7 @@ dependencies = [
 name = "maka-computer-native"
 version = "0.2.0"
 dependencies = [
+ "base64 0.23.1",
  "futures-util",
  "hex",
  "jsonschema 0.60.1",
@@ -10669,6 +10696,7 @@ name = "nsh-platform-linux"
 version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
+ "gdk4-x11",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-audio",
@@ -10683,6 +10711,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde_json",
  "ttf-parser",
+ "x11rb",
 ]
 
 [[package]]

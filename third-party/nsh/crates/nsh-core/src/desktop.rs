@@ -28,7 +28,9 @@ pub use window::{
     WindowKind, WindowMode, WindowOptions, WindowPointerEvents, WindowPosition, WindowProgress,
     WindowRequest, Workspaces,
 };
-pub use window_state::{Display, DisplayId, WindowPlacement, WindowState};
+pub use window_state::{
+    Display, DisplayId, NativeDesktopBounds, NativeDesktopUnit, WindowPlacement, WindowState,
+};
 
 /// How a window's title bar looks ([`TitleBarOptions::style`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]

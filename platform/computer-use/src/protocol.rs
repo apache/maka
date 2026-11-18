@@ -131,7 +131,7 @@ pub enum Command {
         options: InventoryOptions,
     },
     ListWindows {
-        options: InventoryOptions,
+        options: WindowInventoryOptions,
     },
     GetApp {
         target: AppReference,
@@ -349,6 +349,12 @@ pub struct AudioOptions {
 pub struct InventoryOptions {
     pub emit: Option<bool>,
     pub browser: Option<String>,
+}
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowInventoryOptions {
+    pub emit: Option<bool>,
+    pub pid: Option<u32>,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -777,5 +783,36 @@ mod tests {
                 ..
             }
         ));
+    }
+}
+
+impl Command {
+    pub(crate) fn bound_handle(&self) -> Option<&Handle> {
+        match self {
+            Self::TabPageAssetsList { handle, .. }
+            | Self::TabPageAssetsBundle { handle, .. }
+            | Self::Observe { handle, .. }
+            | Self::Action { handle, .. }
+            | Self::BrowserScreenshot { handle, .. }
+            | Self::BrowserMarkTab { handle, .. }
+            | Self::TabMetadata { handle, .. }
+            | Self::ClipboardRead { handle, .. }
+            | Self::ClipboardReadText { handle, .. }
+            | Self::ClipboardWrite { handle, .. }
+            | Self::ClipboardWriteText { handle, .. }
+            | Self::GetJsDialog { handle, .. }
+            | Self::HandleJsDialog { handle, .. }
+            | Self::BrowserEvaluate { handle, .. }
+            | Self::BrowserRead { handle, .. }
+            | Self::BrowserMutation { handle, .. }
+            | Self::BrowserCua { handle, .. }
+            | Self::BrowserWait { handle, .. }
+            | Self::BrowserFileChooserWait { handle, .. }
+            | Self::BrowserFileChooserSetFiles { handle, .. }
+            | Self::BrowserDownloadWait { handle, .. }
+            | Self::BrowserDownloadPath { handle, .. }
+            | Self::BrowserDownloadMedia { handle, .. } => Some(handle),
+            _ => None,
+        }
     }
 }

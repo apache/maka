@@ -34,6 +34,7 @@ export default {
         agent: one(sdk.contracts.agent),
         hostLogs: { contract: sdk.contracts.hostLogs, cardinality: { kind: 'optional' } },
         terminal: { contract: sdk.contracts.terminal, cardinality: { kind: 'optional' } },
+        computer: { contract: sdk.contracts.workspaceComputer, cardinality: { kind: 'optional' } },
         decisions_api: {
           contract: sdk.contracts.workspaceDecisionsApi,
           cardinality: { kind: 'optional' },

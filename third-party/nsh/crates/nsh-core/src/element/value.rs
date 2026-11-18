@@ -310,6 +310,21 @@ impl JsValue for crate::geometry::Points {
     }
 }
 
+/// A number of unrounded device pixels.
+impl JsValue for crate::geometry::ScaledPixels {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "number".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        f32::from_js(value).map(Self)
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        self.0.to_js(host)
+    }
+}
+
 /// An angle, a number of radians (as `Math.PI` and the canvas's `arc`
 /// take them).
 impl JsValue for crate::geometry::Radians {
@@ -998,6 +1013,16 @@ mod tests {
             .unwrap_err()
             .0;
         assert!(error.starts_with("`count`: "), "{error}");
+    }
+
+    #[test]
+    fn native_desktop_bounds_keep_flat_fractional_js_numbers() {
+        use crate::desktop::NativeDesktopBounds;
+        let host = JsonHost::default();
+        let json = serde_json::json!({"x": -12.5, "y": 2.25, "width": 220.5, "height": 140.25});
+        let raw = host.value(json.clone());
+        let bounds = NativeDesktopBounds::from_js(JsIn::new(&host, raw)).unwrap();
+        assert_eq!(host.read(bounds.to_js(&host).unwrap()).unwrap(), json);
     }
 
     /// Fields of one `Option` type in a row are read and written in a

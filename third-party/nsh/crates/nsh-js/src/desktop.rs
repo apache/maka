@@ -1136,9 +1136,9 @@ export interface WindowRef {
   on(event: "displayChange", listener: (event: { display: Display }) => void): () => void;
 }
 
-/** What the platform reports of a window. Rectangles are in points, in
- * screen coordinates: from the primary display's top left corner, `y`
- * growing down. */
+/** What the platform reports of a window. Bounds use screen points, from
+ * the primary display's top left corner, except nativeContentBounds.
+ * Screen coordinates grow downwards along y. */
 export interface WindowState {
   /** Its mode (minimized apart). */
   mode: WindowMode;
@@ -1152,6 +1152,9 @@ export interface WindowState {
   bounds: Bounds;
   /** Its content area now. */
   contentBounds: Bounds;
+  /** Content in OS desktop units (macOS points, Windows/X11 pixels).
+   * Null when the platform cannot report a global native position. */
+  nativeContentBounds: { x: number; y: number; width: number; height: number } | null;
   /** Its mode and windowed bounds: what to save, and give to
    * `setPlacement`, to open it the same way next time. */
   placement: WindowPlacement;

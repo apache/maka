@@ -129,6 +129,7 @@ maka-ui-build.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 crossterm.workspace = true
 nsh-engine.workspace = true
 nsh-platform-tui.workspace = true

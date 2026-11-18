@@ -188,14 +188,7 @@ async fn work_groups_page_cleanly_across_skipped_leading_steps() -> TestResult<(
         };
 
         let a1 = rig.attempt().await?;
-        observe(
-            a1,
-            0,
-            TextKind::Thinking,
-            " 
-",
-        )
-        .await?;
+        observe(a1, 0, TextKind::Thinking, " \n").await?;
         let (t1, _) = rig
             .tool(a1, "tool_search", "call-1", json!({"query":"1"}))
             .await?;
