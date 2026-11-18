@@ -1125,7 +1125,7 @@ impl Session {
         window: &WindowInfo,
         cancellation: &CancellationToken,
     ) -> Result<platform_macos::capture::FrozenWindowCapture, ToolError> {
-        use crate::macos::page_scroll::{PageFrame, SizingPolicy};
+        use crate::macos::page_scroll::PageFrame;
 
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before native geometry read"));
@@ -1153,8 +1153,7 @@ impl Session {
             .map_err(|cleanup| ToolError::CleanupUnconfirmed(format!("{error}; {cleanup}")))?;
             return Err(self.retire_failed_target(handle, error).await);
         }
-        let frame =
-            PageFrame::from_native_geometry(geometry.clone(), SizingPolicy::SOURCE_DEFAULTS)?;
+        let frame = PageFrame::from_native_geometry(geometry.clone())?;
         let requested_size = frame.requested_image_size();
         // Geometry belongs to this retained target, independently of AX binding
         // or image success. Observation invalidation does not roll it back.
