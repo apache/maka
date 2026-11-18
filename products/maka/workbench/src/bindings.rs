@@ -20,6 +20,7 @@
 //! The application receives this already connected Host object; it cannot choose a Root.
 
 mod assets;
+mod community;
 mod diagrams;
 mod file_search;
 mod files;
@@ -28,7 +29,7 @@ mod mutation;
 mod permission_window;
 mod plugins;
 mod quick_tools;
-mod settings;
+mod resources;
 mod system_permission;
 mod terminal;
 mod terminal_grid;
@@ -269,6 +270,7 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 pub fn ui_registry() -> Registry {
     let mut registry = Registry::ui_set("maka/host");
     registry.register::<crate::composer_input::ComposerInput>();
+    registry.register::<crate::composer_input::file::MarkdownFileEditor>();
     registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
     registry.class::<terminal_grid::TerminalGrid>();
@@ -369,6 +371,17 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn community_plugins(
+        this: Instance<Self>,
+        query: String,
+        page: u32,
+        locale: String,
+    ) -> Result<community::Page, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, community::search(query, page, locale)).await
+    }
+
     pub async fn installed_applications(this: Instance<Self>) -> Result<Vec<String>, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
@@ -950,13 +963,19 @@ impl ApplicationHost {
         this: Instance<Self>,
         method: String,
         input: JsonValue,
+        content: Option<String>,
     ) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
             let client = source.resolve(&owner).await?;
             let id = Uuid::new_v4();
-            let mutation = client.control(id, &method, input).await?;
+            let resources = content
+                .map(|text| resources::text("content", text))
+                .unwrap_or_default();
+            let mutation = client
+                .control_with_resources(id, &method, input, resources)
+                .await?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))
@@ -990,7 +1009,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<JsonValue, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
@@ -1019,7 +1038,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<Instance<OriginalMutation>, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = execute(owner.clone(), async move {

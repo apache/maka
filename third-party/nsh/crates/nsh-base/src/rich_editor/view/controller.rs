@@ -1239,7 +1239,7 @@ impl Rv {
                 Ok(p) => Selection::near(&p, m.dir),
                 Err(_) => return,
             };
-            return self.set_selection(next, false);
+            return self.set_selection(next, true);
         }
         // Up and down from a selected node leave it on that side, as
         // ProseMirror moves out of a node selection.

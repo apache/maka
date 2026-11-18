@@ -138,7 +138,11 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
     fs::create_dir_all(f.root.join("skipped")).unwrap();
     fs::create_dir_all(f.root.join(".git/info")).unwrap();
     fs::write(f.root.join(".gitignore"), "ignored.rs\n*.cache\nskipped/\n").unwrap();
-    fs::write(f.root.join(".ignore"), "ignored-by-ignore.rs\n").unwrap();
+    fs::write(
+        f.root.join(".ignore"),
+        format!("#{}\nignored-by-ignore.rs\n", "x".repeat(1024 * 1024)),
+    )
+    .unwrap();
     fs::write(f.root.join(".rgignore"), "ignored-by-rg.rs\n!keep.cache\n").unwrap();
     fs::write(f.root.join(".git/info/exclude"), "from-exclude.rs\n").unwrap();
     fs::write(f.root.join("src/nested/.gitignore"), "!ignored.rs\n").unwrap();

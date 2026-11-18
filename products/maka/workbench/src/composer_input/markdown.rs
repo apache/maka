@@ -39,6 +39,7 @@ use super::model::Projection;
 pub(super) struct Formatting {
     read_only: Prop<bool>,
     link_color: Prop<Color>,
+    file_focused: Option<nsh_core::prelude::ReadSignal<bool>>,
 }
 
 impl Formatting {
@@ -46,6 +47,15 @@ impl Formatting {
         Self {
             read_only,
             link_color,
+            file_focused: None,
+        }
+    }
+
+    pub fn file(link_color: Prop<Color>, focused: nsh_core::prelude::ReadSignal<bool>) -> Self {
+        Self {
+            read_only: false.into(),
+            link_color,
+            file_focused: Some(focused),
         }
     }
 
@@ -75,8 +85,33 @@ impl PluginSpec for Formatting {
 
     fn decorations(&self, state: &EditorState) -> Option<DecorationSet> {
         let presentation = self.presentation(state)?;
-        let cursor = (!self.read_only.get_untracked()).then(|| state.selection().head());
-        let decorations = presentation.decorations(cursor, self.link_color.get_untracked());
+        let cursor = (!self.read_only.get_untracked()
+            && self.file_focused.is_none_or(|focus| focus.get_untracked()))
+        .then(|| state.selection().head());
+        let mut decorations = presentation.decorations(cursor, self.link_color.get_untracked());
+        if let Some(focused) = self.file_focused {
+            let active = focused.get_untracked().then_some(state.selection().head());
+            for (span, code) in &presentation.diagrams {
+                if active.is_some_and(|pos| span.contains(&pos) || pos == span.end) {
+                    continue;
+                }
+                let doc = state.doc();
+                let first = doc.resolve(span.start).ok()?;
+                let last = doc.resolve(span.end).ok()?;
+                let mut at = first.before(1);
+                for index in first.index(0)..=last.index(0) {
+                    let end = at + doc.child(index).node_size();
+                    let deco = if index == first.index(0) {
+                        Decoration::node(at, end, Default::default())
+                            .with_spec([("diagram".into(), Value::from(code.clone()))].into())
+                    } else {
+                        Decoration::node(at, end, [("class".into(), Value::from("hidden"))].into())
+                    };
+                    decorations.push(deco);
+                    at = end;
+                }
+            }
+        }
         (!decorations.is_empty()).then(|| DecorationSet::create(state.doc(), decorations))
     }
 
@@ -111,6 +146,7 @@ struct Presentation {
     styles: Vec<Decoration>,
     syntax: Vec<(Range<usize>, Decoration)>,
     links: Vec<Link>,
+    diagrams: Vec<(Range<usize>, String)>,
 }
 
 struct Link {
@@ -358,7 +394,17 @@ impl<'tree> Reader<'_, '_, 'tree> {
                     self.format(range, inner, "font-mono");
                 }
                 Blockquote(_) => self.quote(range),
-                Code(_) => self.code_block(range),
+                Code(code) => {
+                    if code
+                        .lang
+                        .as_deref()
+                        .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
+                        && let Some(span) = self.span(range.clone())
+                    {
+                        self.result.diagrams.push((span, code.value.clone()));
+                    }
+                    self.code_block(range);
+                }
                 ListItem(_) => self.list_marker(range.start),
                 _ => {}
             }

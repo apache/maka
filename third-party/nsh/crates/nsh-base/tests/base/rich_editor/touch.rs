@@ -36,7 +36,8 @@ fn labels(app: &Headless) -> Vec<String> {
 #[test]
 fn a_long_press_selects_a_word_and_its_menu_copies_and_cuts_it() {
     let mut app = phone(paragraphs(&[LINE]));
-    app.long_press(&format!("text:{LINE}")).unwrap();
+    app.long_press_at(&format!("text:{LINE}"), text_point(&app, LINE, 8))
+        .unwrap();
     assert_eq!(selection(&app), (7, 11));
     // Nothing on the clipboard: no Paste.
     assert_eq!(labels(&app), ["Cut", "Copy", "Select All"]);
@@ -51,7 +52,8 @@ fn a_long_press_selects_a_word_and_its_menu_copies_and_cuts_it() {
     );
     assert!(app.menu().is_none());
     // Cut, then undo: the word comes back.
-    app.long_press(&format!("text:{LINE}")).unwrap();
+    app.long_press_at(&format!("text:{LINE}"), text_point(&app, LINE, 8))
+        .unwrap();
     assert_eq!(labels(&app), ["Cut", "Copy", "Paste", "Select All"]);
     app.choose_menu_item("Cut").unwrap();
     see(&mut app, &doc("alpha  gamma"));
@@ -62,7 +64,8 @@ fn a_long_press_selects_a_word_and_its_menu_copies_and_cuts_it() {
 #[test]
 fn select_all_from_the_menu_selects_the_document() {
     let mut app = phone(paragraphs(&[LINE, "end"]));
-    app.long_press(&format!("text:{LINE}")).unwrap();
+    app.long_press_at(&format!("text:{LINE}"), text_point(&app, LINE, 8))
+        .unwrap();
     app.choose_menu_item("Select All").unwrap();
     see(&mut app, &format!("Sel 0-{}", LINE.len() + 2 + 5));
     // The menu opens again over everything, without Select All.
@@ -74,7 +77,8 @@ fn a_long_press_on_blank_space_places_the_caret_with_its_menu() {
     // The middle of the line is in the spaces between its words.
     let line = "ab          cd";
     let mut app = phone(paragraphs(&[line]));
-    app.long_press(&format!("text:{line}")).unwrap();
+    app.long_press_at(&format!("text:{line}"), text_point(&app, line, 7))
+        .unwrap();
     let (from, to) = selection(&app);
     assert!(
         from == to && from > 3 && from < 13,

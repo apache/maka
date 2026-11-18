@@ -942,6 +942,9 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
             runtime.block_on(phase("close independent API client", api.close()))
         });
     }
+    if let Some(model) = &model {
+        model.stop.cancel();
+    }
     if matches!(&outcome, Ok(Ok(())))
         && cleanup.is_empty()
         && let (Some(child), Some(client)) = (&mut process, &mut control)

@@ -102,7 +102,7 @@ export function ModelSettings(props: {
     const registered = navigation();
     return registered && registered.key === contributed()?.key ? registered.value : null;
   };
-  const busy = () => operations.busy() || (page()?.busy?.() ?? false);
+  const busy = () => operations.navigationBusy() || (page()?.busy?.() ?? false);
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -305,7 +305,7 @@ export function ModelSettings(props: {
           <If when={action()}>
             <SettingsButton
               label={action()!.label}
-              disabled={busy() || action()!.disabled}
+              disabled={operations.busy() || busy() || action()!.disabled}
               onPress={() => action()?.run()}
             />
           </If>

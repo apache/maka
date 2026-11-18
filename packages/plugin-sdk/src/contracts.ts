@@ -21536,6 +21536,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -21552,6 +21558,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -36519,6 +36530,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -36535,6 +36552,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -37542,6 +37564,79 @@ export const contracts: {
             },
           },
           resources: {},
+        },
+        saveFile: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFile',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              expectedVersion: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'expectedVersion'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFileResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  version: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'version'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {
+            content: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
         },
         saveGitHubToken: {
           mode: 'mutation',
@@ -46019,6 +46114,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -46035,6 +46136,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',

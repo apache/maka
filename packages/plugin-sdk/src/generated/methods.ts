@@ -1985,6 +1985,10 @@ export type AgentSessionReadOutput_AuthorizationObligation =
 export type AgentSessionReadOutput_ExternalTaskId = string;
 export type AgentSessionReadOutput_ModelAttemptId = string;
 export type AgentSessionReadOutput_CellId = string;
+/**
+ * The tool family whose authority raised a permission request.
+ */
+export type AgentSessionReadOutput_PermissionSource = 'processes' | 'web' | 'files';
 export type AgentSessionReadOutput_FormField = {
   name: string;
   label: string;
@@ -3825,6 +3829,22 @@ export interface ServiceMethods {
         workspace: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSnapshot;
         path: string;
       };
+    };
+    saveFile: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        path: Runtime.WorkspacePath;
+        expectedVersion: string;
+      };
+      output:
+        | {
+            kind: 'saved';
+            version: string;
+          }
+        | {
+            kind: 'conflict';
+          };
     };
     saveGitHubToken: {
       mode: 'mutation';
@@ -6531,6 +6551,13 @@ export interface AgentSessionReadOutput_PermissionRequest {
   reason: string;
   command?: AgentSessionReadOutput_PermissionCommand | null;
   permissions: AgentSessionReadOutput_Permissions;
+  /**
+   * Network access granted for this request covers only later requests from
+   * the same source; filesystem access covers all of them. Requests stored
+   * before sources were recorded decode as Web, the only source that could
+   * be granted network access then.
+   */
+  source?: AgentSessionReadOutput_PermissionSource & string;
 }
 export interface AgentSessionReadOutput_PermissionCommand {
   command: string;

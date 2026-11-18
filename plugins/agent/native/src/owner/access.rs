@@ -26,7 +26,9 @@ use maka_agent_authority::permissions::{Access, PermissionGrant};
 use maka_agent_facts::{
     durable::*,
     external_effects::{ExternalEffectDescriptor, ExternalEffectKey},
-    interaction::{Decision, InteractionOutcome, InteractionRecord, InteractionRequest},
+    interaction::{
+        Decision, InteractionOutcome, InteractionRecord, InteractionRequest, PermissionSource,
+    },
     tools::{ToolCallContext, ToolError},
 };
 use maka_agent_ports::execution::Interactions;
@@ -1011,6 +1013,7 @@ impl Access for RunAccess {
         &'a self,
         target: &'a AuthorizationObligation,
         basis: &'a PermissionBasis,
+        source: PermissionSource,
     ) -> BoxFuture<'a, Result<Vec<PermissionGrant>, ToolError>> {
         Box::pin(async move {
             let configuration = self.live_configuration().await?;
@@ -1021,7 +1024,7 @@ impl Access for RunAccess {
             let grants = owner
                 .durable
                 .interactions()
-                .permission_grants(&self.execution, Some(target), basis)
+                .permission_grants(&self.execution, Some(target), basis, source)
                 .await
                 .map_err(|error| ToolError::Persistence(error.to_string()))?;
             Ok(grants

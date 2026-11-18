@@ -212,3 +212,19 @@ fn an_editor_holds_its_min_height_and_keeps_a_set_height() {
     );
     assert_eq!(height(&app, "fixed"), 120.0);
 }
+
+#[test]
+fn collapsing_a_selection_to_its_end_scrolls_the_caret_into_view() {
+    let (mut app, _, editor) = start_full();
+    keys(&mut app, &["ctrl+home"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    assert!(text_bounds(&app, "sixty").bottom() > editor.bottom() + px(1.0));
+
+    keys(&mut app, &["mod+a", "right"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    let last = text_bounds(&app, "sixty");
+    assert!(
+        last.bottom() <= editor.bottom() + px(0.5),
+        "{last:?} in {editor:?}"
+    );
+}

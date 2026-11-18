@@ -32,6 +32,7 @@ import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSet
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
 import { WebSearchSettings } from '../../../products/maka/workbench/app/WebSearchSettings';
 import { createWebSearchSettings } from '../../../products/maka/workbench/app/webSearchSettingsState';
+import { CommunityPlugins } from '../../../products/maka/workbench/app/CommunityPlugins';
 import { PluginSettings } from '../../../products/maka/workbench/app/PluginSettings';
 import { SkillSettings } from '../../../products/maka/workbench/app/SkillSettings';
 import { createExternalAgentSettings } from '../../../products/maka/workbench/app/externalAgentSettingsState';
@@ -143,7 +144,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const plugins = createPluginSettings(
     host,
     operations,
-    active('plugins'),
+    () => active('plugins')() || active('marketplace')(),
     runtime,
     context,
     restored?.plugins,
@@ -324,7 +325,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               back: general.back,
               leave: general.leave,
               backLabel: () => tr('Back from general settings'),
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <GeneralSettings owner={general} />,
           ),
@@ -380,7 +381,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                 connections.leave(next);
               },
               backLabel: () => tr('Back from connection settings'),
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <ConnectionSettings owner={connections} externalAgents={externalAgents} />,
           ),
@@ -432,7 +433,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               nested: () => skills.screen() !== 'library' || !!skills.deleting(),
               navigation: skills.navigation,
               back: skills.back,
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <SkillSettings owner={skills} />,
           ),
@@ -463,7 +464,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               navigation: mcp.navigation,
               back: mcp.back,
               leave: mcp.leave,
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <McpSettings owner={mcp} />,
           ),
@@ -481,7 +482,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               navigation: webSearch.navigation,
               back: webSearch.back,
               leave: webSearch.leave,
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <WebSearchSettings owner={webSearch} />,
           ),
@@ -499,9 +500,26 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               navigation: network.navigation,
               back: network.back,
               leave: network.leave,
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <NetworkSettings owner={network} />,
+          ),
+      },
+      marketplace: {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'marketplace',
+            plugins,
+            props,
+            {
+              title: () => tr('Plugin marketplace'),
+              nested: () => false,
+              navigation: () => 'marketplace',
+              back: () => true,
+              busy: operations.navigationBusy,
+            },
+            () => <CommunityPlugins owner={plugins} />,
           ),
       },
       plugins: {
@@ -518,7 +536,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               back: plugins.back,
               leave: plugins.leave,
               backLabel: () => tr('Back from plugins settings'),
-              busy: () => operations.busy() || plugins.rootUi.busy(),
+              busy: () => operations.navigationBusy() || plugins.rootUi.busy(),
             },
             () => (
               <PluginSettings

@@ -94,6 +94,10 @@ export function errorText(reason: unknown, fallback: MessageKey, values?: UiText
     case 'client journal still has active preparation':
     case 'client operation ended before dispatch':
       return '';
+    case 'files_hard_link':
+      return message(
+        'This file has multiple hard links. Saving would break the link between them.',
+      );
     case 'downloads_read_denied':
       return message(
         'Allow Maka to read Downloads in System Settings > Privacy & Security > Files and Folders.',
