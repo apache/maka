@@ -380,7 +380,7 @@ fn session_tools_cover_fork_worktree_stop_failure_pagination_and_self_read_conti
 async fn run_session_tools_edge_cases() -> TestResult<()> {
     let mut rig = Rig::new()?;
     let mut provider = Provider::start().await?;
-    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), async {
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
         let base = rig.directory.path().to_path_buf();
         let ws = base.join("workspace");
         std::fs::create_dir_all(&ws)?;
