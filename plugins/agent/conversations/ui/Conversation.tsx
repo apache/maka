@@ -4386,10 +4386,10 @@ export function Conversation(props: ConversationProps) {
                 <Disclosure
                   label={label}
                   open={open()}
-                  onPress={inputAction(() => {
+                  onPress={() => {
                     animateDisclosure();
                     open.set(!open());
-                  })}
+                  }}
                 >
                   <Text style={captionTextStyle}>{label}</Text>
                 </Disclosure>
