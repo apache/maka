@@ -35,7 +35,4 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-futures-util.workspace = true
-maka-event-log.workspace = true
-maka-packages.workspace = true
 tempfile.workspace = true

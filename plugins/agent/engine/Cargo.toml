@@ -51,26 +51,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 futures-util.workspace = true
-fastrand.workspace = true
 
 [dev-dependencies]
-schemars.workspace = true
-maka-agent-native.workspace = true
-maka-agent-api.workspace = true
-maka-files-native.workspace = true
-maka-workspace-api.workspace = true
-maka-skills-api.workspace = true
-maka-skills-native.workspace = true
-maka-host-runtime.workspace = true
-maka-host-js.workspace = true
-maka-packages.workspace = true
-maka-config.workspace = true
-maka-providers.workspace = true
-maka-tools.workspace = true
-maka-code-runtime.workspace = true
-maka-session-state.workspace = true
-rusqlite.workspace = true
-tokio-tungstenite.workspace = true
-maka-presentation.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "test-util"] }

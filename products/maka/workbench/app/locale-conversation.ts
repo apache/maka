@@ -1176,6 +1176,7 @@ export const conversationMessages = {
   ],
   'Refresh status': ['Refresh status', '刷新状态', '重新整理狀態'],
   'Refresh terminals': ['Refresh terminals', '刷新终端', '重新整理終端'],
+  'File search failed.': ['File search failed.', '搜索文件失败。', '搜尋檔案失敗。'],
   'Refresh workspace files': ['Refresh workspace files', '刷新工作区文件', '重新整理工作區檔案'],
   Rejected: ['Rejected', '已拒绝', '已拒絕'],
   Remove: ['Remove', '移除', '移除'],

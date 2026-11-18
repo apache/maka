@@ -213,15 +213,35 @@ export function MessageRow({
         if (note()) return <NoteDivider label={note()!} />;
         // A failure is a notice about the run, not an answer: one quiet line, with
         // no source view since its source is the same text.
+        // On the desktop its mark sits over Retry's, and the text over Retry's label.
         if (row().role === 'failure')
           return (
             <View style={{ gap: 4, paddingVertical: 4 }}>
-              <Text style={[{ ...secondaryTextStyle, color: C.warning }, { userSelect: 'text' }]}>
-                {row().text}
-                {(repeats?.() ?? 1) > 1
-                  ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
-                  : ''}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 4 }}>
+                <If when={platform.idiom !== 'terminal'}>
+                  <View
+                    style={{
+                      height: secondaryTextStyle.lineHeight,
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon name="statusError" color={C.warning} />
+                  </View>
+                </If>
+                <Text
+                  style={[
+                    { ...secondaryTextStyle, color: C.warning, flex: 1, minWidth: 0 },
+                    { userSelect: 'text' },
+                  ]}
+                >
+                  {/* Host reasons start in lower case: "model HTTP request failed …". */}
+                  {row().text.replace(/^[a-z]/, (letter) => letter.toUpperCase())}
+                  {(repeats?.() ?? 1) > 1
+                    ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
+                    : ''}
+                </Text>
+              </View>
               {failureActions?.(row)}
             </View>
           );
@@ -448,7 +468,14 @@ export function MessageRow({
         const message = (
           <View
             class={menu && 'group'}
-            style={{ paddingVertical: user() ? 16 : 0, gap: 0, width: '100%' }}
+            // On the desktop a user's message ends in its action row (shown on
+            // hover), and that row is the space below it.
+            style={{
+              paddingTop: user() ? 16 : 0,
+              paddingBottom: user() && platform.idiom === 'terminal' ? 16 : 0,
+              gap: 0,
+              width: '100%',
+            }}
           >
             <If
               when={user()}

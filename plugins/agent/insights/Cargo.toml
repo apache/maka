@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
 [package]
 name = "maka-insights"
 version.workspace = true
@@ -26,7 +25,5 @@ publish.workspace = true
 [dependencies]
 maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
-maka-agent-ports.workspace = true
-maka-capabilities.workspace = true
 serde.workspace = true
 serde_json.workspace = true

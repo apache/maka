@@ -21,6 +21,42 @@ use super::*;
 use maka_agent_facts::{executor::NATIVE_TASK_PROTOCOL, tool_output::ToolOutput};
 use rusqlite::{Connection, OptionalExtension, params};
 
+pub(crate) struct MissingReturns {
+    pub owner: RunOwner,
+    pub session: String,
+    pub binding: uuid::Uuid,
+}
+
+impl maka_event_log::connection::Query for MissingReturns {
+    type Output = Vec<MissingReturn>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let mut statement = c.prepare_cached(
+            "SELECT e.run,e.task,e.operation,json_extract(e.body,'$.missingReturn')
+             FROM agent_external_effects e INDEXED BY agent_external_missing_returns
+             CROSS JOIN agent_run_specs r ON r.run=e.run JOIN contents s ON s.id=r.spec_content_id
+             WHERE e.pending=1 AND json_extract(e.body,'$.missingReturn') IS NOT NULL
+             AND r.owner=? AND r.session=? AND json_extract(s.payload,'$.permissionBasis.binding.id')=?
+             ORDER BY e.run,e.operation")?;
+        let mut rows = statement.query(params![
+            serde_json::to_string(&self.owner)?,
+            self.session,
+            self.binding.to_string()
+        ])?;
+        let mut calls = Vec::new();
+        while let Some(row) = rows.next()? {
+            calls.push(MissingReturn {
+                run: crate::sql::identity(row.get(0)?)?,
+                key: ExternalEffectKey {
+                    task: crate::sql::identity(row.get(1)?)?,
+                    operation: crate::sql::identity(row.get(2)?)?,
+                },
+                cell: crate::sql::identity(row.get(3)?)?,
+            });
+        }
+        Ok(calls)
+    }
+}
+
 pub(crate) struct ReadDescriptor(pub RunId, pub ExternalEffectKey);
 impl maka_event_log::connection::Query for ReadDescriptor {
     type Output = ExternalEffectDescriptor;

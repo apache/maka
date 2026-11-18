@@ -33,7 +33,6 @@ maka-config.workspace = true
 maka-model.workspace = true
 maka-network.workspace = true
 maka-providers.workspace = true
-serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 maka-computer-native.workspace = true
@@ -47,7 +46,3 @@ maka-host-runtime.workspace = true
 maka-settings-native.workspace = true
 maka-skills-native.workspace = true
 maka-web.workspace = true
-
-[dev-dependencies]
-sqlx.workspace = true
-tempfile.workspace = true

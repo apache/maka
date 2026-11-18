@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
 [package]
 name = "maka-skills"
 version.workspace = true
@@ -27,9 +26,7 @@ autotests = false
 [dependencies]
 maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
-futures-util.workspace = true
 tokio.workspace = true
-thiserror.workspace = true
 tokio-util.workspace = true
 serde.workspace = true
 schemars.workspace = true

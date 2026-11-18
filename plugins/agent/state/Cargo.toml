@@ -46,4 +46,3 @@ regex-syntax = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true
-cap-std.workspace = true

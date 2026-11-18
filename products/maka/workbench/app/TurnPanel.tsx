@@ -46,8 +46,11 @@ import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { activityIcon, activityPresentation, activityTitle } from './toolActivityPresentation';
 import { cardFamily, type ToolFamily } from './toolCards';
 
+// On the desktop a group sits close under the turn's summary, so the two read
+// as one block, and the reply below starts about a paragraph's gap away.
 const panelStyle = {
-  marginVertical: 8,
+  marginTop: platform.idiom === 'terminal' ? 8 : 4,
+  marginBottom: platform.idiom === 'terminal' ? 8 : 12,
   gap: 8,
   padding: 0,
   borderWidth: 0,
@@ -224,7 +227,14 @@ export function TurnSummary(props: {
     if (props.turn().turnKey === action.turnKey && props.canFold()) props.toggle(action.open);
   };
   return (
-    <View style={{ marginTop: 8, marginBottom: platform.idiom === 'terminal' ? 0 : 8 }}>
+    // On the desktop the message above ends in its own action row: that row is the gap.
+    // Open, the summary heads its work, as close to it as the work's own rows are.
+    <View
+      style={{
+        marginTop: platform.idiom === 'terminal' ? 8 : 0,
+        marginBottom: platform.idiom === 'terminal' || props.expanded() ? 0 : 8,
+      }}
+    >
       <Disclosure
         label={tr('Turn work details')}
         open={props.expanded()}
@@ -382,7 +392,9 @@ function ActivityLog(props: {
     const chrome =
       groupHeaderHeight +
       panelStyle.gap +
-      2 * (panelStyle.marginVertical + panelStyle.padding + panelStyle.borderWidth);
+      panelStyle.marginTop +
+      panelStyle.marginBottom +
+      2 * (panelStyle.padding + panelStyle.borderWidth);
     const viewportHeight = props.viewport().height;
     const available = Math.max(16, Math.min(windowSize().height / 2, viewportHeight - chrome));
     return platform.idiom === 'terminal' ? Math.floor(available / 16) * 16 : available;

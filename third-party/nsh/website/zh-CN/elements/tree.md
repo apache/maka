@@ -103,6 +103,7 @@ mount(App);
 | `id` | `string` | 在 `expanded`、`selected` 和事件中标识它：在树中唯一（重复的 id 会记录到日志，只有它的第一个项目会展开或被选中）。 |
 | `label` | `string` | 没有 `renderItem` 时行显示的内容，屏幕阅读器读出的内容，以及按首字母跳转匹配的内容。 |
 | `children` | `TreeItem[]` | 它下面的项目，按顺序。有子项目时它是文件夹：可以展开和收起。 |
+| `expandable` | `boolean` | 将空节点视为目录，可在展开时加载子项。 |
 | `disabled` | `boolean` | 用户不能选中、展开或收起它：点按和按键都会跳过它，应用 `disabled:` 样式。它的子项目仍按 `expanded` 显示。 |
 
 `renderItem` 为每个可见行收到一个 `TreeEntry`：项目的 `id`、`label` 和 `disabled`，它的 `depth`（顶层为 0，顶层项目之下为 1，……）以及它是否是 `folder`。它描述项目本身，行的状态则通过行的 class 表达：每个项目的绘制只创建一次，在行被选中、展开或收起时保留其视图，所以箭头能以过渡动画旋转。
@@ -117,6 +118,7 @@ mount(App);
 | `selected` | `.selected(..)` | `string \| null` | 无 | 选中项目的 id（受控），`null` 表示没有。 |
 | `defaultSelected` | `.default_selected(..)` | `string` | 无 | 未设置 `selected` 时，一开始选中的项目。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 只读的树：不响应点按和按键，不是键盘焦点的一站，每一行都应用 `disabled:`；显示 `expanded` 和 `selected` 所说的状态。 |
+| `singleClickAction` | `.single_click_action(..)` | `boolean` | `false` | 单击或点按叶节点即触发操作。 |
 | `reveal` | `.reveal(..)` | `boolean` | `false` | 展开和收起时，项目之后的行以弹簧动画移到新位置，由原生执行。开启“减弱动态效果”时关闭。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对树的称呼（“文件”）。 |
 | `renderItem` | `.render_item(..)` | `(entry: TreeEntry) => JSX.Element` | 无 | 可见行的内容；没有它时行显示项目的标签。 |

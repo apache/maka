@@ -256,7 +256,9 @@ impl Owner {
             }
             basis.model = Some(model.clone());
         }
-        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. }) {
+        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. })
+            || matches!(&origin, MessageOrigin::Session { execution } if execution == source && identity == super::external_recovery::recovery_request_id(source.run_id))
+        {
             QueuePlacement::Completion {
                 caller: source.run_id,
             }

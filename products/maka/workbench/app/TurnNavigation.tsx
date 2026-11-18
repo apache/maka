@@ -194,6 +194,7 @@ function NavigationMark(props: {
 }) {
   const opened = signal(false);
   const previewText = signal('');
+  const cardWidth = () => Math.min(300, Math.max(0, windowSize().width - 32));
   effect(() => {
     const item = props.item();
     previewText.set('');
@@ -228,7 +229,8 @@ function NavigationMark(props: {
             onOpenChange={({ open }) => opened.set(open)}
             style={{
               ...richTooltipStyle(),
-              width: Math.min(300, Math.max(0, windowSize().width - 32)),
+              width: cardWidth(),
+              maxWidth: cardWidth(),
               maxHeight: 100,
               pointerEvents: 'none',
             }}

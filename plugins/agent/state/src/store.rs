@@ -539,6 +539,19 @@ impl Store {
             retract_pending: true,
         }
     }
+    pub async fn missing_external_returns(
+        &self,
+        spec: &RunSpec,
+    ) -> Result<Vec<crate::external_effects::MissingReturn>, StoreError> {
+        self.data
+            .query(crate::external_effects::MissingReturns {
+                owner: spec.owner.clone(),
+                session: spec.session_id.clone(),
+                binding: spec.permission_basis.binding.id,
+            })
+            .await
+    }
+
     pub async fn external_effect_descriptor(
         &self,
         run: RunId,

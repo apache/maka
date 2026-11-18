@@ -610,6 +610,8 @@ prop scroll:text:"let a = 1;" scrollbar false
 # The table's scroll view without its indicator.
 prop scroll:text:"Alpha" horizontal true
 prop scroll:text:"Alpha" scrollbar false
+# The table's grid, around its cells, styled by `tableGrid`.
+style parent:parent:text:"Alpha" backgroundColor #00ff00ff
 style text:"First item" color #0000ffff
 # A press on the link reports its URL and the modifier keys held;
 # nothing opens it.

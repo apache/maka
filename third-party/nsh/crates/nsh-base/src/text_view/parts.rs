@@ -163,6 +163,9 @@ parts! {
     /// The horizontal scroll view of a table's cells: they scroll when the
     /// columns cannot shrink further.
     table_scroll => TableScroll,
+    /// The grid of a table's cells, in its scroll view. It draws the
+    /// table's top and left lines, each cell its right and bottom ones.
+    table_grid => TableGrid,
     /// The header row of a table, after `tableRow`.
     table_head => TableHead,
     /// Every row of a table: a view behind its cells, for backgrounds and

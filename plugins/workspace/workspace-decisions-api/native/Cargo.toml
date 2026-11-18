@@ -27,7 +27,6 @@ test = false
 
 [dependencies]
 maka-agent-facts.workspace = true
-maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
 futures-util.workspace = true
 maka-config.workspace = true

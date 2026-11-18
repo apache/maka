@@ -255,7 +255,11 @@ export const exclusionRules = [
     id: 'generated-files',
     justification:
       'Mechanically derived from a generator in this repository. A hand-written header would be reverted by the next regeneration; the generators themselves carry the header.',
-    matches: isOneOf('Cargo.lock', 'third-party/termina/Cargo.lock'),
+    matches: isOneOf(
+      'Cargo.lock',
+      'third-party/termina/Cargo.lock',
+      'products/maka/workbench/app/pierreIcons.js',
+    ),
   },
   {
     id: 'verbatim-runtime-payloads',

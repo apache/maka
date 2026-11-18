@@ -79,10 +79,22 @@ import { PluginView } from './plugins/PluginView';
 import { useHost } from './host';
 
 const detailsGap = 8;
-const cardPadding = { top: 12, right: 12, bottom: 12, left: disclosureContentInset(0) };
+/**
+ * The desktop card spans its row as the row's hover fill and trailing actions
+ * do, past the icon lane on both sides, so the two line up. Its text keeps the
+ * text lane.
+ */
+const cardOutset = 8;
+const cardPadding = {
+  top: 12,
+  right: 12 + cardOutset,
+  bottom: 12,
+  left: disclosureContentInset(0) + cardOutset,
+};
 const cardStyle = () => ({
   backgroundColor: C.card,
   borderRadius: 12,
+  marginHorizontal: -cardOutset,
   paddingTop: cardPadding.top,
   paddingRight: cardPadding.right,
   paddingBottom: cardPadding.bottom,

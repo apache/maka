@@ -64,7 +64,6 @@ cua-driver-contract = { workspace = true, optional = true }
 cua-driver-sdk = { workspace = true, optional = true }
 cua-driver-core = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761", optional = true }
 serde.workspace = true
-schemars.workspace = true
 uuid.workspace = true
 libc = { workspace = true, optional = true }
 reqwest.workspace = true

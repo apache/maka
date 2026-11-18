@@ -88,6 +88,8 @@ pub(crate) struct RunAccess {
     _work: SessionStore,
     custody: Arc<dyn WorkCustody>,
     binding_requests: tokio::sync::Mutex<Vec<BindingRequest>>,
+    pub(super) missing_returns:
+        tokio::sync::OnceCell<Vec<maka_agent_state::external_effects::MissingReturn>>,
     model_tools: std::sync::OnceLock<(
         Arc<crate::mcp::Catalog>,
         maka_agent_facts::execution::ToolMode,
@@ -127,6 +129,7 @@ impl Owner {
             custody,
             binding_requests: tokio::sync::Mutex::new(Vec::new()),
             model_tools: Default::default(),
+            missing_returns: Default::default(),
         }))
     }
 
