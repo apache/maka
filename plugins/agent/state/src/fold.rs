@@ -488,6 +488,7 @@ impl RunView {
     pub fn blocks_followup(&self) -> bool {
         (self.terminal == Some(Terminal::Failed) || self.cancelled_by_risk)
             && self.has_unsettled_recovery()
+            && !self.interrupted_host_calls()
     }
 
     pub fn has_unsettled_recovery(&self) -> bool {

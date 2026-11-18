@@ -299,6 +299,58 @@ impl RunView {
         Ok(current)
     }
 
+    pub(super) fn interrupted_host_calls(&self) -> bool {
+        let Some(task) = &self.external else {
+            return false;
+        };
+        self.can_interrupt_host_calls(
+            &task
+                .effects
+                .iter()
+                .filter_map(|(&operation, effect)| {
+                    effect.missing_return.map(|cell| (operation, cell))
+                })
+                .collect(),
+        )
+    }
+
+    pub fn can_interrupt_host_calls(
+        &self,
+        missing: &std::collections::BTreeMap<uuid::Uuid, maka_agent_facts::cells::CellId>,
+    ) -> bool {
+        let Some(task) = &self.external else {
+            return false;
+        };
+        let covers_cell = |cell| missing.values().any(|&id| id == cell);
+        !missing.is_empty()
+            && task.live_workspace
+            && task.cleanup == OperationCleanup::Confirmed
+            && task.publication.is_none()
+            && task
+                .effects
+                .iter()
+                .all(|(id, effect)| !effect.pending() || missing.contains_key(id))
+            && self.tools.values().all(|tool| !self.tool_unsettled(tool))
+            && !self.attempts.values().any(super::attempt_unsettled)
+            && self
+                .cells
+                .values()
+                .all(|cell| !cell.has_unsettled_effects() || covers_cell(cell.id))
+            && self.recovery_failures().all(|reason| match reason {
+                BlockerKind::ExternalEffectUnknown {
+                    task: id,
+                    operation,
+                } => *id == task.task && missing.contains_key(operation),
+                BlockerKind::CodeCellRecoveryUnavailable { cell } => self
+                    .recovery_cell(cell)
+                    .is_some_and(|cell| covers_cell(cell.id)),
+                BlockerKind::ExternalTaskUnobservable { descriptor } => {
+                    task.binding.as_ref() == Some(descriptor) || &task.descriptor == descriptor
+                }
+                _ => false,
+            })
+    }
+
     pub(super) fn external_terminal_allowed(&self, terminal: &Terminal) -> bool {
         if self.cancelled_by_risk {
             // The adjudicated blocker may already have left the bounded frontier.
@@ -309,6 +361,9 @@ impl RunView {
         };
         if !task.admitted {
             return *terminal == Terminal::Cancelled;
+        }
+        if self.interrupted_host_calls() && *terminal != Terminal::Completed {
+            return true;
         }
         if task.closed.is_some() {
             return true;

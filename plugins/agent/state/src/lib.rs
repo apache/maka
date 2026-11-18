@@ -252,6 +252,11 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "memory write resolution",
         sql: include_str!("../migrations/0046_memory_resolution.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 47,
+        description: "missing external tool returns",
+        sql: include_str!("../migrations/0047_missing_external_returns.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -276,6 +281,7 @@ mod migration_tests {
                             && m.description != "memory assertion metadata"
                             && m.description != "memory version evidence"
                             && m.description != "memory write resolution"
+                            && m.description != "missing external tool returns"
                     })
                     .copied()
                     .collect();

@@ -96,7 +96,7 @@ fn version(version: u32) -> Result<(), StoreError> {
     }
     Ok(())
 }
-fn identity<T: DeserializeOwned>(value: String) -> Result<T, StoreError> {
+pub(crate) fn identity<T: DeserializeOwned>(value: String) -> Result<T, StoreError> {
     Ok(serde_json::from_value(serde_json::Value::String(value))?)
 }
 fn limit(limit: u32) -> Result<u32, StoreError> {
