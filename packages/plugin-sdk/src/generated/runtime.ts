@@ -2519,13 +2519,45 @@ export type AgentScheduledEffect =
        * Tool and permission profile requested for this plan.
        */
       workerTools: DiscoveryWorkerTools;
+      /**
+       * Optional exact tool choices and the categories shown to the user.
+       * The profile and the current Session ceiling still apply.
+       */
+      selectedTools?: {
+        [k: string]: DiscoveryToolGroup | undefined;
+      } | null;
     };
 export type AutomationDelivery = 'steering' | 'followup';
 export type DiscoveryWorkerTools = 'read_only' | 'session';
+/**
+ * The category is derived from the bound service, even for renamed tools.
+ */
+export type DiscoveryToolGroup =
+  | 'read_files'
+  | 'modify_files'
+  | 'history'
+  | 'commands'
+  | 'web'
+  | 'sessions'
+  | 'desktop'
+  | 'other';
 export type AgentSchedules =
   | {
       kind: 'discovery_tools';
+      /**
+       * All names available in this profile, including the required return tool.
+       */
       names: string[];
+      /**
+       * Selectable names classified by their current binding.
+       */
+      groups: {
+        [k: string]: DiscoveryToolGroup | undefined;
+      };
+      /**
+       * Previously approved names for this plan and profile, if any.
+       */
+      approvedNames?: string[] | null;
     }
   | {
       kind: 'page';

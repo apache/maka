@@ -55,6 +55,13 @@ mount(() => {
     tasks: detail ? [{ ...detail.task, revision: detail.revision, approved: detail.approved }] : [],
     nextCursor: null,
   });
+  const catalog = (profile: string) => {
+    const groups: Record<string, string> = { Read: 'read_files', DiscoveryMemory: 'history' };
+    if (disabledModel) groups.NewReader = 'read_files';
+    if (profile === 'session')
+      Object.assign(groups, { Shell: 'commands', Write: 'modify_files', WebFetch: 'web' });
+    return { groups, names: ['DiscoveryComplete', ...Object.keys(groups)].sort() };
+  };
   const host = {
     async query(_endpoint: string, method: string, input: any) {
       if (method === 'observe') return { session };
@@ -66,7 +73,13 @@ mount(() => {
       if (input.kind === 'preview_discovery')
         return {
           kind: 'discovery_tools',
-          names: input.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'],
+          ...catalog(input.effect.workerTools),
+          approvedNames:
+            input.taskId &&
+            detail?.approved &&
+            input.effect.workerTools === detail.task.effect.workerTools
+              ? detail.approvedTools
+              : null,
         };
       if (input.kind === 'get') {
         if (failDetailOnce) {
@@ -108,8 +121,13 @@ mount(() => {
   const control = async (_method: string, input: any) => {
     calls.set(input.kind);
     if (input.kind === 'create' || input.kind === 'approve') {
-      const names =
-        input.input.task.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'];
+      const effect = input.input.task.effect;
+      const names = catalog(effect.workerTools).names.filter(
+        (name) =>
+          name === 'DiscoveryComplete' ||
+          !effect.selectedTools ||
+          Object.hasOwn(effect.selectedTools, name),
+      );
       if (JSON.stringify(input.input.approvedTools) !== JSON.stringify(names))
         return { kind: 'rejected', reason: 'Expected the displayed tool list' };
       if (input.input.task.effect.target.boundaryRevision !== session.boundaryRevision)
@@ -127,6 +145,7 @@ mount(() => {
       detail = {
         revision,
         approved: true,
+        approvedTools: input.input.approvedTools,
         pendingFire: null,
         timezone: input.input.timezone,
         task: {
@@ -162,9 +181,11 @@ mount(() => {
           lastError: null,
         };
         detail.approved = true;
+        detail.approvedTools = input.input.approvedTools;
         calls.set('approved ' + detail.task.effect.model.connectionId);
       }
       if (input.kind === 'update') {
+        detail.approvedTools = input.input.approvedTools;
         detail.task = {
           ...detail.task,
           ...input.input.task,
@@ -199,6 +220,8 @@ mount(() => {
     'mod+shift+b',
     () => {
       detail.task.backgroundFollowup = true;
+      // A preset-only follow-up still has a pinned list of approved names.
+      delete detail.task.effect.selectedTools;
       detail.revision = ++revision;
       publish();
     },

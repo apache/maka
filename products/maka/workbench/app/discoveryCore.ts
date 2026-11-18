@@ -38,6 +38,34 @@ export type DiscoveryApproval = {
 type DiscoveryEffect = Extract<AgentScheduledEffect, { kind: 'discovery' }>;
 export type DiscoveryWorkerTools = NonNullable<DiscoveryEffect['workerTools']>;
 
+export type DiscoveryToolSelection = NonNullable<DiscoveryEffect['selectedTools']>;
+export type DiscoveryToolPreview = Extract<AgentSchedules, { kind: 'discovery_tools' }>;
+
+// Preserve the actual choices when a catalog changes, including the category of each alias.
+export function selectedDiscoveryTools(
+  preview: DiscoveryToolPreview,
+  requested?: DiscoveryToolSelection | null,
+  approvedNames?: string[] | null,
+): DiscoveryToolSelection {
+  const approved = approvedNames ? new Set(approvedNames) : null;
+  return Object.fromEntries(
+    Object.entries(preview.groups).filter(
+      ([name, group]) =>
+        (!requested || (Object.hasOwn(requested, name) && requested[name] === group)) &&
+        (!approved || approved.has(name)),
+    ),
+  );
+}
+
+export function approvedDiscoveryNames(
+  preview: DiscoveryToolPreview,
+  selection: DiscoveryToolSelection,
+) {
+  return preview.names.filter(
+    (name) => !Object.hasOwn(preview.groups, name) || Object.hasOwn(selection, name),
+  );
+}
+
 export function discoveryWorkerTools(
   effect: AgentScheduledEffect | undefined,
 ): DiscoveryWorkerTools {

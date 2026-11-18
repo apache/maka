@@ -65,6 +65,7 @@ use uuid::Uuid;
 pub(crate) struct SelectedTool {
     selection: ServiceTool,
     binding: String,
+    pub(crate) discovery_group: crate::contract::DiscoveryToolGroup,
 }
 
 /// The tool selected by the Agent's configuration, resolved through its current
@@ -87,6 +88,12 @@ pub(crate) struct SelectionSnapshot {
 impl SelectedTool {
     pub(crate) fn name(&self) -> &str {
         &self.selection.name
+    }
+    pub(crate) fn reads_session_content(&self) -> bool {
+        use crate::contract::DiscoveryToolGroup;
+        self.discovery_group == DiscoveryToolGroup::ReadFiles
+            || (self.discovery_group == DiscoveryToolGroup::History
+                && self.selection.method == "sessionRead")
     }
     pub(crate) fn permits_approval(&self, name: &str, method: &str, binding: &str) -> bool {
         self.selection.name == name
@@ -269,7 +276,6 @@ pub(crate) struct Catalog<T> {
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
-    pub discovery_reads: Vec<String>,
 }
 
 pub(crate) fn catalog(
@@ -281,13 +287,11 @@ pub(crate) fn catalog(
         tools,
         basis,
         editing,
-        discovery_reads,
     } = catalog_inner(services, selected, additional, None)?;
     Ok(Catalog {
         tools: Declarations(tools),
         basis,
         editing,
-        discovery_reads,
     })
 }
 
@@ -324,7 +328,6 @@ fn catalog_inner(
     run: Option<RunBindings>,
 ) -> Result<Catalog<ToolCatalog>, String> {
     let mut basis = Vec::new();
-    let mut discovery_reads = Vec::new();
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
         .iter()
@@ -375,41 +378,45 @@ fn catalog_inner(
                 return Err("agent_tool_contract_invalid".to_owned());
             };
             let contract = binding.contract();
-            if contract == &file_contract
-                && selection.method == "read"
-            {
-                discovery_reads.push(selection.name.clone());
-            }
             let method = methods
                 .get(&selection.method)
                 .ok_or("agent_tool_method_unavailable")?;
             if method.resources.values().any(|resource| !resource.optional) {
                 return Err("agent_tool_required_resources_unavailable".into());
             }
-            // The actual binding owns the title meaning, never a tool alias.
-            let title_kind = if binding.contract() == &file_contract {
+            // Tool aliases can change. The bound service and method supply both display meanings.
+            use crate::contract::DiscoveryToolGroup as Group;
+            use title::Kind;
+            let (title_kind, discovery_group) = if contract == &file_contract {
                 match selection.method.as_str() {
-                    "read" => Some(title::Kind::Read),
-                    "write" => Some(title::Kind::Write),
-                    "edit" => Some(title::Kind::Edit),
-                    "applyPatch" => Some(title::Kind::Patch),
-                    _ => None,
+                    "read" => (Some(Kind::Read), Group::ReadFiles),
+                    "write" => (Some(Kind::Write), Group::ModifyFiles),
+                    "edit" => (Some(Kind::Edit), Group::ModifyFiles),
+                    "applyPatch" => (Some(Kind::Patch), Group::ModifyFiles),
+                    _ => (None, Group::Other),
                 }
-            } else if binding.contract() == &web_contract {
+            } else if contract == &web_contract {
                 match selection.method.as_str() {
-                    "fetch" => Some(title::Kind::Fetch),
-                    "search" => Some(title::Kind::Search),
-                    _ => None,
+                    "fetch" => (Some(Kind::Fetch), Group::Web),
+                    "search" => (Some(Kind::Search), Group::Web),
+                    _ => (None, Group::Other),
                 }
             } else if contract == &agent_contract {
                 match selection.method.as_str() {
-                    "create" | "sessionCreate" => Some(title::Kind::CreateSession),
-                    "fork" => Some(title::Kind::ForkSession),
-                    "send" | "sessionSend" => Some(title::Kind::SendSession),
-                    _ => None,
+                    "create" | "sessionCreate" => (Some(Kind::CreateSession), Group::Sessions),
+                    "fork" => (Some(Kind::ForkSession), Group::Sessions),
+                    "send" | "sessionSend" => (Some(Kind::SendSession), Group::Sessions),
+                    "sessionList" | "sessionRead" => (None, Group::History),
+                    "sessionManage" | "respond" | "sessionStop" | "presets" | "preset"
+                    | "createPreset" | "updatePreset" | "deletePreset" => (None, Group::Sessions),
+                    _ => (None, Group::Other),
                 }
+            } else if contract == &process_contract {
+                (None, Group::Commands)
+            } else if contract == &computer_contract {
+                (None, Group::Desktop)
             } else {
-                None
+                (None, Group::Other)
             };
             if !method.resources.is_empty()
                 || match selection.result {
@@ -483,6 +490,7 @@ fn catalog_inner(
                 (Projection::Direct, input_schema)
             };
             let selected = SelectedTool {
+                discovery_group,
                 selection: selection.clone(),
                 binding: binding.execution_basis().into(),
             };
@@ -626,7 +634,6 @@ fn catalog_inner(
         tools: catalog,
         basis,
         editing,
-        discovery_reads,
     })
 }
 #[derive(Clone)]
@@ -1117,6 +1124,7 @@ mod tests {
         .unwrap();
         let mut live = SelectedTool {
             selection: serde_json::from_value(selection).unwrap(),
+            discovery_group: crate::contract::DiscoveryToolGroup::Other,
             binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"
                 .into(),
         };

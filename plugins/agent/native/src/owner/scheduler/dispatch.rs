@@ -185,8 +185,13 @@ impl Owner {
             .await?;
         let discovery_tools = match &plan.task.effect {
             ScheduledEffect::Discovery { worker_tools, .. } => Some(
-                self.discovery_tool_grant(&basis, target, *worker_tools)
-                    .await?,
+                self.discovery_tool_grant(
+                    &basis,
+                    target,
+                    *worker_tools,
+                    plan.task.effect.selected_discovery_tools(),
+                )
+                .await?,
             ),
             _ => None,
         };

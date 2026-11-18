@@ -133,7 +133,12 @@ mod tests {
         app.wait_for("text:/Investigation permissions.*Read-only tools/")
             .unwrap();
         app.press("role:button[Standard Session tools]").unwrap();
-        app.wait_for("text:Read · Shell").unwrap();
+        app.wait_for("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.press("label:Terminal tools: On").unwrap();
+        app.press("role:button[Show selected tools]").unwrap();
+        app.wait_for("text:DiscoveryComplete · DiscoveryMemory · Read · WebFetch · Write")
+            .unwrap();
         app.press("role:button[Approve and enable]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("text:/Next check.*15:59:58/").unwrap();
@@ -145,7 +150,9 @@ mod tests {
         app.press_key("mod+shift+r").unwrap();
         app.wait_for("text:Needs renewed approval").unwrap();
         app.press("role:button[Review permissions]").unwrap();
-        app.wait_for("text:Read · Shell").unwrap();
+        app.wait_for("role:button[Choose tool groups]").unwrap();
+        app.press("role:button[Choose tool groups]").unwrap();
+        app.wait_for("label:Terminal tools: Off").unwrap();
         app.press("role:button[Approve and resume]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();

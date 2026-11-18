@@ -29,6 +29,10 @@ import type { Host } from './host';
 import { currentLocale, tr, type MessageKey } from './locale';
 import { createText, errorText, UiError, renderText, message } from './text';
 import {
+  approvedDiscoveryNames,
+  selectedDiscoveryTools,
+  type DiscoveryToolPreview,
+  type DiscoveryToolSelection,
   discoveryCadence,
   discoveryInput,
   discoveryTasks,
@@ -36,6 +40,7 @@ import {
   type DiscoveryApproval,
   type DiscoveryWorkerTools,
 } from './discoveryCore';
+import { DiscoveryToolPicker, discoverySelectionLabel } from './DiscoveryToolPicker';
 import { Icon } from './Icon';
 import { SettingsField } from './SettingsField';
 import { SettingsButton, SettingsSegmented, SettingsSelect } from './SettingsPage';
@@ -105,7 +110,8 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     intent = signal('');
   const cadence = signal<IntervalCadence>(discoveryCadence());
   const workerTools = signal<DiscoveryWorkerTools>('read_only');
-  const approvedTools = signal<string[] | null>(null);
+  const toolPreview = signal<DiscoveryToolPreview | null>(null);
+  const selectedTools = signal<DiscoveryToolSelection>({});
   const reapproving = signal(false);
   const deleting = signal(false);
   const needsRenewedApproval = (plan = detail()) =>
@@ -114,6 +120,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     editing() ? workerTools() : discoveryWorkerTools(detail()?.task.effect);
   const error = createText();
   const watchError = createText();
+  const planSelection = () => {
+    const effect = detail()?.task.effect;
+    return effect?.kind === 'discovery' ? effect.selectedTools : undefined;
+  };
   const unavailableEditTarget = () => {
     const plan = editingPlan();
     if (!plan) return false;
@@ -188,8 +198,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     captured: DiscoveryApproval,
     profile: DiscoveryWorkerTools,
     ticket: number,
+    requested?: DiscoveryToolSelection | null,
+    restoreGrant = false,
   ) => {
-    approvedTools.set(null);
+    toolPreview.set(null);
     try {
       const result = await props.host.query('agent', 'schedules', {
         kind: 'preview_discovery',
@@ -198,7 +210,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       });
       if (!alive || ticket !== formGeneration) return;
       if (result.kind !== 'discovery_tools') throw new UiError('Discovery plan changed');
-      approvedTools.set(result.names);
+      selectedTools.set(
+        selectedDiscoveryTools(result, requested, restoreGrant ? result.approvedNames : undefined),
+      );
+      toolPreview.set(result);
     } catch (reason) {
       if (alive && ticket === formGeneration)
         error.set(errorText(reason, 'Could not load the discovery plan.'));
@@ -206,6 +221,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   };
   const changeWorkerTools = (value: string) => {
     const profile = value === 'session' ? 'session' : 'read_only';
+    if (workerTools() === profile) return;
     workerTools.set(profile);
     const captured = basis();
     if (captured) {
@@ -225,7 +241,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         ? discoveryWorkerTools(plan?.task.effect)
         : 'read_only';
     workerTools.set(profile);
-    approvedTools.set(null);
+    toolPreview.set(null);
     intent.set(plan?.task.intent.body ?? '');
     const schedule = plan?.task.schedule;
     minutes.set(schedule?.kind === 'interval' ? String(schedule.everySeconds / 60) : '30');
@@ -237,7 +253,12 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       const captured = await capture();
       if (alive && ticket === formGeneration) {
         basis.set(captured);
-        await previewTools(captured, profile, ticket);
+        const effect = plan?.task.effect;
+        const requested =
+          effect?.kind === 'discovery' && effect.workerTools === profile
+            ? effect.selectedTools
+            : undefined;
+        await previewTools(captured, profile, ticket, requested, true);
       }
     } catch (reason) {
       if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
@@ -364,8 +385,8 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   };
   const save = async () => {
     const captured = basis(),
-      tools = approvedTools();
-    if (!captured || !tools || busy() || unavailableEditTarget()) return;
+      preview = toolPreview();
+    if (!captured || !preview || busy() || unavailableEditTarget()) return;
     const current = editingPlan(),
       id = current?.task.id;
     let input;
@@ -380,7 +401,17 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         current,
         { cadence: cadence(), workerTools: workerTools() },
       );
-      input.approvedTools = tools;
+      const chosen = selectedTools();
+      input.approvedTools = approvedDiscoveryNames(preview, chosen);
+      // Keep an unchanged preset grant (and its one-time follow-ups) on timing-only edits.
+      const keepPresetGrant =
+        current?.approved &&
+        !reapproving() &&
+        sameValue(current.task.effect, input.task.effect) &&
+        sameValue(input.approvedTools, preview.approvedNames);
+      if (input.task.effect.kind === 'discovery' && !keepPresetGrant) {
+        input.task.effect.selectedTools = chosen;
+      }
     } catch {
       error.set(message('Discovery invalid settings'));
       return;
@@ -392,7 +423,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (!alive) return;
       if (!sameValue(latest, captured)) {
         basis.set(latest);
-        await previewTools(latest, workerTools(), ++formGeneration);
+        await previewTools(latest, workerTools(), ++formGeneration, selectedTools());
         throw new UiError('Discovery settings changed');
       }
       const result = await props.control(
@@ -409,7 +440,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (result.kind === 'conflict') throw new UiError('Discovery plan changed');
       if (result.kind === 'rejected') {
         if (result.reason === 'scheduler_discovery_tools_changed') {
-          await previewTools(latest, workerTools(), ++formGeneration);
+          await previewTools(latest, workerTools(), ++formGeneration, selectedTools());
           throw new UiError('Discovery settings changed');
         }
         throw new Error(result.reason);
@@ -596,6 +627,11 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                   accessLabel(snapshot()!.target.permissions.access)
                 : tr('Use read-only investigation tools')}
             </Text>
+            <If when={!editing() && planSelection() != null}>
+              <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                {discoverySelectionLabel(planSelection()!)}
+              </Text>
+            </If>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
               <Text style={{ ...captionTextStyle, color: C.secondary, flexShrink: 1 }}>
                 {tr('Discovery model')}: {modelLabel()}
@@ -651,10 +687,13 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             change={changeWorkerTools}
             disabled={busy() || !basis()}
           />
-          <If when={approvedTools()?.length}>
-            <Text style={{ ...captionTextStyle, color: C.secondary, userSelect: 'text' }}>
-              {approvedTools()!.join(' · ')}
-            </Text>
+          <If when={toolPreview() !== null}>
+            <DiscoveryToolPicker
+              preview={toolPreview()!}
+              selection={selectedTools()}
+              change={selectedTools.set}
+              disabled={busy()}
+            />
           </If>
           <If when={unavailableEditTarget()}>
             <Text style={{ ...captionTextStyle, color: C.danger }}>
@@ -716,7 +755,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                 busy() ||
                 loading() ||
                 !basis() ||
-                !approvedTools() ||
+                !toolPreview() ||
                 (!!editingPlan() && !!detail()?.pendingFire) ||
                 unavailableEditTarget()
               }

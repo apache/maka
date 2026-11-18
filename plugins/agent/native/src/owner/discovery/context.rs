@@ -59,10 +59,9 @@ impl Owner {
             None
         };
         let mut recent = Vec::new();
-        if tools
-            .iter()
-            .any(|name| name == "SessionRead" || self.discovery_reads.contains(name))
-        {
+        if self.tool_basis.iter().any(|tool| {
+            tool.reads_session_content() && tools.iter().any(|name| name == tool.name())
+        }) {
             let target = &job.approval.target;
             let page = self
                 .canonical_catalog()?

@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { discoveryInput, discoveryTasks } from '../app/discoveryCore.ts';
+import {
+  approvedDiscoveryNames,
+  selectedDiscoveryTools,
+  discoveryInput,
+  discoveryTasks,
+} from '../app/discoveryCore.ts';
 import { quoteBotMessage } from '../app/botTranscriptCore.ts';
 
 const approval = {
@@ -50,6 +55,19 @@ test('approval pins the displayed scope and model and rejects invalid intervals'
   for (const minutes of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER]) {
     assert.throws(() => discoveryInput(approval, 'Discovery', 'check', minutes, 1000, 'UTC'));
   }
+});
+
+test('editing a grant keeps exact names and categories as the catalog changes', () => {
+  const preview = {
+    names: ['DiscoveryComplete', 'NewReader', 'Note', 'Read'],
+    groups: { NewReader: 'read_files', Note: 'commands', Read: 'read_files' },
+  };
+  const selected = selectedDiscoveryTools(preview, { Read: 'read_files', Note: 'read_files' });
+  assert.deepEqual(approvedDiscoveryNames(preview, selected), ['DiscoveryComplete', 'Read']);
+  assert.deepEqual(selectedDiscoveryTools(preview, null, ['Read', 'DiscoveryComplete']), {
+    Read: 'read_files',
+  });
+  assert.deepEqual(approvedDiscoveryNames(preview, {}), ['DiscoveryComplete']);
 });
 
 test('discovery listing carries catalogue revision through all pages and rejects a raced snapshot', async () => {

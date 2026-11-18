@@ -53,6 +53,17 @@ pub(crate) struct Catalog {
     pub(crate) live_bindings: Vec<super::LiveBinding>,
 }
 impl Catalog {
+    /// A fresh worker shares workspace tools. The outer client layer belongs to its original Session.
+    pub(crate) fn for_new_session(&self) -> &Self {
+        if self.client_mcp.is_some() {
+            self._parent
+                .as_deref()
+                .expect("a client layer overlays a workspace catalog")
+        } else {
+            self
+        }
+    }
+
     fn with_layer(
         parent: Arc<Self>,
         revision: String,

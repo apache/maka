@@ -52,6 +52,10 @@ pub enum ScheduledEffect {
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
         /// Tool and permission profile requested for this plan.
         worker_tools: DiscoveryWorkerTools,
+        /// Optional exact tool choices and the categories shown to the user.
+        /// The profile and the current Session ceiling still apply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected_tools: Option<DiscoveryToolSelection>,
     },
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -61,7 +65,30 @@ pub enum DiscoveryWorkerTools {
     ReadOnly,
     Session,
 }
+/// The category is derived from the bound service, even for renamed tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryToolGroup {
+    ReadFiles,
+    ModifyFiles,
+    History,
+    Commands,
+    Web,
+    Sessions,
+    Desktop,
+    Other,
+}
+
+pub type DiscoveryToolSelection = BTreeMap<String, DiscoveryToolGroup>;
+
 impl ScheduledEffect {
+    pub fn selected_discovery_tools(&self) -> Option<&DiscoveryToolSelection> {
+        match self {
+            Self::Discovery { selected_tools, .. } => selected_tools.as_ref(),
+            _ => None,
+        }
+    }
+
     pub fn target(&self) -> &ScheduledTarget {
         match self {
             Self::Session { target, .. }
@@ -211,7 +238,13 @@ pub enum InvestigationPhase {
 #[schemars(rename = "AgentSchedules")]
 pub enum Schedules {
     DiscoveryTools {
+        /// All names available in this profile, including the required return tool.
         names: Vec<String>,
+        /// Selectable names classified by their current binding.
+        groups: DiscoveryToolSelection,
+        /// Previously approved names for this plan and profile, if any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approved_names: Option<Vec<String>>,
     },
     Page {
         revision: u64,

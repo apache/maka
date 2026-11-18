@@ -148,7 +148,12 @@ impl CaptureError {
     }
 }
 
-fn investigation_prompt(language: Language, direction: &str, memory_allowed: bool) -> String {
+fn investigation_prompt(
+    language: Language,
+    direction: &str,
+    memory_allowed: bool,
+    history_allowed: bool,
+) -> String {
     let direction = direction.trim();
     let (focused, broad, memory, history, finish) = match language {
         Language::ZhCn => (
@@ -181,7 +186,9 @@ fn investigation_prompt(language: Language, direction: &str, memory_allowed: boo
     if memory_allowed {
         prompt.push_str(&format!("\n\n{memory}"));
     }
-    prompt.push_str(&format!("\n{history}"));
+    if history_allowed {
+        prompt.push_str(&format!("\n{history}"));
+    }
     prompt.push_str(&format!("\n\n{finish}"));
     prompt
 }
@@ -484,6 +491,7 @@ impl Owner {
         basis: &CapturedRun,
         target: &ScheduledTarget,
         profile: DiscoveryWorkerTools,
+        selection: Option<&DiscoveryToolSelection>,
     ) -> Result<scheduler::DiscoveryToolGrant, String> {
         let source = self.session(&target.session_id).await?;
         check_target(&source, target)?;
@@ -494,6 +502,7 @@ impl Owner {
                     .mcp_catalog
                     .as_ref()
                     .ok_or("discovery_tool_catalog_unavailable")?
+                    .for_new_session()
                     .tools
             }
         };
@@ -512,20 +521,43 @@ impl Owner {
         if catalog.contains(MEMORY) {
             names.push(MEMORY.into());
         }
-        let names = self.discovery_worker_tools(&names, source.configuration.tools.as_deref());
+        let names =
+            self.discovery_worker_tools(&names, source.configuration.tools.as_deref(), selection);
+        // Every requested optional name must still be in the profile, in its displayed
+        // category, and under the parent ceiling. Only the return tool is implicit.
+        if selection.is_some_and(|selected| selected.len() + 1 != names.len()) {
+            return Err("scheduler_discovery_tools_changed".into());
+        }
         Ok(scheduler::DiscoveryToolGrant { profile, names })
     }
 
+    pub(super) fn discovery_tool_group(&self, name: &str) -> DiscoveryToolGroup {
+        if let Some(tool) = self.tool_basis.iter().find(|tool| tool.name() == name) {
+            return tool.discovery_group;
+        }
+        if RECALL_TOOLS.contains(&name) || name == MEMORY {
+            return DiscoveryToolGroup::History;
+        }
+        match name {
+            "ScheduledTask" | "CreateGoal" | "GetGoal" | "GoalStatus" | "todo_read"
+            | "todo_write" => DiscoveryToolGroup::Sessions,
+            _ => DiscoveryToolGroup::Other,
+        }
+    }
+
     pub(super) fn read_only_discovery_tool(&self, name: &str) -> bool {
-        self.discovery_reads.iter().any(|tool| tool == name)
-            || RECALL_TOOLS.contains(&name)
-            || matches!(name, "SessionList" | "SessionRead" | MEMORY | COMPLETE)
+        name == COMPLETE
+            || matches!(
+                self.discovery_tool_group(name),
+                DiscoveryToolGroup::ReadFiles | DiscoveryToolGroup::History
+            )
     }
 
     fn discovery_worker_tools(
         &self,
         names: &[String],
         configured: Option<&[String]>,
+        selection: Option<&DiscoveryToolSelection>,
     ) -> Vec<String> {
         let mut allowed: Vec<_> = names
             .iter()
@@ -533,6 +565,9 @@ impl Owner {
                 name.as_str() != COMPLETE
                     && (self.settings.recall || !RECALL_TOOLS.contains(&name.as_str()))
                     && configured.is_none_or(|configured| configured.contains(name))
+                    && selection.is_none_or(|selected| {
+                        selected.get(name.as_str()) == Some(&self.discovery_tool_group(name))
+                    })
             })
             .cloned()
             .collect();
@@ -678,6 +713,7 @@ impl Owner {
                 let allowed = self.discovery_worker_tools(
                     &job.tools.names,
                     source.configuration.tools.as_deref(),
+                    fire.effect.selected_discovery_tools(),
                 );
                 job.input = self
                     .discovery_input(&job, fire, previous, timezone, &allowed)
@@ -897,17 +933,24 @@ impl Owner {
         timezone: &str,
         allowed_tools: &[String],
     ) -> Result<MessageInput, String> {
+        let history_allowed = fire.effect.selected_discovery_tools().is_none()
+            || allowed_tools
+                .iter()
+                .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
         let mut prompt = investigation_prompt(
             job.approval.language,
             fire.intent.body(),
             allowed_tools.iter().any(|name| name == MEMORY),
+            history_allowed,
         );
         prompt.push_str(&context::environment(
             job.approval.language,
             &job.approval.target.workspace.path,
             timezone,
         ));
-        prompt.push_str(&self.discovery_opening(job, previous, allowed_tools).await?);
+        if history_allowed {
+            prompt.push_str(&self.discovery_opening(job, previous, allowed_tools).await?);
+        }
         Ok(prompt.into())
     }
 
@@ -919,8 +962,11 @@ impl Owner {
         timezone: &str,
     ) -> Result<(), CaptureError> {
         let source = self.session(&job.bot).await?;
-        let allowed_tools =
-            self.discovery_worker_tools(&job.tools.names, source.configuration.tools.as_deref());
+        let allowed_tools = self.discovery_worker_tools(
+            &job.tools.names,
+            source.configuration.tools.as_deref(),
+            fire.effect.selected_discovery_tools(),
+        );
         if self
             .store
             .get_session::<StoredSessionConfiguration>(&job.worker)

@@ -192,6 +192,7 @@ impl Owner {
             model,
             thinking_level,
             worker_tools,
+            selected_tools,
         } = &mut plan.task.effect
         else {
             return Ok(None);
@@ -222,6 +223,7 @@ impl Owner {
                 target: parent_target,
                 model: parent_model,
                 thinking_level: parent_thinking,
+                selected_tools: parent_selection,
                 ..
             } = &parent.task.effect
             else {
@@ -261,6 +263,13 @@ impl Owner {
                         .names
                         .retain(|name| self.read_only_discovery_tool(name));
                 }
+                *selected_tools = parent_selection.as_ref().map(|selection| {
+                    selection
+                        .iter()
+                        .filter(|(name, _)| tools.names.contains(name))
+                        .map(|(name, group)| (name.clone(), *group))
+                        .collect()
+                });
                 return Ok(Some(Approval::Discovery {
                     approval: approval.clone(),
                     tools,
@@ -386,6 +395,7 @@ impl Owner {
                                         model: model.clone(),
                                         thinking_level,
                                         worker_tools: worker_tools.unwrap_or_default(),
+                                        selected_tools: None,
                                     }
                                 }
                                 Target::Session => ScheduledEffect::Session {
