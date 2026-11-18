@@ -132,6 +132,49 @@ impl Owner {
         }))
     }
 
+    pub async fn save_file(
+        &self,
+        input: SaveFile,
+        scope: &Scope,
+    ) -> Result<SaveFileResult, String> {
+        if !matches!(
+            scope.identity,
+            maka_capabilities::call::Identity::Native
+                | maka_capabilities::call::Identity::Remote { .. }
+        ) {
+            return Err("Only the workspace client may save an edited file.".into());
+        }
+        let (original, directory) = self.file_directory(&input.session_id, None, scope).await?;
+        let sandbox = self
+            .capture_sandbox(&original, scope.sandbox_floor())
+            .await?;
+        self.check_file_session(&input.session_id, &original, scope)
+            .await?;
+        worktrees::blocking(scope, &self.stop, move |cancel| {
+            let policy = match sandbox {
+                maka_sandbox::Sandbox::Managed { filesystem, .. } => {
+                    Some(filesystem.compile().map_err(|e| e.to_string())?)
+                }
+                maka_sandbox::Sandbox::Disabled => None,
+                maka_sandbox::Sandbox::External { .. } => {
+                    return Err("File editing requires a local workspace.".into());
+                }
+            };
+            match directory.save_text(
+                &input.path,
+                &input.expected_version,
+                &input.text,
+                policy.as_ref(),
+                &cancel,
+            ) {
+                Ok(Some(version)) => Ok(SaveFileResult::Saved { version }),
+                Ok(None) => Ok(SaveFileResult::Conflict),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await
+    }
+
     pub async fn read_file(
         self: &Arc<Self>,
         input: FileRead,

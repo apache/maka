@@ -4402,9 +4402,9 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
         file_tab.size.width <= px(200.0),
         "Stage tab stretched abnormally wide: {file_tab:?}"
     );
-    let def_btn = desktop.control("Go to definition").await;
+    let find_button = desktop.control("Find in file").await;
     let editor_body_probe = Bounds::new(
-        point(def_btn.left(), def_btn.bottom() + px(24.0)),
+        point(file_tab.left(), find_button.bottom() + px(24.0)),
         size(px(280.0), px(180.0)),
     );
     desktop

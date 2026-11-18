@@ -129,6 +129,20 @@ fn inline(schema: &Schema, text: &str) -> Vec<Node> {
 }
 
 pub(super) fn document(schema: &Schema, source: &str) -> Node {
+    paragraphs(schema, source, inline)
+}
+
+pub(super) fn file_document(schema: &Schema, source: &str) -> Node {
+    paragraphs(schema, source, |schema, text| {
+        if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![schema.text(text, vec![])]
+        }
+    })
+}
+
+fn paragraphs(schema: &Schema, source: &str, inline: fn(&Schema, &str) -> Vec<Node>) -> Node {
     let mut paragraphs = Vec::new();
     let mut rest = source;
     loop {

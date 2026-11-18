@@ -55,9 +55,7 @@ mod publication;
 
 use maka_workspace_api::files::*;
 pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
-    // One coordinator for every activation of this compiled provider. It owns
-    // no work; accepted request Scopes retain the actual joined executors.
-    let writes = Arc::new(WriteCoordinator::default());
+    let writes = WriteCoordinator::shared();
     registry.insert(
         maka_workspace_api::files::IMPLEMENTATION.into(),
         Arc::new(move |context, _| {
