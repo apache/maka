@@ -39,7 +39,6 @@ maka-config.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tempfile.workspace = true
-sqlx.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }

@@ -38,20 +38,6 @@ use crate::protocol::Direction;
 use cua_driver_contract::WindowBounds;
 use maka_agent_facts::tools::ToolError;
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SizingPolicy {
-    use_legacy_sizing: bool,
-    normalize_to_points: bool,
-}
-
-impl SizingPolicy {
-    /// These are source defaults, not observed remote configuration values.
-    pub(crate) const SOURCE_DEFAULTS: Self = Self {
-        use_legacy_sizing: false,
-        normalize_to_points: true,
-    };
-}
-
 #[derive(Clone)]
 pub(crate) struct PageFrame {
     bounds: WindowBounds,
@@ -62,11 +48,10 @@ pub(crate) struct PageFrame {
 
 impl PageFrame {
     /// Retain a native observation's geometry and its explicit scalar mapping.
-    /// The policy resolves the scalar before integer image sizing; deriving it
-    /// from independently rounded image dimensions changes the original map.
+    /// The scalar is resolved before integer image sizing; deriving it from
+    /// independently rounded image dimensions changes the original map.
     pub(crate) fn from_native_geometry(
         geometry: platform_macos::geometry::NativeWindowGeometry,
-        sizing_policy: SizingPolicy,
     ) -> Result<Self, ToolError> {
         let bounds = WindowBounds {
             x: geometry.bounds.x,
@@ -90,23 +75,8 @@ impl PageFrame {
         {
             return Err(unavailable());
         }
-        let logical_base = sizing_policy.use_legacy_sizing
-            && sizing_policy.normalize_to_points
-            && native_scale > 1.0;
-        let base_scale = if logical_base { 1.0 } else { native_scale };
-        let mut requested_image_size = [bounds.width * base_scale, bounds.height * base_scale];
-        let resize_scale = if sizing_policy.use_legacy_sizing {
-            let longest = requested_image_size[0].max(requested_image_size[1]);
-            let first = (2048.0 / longest).min(1.0);
-            let shortest = (requested_image_size[0] * first).min(requested_image_size[1] * first);
-            first * (768.0 / shortest).min(1.0)
-        } else {
-            1.0
-        };
-        for dimension in &mut requested_image_size {
-            *dimension *= resize_scale;
-        }
-        let scaling_factor = 1.0 / (base_scale * resize_scale);
+        let requested_image_size = [bounds.width * native_scale, bounds.height * native_scale];
+        let scaling_factor = 1.0 / native_scale;
         if requested_image_size
             .iter()
             .chain(std::iter::once(&scaling_factor))
@@ -269,46 +239,9 @@ mod tests {
 
     #[test]
     fn native_sizing_retains_fractional_size_and_one_scalar() {
-        let frame = PageFrame::from_native_geometry(
-            geometry(100.25, 80.125, 2.0),
-            SizingPolicy::SOURCE_DEFAULTS,
-        )
-        .unwrap();
+        let frame = PageFrame::from_native_geometry(geometry(100.25, 80.125, 2.0)).unwrap();
         assert_eq!(frame.requested_image_size(), [200.5, 160.25]);
         assert_eq!(frame.screen_point([200.0, 160.0]).unwrap(), [90.0, 100.0]);
-    }
-
-    #[test]
-    fn legacy_normalization_is_an_explicit_sizing_choice() {
-        for (normalize_to_points, size, point) in [
-            (true, [500.0, 300.0], [90.0, 120.0]),
-            (false, [1000.0, 600.0], [40.0, 70.0]),
-        ] {
-            let frame = PageFrame::from_native_geometry(
-                geometry(500.0, 300.0, 2.0),
-                SizingPolicy {
-                    use_legacy_sizing: true,
-                    normalize_to_points,
-                },
-            )
-            .unwrap();
-            assert_eq!(frame.requested_image_size(), size);
-            assert_eq!(frame.screen_point([100.0, 100.0]).unwrap(), point);
-        }
-    }
-
-    #[test]
-    fn legacy_sizing_applies_both_resize_stages() {
-        let frame = PageFrame::from_native_geometry(
-            geometry(4000.0, 2000.0, 2.0),
-            SizingPolicy {
-                use_legacy_sizing: true,
-                normalize_to_points: true,
-            },
-        )
-        .unwrap();
-        assert_eq!(frame.requested_image_size(), [1536.0, 768.0]);
-        assert_eq!(frame.scaling_factor, 1.0 / 0.384);
     }
 
     #[test]
@@ -318,19 +251,13 @@ mod tests {
             geometry(100.0, 100.0, f64::NAN),
             geometry(f64::MAX, 100.0, 2.0),
         ] {
-            assert!(
-                PageFrame::from_native_geometry(metadata, SizingPolicy::SOURCE_DEFAULTS).is_err()
-            );
+            assert!(PageFrame::from_native_geometry(metadata).is_err());
         }
     }
 
     #[test]
     fn native_controller_coordinates_truncate_before_the_one_scalar_map() {
-        let frame = PageFrame::from_native_geometry(
-            geometry(100.25, 80.125, 2.0),
-            SizingPolicy::SOURCE_DEFAULTS,
-        )
-        .unwrap();
+        let frame = PageFrame::from_native_geometry(geometry(100.25, 80.125, 2.0)).unwrap();
         let direct = controller_position([3.9, -3.9]).unwrap();
         assert_eq!(direct, [3, -3]);
         assert_eq!(
