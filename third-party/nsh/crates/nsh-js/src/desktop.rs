@@ -13,7 +13,8 @@ use std::{
 };
 
 use nsh_core::{
-    Command, EventKind, ImageSource, Op, ROOT_ID,
+    Command, EventKind, HeaderItem, HeaderItemContent, HeaderSystemItem, ImageSource, Op, Prop,
+    ROOT_ID, ScreenProp,
     desktop::{
         DesktopCommand, MenuAction, MenuBarMode, MenuItem, MenuRole, Shortcut, Tray,
         TrayTitlePlacement, TrayTitleRun,
@@ -44,6 +45,8 @@ pub(crate) struct Menus {
     app: RefCell<Vec<(u32, JsValue)>>,
     /// The last context menu's functions.
     popup: RefCell<Vec<(u32, JsValue)>>,
+    /// Trailing iOS header bar button functions, by screen node id.
+    header: RefCell<std::collections::HashMap<u32, Vec<(u32, JsValue)>>>,
     /// Resolves the promise of the context menu shown (owned), once the
     /// platform reports it closed.
     closed: Cell<JsValue>,
@@ -64,6 +67,7 @@ impl Default for Menus {
         Menus {
             app: RefCell::default(),
             popup: RefCell::default(),
+            header: RefCell::default(),
             tray: RefCell::default(),
             tray_click: Cell::new(0),
             globals: RefCell::default(),
@@ -140,6 +144,12 @@ impl Menus {
             .drain(..)
             .chain(self.popup.get_mut().drain(..))
             .chain(self.tray.get_mut().drain(..))
+            .chain(
+                self.header
+                    .get_mut()
+                    .drain()
+                    .flat_map(|(_, handlers)| handlers),
+            )
         {
             // SAFETY: owned values; no JS runs from here on.
             unsafe { qjs::JS_FreeValue(raw, f) };
@@ -250,12 +260,34 @@ fn icon(cx: *mut JsContext, v: JsValue) -> Result<Option<ImageSource>, String> {
     Ok(Some(source.inline()))
 }
 
+/// [`dom::take_len`] with its error as the message: arrays read here are
+/// read natively, where the time budget cannot interrupt, and a sparse
+/// array is as long as it says.
+fn take_len(cx: *mut JsContext, list: JsValue, budget: &mut u32) -> Result<u32, String> {
+    dom::take_len(cx, list, budget).ok_or_else(|| {
+        // SAFETY: the pending exception (owned), freed after; its message
+        // says why.
+        unsafe {
+            let e = qjs::JS_GetException(cx);
+            let message = dom::string_arg(cx, e).unwrap_or_default();
+            qjs::JS_FreeValue(cx, e);
+            message
+        }
+    })
+}
+
 /// Decodes menus, keeping their functions.
 struct Decoder {
     cx: *mut JsContext,
     mac: bool,
     /// The items' functions (id, owned function).
     functions: Vec<(u32, JsValue)>,
+    /// The submenus the item being read is in.
+    depth: u32,
+    /// The items left to read of [`dom::MAX_ARRAY_ITEMS`], submenus counted
+    /// together: a menu that is its own submenu multiplies its length at
+    /// each level.
+    budget: u32,
 }
 
 impl Decoder {
@@ -266,19 +298,30 @@ impl Decoder {
         if !unsafe { qjs::JS_IsArray(list) } {
             return Err("a menu is an array of items".into());
         }
-        let mut len: i64 = 0;
-        // SAFETY: the length of a live array.
-        unsafe { qjs::JS_GetLength(cx, list, &mut len) };
-        let mut out = Vec::with_capacity(len.max(0) as usize);
-        for i in 0..len.max(0) {
+        // Read natively, where neither the time budget nor the interpreter's
+        // stack limit applies: a menu that is its own submenu would recurse
+        // until the thread's stack overflows.
+        if self.depth > dom::MAX_DEPTH {
+            return Err("submenus nested too deeply".into());
+        }
+        let len = take_len(cx, list, &mut self.budget)?;
+        let mut out = Vec::with_capacity(len.min(1 << 10) as usize);
+        self.depth += 1;
+        for i in 0..len {
             // SAFETY: an element of a live array (owned).
-            let v = unsafe { qjs::JS_GetPropertyInt64(cx, list, i) };
+            let v = unsafe { qjs::JS_GetPropertyUint32(cx, list, i) };
             let item = self.item(v);
             free(cx, v);
-            if let Some(item) = item? {
-                out.push(item);
+            match item {
+                Ok(Some(item)) => out.push(item),
+                Ok(None) => {}
+                Err(e) => {
+                    self.depth -= 1;
+                    return Err(e);
+                }
             }
         }
+        self.depth -= 1;
         Ok(out)
     }
 
@@ -300,6 +343,7 @@ impl Decoder {
         let label = string(cx, v, c"label");
         let enabled = !flag(cx, v, c"disabled").unwrap_or(false);
         let icon = icon(cx, v)?;
+        let symbol = string(cx, v, c"symbol");
         let submenu = get(cx, v, c"submenu");
         if !nullish(submenu) {
             let items = self.items(submenu);
@@ -309,6 +353,8 @@ impl Decoder {
                 enabled,
                 items: items?,
                 icon,
+                symbol,
+                inline: flag(cx, v, c"inline").unwrap_or(false),
             }));
         }
         let role = match string(cx, v, c"role") {
@@ -353,6 +399,8 @@ impl Decoder {
             role,
             when,
             icon,
+            symbol,
+            destructive: flag(cx, v, c"destructive").unwrap_or(false),
         })))
     }
 
@@ -369,6 +417,8 @@ fn decode(cx: *mut JsContext, list: JsValue) -> Result<(Arc<[MenuItem]>, Functio
         cx,
         mac: os(cx) == Os::MacOs,
         functions: Vec::new(),
+        depth: 0,
+        budget: dom::MAX_ARRAY_ITEMS,
     };
     match decoder.items(list) {
         Ok(items) => Ok((items.into(), std::mem::take(&mut decoder.functions))),
@@ -429,6 +479,7 @@ unsafe extern "C" fn set_application_menu(
         match decode(cx, list) {
             Ok((items, functions)) => {
                 keep(cx, &menus(cx).app, functions);
+                let items = MenuItem::with_inline_expanded(&items).into();
                 listen(cx).and_then(|()| send(cx, DesktopCommand::SetMenu(Some(items))))
             }
             Err(e) => Err(e),
@@ -478,6 +529,7 @@ unsafe fn popup_menu(
         }
     };
     keep(cx, &menus(cx).popup, functions);
+    let items = MenuItem::with_inline_expanded(&items).into();
     // One context menu at a time: one shown before is closed by now.
     resolve_closed(cx);
     menus(cx).closed.set(funcs[0]);
@@ -556,6 +608,14 @@ unsafe extern "C" fn on_menu(
                 .map(|&(_, f)| unsafe { qjs::JS_DupValue(cx, f) })
         })
         .or_else(|| {
+            m.header.borrow().values().find_map(|handlers| {
+                handlers.iter().find(|(i, _)| *i == id).map(|&(_, f)| {
+                    // SAFETY: a dup for the call.
+                    unsafe { qjs::JS_DupValue(cx, f) }
+                })
+            })
+        })
+        .or_else(|| {
             m.globals
                 .borrow()
                 .iter()
@@ -611,6 +671,231 @@ fn next_id(cx: *mut JsContext) -> u32 {
     let id = m.next.get() + 1;
     m.next.set(id);
     id
+}
+
+/// Decodes `ios.headerRightItems` for screen `screen`: assigns menu /
+/// press ids, keeps their functions by screen id, and returns the
+/// platform items (or an error to throw).
+pub(crate) fn decode_header_right_items(
+    cx: *mut JsContext,
+    screen: u32,
+    list: JsValue,
+) -> Result<Vec<HeaderItem>, JsValue> {
+    listen(cx)?;
+    if nullish(list) {
+        clear_header(cx, screen);
+        return Ok(Vec::new());
+    }
+    // SAFETY: an inline tag check.
+    if !unsafe { qjs::JS_IsArray(list) } {
+        return Err(throw(cx, "nsh: ios.headerRightItems is an array of items"));
+    }
+    let mut len: i64 = 0;
+    // SAFETY: the length of a live array.
+    unsafe { qjs::JS_GetLength(cx, list, &mut len) };
+    let mut items = Vec::with_capacity(len.max(0) as usize);
+    let mut functions = Vec::new();
+    for i in 0..len.max(0) {
+        // SAFETY: an element of a live array (owned).
+        let v = unsafe { qjs::JS_GetPropertyInt64(cx, list, i) };
+        let item = decode_header_item(cx, v, &mut functions);
+        free(cx, v);
+        match item {
+            Ok(Some(item)) => items.push(item),
+            Ok(None) => {}
+            Err(message) => {
+                for (_, f) in functions {
+                    free(cx, f);
+                }
+                return Err(throw(cx, &format!("nsh: ios.headerRightItems: {message}")));
+            }
+        }
+    }
+    keep_header(cx, screen, functions);
+    Ok(items)
+}
+
+/// Drops the header handlers of screen `screen` (the prop was cleared).
+pub(crate) fn clear_header(cx: *mut JsContext, screen: u32) {
+    if let Some(old) = menus(cx).header.borrow_mut().remove(&screen) {
+        for (_, f) in old {
+            free(cx, f);
+        }
+    }
+}
+
+/// As [`clear_header`], from a finalizer (no live context).
+pub(crate) fn clear_header_rt(rt: *mut qjs::JSRuntime, screen: u32) {
+    let Some(state) = crate::state::of_runtime(rt) else {
+        return;
+    };
+    // SAFETY: the state's menus, while the runtime lives.
+    let menus = unsafe { &(*state).menus };
+    if let Some(old) = menus.header.borrow_mut().remove(&screen) {
+        for (_, f) in old {
+            // SAFETY: owned values; no JS runs from a finalizer.
+            unsafe { qjs::JS_FreeValueRT(rt, f) };
+        }
+    }
+}
+
+fn keep_header(cx: *mut JsContext, screen: u32, functions: Vec<(u32, JsValue)>) {
+    let old = menus(cx)
+        .header
+        .borrow_mut()
+        .insert(screen, functions)
+        .unwrap_or_default();
+    for (_, f) in old {
+        free(cx, f);
+    }
+}
+
+fn decode_header_item(
+    cx: *mut JsContext,
+    v: JsValue,
+    functions: &mut Functions,
+) -> Result<Option<HeaderItem>, String> {
+    if !is_object(v) {
+        // SAFETY: `ToBoolean` of a live value.
+        return if unsafe { qjs::JS_ToBool(cx, v) } == 0 {
+            Ok(None)
+        } else {
+            Err("a header item is an object".into())
+        };
+    }
+    let system = string(cx, v, c"systemItem")
+        .map(|name| header_system_item(&name).ok_or_else(|| format!("unknown systemItem `{name}`")))
+        .transpose()?;
+    let symbol = string(cx, v, c"symbol").map(Into::into);
+    let label_field = string(cx, v, c"label").map(Into::into);
+    let content = match (system, symbol, label_field.clone()) {
+        (Some(item), None, _) => HeaderItemContent::SystemItem(item),
+        (None, Some(name), _) => HeaderItemContent::Symbol(name),
+        (None, None, Some(text)) => HeaderItemContent::Label(text),
+        _ => {
+            return Err("a header item needs exactly one of systemItem, symbol, or label".into());
+        }
+    };
+    let label = match &content {
+        HeaderItemContent::Label(_) => None,
+        _ => label_field,
+    };
+    let menu_val = get(cx, v, c"menu");
+    let menu = if nullish(menu_val) {
+        free(cx, menu_val);
+        None
+    } else {
+        let mut decoder = Decoder {
+            cx,
+            mac: os(cx) == Os::MacOs,
+            functions: Vec::new(),
+            depth: 0,
+            budget: dom::MAX_ARRAY_ITEMS,
+        };
+        let items = decoder.items(menu_val);
+        free(cx, menu_val);
+        match items {
+            Ok(items) => {
+                functions.extend(std::mem::take(&mut decoder.functions));
+                Some(items)
+            }
+            Err(message) => {
+                decoder.free();
+                return Err(message);
+            }
+        }
+    };
+    let on_press = get(cx, v, c"onPress");
+    // SAFETY: an inline check.
+    let press_id = if menu.is_none() && unsafe { qjs::JS_IsFunction(cx, on_press) } {
+        let id = next_id(cx);
+        functions.push((id, on_press));
+        id
+    } else {
+        free(cx, on_press);
+        0
+    };
+    Ok(Some(HeaderItem::from_parts(
+        string(cx, v, c"key").map(Into::into),
+        content,
+        label,
+        flag(cx, v, c"disabled").unwrap_or(false),
+        press_id,
+        menu,
+    )))
+}
+
+fn header_system_item(name: &str) -> Option<HeaderSystemItem> {
+    Some(match name {
+        "add" => HeaderSystemItem::Add,
+        "done" => HeaderSystemItem::Done,
+        "close" => HeaderSystemItem::Close,
+        "edit" => HeaderSystemItem::Edit,
+        "compose" => HeaderSystemItem::Compose,
+        "search" => HeaderSystemItem::Search,
+        "share" => HeaderSystemItem::Share,
+        "trash" => HeaderSystemItem::Trash,
+        "save" => HeaderSystemItem::Save,
+        "cancel" => HeaderSystemItem::Cancel,
+        _ => return None,
+    })
+}
+
+/// Sets `ios.headerRightItems` on screen `id` from JS value `value`.
+pub(crate) fn set_header_right_items(
+    cx: *mut JsContext,
+    id: u32,
+    value: JsValue,
+) -> Result<(), JsValue> {
+    let items = decode_header_right_items(cx, id, value)?;
+    dom::push_op(
+        cx,
+        Op::SetProp {
+            id,
+            prop: Prop::Screen(ScreenProp::HeaderRightItems(items)),
+        },
+    )
+}
+
+/// Sets `selectionMenu` on view `id` from JS value `value`: assigns the
+/// items' ids and keeps their `onSelect` functions by the view's id (in
+/// the slot header items use), freed when the prop changes or the view
+/// goes.
+pub(crate) fn set_selection_menu(
+    cx: *mut JsContext,
+    id: u32,
+    value: JsValue,
+) -> Result<(), JsValue> {
+    listen(cx)?;
+    let items = if nullish(value) {
+        clear_header(cx, id);
+        Vec::new()
+    } else {
+        let mut decoder = Decoder {
+            cx,
+            mac: os(cx) == Os::MacOs,
+            functions: Vec::new(),
+            depth: 0,
+            budget: dom::MAX_ARRAY_ITEMS,
+        };
+        match decoder.items(value) {
+            Ok(items) => {
+                keep_header(cx, id, std::mem::take(&mut decoder.functions));
+                items
+            }
+            Err(message) => {
+                decoder.free();
+                return Err(throw(cx, &format!("nsh: selectionMenu: {message}")));
+            }
+        }
+    };
+    dom::push_op(
+        cx,
+        Op::SetProp {
+            id,
+            prop: Prop::SelectionMenu(items),
+        },
+    )
 }
 
 /// `Tray.set(options | null)`.
@@ -688,7 +973,7 @@ unsafe extern "C" fn set_tray(
     tray.tooltip = string(cx, options, c"tooltip").unwrap_or_default();
     tray.title = title;
     tray.title_placement = title_placement;
-    tray.menu = items;
+    tray.menu = MenuItem::with_inline_expanded(&items).into();
     tray.click = click;
     listen(cx)
         .and_then(|()| send(cx, DesktopCommand::SetTray(Some(tray))))
@@ -715,15 +1000,13 @@ fn tray_title_runs(cx: *mut JsContext, list: JsValue) -> Result<Vec<TrayTitleRun
     if !unsafe { qjs::JS_IsArray(list) } {
         return Err(SHAPE.into());
     }
-    let mut len: i64 = 0;
-    // SAFETY: the length of a live array.
-    unsafe { qjs::JS_GetLength(cx, list, &mut len) };
+    let len = take_len(cx, list, &mut { dom::MAX_ARRAY_ITEMS })?;
     // Not sized by `len`: the app sets an array's length, holes and all; the
     // first hole ends the decoding with an error.
     let mut runs = Vec::new();
-    for i in 0..len.max(0) {
+    for i in 0..len {
         // SAFETY: an element of a live array (owned).
-        let v = unsafe { qjs::JS_GetPropertyInt64(cx, list, i) };
+        let v = unsafe { qjs::JS_GetPropertyUint32(cx, list, i) };
         let fields = is_object(v).then(|| (text_string(cx, v), string(cx, v, c"color")));
         free(cx, v);
         let Some((Some(text), color)) = fields else {
@@ -1242,10 +1525,23 @@ export type MenuItem =
        * without an icon and logs a warning. The top-level menus of a
        * menu bar show their titles alone, and so do GPUI's native menus on
        * macOS. GTK's menus show no icon beside a label: GTK draws a menu
-       * item's icon only when it has no text. A terminal shows no images. */
+       * item's icon only when it has no text. A terminal shows no images.
+       * For an SF Symbol name in iOS header menus, use `symbol` instead. */
       icon?: ImageAsset | string;
-      /** Its items: makes it a submenu (`label` is required). */
+      /** An SF Symbol name beside its label in iOS header menus; ignored
+       * elsewhere (including macOS). Takes the place of `icon` when both
+       * are set. */
+      symbol?: string;
+      /** Destructive: iOS draws it red; the desktops ignore it. */
+      destructive?: boolean;
+      /** Its items: makes it a submenu (`label` is required). With
+       * `inline: true`, an inline section: on iOS,
+       * `UIMenuOptions.displayInline` with `label` as the section title;
+       * on the desktops, its items between separators, its label not
+       * shown. */
       submenu?: readonly (MenuItem | null | undefined | false)[];
+      /** An inline section when `submenu` is set (see `submenu`). */
+      inline?: boolean;
     };
 
 /** The application menu and context menus. */

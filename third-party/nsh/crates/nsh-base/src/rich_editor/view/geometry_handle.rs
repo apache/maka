@@ -142,10 +142,7 @@ impl ViewGeometry for GeometryHandle {
         self.with(|local| {
             let tree = local.tree.borrow();
             let geo = local.geo.borrow();
-            let block = tree.children.values().flatten().find(|b| b.pos == pos)?;
-            let origin = geo.origin(block.id)?;
-            let (_, frame) = geo.frames.get(&block.id)?;
-            Some(Bounds::new(origin, frame.size))
+            super::controller::node_box(&tree, &geo, pos)
         })
     }
 
@@ -200,13 +197,14 @@ mod tests {
         let mut tree = Tree::default();
         let mut geo = Geometry::default();
         for (id, pos, y) in [(1, 1, 0.0), (2, 3, 30.0)] {
+            tree.positions.insert(id, pos - 1);
+            tree.by_pos.insert(pos - 1, id);
             tree.children
                 .entry(0)
                 .or_default()
                 .push(super::super::controller::BlockItem {
                     id,
                     node: state.doc().clone(),
-                    pos: pos - 1,
                     parent: 0,
                 });
             geo.frames.insert(

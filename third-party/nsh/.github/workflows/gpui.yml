@@ -66,9 +66,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # The Linux and Windows runs of a pull request from this repository run
+    # on the self-hosted runners; forks' pull requests, the scheduled runs
+    # (which save the dependencies' caches forks restore) and macOS run on
+    # GitHub's runners (docs/dev/tooling.md "Runners").
+    runs-on: ${{ (github.event_name != 'schedule' && !(github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository)) && (matrix.os == 'ubuntu-24.04' && fromJSON('["public", "Linux", "X64"]') || matrix.os == 'windows-latest' && fromJSON('["public", "Windows", "X64"]')) || matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Temporary directories (tests) outside the checkout.
       - name: Set up the environment
@@ -101,9 +105,22 @@ jobs:
           echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
 
       - name: Setup Rust
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      # The self-hosted runner is shared: install the toolchain without
+      # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
+      - name: Setup Rust (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$bin:$PATH"
+          command -v rustup || curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          rustup toolchain install stable --profile minimal -c clippy
+          echo "$bin" >> "$GITHUB_PATH"
 
       # huacnlee/cargo, and the dependencies' builds: main's runs save
       # them, pull requests restore them.
@@ -116,10 +133,20 @@ jobs:
           lockfiles: "**/Cargo.lock"
 
       # A workspace of its own: huacnlee/cargo builds the dependencies it
-      # shares with the main workspace once (`shared-deps`).
+      # shares with the main workspace once (`shared-deps`). `--locked`: a
+      # change to those crates that left crates/gpui/Cargo.lock behind fails
+      # here, on main's scheduled runs too, rather than in the release
+      # (`cargo xtask dist` builds the GPUI host `--locked`).
       - name: Clippy
         working-directory: crates/gpui
-        run: cargo clippy --all-targets --features nsh-platform-gpui/dev -- -D warnings
+        run: cargo clippy --locked --all-targets --features nsh-platform-gpui/dev -- -D warnings
+
+      # Without the optional features: no shader renderer (naga, NSH's
+      # wgpu), syntect, RaTeX, ropey, imara-diff; no `zlib` or `crypto`
+      # module.
+      - name: Check without optional features
+        working-directory: crates/gpui
+        run: cargo clippy -p nsh-platform-gpui --no-default-features --features js -- -D warnings
 
       # Tests need no display: they open no window.
       - name: Test

@@ -127,6 +127,10 @@ impl Node {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
+    pub(crate) fn as_ptr(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
     /// Its type.
     pub fn ty(&self) -> &NodeType {
         &self.0.ty

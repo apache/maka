@@ -28,6 +28,7 @@ mod agent;
 mod animation;
 mod app;
 mod app_window;
+#[cfg_attr(not(feature = "media"), path = "audio_off.rs")]
 mod audio;
 mod canvas;
 mod chrome;
@@ -43,13 +44,16 @@ mod gfx;
 mod global_shortcut;
 mod image;
 mod input;
+mod keyboard;
 mod keymap;
 mod linking;
+mod login_item;
 mod mount;
 mod native;
 mod navigation;
 mod notifications;
 mod picker;
+mod presence;
 mod render;
 mod richedit;
 mod scroll;
@@ -88,6 +92,7 @@ pub use crate::{
         AppOptions, AppSource, AppView, debug_output, fatal_error, quit_app, run_app,
         run_app_with_config, set_components, set_ui_sets, with_running_view,
     },
+    compose::Placement,
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent, Wheel},
     text::DWriteTextEngine,

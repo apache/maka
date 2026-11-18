@@ -4,7 +4,8 @@
 // closes); tooltips the app opens (touch screens show none of their own)
 // and a toolbar; sheets (filters applied from a draft, a form, a drawer);
 // Escape and back close the top one. Then on a desktop: tooltips follow
-// the mouse, after their delays, and the toolbar's keys work. Menus:
+// the mouse, after their delays (at once along the toolbar once one
+// showed), and the toolbar's keys work. Menus:
 // menus.test.tsx; toasts: toasts.test.tsx.
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
@@ -160,4 +161,38 @@ test("on a desktop, tooltips show while the mouse rests on their element, after 
   await desk.hover("Instant");
   await desk.waitFor("tooltip hidden (hover)");
   expect(desk.texts()).not.toContain("Shown while pinned or hovered");
+});
+
+test("on a desktop, moving along the toolbar shows each tool's tooltip at once once one showed", async () => {
+  const desk = await open("../App.tsx", { platform: "macos", clock: {} });
+  await desk.press("role:button[Tooltip]");
+  await desk.waitFor("Move: Drag to move what is selected");
+  // The first tool the mouse rests on waits for its delay.
+  await desk.hover("label:Pen");
+  await desk.wait(300);
+  expect(desk.texts()).not.toContain("Pen");
+  await desk.wait(300);
+  await desk.waitFor("Pen");
+  // On to the next tool: its tooltip shows at once.
+  await desk.hover("label:Image");
+  await desk.wait(20);
+  expect(desk.texts()).toContain("Image");
+  expect(desk.texts()).not.toContain("Pen");
+  // Off the toolbar for longer than the grace period: the next waits again.
+  await desk.hover("Move: Drag to move what is selected");
+  await desk.wait(400);
+  await desk.hover("label:Comment");
+  await desk.wait(300);
+  expect(desk.texts()).not.toContain("Comment");
+  await desk.wait(300);
+  await desk.waitFor("Comment");
+  // The delays card's tooltips each wait for their own delay, once the
+  // grace period after the toolbar is over.
+  await desk.hover("Move: Drag to move what is selected");
+  await desk.wait(400);
+  await desk.hover("Default");
+  await desk.wait(300);
+  expect(desk.texts()).not.toContain("After half a second");
+  await desk.wait(300);
+  await desk.waitFor("After half a second");
 });

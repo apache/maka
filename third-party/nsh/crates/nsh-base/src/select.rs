@@ -267,6 +267,14 @@ pub struct SelectProps {
     /// Desktops: the distance it keeps from the edges of the safe area.
     #[prop(default)]
     pub margin: Prop<Points>,
+    /// Desktops: the list opens with the chosen item's row over the
+    /// trigger, the rows before it above (`true`), or on the `placement`
+    /// side of the trigger (`false`). Left out, the platform's way: over
+    /// the trigger on macOS, as its pop-up buttons open; on the side
+    /// elsewhere, as Windows', Linux's and browsers' drop-down lists do.
+    /// With nothing chosen it opens on the side; a terminal's list always
+    /// does.
+    pub cover: Prop<Option<bool>>,
     /// The classes of the popup (desktops: at least as wide as the
     /// trigger, never taller than the room beside it) or of the sheet
     /// (touch screens) the list is in.
@@ -274,6 +282,24 @@ pub struct SelectProps {
     /// The inline style of the popup or sheet, over its classes.
     #[prop(default)]
     pub popup_style: Prop<Style>,
+    /// Desktops: classes the popup has in its first frame, which its
+    /// `transition` classes animate from (Tailwind's `starting:`, CSS's
+    /// `@starting-style`): its entrance. A state's classes apply over
+    /// `popupClass` and `popupStyle`, as a state's styles do. A sheet
+    /// comes in with its own motion.
+    pub popup_starting_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup in its first frame, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_starting_style: Prop<Style>,
+    /// Desktops: classes the popup has while it goes: it stays, taking no
+    /// presses, until the transitions it has then ran (`onClose` after),
+    /// so they run its exit.
+    pub popup_ending_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup while it goes, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_ending_style: Prop<Style>,
     /// Touch screens: the classes of the backdrop behind the sheet
     /// (pressing it closes the list).
     pub backdrop_class: Prop<Option<SharedString>>,
@@ -318,7 +344,10 @@ pub struct SelectProps {
     /// What screen readers call the clear button (the app's words).
     pub clear_button_accessibility_label: Prop<Option<SharedString>>,
     /// What opens the list when pressed: the app's element, which the
-    /// list is placed against.
+    /// list is placed against. It is the combobox screen readers hear:
+    /// the select sets its role, label, value, `expanded`, `hasPopup` and
+    /// `disabled`, and the states the app gives the element itself stay
+    /// (`invalid` for a select the app's checks reject, `busy`).
     pub trigger: Prop<Option<Slot>>,
     /// What the list shows while no item does (a search that matches
     /// nothing, no items).
@@ -466,10 +495,10 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
         if !next {
             closed_by.replace(Some(reason));
         }
-        // Reported before the state follows: the popup has no motion on
-        // the desktops, so `onOpen` / `onClose` come in this same turn,
+        // Reported before the state follows: `onOpen` / `onClose` come
         // after it (as `Menu`'s order says: `onCancel`, `onOpenChange`,
-        // then the lifecycle).
+        // then the lifecycle), in this same turn while the popup has no
+        // looks for its states.
         open.request(next, || cx.emit(SelectEvent::OpenChange(next, reason)));
     });
     // The value of item `item`, if it can be chosen.
@@ -607,16 +636,16 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
                 return;
             }
             cx.emit(SelectEvent::Close);
-            // The keyboard goes back to the trigger, unless a press outside
-            // or Tab took it somewhere else.
+        }),
+        // The keyboard goes back to the trigger, unless a press outside,
+        // Tab or the app's `onChange` took it somewhere else.
+        back: Rc::new(move |popup| {
             let by = closed_by.replace(None);
-            if is_desktop()
-                && !matches!(
-                    by,
-                    Some(OpenChangeReason::PressOutside | OpenChangeReason::Focus)
-                )
-            {
-                anchor.focus();
+            if !matches!(
+                by,
+                Some(OpenChangeReason::PressOutside | OpenChangeReason::Focus)
+            ) {
+                anchor.focus_back(popup);
             }
         }),
     };
@@ -628,6 +657,10 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
             margin: props.margin,
             popup_class: props.popup_class,
             popup_style: props.popup_style,
+            popup_starting_class: props.popup_starting_class,
+            popup_starting_style: props.popup_starting_style,
+            popup_ending_class: props.popup_ending_class,
+            popup_ending_style: props.popup_ending_style,
             backdrop_class: props.backdrop_class,
             backdrop_style: props.backdrop_style,
         },
@@ -648,12 +681,19 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
         render_group: props.render_group,
         empty: props.empty,
         footer: None,
-        // On macOS the list opens with the chosen item over the trigger,
-        // as the system's pop-up buttons do; elsewhere (Windows, Linux,
-        // browsers, terminals) it drops below the trigger, as their own
-        // drop-down lists do.
-        cover: (os() == nsh_core::platform::Os::MacOs && !is_terminal())
-            .then(crate::popup::Cover::new),
+        // Unless the app says otherwise (`cover`), on macOS the list opens
+        // with the chosen item over the trigger, as the system's pop-up
+        // buttons do; elsewhere (Windows, Linux, browsers) it drops below
+        // the trigger, as their own drop-down lists do. A terminal's list
+        // always drops below; a touch screen's is a sheet.
+        cover: (is_desktop() && !is_terminal()).then(|| {
+            let cover = props.cover;
+            crate::popup::Cover::new(move || {
+                cover
+                    .get()
+                    .unwrap_or_else(|| os() == nsh_core::platform::Os::MacOs)
+            })
+        }),
     };
     // Tab past the trigger, or out of the list's search field, closes the
     // list and moves the focus on.

@@ -117,21 +117,57 @@ changes) or an animated value (`&AnimatedValue`, `&AnimatedNode`), whose node it
 uniforms) and the render pipelines by source hash (`None` for one the device refused, reported once with a `js`
 warning). A backend opens it the first time a shader is mounted on a surface (Android: on the `NshView`, kept across
 app loads), so an app without shaders opens no device. `Renderer::new` requests a low-power adapter with WebGL 2's
-downlevel limits backend by backend (Linux: GL, then the primary ones; elsewhere the primary ones and GL at once;
-no setting chooses one) and keeps the first whose device opens, so an adapter that refuses its device gives the
-next backend its turn; where none opens it is `None` and shader views show their background and children. Uncaptured device errors are warnings, never panics.
+downlevel limits backend by backend (Linux: GL, then the primary ones; Windows: Direct3D 12, then every backend at
+once; elsewhere the primary ones and GL at once; no setting chooses one) and keeps the first whose device opens, so
+an adapter that refuses its device gives the next backend its turn; on Windows a software adapter (Direct3D 12's
+WARP, its only one on Haswell's integrated GPUs and in many virtual machines) is tried only from the last entry, where
+a hardware Vulkan or GL adapter sorts ahead of it (`takes`); where none opens it is `None` and shader views show their background and children. Uncaptured device errors are warnings, never panics.
+
+Neither opening the device nor compiling a pipeline happens on the main thread, where each took tens of
+milliseconds (opening the device about 60 ms on a Mac, a pipeline 7–16 ms):
+
+- **Opening.** `Renderer::open(format, done)` runs `Renderer::new` on a thread of its own and calls `done` there; the
+  backend sends the renderer back to its main thread. macOS and iOS open this way, from the first shader (macOS: or
+  the first page's or dialog's `transitionShader`) mounted. While the device opens, a shader view shows its
+  background and children as they are, a transition starts no run and a page or a dialog comes and goes with its own
+  `animation`, as without a device, but the app is not told there is none: `shaders_unavailable` is reported only
+  once `done` says so. Once it is open, every shader view mounted meanwhile renders, and effects and transitions hide
+  their children as their frames show. Windows, Linux, Android and GPUI still open it with `Renderer::new` when the
+  first shader is mounted.
+- **Pipelines.** A pipeline the cache does not hold is compiled on the renderer's worker thread (one per renderer,
+  started with the first pipeline asked for, ended when the renderer drops); the cache marks it compiling, so it is
+  asked for once. `ShaderView::render` renders nothing for a view whose pipeline compiles: it stays due
+  (`ShaderView::compiling`), and a later call renders it. Backends that render on every display frame while a view
+  `wants_frame` (iOS, Windows, Linux, Android, GPUI) need nothing more; macOS, which renders a view that changed once
+  after the batch, waits for `Renderer::on_pipeline_ready`, which the worker calls after each pipeline it compiled,
+  and renders the views then (`Drive::Compiling`). A refused pipeline is reported once and cached as refused, as
+  before. Tests that render right after setting a shader wait with `Renderer::wait_for_pipelines`.
 
 `nsh_engine::shader::ShaderView` is one view's state on the main thread: the layer, its uniforms, size and scale, the
 clock of `nsh.time` (kept while paused), and its frames.
 
 - **Rendering never waits for the GPU.** Frames are read back asynchronously; a slow GPU drops frames instead of
   stalling the main thread.
+- **Memory.** The device asks for wgpu's `MemoryUsage` hints: on Direct3D 12 and Vulkan its allocator takes blocks of
+  8 MB and more where the default (`Performance`) takes 128 MB, which a few views' targets and read-back buffers never
+  fill. Metal and OpenGL do not read the hints. It asks for room for 65,536 live bindings, not wgpu's million, which
+  Direct3D 12 allocates as a descriptor heap when the device opens; the other backends report no limit there.
 - **Frames on IOSurfaces (Apple).** After `show_on_surfaces`, a view renders into one of three IOSurfaces of its frame's
   size (`shader_surfaces.rs`), tagged sRGB, instead of reading pixels back: `surface()` is the frame to show, which the
   backend sets as its layer's `contents`, and the window server matches its colours to the display on the GPU. A
   surface the window server still uses is not rendered into again (`IOSurfaceIsInUse`); with none free the frame is
   skipped. `frame()` stays empty; `set_input_from_frame` copies the frame shown on the GPU (a transition that starts
   over a running one). Where the device is not Metal's, frames are read back.
+- **Frames on shared textures (Windows).** Where the renderer is on Direct3D 12, the backend calls `show_on_surfaces(true)`: a view renders into one of
+  three Direct3D 12 textures of its frame's size (`shader_surfaces_windows.rs`, in a shared heap, simultaneous access,
+  wrapped for wgpu with `wgpu-hal`'s `texture_from_raw`) instead of reading pixels back. `surface()` gives the
+  texture of the frame to show by NT handle, with the view's shared fence and a value: the backend opens the texture on
+  its device (`OpenSharedResource1`), draws it as a Direct2D bitmap (`CreateBitmapFromDxgiSurface`, kept per texture
+  and device generation) and signals the value on the fence once `EndDraw` submitted the frame. A texture is rendered
+  into again only once the fence passed the value of the last frame that drew it; with none free the frame is skipped.
+  `frame()` stays empty, and `set_input_from_frame` copies on the GPU as on Apple. A texture the backend cannot open
+  (another adapter, a device without shared fences) sends the view back to reading frames back
+  (`show_on_surfaces(false)`), and a running transition shows what it started from until its first frame read back.
 - **Frame pacing.** `wants_frame` is true while something it reads changed, while it is animated and not paused, or
   while a frame is on its way back. Backends call `render` on their frame clock only while it is true, at most once
   per display frame.
@@ -150,7 +186,7 @@ is. Views out of sight stop rendering until they show again.
 | macOS (AppKit) | one frame callback of the surface's display link while frames change with time, pictures are due or anything else wants frames; a view that only changed renders after the batch and shows its frame when the GPU says it is done (`Renderer::when_done`), without the display link; at the window's backing scale | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children (`decor.rs` shapes it); a `CGImage` without Metal | `shown`, from `Mounter::revisit` (rows scrolled away, screens under another) |
 | iOS | a `CADisplayLink` of its own, at the screen's scale | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children; a `CGImage` without Metal | views outside any window render once back in one |
 | Android | the UI-thread animator's `Choreographer`, kept ticking by `UiAnimation::outputs` while a view wants a frame | a bitmap of `Box.java`, filled by `NshView.shaderFrame` | — |
-| Windows | the surface's frame ticker (`Surface::on_frame`), at the window's scale | a Direct2D bitmap drawn under the children (made again after a device loss) | `reveal`: hidden, concealed or detached views |
+| Windows | the surface's frame ticker (`Surface::on_frame`), at the window's scale | a Direct2D bitmap drawn under the children: a texture shared with the renderer's device (`show_on_surfaces`), else the pixels read back (made again after a device loss) | `reveal`: hidden, concealed or detached views |
 | GPUI | a frame client of its surface | a GPUI image (BGRA, straight, the view's opacity multiplied in, as canvases' pixmaps), whose replaced image leaves GPUI's atlases | views not drawn in the last frame |
 | Web | `requestAnimationFrame` | a `<canvas>` under the children (an effect's and a running transition's over them) | `IntersectionObserver` |
 
@@ -186,9 +222,9 @@ web page, nor backdrop blur or glass. The pictures of views AppKit has just show
 under the top one) wait for the next display frame: until AppKit displays the window their layers are out of the tree,
 where they draw y up.
 
-Where there is no GPU device (`Renderer::new` is `None`) macOS masks no children: an effect or a screen effect
-shows them as they are, a transition starts no run, and a page's or a dialog's `transitionShader` leaves the change
-to its own `animation`.
+Where there is no GPU device (`Renderer::new` is `None`), and while it opens, macOS masks no children: an effect or a
+screen effect shows them as they are, a transition starts no run, and a page's or a dialog's `transitionShader`
+leaves the change to its own `animation`.
 
 iOS retakes an effect's pictures on the display frame after the core says they changed (`MountItem::ShaderInput`) or
 the platform changed a view in them (animated values, scrolling, image loads), at most once per frame, and only those
@@ -203,9 +239,9 @@ dialog released while it shows closes through its shader too. The overlays leave
 reloads (`Shaders` drops them), and the root's children leave the view screen shaders draw them from
 (`Decor::set_effect`) when the last screen shader goes.
 
-Where there is no GPU device (`Renderer::new` is `None`) iOS masks no children: an effect or a screen effect shows
-them as they are, a transition starts no run, and a page's or a dialog's `transitionShader` leaves the change to
-its own `animation`, as it does when Reduce Motion is on.
+Where there is no GPU device (`Renderer::new` is `None`), and while it opens, iOS masks no children: an effect or a
+screen effect shows them as they are, a transition starts no run, and a page's or a dialog's `transitionShader`
+leaves the change to its own `animation`, as it does when Reduce Motion is on.
 
 On Android the layer stays in `libnsh`: the encoder sends Java only whether a view shows a shader (opcode `SHADER`,
 35, in `encode.rs` ↔ `Mounter.java`), Java reports the size in pixels (`Native.shaderSize`), and the layer goes to

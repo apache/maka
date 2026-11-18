@@ -174,8 +174,9 @@ scroll view's edge in a `relative` box around both, or anywhere else on the scre
 | `"always"` | Always. |
 
 In every mode it shows while its thumb is dragged, and stays `motion.idle` after the last scroll, drag or hover. While
-the content fits the viewport, it stays hidden. Hidden, the bar is at `opacity: 0` and passes presses through to what
-is under it.
+the content fits the viewport, it stays hidden and the whole bar passes pointer events through to the content in
+every mode. A hidden bar has `opacity: 0`; in `"hover"` mode on a desktop, its track receives the pointer whenever
+the content can scroll.
 
 ## Motion
 

@@ -91,11 +91,15 @@ the render layer each line's text and position, so the page draws lines exactly 
 
 `EngineControl` (from `engine.control()`) sends what the user does: `dispatch_event(id, kind, payload)` (a press is
 `EventKind::Press` with `EventPayload::None` where the platform does not know the pointer), `scroll(id, offset,
-applied)`, `resize(size)`, `set_environment(environment)` (appearance, safe areas, locale, ...), `frame()`.
+applied)`, `resize(size)`, `set_environment(environment)` (appearance, safe areas, locale, ...), `frame()`. A platform
+whose scroll views move with the keyboard (arrows, Page Up / Down, Home, End) also calls `key_scrolled(id, key_move)`
+after it starts each key's scroll, with the key's `nsh_core::scroll::KeyMove`: from End a list goes on to its real end
+through rows it has only estimated, and every other key lets go of that end (`docs/dev/scrolling-and-lists.md`).
 
 `Environment::platform` names a platform built outside NSH (`Some("miniprogram")`); NSH's own platforms leave it
 `None`. Apps read it as `platform.name` (TSX) and `platform_name()` (Rust, `nsh_core::prelude`), which is the OS's
-name (`ios`, `web`, ...) on NSH's own platforms (`Environment::platform_name`). The name is lower case and none of
+name (`ios`, `web`, ...) on NSH's own platforms (`Environment::platform_name`), and `platform.select(spec)` checks
+`platform.name` before `platform.os`. The name is lower case and none of
 `Os`'s; it is the same name as the command line's `--target`. A Mini Program is a platform that runs on an operating
 system, so the environment holds both: the platform's name and the OS beneath it.
 
@@ -104,6 +108,14 @@ runs on: the Mini Program platform reports iOS or Android from `wx.getDeviceInfo
 the simulated device's `system`. The OS's props (`ios={{…}}`, `android={{…}}`) then apply as they do on that OS, and
 the backend skips the mount items it does not show. `Idiom` says whether desktop behavior applies (`Idiom::Desktop`)
 or mobile (`Phone`, `Pad`).
+
+What the platform provides on that OS is in the environment as well, as NSH's own backends say it:
+`Environment::tab_bar` (on by default) is the system's tab bar on iOS and Android (`nsh/mobile`'s `TabBar`, which
+mounts the native component `TAB_BAR_COMPONENT` the platform registers; off: `TabBar` takes no room and `isAvailable` is
+false), and `Environment::clipboard_images` (`None` by default: as NSH's own backends on the OS, none on Android; `Some` from a platform built outside NSH) is images on the clipboard
+(off: `Clipboard`'s image calls reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` before reaching the platform). The
+Mini Program platform turns both off. The other services follow the same pattern (`screen_color`, `file_requests`,
+`speech`, `notifications`, `audio`: what the platform answers).
 
 ## WebAssembly hosts
 

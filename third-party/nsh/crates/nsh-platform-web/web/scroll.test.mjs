@@ -215,9 +215,14 @@ function scroller() {
   const p = Object.create(Player.prototype);
   p.root = { parentNode: null };
   p.size = [300, 200];
-  // A scroll that ends tells the engine (`nsh_scroll_ended`), which these
-  // players run without; -1: the engine is not due again (`schedule`).
-  p.wasm = { nsh_scroll_ended: () => -1 };
+  // A scroll that ends and a scroll key tell the engine (`nsh_scroll_ended`,
+  // `nsh_key_scroll`), which these players run without; -1: the engine is
+  // not due again (`schedule`).
+  p.keyScrolls = [];
+  p.wasm = {
+    nsh_scroll_ended: () => -1,
+    nsh_key_scroll: (id, kind, amount) => (p.keyScrolls.push([id, kind, amount]), -1),
+  };
   const el = {
     _id: 1, _kind: 'scroll', _events: new Set(), _applied: 0, parentNode: p.root,
     clientWidth: 300, clientHeight: 200, scrollWidth: 300, scrollHeight: 5000, scrollLeft: 0, scrollTop: 0,
@@ -253,6 +258,17 @@ test('scroll commands win over a wheel or key glide', (t) => {
       assert.equal(el._applied, 1);
     }
   }
+});
+
+test('scroll keys tell the engine, End as End', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  const { p, el } = scroller();
+  p.scrollKey({ key: 'End', shiftKey: false }, el);
+  p.scrollKey({ key: 'PageUp', shiftKey: false }, el);
+  runFrames();
+  // The key's own move (3: to the end, 1: by pages): a list follows its
+  // end from End on; Page Up leaves it.
+  assert.deepEqual(p.keyScrolls, [[1, 3, 0], [1, 1, -1]]);
 });
 
 test('a glide moves with the content the core keeps in place', (t) => {

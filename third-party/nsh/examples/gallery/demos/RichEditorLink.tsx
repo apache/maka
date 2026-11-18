@@ -36,7 +36,9 @@ export function createLinkMenu(editor: RichEditorSession, revision: () => number
   };
   const close = () => {
     editing.set(false);
-    editor.focus();
+    // After this key: on the web the Enter that submitted the field is still being handled, and an editor
+    // focused now would take it too (and replace the selection with a line break).
+    setTimeout(() => editor.focus(), 0);
   };
   /** Sets the address: the whole link under the caret, the selection, or new linked text at the caret. */
   const apply = () => {

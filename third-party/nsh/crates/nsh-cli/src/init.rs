@@ -296,7 +296,7 @@ nsh-platform-{platform} = {}
 "#,
                 dep(
                     &format!("nsh-platform-{platform}"),
-                    crate::rust_app::RUST_APP_PLATFORM
+                    &crate::rust_app::rust_app_platform(&format!("nsh-platform-{platform}"))
                 )
             ));
         }
@@ -678,6 +678,8 @@ mod tests {
             "nsh-platform-macos = {{ version = {version:?}{} }}",
             crate::rust_app::RUST_APP_PLATFORM
         )));
+        // Linux names its own `sound` (GStreamer) too, which an app can drop.
+        assert!(published.contains("\"net\", \"sound\"] }"), "{published}");
         let checkout =
             dunce::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
         let core = checkout.join("crates").join("nsh-core");

@@ -69,6 +69,24 @@ final class SelectableView implements SelectionHandle.Owner {
     /** A dragged handle passed the other: each marks the other end until the finger lifts. */
     private boolean swapped;
     private android.view.ActionMode mode;
+    /** The app's items of the menu (`selectionMenu`), after the system's. */
+    MenuEntry[] menu = new MenuEntry[0];
+
+    /** An item of the app's (`id` -1: a separator, which starts a new group). */
+    static final class MenuEntry {
+        final int id;
+        final boolean enabled;
+        final String label;
+
+        MenuEntry(int id, boolean enabled, String label) {
+            this.id = id;
+            this.enabled = enabled;
+            this.label = label;
+        }
+    }
+
+    /** The first menu item id of the app's items (above the system's ids). */
+    private static final int APP_ITEM = 0x10000;
     /** The text the touch went down on, and where (screen). */
     private TextBox touched;
     private float downX, downY;
@@ -502,6 +520,22 @@ final class SelectableView implements SelectionHandle.Owner {
         return b[0] == 0 && b[1] == 0 && b[2] == last && layout != null && b[3] >= layout.getText().length();
     }
 
+    /**
+     * The app's items (`selectionMenu`) after the system's and the text
+     * actions, in their order; a separator starts a new group.
+     */
+    private void addAppItems(android.view.Menu m) {
+        int group = 1;
+        for (int i = 0; i < menu.length; i++) {
+            MenuEntry entry = menu[i];
+            if (entry.id == -1) {
+                group++;
+                continue;
+            }
+            m.add(group, APP_ITEM + i, 200 + i, entry.label).setEnabled(entry.enabled);
+        }
+    }
+
     private void showToolbar() {
         if (handle == 0 || empty()) return;
         if (mode != null) {
@@ -521,6 +555,7 @@ final class SelectableView implements SelectionHandle.Owner {
                 int share = system.getIdentifier("share", "string", "android");
                 if (share != 0) menu.add(android.view.Menu.NONE, android.R.id.shareText, 2, system.getString(share));
                 addTextActions(menu);
+                addAppItems(menu);
                 return true;
             }
 
@@ -534,6 +569,16 @@ final class SelectableView implements SelectionHandle.Owner {
             public boolean onActionItemClicked(android.view.ActionMode m, android.view.MenuItem item) {
                 if (handle == 0) return false;
                 int itemId = item.getItemId();
+                if (itemId >= APP_ITEM && itemId - APP_ITEM < menu.length) {
+                    int chosen = menu[itemId - APP_ITEM].id;
+                    // The root's `Menu` event, as a menu's item.
+                    if (chosen > 0 || chosen < -1) {
+                        mounter.eventMap(1, Native.MENU, new String[] {"id"},
+                                new Object[] {(double) (chosen & 0xffffffffL)});
+                    }
+                    clear();
+                    return true;
+                }
                 if (itemId == android.R.id.copy) {
                     String copied = nativeText(handle, SelectableView.this);
                     if (copied != null && !copied.isEmpty()) SystemUi.setClipboard(view.getContext(), copied);

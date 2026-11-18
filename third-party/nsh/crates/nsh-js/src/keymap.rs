@@ -45,6 +45,7 @@ struct Options {
     pass_through: bool,
     fallback: bool,
     within: Option<NodeId>,
+    for_focus: bool,
 }
 
 /// A context's bindings, oldest first.
@@ -136,6 +137,7 @@ fn parse_options(cx: Ctx, options: Raw) -> R<Options> {
     let within = (!node.is_undefined())
         .then(|| scoped_node(cx, node.raw(), "keymap.bind within"))
         .transpose()?;
+    let for_focus = js::to_bool(cx, js::get(cx, options, "forFocus")?.raw());
     let value = js::get(cx, options, "when")?;
     if value.is_undefined() {
         return Ok(Options {
@@ -144,6 +146,7 @@ fn parse_options(cx: Ctx, options: Raw) -> R<Options> {
             pass_through,
             fallback,
             within,
+            for_focus,
         });
     }
     let when = match js::to_string(cx, value.raw())?.as_str() {
@@ -162,6 +165,7 @@ fn parse_options(cx: Ctx, options: Raw) -> R<Options> {
         pass_through,
         fallback,
         within,
+        for_focus,
     })
 }
 
@@ -296,7 +300,8 @@ fn send(cx: Ctx) -> R<()> {
         .iter()
         .map(|b| {
             let mut binding = KeyBinding::new(b.id, b.keystroke, b.options.when, b.options.repeat)
-                .passing_through(b.options.pass_through);
+                .passing_through(b.options.pass_through)
+                .focus_keys(b.options.for_focus);
             binding.fallback = b.options.fallback;
             binding.within = b.options.within;
             binding
@@ -371,6 +376,13 @@ pub(crate) const TYPES: &str = r#"export interface KeyBindingOptions {
    * A nonmatching scope leaves older bindings and native defaults eligible.
    * Throws when the host does not support native focus scopes. */
   within?: ViewRef;
+  /** The keys of the view that has the keyboard focus (default false). A
+   * plain Return or Space (Shift allowed) presses the focused control
+   * (`onPress`), and other bindings of those keys give way to it; a
+   * `forFocus` binding takes them first. Bind it while your view has the
+   * focus (`onFocus`) and remove it as the focus leaves (`onBlur`): a tile
+   * whose Space flips its switch and whose Return opens it. */
+  forFocus?: boolean;
 }
 
 /** The app's keyboard shortcuts: on desktop and terminal backends, the web,

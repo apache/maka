@@ -1,15 +1,16 @@
 //! The app's keyboard shortcuts (`nsh/keymap`): the table the engine
-//! mounts ([`MountItem::Keymap`](nsh_core::MountItem::Keymap)) and a local
-//! key monitor that matches every key against it on the spot.
+//! mounts ([`MountItem::Keymap`](nsh_core::MountItem::Keymap)) and the
+//! match of every key against it on the spot.
 //!
-//! The monitor sees a key before AppKit dispatches it: before menus' key
-//! equivalents (which is why the keystrokes of Quit, Hide, Minimize and
-//! Full Screen cannot be bound: `Keystroke::reserved`; the dev host's
-//! Cmd+R is left alone), before the field
-//! editor's key bindings and before the root's own keys (going back,
-//! scrolling). A key that fires a binding is consumed (no beep, nothing
-//! typed) and reported to JS with the root's `KeyCommand` event; JS runs
-//! the handler afterwards. Other keys go on as if there were no monitor.
+//! The key is seen before AppKit dispatches it by [`crate::keyboard`]'s
+//! monitor, which runs this match first: before menus' key equivalents
+//! (which is why the keystrokes of Quit, Hide, Minimize and Full Screen
+//! cannot be bound: `Keystroke::reserved`; the dev host's Cmd+R is left
+//! alone), before the field editor's key bindings and before the root's
+//! own keys (going back, scrolling). A key that fires a binding is
+//! consumed (no beep, nothing typed) and reported to JS with the root's
+//! `KeyCommand` event; JS runs the handler afterwards. Other keys go on as
+//! if there were no table.
 //!
 //! A surface takes the keys of its window while the keyboard focus is in
 //! it (its root, one of its views, a field or hosted view inside it), or
@@ -21,103 +22,48 @@
 //! bindings resolve it to `noop:`, which does not say which key it was: the
 //! monitor keeps the last one it saw ([`unhandled_key`]).
 
-use std::{cell::RefCell, ptr::NonNull, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use block2::RcBlock;
 use nsh_core::{
     EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
-    keymap::{Key, KeyMatch, Keymap, Keystroke, Modifiers},
+    keymap::{Key, KeyFocus, KeyMatch, Keymap, Keystroke, Modifiers},
     platform::Os,
 };
-use objc2::{rc::Retained, runtime::AnyObject};
+use objc2::{ProtocolType, msg_send, rc::Retained};
 use objc2_app_kit::{
-    NSEvent, NSEventMask, NSEventModifierFlags, NSTextInputClient, NSTextView, NSView, NSWindow,
+    NSEvent, NSEventModifierFlags, NSTextInputClient, NSTextView, NSView, NSWindow,
 };
+use objc2_foundation::NSObjectProtocol;
 
 use crate::surface::Surface;
 
-/// A surface's table and the monitor matching keys against it (while it
-/// has bindings).
+/// A surface's table of bindings.
 #[derive(Default)]
 pub(crate) struct KeymapState {
     table: RefCell<Option<Arc<Keymap>>>,
-    monitor: RefCell<Option<Retained<AnyObject>>>,
     key: RefCell<Option<Retained<NSEvent>>>,
-}
-
-impl KeymapState {
-    fn remove_monitor(&self) {
-        if let Some(monitor) = self.monitor.borrow_mut().take() {
-            // SAFETY: a monitor `addLocalMonitorForEventsMatchingMask`
-            // returned.
-            unsafe { NSEvent::removeMonitor(&monitor) };
-        }
-    }
-}
-
-impl Drop for KeymapState {
-    fn drop(&mut self) {
-        self.remove_monitor();
-    }
 }
 
 /// `MountItem::Keymap`: replaces the surface's table.
 pub(crate) fn set(surface: &Surface, keymap: Arc<Keymap>) {
     let state = &surface.keymap;
     if keymap.is_empty() {
-        surface.keymap.table.borrow_mut().take();
-        if !crate::text_input::is_armed(surface) {
-            surface.keymap.remove_monitor();
-        }
+        clear(surface);
         return;
     }
     *state.table.borrow_mut() = Some(keymap);
-    ensure_monitor(surface);
-}
-
-/// Ensures the surface's key-down monitor is installed so armed focus fences
-/// see desktop keystrokes even before a keymap table is mounted.
-pub(crate) fn ensure_monitor(surface: &Surface) {
-    let state = &surface.keymap;
-    if state.monitor.borrow().is_none() {
-        let monitor = install(surface.key());
-        *state.monitor.borrow_mut() = monitor;
-    }
-}
-
-/// Removes the local key monitor once neither a keymap table nor an armed
-/// focus fence needs it.
-pub(crate) fn sync_monitor(surface: &Surface) {
-    if surface.keymap.table.borrow().is_none() && !crate::text_input::is_armed(surface) {
-        surface.keymap.remove_monitor();
-    }
 }
 
 /// Drops the table (the app stopped).
 pub(crate) fn clear(surface: &Surface) {
     surface.keymap.table.borrow_mut().take();
-    surface.keymap.remove_monitor();
-}
-
-fn install(key: u64) -> Option<Retained<AnyObject>> {
-    let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-        // SAFETY: AppKit passes a valid event.
-        let e = unsafe { event.as_ref() };
-        match Surface::with_key(key) {
-            Some(surface) if pressed(&surface, e) => std::ptr::null_mut(),
-            _ => event.as_ptr(),
-        }
-    });
-    // SAFETY: the block returns the event it got, or null (consumed); the
-    // monitor is removed with the table.
-    unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block) }
 }
 
 /// What the monitor does with key-down `event`, for a key given to a
 /// window that is not the key window (`nsh test`'s, whose events the
-/// monitor never sees): whether a binding consumed it (then the window
-/// must not get it; a binding passing it through is reported and the
-/// window gets it).
+/// application's monitors do not see because the window is handed them
+/// directly): whether a binding consumed it (then the window must not get
+/// it; a binding passing it through is reported and the window gets it).
 #[cfg(any(feature = "dev", feature = "terminal"))]
 pub(crate) fn fires(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     fires_now(surface, event)
@@ -131,8 +77,9 @@ pub(crate) fn fires_now(surface: &Rc<Surface>, event: &NSEvent) -> bool {
 }
 
 /// Whether key-down `event` was held by an unsettled focus fence or consumed
-/// by one of the surface's ordinary bindings.
-fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+/// by one of the surface's ordinary bindings. Runs in
+/// [`crate::keyboard`]'s monitor, before the raw key and the menus.
+pub(crate) fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     if crate::text_input::is_replaying(surface) {
         return false;
     }
@@ -223,12 +170,15 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
         }
     }
     let path = crate::input::focus_path(surface);
+    let mut focus = KeyFocus::default();
+    focus.editing = editing;
+    focus.control = control;
+    focus.covered = crate::input::focus_covered(surface);
     let found = match_table(
         &table,
         window_root,
         keystroke,
-        editing,
-        control,
+        focus,
         event.isARepeat(),
         fallback,
         ctrl_for_command,
@@ -247,16 +197,24 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     found.consumed()
 }
 
-/// Whether an input method is composing in the focused text view (it has
+/// Whether an input method is composing in the focused input client (it has
 /// marked text: pinyin, kana). Every key is then the input method's:
 /// Backspace deletes a letter of the composition, Return and Space
 /// commit it, arrows move through its candidates. A binding taking one
 /// first would leave the composition stuck.
 fn composing(window: &NSWindow) -> bool {
-    window
-        .firstResponder()
-        .and_then(|r| r.downcast::<NSTextView>().ok())
-        .is_some_and(|t| t.hasMarkedText())
+    window.firstResponder().is_some_and(|responder| {
+        // Hosted inputs can implement the text input protocol without
+        // inheriting from NSTextView (a terminal, for example).
+        if !responder.conformsToProtocol(
+            <dyn NSTextInputClient>::protocol().expect("AppKit's text input protocol"),
+        ) {
+            return false;
+        }
+        // SAFETY: The responder conforms to NSTextInputClient, whose required
+        // hasMarkedText method is called on the main thread.
+        unsafe { msg_send![&*responder, hasMarkedText] }
+    })
 }
 
 /// Where the keyboard focus is: `Some(true)` in a text input or hosted
@@ -276,7 +234,8 @@ fn editing(root: &crate::view::NshView, window: &NSWindow) -> Option<bool> {
     Some(!crate::view::is_ours(view))
 }
 
-/// The keystroke of `event`, by its key on the US layout.
+/// The keystroke of `event`, by its key on the US layout: the shortcut
+/// vocabulary [`crate::keyboard`] matches capture rules with too.
 pub(crate) fn keystroke(event: &NSEvent) -> Option<Keystroke> {
     let flags = event.modifierFlags();
     let modifiers = Modifiers {
@@ -310,6 +269,12 @@ pub(crate) fn keystroke(event: &NSEvent) -> Option<Keystroke> {
         },
     };
     Some(Keystroke { modifiers, key })
+}
+
+/// Whether `event` is the dev host's reload (Cmd+R): the raw keys leave it
+/// to the reload monitor, as the keymap does.
+pub(crate) fn reloads(event: &NSEvent) -> bool {
+    keystroke(event).is_some_and(|keystroke| keystroke.reloads(Os::MacOs))
 }
 
 /// The character `event`'s key types without modifiers (Shift included:
@@ -351,19 +316,16 @@ fn match_table(
     table: &Keymap,
     window: NodeId,
     keystroke: Keystroke,
-    editing: bool,
-    control: bool,
+    focus: KeyFocus,
     repeat: bool,
     fallback: bool,
     ctrl_for_command: bool,
     within: impl Fn(NodeId) -> bool,
 ) -> KeyMatch {
     let find = |stroke| {
-        if fallback {
-            table.find_fallback_at_with(window, stroke, editing, control, repeat, &within)
-        } else {
-            table.find_at_with(window, stroke, editing, control, repeat, &within)
-        }
+        table.find_eligible(window, stroke, focus, repeat, |binding| {
+            binding.fallback == fallback && binding.within.is_none_or(&within)
+        })
     };
     let mut found = find(keystroke);
     if matches!(found, KeyMatch::None)
@@ -381,6 +343,13 @@ fn match_table(
 
 #[cfg(test)]
 mod tests {
+    fn focus(editing: bool, control: bool) -> super::KeyFocus {
+        let mut focus = super::KeyFocus::default();
+        focus.editing = editing;
+        focus.control = control;
+        focus
+    }
+
     use nsh_core::{
         keymap::{KeyBinding, KeyMatch, Keymap, Keystroke, When},
         platform::Os,
@@ -412,8 +381,7 @@ mod tests {
                 &table,
                 nsh_core::ROOT_ID,
                 parse("ctrl+u"),
-                true,
-                false,
+                focus(true, false),
                 false,
                 false,
                 false,
@@ -426,8 +394,7 @@ mod tests {
                 &table,
                 nsh_core::ROOT_ID,
                 parse("ctrl+u"),
-                true,
-                false,
+                focus(true, false),
                 false,
                 false,
                 true,
@@ -440,8 +407,7 @@ mod tests {
                 &table,
                 nsh_core::ROOT_ID,
                 parse("ctrl+c"),
-                true,
-                false,
+                focus(true, false),
                 false,
                 false,
                 true,
@@ -454,8 +420,7 @@ mod tests {
                 &table,
                 nsh_core::ROOT_ID,
                 parse("ctrl+cmd+s"),
-                true,
-                false,
+                focus(true, false),
                 false,
                 false,
                 true,
@@ -479,8 +444,7 @@ mod tests {
                 &table,
                 window,
                 parse("ctrl+s"),
-                true,
-                false,
+                focus(true, false),
                 false,
                 fallback,
                 true,
@@ -516,8 +480,7 @@ mod tests {
                         &table,
                         7,
                         key,
-                        false,
-                        control,
+                        focus(false, control),
                         false,
                         fallback,
                         false,

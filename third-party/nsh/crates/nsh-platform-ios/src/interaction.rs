@@ -7,9 +7,11 @@
 //! again in the in-between color on every frame of a display link that
 //! runs only while one moves, as an animated `color` does.
 
+use std::cell::Cell;
+
 use nsh_core::{
     AttributedText, BlendMode, Cursor, KeyframeAnimation, Keyframes, Transition, TransitionProps,
-    ViewStyle, transition,
+    ViewStyle, element::Spring, transition,
 };
 use objc2::{
     MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, runtime::AnyObject, sel,
@@ -18,7 +20,7 @@ use objc2_core_foundation::CGFloat;
 use objc2_foundation::{NSArray, NSNumber, NSRunLoop, NSRunLoopCommonModes, NSString, ns_string};
 use objc2_quartz_core::{
     CABasicAnimation, CADisplayLink, CAKeyframeAnimation, CALayer, CAMediaTiming,
-    CAMediaTimingFunction, CATransaction, kCAFillModeBackwards,
+    CAMediaTimingFunction, CASpringAnimation, CATransaction, kCAFillModeBackwards,
 };
 use objc2_ui_kit::{
     UIAxis, UIPointerEffect, UIPointerShape, UIPointerStyle, UITargetedPreview, UIView,
@@ -38,9 +40,22 @@ fn numbers(values: &[f64]) -> Retained<NSArray> {
 /// Key of the running keyframe animation.
 const KEYFRAMES: &str = "nshKeyframes";
 
+/// Core Animation takes the control points as they are: a `y` outside 0..1
+/// overshoots, as CSS's does.
 fn timing(c: [f32; 4]) -> Retained<CAMediaTimingFunction> {
     CAMediaTimingFunction::functionWithControlPoints(c[0], c[1], c[2], c[3])
 }
+
+thread_local! {
+    /// The spring of the transition [`transition`] runs, while it restyles:
+    /// what [`animate_geometry`] moves its paths with.
+    static SPRING: Cell<Option<Spring>> = const { Cell::new(None) };
+}
+
+/// A transaction's implicit animations (the view's sublayers) take a curve,
+/// not a spring: a fast start easing out over the spring's settling time,
+/// without its overshoot.
+const SPRING_CURVE: [f32; 4] = [0.2, 0.9, 0.3, 1.0];
 
 /// Layer properties a transition animates, by group.
 fn keys(props: TransitionProps) -> Vec<&'static NSString> {
@@ -91,6 +106,28 @@ fn change(
     a
 }
 
+/// One property's change on `spring`'s physics, from rest, lasting until it
+/// settles as the core's transitions do.
+fn spring_change(
+    key: &NSString,
+    from: &AnyObject,
+    to: &AnyObject,
+    spring: Spring,
+) -> Retained<CABasicAnimation> {
+    let a = CASpringAnimation::animationWithKeyPath(Some(key));
+    // SAFETY: values read from the property this animation drives.
+    unsafe {
+        a.setFromValue(Some(from));
+        a.setToValue(Some(to));
+    }
+    a.setMass(spring.mass as CGFloat);
+    a.setStiffness(spring.stiffness as CGFloat);
+    a.setDamping(spring.damping as CGFloat);
+    a.setInitialVelocity(0.0);
+    a.setDuration(spring.settle_ms() as f64 / 1000.0);
+    Retained::into_super(a)
+}
+
 /// Runs `apply`, which sets geometry `layer` draws itself with, so that it
 /// animates along the current transaction: paths (a box shadow's
 /// `shadowPath`, a mask's `path`) and the corners of UIKit's own layers have
@@ -114,13 +151,16 @@ pub(crate) fn animate_geometry(layer: &CALayer, key: &NSString, apply: impl FnOn
     if same {
         return;
     }
-    let animation = change(
-        key,
-        &from,
-        &to,
-        CATransaction::animationDuration(),
-        CATransaction::animationTimingFunction().as_deref(),
-    );
+    let animation = match SPRING.get() {
+        Some(spring) => spring_change(key, &from, &to, spring),
+        None => change(
+            key,
+            &from,
+            &to,
+            CATransaction::animationDuration(),
+            CATransaction::animationTimingFunction().as_deref(),
+        ),
+    };
     layer.addAnimation_forKey(&animation, Some(key));
 }
 
@@ -135,11 +175,20 @@ pub(crate) fn transition(view: &UIView, t: &Transition, apply: impl FnOnce()) {
     let from_layer = unsafe { layer.presentationLayer() }.unwrap_or_else(|| layer.clone());
     let before: Vec<Option<Retained<AnyObject>>> =
         keys.iter().map(|k| value(&from_layer, k)).collect();
-    let duration = t.duration as f64 / 1000.0;
+    let duration = t.run_ms() as f64 / 1000.0;
+    let spring = t.spring;
+    let curve = if spring.is_some() {
+        SPRING_CURVE
+    } else {
+        t.easing
+    };
+    let curve = timing(curve);
     CATransaction::begin();
     CATransaction::setAnimationDuration(duration);
-    CATransaction::setAnimationTimingFunction(Some(&timing(t.easing)));
+    CATransaction::setAnimationTimingFunction(Some(&curve));
+    SPRING.set(spring);
     apply();
+    SPRING.set(None);
     CATransaction::commit();
     // SAFETY: a plain clock read.
     let now = objc2_quartz_core::CACurrentMediaTime();
@@ -152,7 +201,10 @@ pub(crate) fn transition(view: &UIView, t: &Transition, apply: impl FnOnce()) {
         if same {
             continue;
         }
-        let a = change(key, &from, &to, duration, Some(&timing(t.easing)));
+        let a = match spring {
+            Some(spring) => spring_change(key, &from, &to, spring),
+            None => change(key, &from, &to, duration, Some(&curve)),
+        };
         if t.delay > 0.0 {
             a.setBeginTime(now + t.delay as f64 / 1000.0);
             // SAFETY: an immutable Core Animation constant.

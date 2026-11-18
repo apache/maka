@@ -97,6 +97,11 @@ holds the limits, the granted capabilities, the data directory and the native co
 below do; `AppView::set_locale`, `set_font_scale` and `set_error_handler` match `locale`, `fontScale` and `onError`.
 `nsh package --target ios` builds this kind of app for you, with your root mounted.
 
+Without `set_ui_sets`, an `AppView` serves `nsh/base`'s core part (`Button`, `Checkbox`, `Switch`, `Tabs`, `Slider`,
+`AlertDialog`, the navigation, `Input`, ...), all a Rust root needs, as Rust makes `nsh/base`'s components by type. A
+view that loads TSX importing more of `nsh/base` (`Select`, `TextView`, `EmojiPicker`, ...) passes all of it,
+`nsh_base::registry()`, as above.
+
 ## Get the framework
 
 The distribution contains both variants:
@@ -124,6 +129,10 @@ other Rust runtimes. Choose the Xcode embedding setting below to match the frame
 By default, each XCFramework has three arm64 slices: iOS devices, the iOS simulator (Apple silicon) and Mac Catalyst. The minimum
 deployment target is iOS 15.0. The Swift module is compiled with library evolution, so apps built with other Swift
 compiler versions can import it, and the framework links everything it needs: you add nothing else.
+
+`NshAppView` serves the apps it runs all of `nsh/base`, `nsh/base/plot` included, as Android's `NshView` does: an app
+imports any of its components. A host app that builds the runtime with Rust code of its own picks the UI sets with
+`nsh_platform_ios::set_ui_sets` before its first view ([Embedding a Rust app](#embedding-a-rust-app)).
 
 ## Add it to an Xcode project
 
@@ -191,6 +200,11 @@ final class EmbedController: UIViewController {
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation {
         NshAppView.preferredStatusBarUpdateAnimation
     }
+
+    // Let the page shown decide the orientations (`supportedOrientations`).
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        NshAppView.supportedInterfaceOrientations ?? super.supportedInterfaceOrientations
+    }
 }
 ```
 
@@ -208,6 +222,7 @@ The complete sample, a UIKit app that shows an NSH app below its own native head
 | `init(frame: CGRect = .zero, trace: Bool = false)` | Creates the view. `trace` logs the time of every commit. `init?(coder:)` supports storyboards and nibs. |
 | `onError: ((String) -> Void)?` | Receives fatal app errors (a bundle that fails to load, uncaught JS exceptions, a VM stopped by a limit) on the main thread. Errors are always logged; development builds also show them over the app. |
 | `limits: NshLimits` | The VM limits of the apps loaded from now on. |
+| `handoff: Bool` | Gives the address the apps loaded from now on set with [`UrlScheme.setUrl`](../modules/nsh.md#handoff) to the system, so Handoff continues it on the user's other devices. An address of the app's own scheme needs `<bundle id>.url` in your Info.plist's `NSUserActivityTypes`, and comes back to the other device's `scene(_:continue:)` with the URL in `userInfo["url"]`: pass it to `openURL(_:)`. Off by default. |
 | `grantCapabilities(_ json: String?) throws` | The most the apps loaded from now on may do, as JSON in the form of `nsh.json`'s `capabilities`; `nil` grants what each app declares. Throws `NshError` for invalid JSON. |
 | `locale: Locale?` | The app's language and region in place of the user's: `Intl`, `locale()` and the components follow it at once, and the apps loaded later start in it. `nil` follows the system's. |
 | `fontScale: CGFloat?` | The text size in place of Dynamic Type's (1 is the default): texts and inputs are laid out again at it and `fontScale()` reads it, at once and for the apps loaded later; lengths keep their size. `nil` follows the system's. |
@@ -221,18 +236,20 @@ The complete sample, a UIKit app that shows an NSH app below its own native head
 | `connectDevServer(_ url: URL) throws` | Development: loads from a `nsh dev` server and reloads on every change. Throws with `NativeShell.xcframework`, which has no development support. |
 | `register(component:_:)` | Registers a [native component](./native-components.md). |
 | `watchScroll(_ nativeID: String, _ watcher: NshScrollWatcher?)` | Follows and drives the app's `<Scroll>` with that `nativeID` from the main thread, in the frame of the scroll ([Following a scroll view](#following-a-scroll-view)); `nil` stops watching. |
+| `contentCulling: Bool` | Whether scroll views make the views of their content only near their viewport (`true`, the default) or all of it. Turned off, what is not made yet is made in the next frames, so the host can draw a whole scroll view (a long screenshot of the page from the handle's `contentView`); turned on again, what is far away is given up. Applies at once and to the apps loaded later. |
 | `params: [String: Any]` | The launch parameters of the apps loaded from now on: the app reads them at start as `host.params` ([`host`](../modules/nsh.md#host)). |
 | `send(_ name: String, _ data: Any? = nil)` | Sends an event to the app (`host.on(name, …)`); kept until it listens, or for the next app while none runs. |
 | `handle(_ name: String, _ handler:)` | Handles the app's calls (`host.call`) and posts (`host.post`) of `name` on the main thread: `{ data, reply in … }`, or an `async throws` function `{ data in … }` whose result answers the call. |
 | `removeHandler(_ name: String)` | Removes the handler of `name`: the app's calls of it fail at once. |
 | `static preferredStatusBarStyle`, `prefersStatusBarHidden`, `preferredStatusBarUpdateAnimation` | What the running apps asked for (their pages' and dialogs' `statusBar`, `nsh.json`'s default): return them from the hosting view controller's overrides. |
+| `static supportedInterfaceOrientations` | The orientations the page shown asked for (`NavPage`'s `supportedOrientations`): return it from the hosting view controller's override, its own when `nil`. |
 
 > [!IMPORTANT]
 > `bundle.nshc` (bytecode) loads only from inside the app bundle. QuickJS does not validate bytecode, so bytecode from
 > anywhere else could corrupt memory: for a file outside the app bundle, load `bundle.js` (JS source), or better, a
 > [signed package](./signed-packages.md).
 
-`limits`, `grantCapabilities`, `storageDirectory` and `cacheOptions` apply from the next load: set them before `loadBundle` / `run`.
+`limits`, `handoff`, `grantCapabilities`, `storageDirectory` and `cacheOptions` apply from the next load: set them before `loadBundle` / `run`.
 
 Each app keeps its storage under its own id with no setting: a signed package under the id its release key's certificate vouches for, a bundle under the `id` of its `nsh.json` (`app.json` next to it, written by `nsh build`). Set `storageDirectory` to keep an app's data somewhere of the host's choosing:
 
@@ -457,6 +474,8 @@ updates the app in place, logs appear in the `nsh dev` terminal, and errors show
   The JS engine runs on its own thread; the main thread never waits for it.
 - **Status bar.** The embedded app's pages and dialogs (`statusBar`) change what `NshAppView.preferredStatusBarStyle` and friends return;
   the hosting view controller must forward them, as in the example above.
+- **Orientations.** A page's `supportedOrientations` changes what `NshAppView.supportedInterfaceOrientations` returns;
+  the hosting view controller forwards it, as in the example above, and the screen turns as its controllers allow.
 - **Safe area.** Apps use `safe_area()` in Rust, and `env(safe-area-inset-*)` in padding or
   `safeAreaInsets()` from [`nsh`](../modules/nsh.md#safe-area-and-keyboard) in TSX, as usual. An `NshAppView` placed below your own header gets the insets that apply to it, not the window's.
 - **Mac Catalyst.** The same framework works in Catalyst apps.

@@ -24,7 +24,7 @@ use objc2_quartz_core::{
     CACornerMask, CALayer, CAMediaTiming, CAShapeLayer, CATransaction, kCACornerCurveCircular,
     kCACornerCurveContinuous, kCAFillRuleEvenOdd, kCAGravityResize, kCALineCapRound,
 };
-use objc2_ui_kit::{UIColor, UIImage, UIView, UIViewAutoresizing};
+use objc2_ui_kit::{UIBezierPath, UIColor, UIImage, UIView, UIViewAutoresizing};
 
 /// Fills sit behind the children. Borders too (CSS), except where the
 /// children are clipped: there the layer's own border, which Core Animation
@@ -803,6 +803,40 @@ fn ring_path(rect: CGRect, radii: CornerRadii, widths: [CGFloat; 4]) -> CFRetain
     ];
     add_outline(&path, inner, corners, radii.continuous, false);
     path
+}
+
+/// The outline this module gave `view`, in its bounds: where its corners
+/// differ, the path of its clip or fill layer; else the layer's own corners
+/// (`set_corners`), only those its mask rounds.
+pub(crate) fn outline(view: &UIView) -> Retained<UIBezierPath> {
+    let layer = view.layer();
+    // SAFETY: a snapshot of the sublayers, read on the main thread.
+    let sublayers = unsafe { layer.sublayers() };
+    let shaped = layer
+        .mask()
+        .into_iter()
+        .chain(
+            sublayers
+                .iter()
+                .flat_map(|s| s.to_vec())
+                .filter(|l| l.zPosition() == BEHIND),
+        )
+        .find_map(|l| l.downcast::<CAShapeLayer>().ok()?.path());
+    if let Some(path) = shaped {
+        return UIBezierPath::bezierPathWithCGPath(&path);
+    }
+    let r = px(layer.cornerRadius() as f32);
+    let masked = layer.maskedCorners();
+    let at = |corner: CACornerMask| if masked.contains(corner) { r } else { px(0.0) };
+    let radii = CornerRadii {
+        top_left: at(CACornerMask::LayerMinXMinYCorner),
+        top_right: at(CACornerMask::LayerMaxXMinYCorner),
+        bottom_right: at(CACornerMask::LayerMaxXMaxYCorner),
+        bottom_left: at(CACornerMask::LayerMinXMaxYCorner),
+        // SAFETY: an immutable Core Animation constant.
+        continuous: *layer.cornerCurve() == *unsafe { kCACornerCurveContinuous },
+    };
+    UIBezierPath::bezierPathWithCGPath(&rounded(view.bounds(), radii))
 }
 
 /// A rectangle with the corners `radii` (circular or continuous).

@@ -1,7 +1,12 @@
 # Text
 
 - **Text**: `<Text>`; styles `numberOfLines`, `textOverflow` (`ellipsis|clip|ellipsis-start|ellipsis-middle`: `EllipsizeMode`'s
-  `Tail|Clip|Head|Middle`), `fontFamily` (system or imported fonts:
+  `Tail|Clip|Head|Middle`; on macOS the cut last line goes where its paragraph's alignment puts the other lines, and a
+  `clip` line wider than its box starts at its paragraph's start edge whatever the alignment, as CSS does for a
+  paragraph of that direction (`dir="auto"`): the right one for a right-to-left paragraph (its `writingDirection`, else
+  its first strong character's, as CoreText resolves a natural direction), so the beginning of the text stays in view;
+  such a right-to-left line's box starts left of the content box, and `onTextLayout` reports its negative `x`),
+  `fontFamily` (system or imported fonts:
   `import Inter from "./Inter.ttf"` evaluates to the family name and registers the font before the first frame; a host can register the same files itself, `NshView.registerFont` / `NshAppView.registerFont`, and the app names the family), `fontWeight`,
   `fontStyle` (italic runs leave color emoji upright, in runs of their own: `AttributedText::push`, as WebKit does;
   Chrome and Android would slant them), `letterSpacing`, `textDecorationLine` + `textDecorationColor`, `textTransform`, `lineHeight`, `textAlign`,
@@ -25,10 +30,12 @@
   Test-id-only span updates remount the text metadata with its cached final layout (`LaidText`), retaining fitted
   font sizes. They preserve prepared state and measurement caches and raise no `onTextLayout`.
 - A text laid out gives Taffy its first line's baseline, below its top through its padding and border
-  (`TextEngine::first_baseline`: web, macOS; `measure_leaf`, cached per width in `TextContext::baseline`), so a flex row
-  with `items-baseline` lines its texts up by their baselines, as CSS does. An engine that does not report one gives
-  `None` and the text is aligned by its bottom edge, Taffy's fallback for a box without a baseline: texts of different
-  sizes in a row then sit off each other's baseline by the difference of what is below their baselines. Only a text
+  (`TextEngine::first_baseline`: every built-in engine, CoreText on macOS and iOS, Android, Pango, DirectWrite, GPUI,
+  the web, Cells and the headless one; `measure_leaf`, cached per width in `TextContext::baseline`), so a flex row
+  with `items-baseline` lines its texts up by their first baselines on every platform, as CSS does. An engine that does
+  not report one (the trait's default, for a custom engine) gives `None` and the text is aligned by its bottom edge,
+  Taffy's fallback for a box without a baseline: texts of different sizes in a row then sit off each other's baseline
+  by the difference of what is below their baselines. Only a text
   aligned by baseline is asked (`layout_tree::Aligned`, from its `align-self` or its container's `align-items`), and
   only when it is laid out, not measured (Taffy's baseline pass lays its items out); a text measured by an estimate has
   none.
@@ -110,12 +117,33 @@
   responder clears, so a surface shows one selection. Android (`selectable_view.rs`, `SelectableView.java`): the
   shared Rust model runs on the UI thread over JNI, hit-testing through a Java callback; a long press selects a word,
   then handles and a floating `ActionMode` (Copy, Select all, Share).
+- **Selection menu**: `selectionMenu` on a selectable view (Rust `Element::selection_menu`, the host prop
+  `Prop::SelectionMenu`, `ViewProps::selection_menu`) takes `nsh/desktop`'s `MenuItem`s, each running its `onSelect`;
+  they go after the system's items, which always stay. The core keeps plain items and separators
+  (`desktop::MenuItem::selection_menu`: inline sections expanded; submenus, roles, shortcuts and check marks left
+  out; no leading, trailing or repeated separators); a chosen item is reported as the root's `Menu` event with its id,
+  as a menu's (nsh-js keeps the functions by the view's id and frees them with it; Rust's live with the binding). The
+  outermost area's items are the selection's. macOS appends them to the secondary-click menu (`text::context_menu`,
+  built by `chrome::menu`), Windows and GPUI to their popup (`selectable_view::context_menu`), GTK as a section of
+  the edit popover (`selection-menu.item-N` actions), iOS 16 and later to the edit menu
+  (`editMenuInteraction:menuForConfiguration:suggestedActions:`; groups between separators are inline sections; iOS
+  15's `UIMenuController` shows the system's items alone), Android to the floating `ActionMode` after the
+  `PROCESS_TEXT` actions (`encode.rs` `selection_menu`, `SelectableView.addAppItems`). The web shows the browser's
+  menu alone: the browser's renderer drops the prop.
 - **Color changes**: a text whose spans change only their colors (text, decoration and background) or which of them
   are hidden keeps its typesetting, measurements and layout where the platform draws colors from the text it mounts
   (`TextEngine::draws_colors_from_text`: macOS, Windows, Linux and GPUI, which also read `hidden` there): only the new
   text is mounted with the layout, so a word fading in, or shown after waiting hidden, costs one draw, not a new layout
   of its paragraph. macOS draws again only the lines of the characters drawn otherwise
   (`AttributedText::recolored_ranges`, `text::damage`). The other backends typeset it again.
+- **Span states**: a nested `<Text>` has no view to report its interaction states, so the core takes them from the
+  events of its link. A span whose classes or state styles read `hover:` is a link hearing `MouseEnter` /
+  `MouseLeave` (as a hinted one: no press, no stop of Tab, none inside a span taking presses), and a link reading
+  `active:` also hears `PressDown` / `PressUp` (`Core::collect_text`); `Core::span_state` turns those events into the
+  span's `HOVERED` / `PRESSED` before anything else handles them (a cancelled press's dropped release too), and the
+  restyled span merges into its text again. The platforms only hit-test their links as they already do for hints
+  and presses. A color change takes the path above; a decoration line typesets the paragraph again without laying
+  out the views around it (`layout_eq`).
 - **Span backgrounds**: `backgroundColor` / `borderRadius` on a nested `<Text>` (its view style, which spans otherwise
   ignore) become `ResolvedTextStyle::background` (`TextBackground`: color, radius and the span's node, so neighboring
   spans that look the same stay apart), inherited by the spans inside it; the block's own background stays its view's.
@@ -143,7 +171,12 @@
   box, `align-*` classes; a node field like `zIndex`, a change rebuilds the block) places it in its line:
   `AttachmentAlignments` keeps alignment separately from the legacy `TextAttachment` and
   `AttributedText` structs; `TextEngine::prepare_aligned` accepts it, with a default that calls `prepare` for existing
-  engines.
+  engines. On the baseline, a view that holds text stands on the line by the baseline of the first line of
+  text in it, as CSS stands an `inline-block` / `inline-flex` box; one without text (an image, a box) stands on its
+  bottom edge, as a replaced box. The core finds that text in the attachment's layout
+  (`attachment_baselines`, `TextEngine::first_baseline`, which every engine answers) and
+  `AttachmentAlignments::baseline` carries how far below the attachment's top it is; every engine places an
+  attachment by `AttachmentAlignments::ascent` and `extent`, so the line reserves what is above and below it.
   `TextAttachment::ascent(font, align)` is how far its top is above the baseline (`baseline` the height, the default and the only
   value before; `text-top` the font's ascent, `text-bottom` the height minus the descent, `middle` half the height
   plus the x height), `extent` what the line reserves above and below (each at least 0), both from the
@@ -159,7 +192,9 @@
   `top` / `bottom` (the line box's) and `sub` / `super` / lengths are not offered: the engines size placeholders
   before lines exist. The headless engine's font is its line (ascent 1.2 em, descent 0, x height 0.5 em). After the final layout the core places its native view, a child of the text view (Android's
   `TextBox` is a ViewGroup for this), on the placeholder (`TextEngine::attachments`); attachments cut off by the line limit or
-  an ellipsis move out of sight. Their own children are normal layout children; a text inside them built after the block
+  an ellipsis move out of sight. Their own children are normal layout children, made with the attachment: a scroll
+  view around the text never culls them (`Core::cull_scope`), as its walk does not reach inside texts, though past
+  a turn's budget they may wait for the next turns as other views do (`pace.rs`); a text inside them built after the block
   resizes them and builds the block again (`check_attachments`). They take presses of their own; copying leaves the
   placeholders out. Text inside an attachment takes the color of the text around it (the nearest color set on its
   spans, its block or the views around, as CSS's `color` reaches an inline block and `currentColor` reaches the
@@ -173,3 +208,12 @@
 
 See also the text pitfalls in [pitfalls.md](pitfalls.md) and the engines in `crates/nsh-platform-ios/src/text.rs` /
 `crates/nsh-platform-android/src/text.rs`.
+
+On macOS, inline link accessibility elements interleave with the paragraph's
+static text. Headings and app-labelled text keep their name and expose only
+link children. Selectable text whose accessibility value is its drawn text,
+and its link elements, expose `AXSelectedTextRange` and `AXSelectedText`.
+Selecting a range in an element's displayed text uses the enclosing
+selectable view's selection, including its copy behavior and `onSelectionChange`.
+`SelectionModel::select_range` sets UTF-16 positions directly for this path and
+clamps offsets out of surrogate pairs.

@@ -56,6 +56,8 @@ let config = EngineConfig {
     environment: Environment {
         os: Os::Ios,                    // the device's: platform.os in the app
         platform: Some("miniprogram"),  // platform.name in the app
+        tab_bar: false,                 // what the host provides
+        clipboard_images: Some(false),
         idiom: Idiom::Phone,
         ..Environment::default()
     },
@@ -65,6 +67,8 @@ let config = EngineConfig {
 };
 let mut engine = LocalEngine::start(config, text_engine, sink).expect("the app starts");
 ```
+
+The environment also says what the platform provides. `tab_bar` (on by default) is the system's tab bar of `nsh/mobile`'s `TabBar` on iOS and Android; a platform with none turns it off, and the app shows its tabs with `nsh/base`'s `Tabs`. `clipboard_images` is images on the clipboard: by default as NSH's own backends on `os` (none on Android), `Some` for what the platform does; without them, `Clipboard.readImage` and `writeImage` reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` and `hasImage` is false. A Mini Program has neither.
 
 `LocalEngine::pump()` runs what is due and returns when it is due again: the platform calls it at that time and after each input. Depend on `nsh-engine` with `default-features = false` for apps written in Rust: the engine then builds for `wasm32-unknown-unknown` too.
 
@@ -110,6 +114,10 @@ The Mini Program platform measures with the logic layer's canvas, breaks lines a
 ## 4. Send input back
 
 `EngineControl` sends what the user does: `dispatch_event(id, EventKind::Press, EventPayload::None)` for a tap on a view that reports presses, `scroll(id, offset, 0)` as a scroll view moves, `resize(size)` and `set_environment(environment)` when the window or the appearance changes, `frame()` at the display frame the engine asked for (`MountSink::request_frame`).
+
+A platform whose scroll views move with the keyboard (arrows, Page Up / Down, Home, End) calls
+`key_scrolled(id, key_move)` after it starts each key's scroll, with the key's move (`nsh_core::scroll::KeyMove`): one
+press of End then takes a list all the way to its end.
 
 ## 5. Add the command line's target
 

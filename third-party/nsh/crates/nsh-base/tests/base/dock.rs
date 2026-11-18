@@ -395,6 +395,9 @@ fn a_locked_area_moves_nothing() {
     app.drag("id:tab-a", point(px(560.0), px(288.0))).unwrap();
     app.wait(std::time::Duration::from_millis(200)).unwrap();
     assert!(app.shows("Layout h([*a b]:400 [*c])"));
+    // Its split's boundary is still a handle the user resizes it by (only
+    // `SplitView`'s columns have none).
+    assert_eq!(app.screen().count("role:adjustable").unwrap(), 1);
     app.press("id:close-c").unwrap();
     app.wait(std::time::Duration::from_millis(100)).unwrap();
     assert!(app.shows("Removed none"));
@@ -718,4 +721,58 @@ fn a_finger_s_drag_waits_for_a_long_press_and_a_pointer_s_does_not() {
     app.hover("id:tab-c").unwrap();
     app.drag("id:tab-c", point(px(-170.0), px(0.0))).unwrap();
     app.wait_for("Layout h([*c a b]:400)").unwrap();
+}
+
+/// The compact bottom sheet rides above the software keyboard, and a dock
+/// taller than the room the keyboard leaves is held below the status bar,
+/// as `Sheet` holds a bottom sheet, so its content stays on the screen.
+#[test]
+fn a_compact_bottom_dock_lifted_by_the_keyboard_stays_below_the_status_bar() {
+    let mut terminal = DockRegion::new(DockLayout::tabs().panel("terminal"));
+    terminal.size = Some(px(600.0));
+    let layout = two_groups().with_dock(DockPlacement::Bottom, terminal);
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
+        ..EngineConfig::new(Root::new::<Workspace>(move || WorkspaceProps {
+            layout: layout.clone(),
+            width: None,
+            height: None,
+            compact: Some(true),
+        }))
+    };
+    config.environment.os = Os::Ios;
+    config.environment.idiom = Idiom::Phone;
+    config.environment.safe_area.top = px(47.0);
+    config.environment.safe_area.bottom = px(34.0);
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.first_render().unwrap();
+    app.run_for(std::time::Duration::from_millis(400)).unwrap();
+    app.press("id:toggle-bottom").unwrap();
+    app.run_for(std::time::Duration::from_millis(600)).unwrap();
+    app.wait_for("Panel terminal").unwrap();
+    app.set_environment("keyboard", |e| {
+        e.keyboard_height = px(336.0);
+        e.keyboard_duration = 250.0;
+    })
+    .unwrap();
+    app.run_for(std::time::Duration::from_millis(400)).unwrap();
+    let nodes = app.screen().layout_nodes();
+    let label = nodes
+        .iter()
+        .find(|n| {
+            n.text
+                .as_ref()
+                .is_some_and(|t| t.text.text == "Panel terminal")
+        })
+        .expect("the terminal panel's text")
+        .bounds;
+    assert!(
+        label.origin.y >= px(47.0),
+        "the drawer's content below the status bar: {label:?}"
+    );
+    assert!(
+        label.bottom() <= px(844.0 - 336.0),
+        "the drawer's content above the keyboard: {label:?}"
+    );
 }

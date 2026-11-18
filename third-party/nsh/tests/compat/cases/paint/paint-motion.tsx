@@ -1,7 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md): transitions
 // and the built-in keyframe animations as the platform receives them:
 // the animated properties, durations and delays in numbers, `ms` and `s`,
-// every timing function and iteration counts, set in either order.
+// every timing function (a cubic Bézier past 0..1 kept as written, NSH's
+// spring as a style and as a class) and iteration counts, set in either
+// order.
 import { Text, View } from "nsh";
 
 function App() {
@@ -30,6 +32,15 @@ function App() {
         testID="bezier"
         style={{ height: 4, transitionDuration: 150, transitionTimingFunction: "cubic-bezier(0.4, 0, 0.2, 1)" }}
       />
+      <View
+        testID="overshoot"
+        style={{ height: 4, transitionDuration: 200, transitionTimingFunction: "cubic-bezier(0.3, 1.25, 0.6, 1)" }}
+      />
+      <View
+        testID="spring"
+        style={{ height: 4, transitionProperty: "transform", transitionTimingFunction: "spring(620, 36)" }}
+      />
+      <View testID="spring-class" class="transition-transform ease-spring-[992,45,2]" style={{ height: 4 }} />
       <View
         testID="spin"
         style={{

@@ -1,4 +1,4 @@
-use nsh_core::prelude::*;
+use nsh_core::{keymap::Keystroke, platform::Os, prelude::*};
 use nsh_platform_tui::{App, Handled, Input, Modifiers, Root};
 use ratatui_core::{backend::TestBackend, terminal::Terminal};
 
@@ -1286,4 +1286,698 @@ fn tab_reaches_a_texts_links_in_order_shows_the_focused_one_and_return_presses_i
         &rx,
         "Pressed: https://example.com/guide #notes #notes",
     );
+}
+
+/// What a raw key transition reported, as the test reads it: the logical
+/// key's name, whether the event says Shift, a repeat, the capture decision,
+/// and the terminal's absent physical code.
+fn raw_event(event: &KeyEvent) -> String {
+    format!(
+        "{} shift {} repeat {} prevented {} code {:?}",
+        event.key.as_str(),
+        event.modifiers.shift,
+        event.repeat,
+        event.default_prevented,
+        event.code.as_str(),
+    )
+}
+
+#[component]
+fn RawKeyPage() -> impl IntoElement {
+    let down = signal(String::from("none"));
+    let up = signal(String::from("none"));
+    view()
+        .flex_1()
+        .child(
+            view()
+                .h(px(16.0))
+                .focusable(true)
+                .on_press(|_: &()| {})
+                .on_key_down(move |event: &KeyEvent| down.set(raw_event(event)))
+                .on_key_up(move |event: &KeyEvent| up.set(raw_event(event)))
+                .child(text("pad")),
+        )
+        .child(text(move || format!("down {}", down.get())))
+        .child(text(move || format!("up {}", up.get())))
+}
+
+#[test]
+fn raw_key_events_report_the_terminal_events_and_never_ignore_a_release() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
+    view.load(App::Rust(Root::new::<RawKeyPage>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "down none");
+    view.handle(key("Tab", Default::default()));
+    // A press: its character, and neither a repeat nor a release.
+    view.handle(key("a", Default::default()));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "down a shift false repeat false prevented false code \"\"",
+    );
+    // The keymap knows the arrow as `Left`: the raw event names it as the
+    // DOM and the other platforms do, and the terminal has no code for it.
+    view.handle(key("Left", Default::default()));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "down ArrowLeft shift false repeat false prevented false code \"\"",
+    );
+    // The terminal's repeat (kitty) is the same key marked a repeat.
+    view.handle(Input::KeyRepeat {
+        key: "a".into(),
+        modifiers: Default::default(),
+    });
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "down a shift false repeat true prevented false code \"\"",
+    );
+    // A release is a transition of its own, not dropped: no repeat, and the
+    // reported modifiers stay as they are.
+    assert_eq!(
+        view.handle(Input::Key {
+            key: "a".into(),
+            modifiers: Default::default(),
+            release: true,
+        }),
+        Handled::Ignored
+    );
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "up a shift false repeat false prevented false code \"\"",
+    );
+    // A character is the terminal's: Shift+A reports `A`, with Shift, and a
+    // key no shortcut names still reaches the view (a modifier's).
+    view.handle(key(
+        "A",
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    ));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "down A shift true repeat false prevented false code \"\"",
+    );
+    view.handle(key("Shift", Default::default()));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "down Shift shift false repeat false prevented false code \"\"",
+    );
+}
+
+#[component]
+fn CapturedTabPage() -> impl IntoElement {
+    let first = signal(false);
+    let second = signal(false);
+    let heard = signal(String::from("none"));
+    view()
+        .flex_1()
+        .capture_keys(KeyCapture::keys([
+            Keystroke::parse("tab", Os::Linux).unwrap()
+        ]))
+        .on_key_down(move |event: &KeyEvent| {
+            heard.set(format!(
+                "{} {}",
+                event.key.as_str(),
+                event.default_prevented
+            ))
+        })
+        .child(
+            view()
+                .h(px(16.0))
+                .focusable(true)
+                .on_press(|_: &()| {})
+                .on_focus(move |_: &()| first.set(true))
+                .child(text("first")),
+        )
+        .child(
+            view()
+                .h(px(16.0))
+                .focusable(true)
+                .on_press(|_: &()| {})
+                .on_focus(move |_: &()| second.set(true))
+                .child(text("second")),
+        )
+        .child(text(move || {
+            format!(
+                "focused {} {} heard {}",
+                first.get(),
+                second.get(),
+                heard.get()
+            )
+        }))
+}
+
+#[test]
+fn a_captured_tab_moves_no_focus_and_marks_the_key_and_its_release() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+    view.load(App::Rust(Root::new::<CapturedTabPage>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "focused false false");
+    // Ctrl+N takes the first stop's focus; no view had it before, so the
+    // key was no view's to hear.
+    view.handle(ctrl("n"));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused true false heard none",
+    );
+    // A key the rule does not name is heard unmarked, and does nothing.
+    view.handle(key("q", Default::default()));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused true false heard q false",
+    );
+    // Tab is the ancestor's: the view hears it marked captured, and the
+    // terminal's traversal is not run.
+    assert_eq!(view.handle(key("Tab", Default::default())), Handled::Yes);
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused true false heard Tab true",
+    );
+    // The release carries its own decision: captured, no default, and it
+    // still reaches the view.
+    assert_eq!(
+        view.handle(Input::Key {
+            key: "Tab".into(),
+            modifiers: Default::default(),
+            release: true,
+        }),
+        Handled::Yes
+    );
+}
+
+#[component]
+fn FieldUnderCapture() -> impl IntoElement {
+    let armed = signal(false);
+    let heard = signal(String::from("none none"));
+    view()
+        .flex_1()
+        .when(armed.get(), |page| page.capture_keys(KeyCapture::All))
+        .on_key_down(move |event: &KeyEvent| {
+            heard.set(format!(
+                "{} {}",
+                event.key.as_str(),
+                event.default_prevented
+            ))
+        })
+        .child(
+            nsh_base::input()
+                .h(px(32.0))
+                .on_focus(move |_: &()| armed.set(true)),
+        )
+        .child(text(move || format!("heard {}", heard.get())))
+        .child(text(move || format!("armed {}", armed.get())))
+}
+
+#[test]
+fn a_text_field_keeps_its_keys_even_under_a_capture_of_every_key() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    view.load(App::Rust(Root::new::<FieldUnderCapture>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "armed false");
+    // The field takes the focus while no capture is mounted; its focus
+    // mounts the rule over it.
+    view.handle(ctrl("n"));
+    draw_until(&mut view, &mut terminal, &rx, "armed true");
+    // The rule covers the field now: typing still edits it, and the views
+    // around it hear no part of the edit.
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Yes);
+    draw_until(&mut view, &mut terminal, &rx, "armed true");
+    assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "a");
+    assert!(
+        super::dock::dump(&terminal).contains("heard none none"),
+        "the capture did not intercept the field's key"
+    );
+}
+
+/// A portal (an `Overlay`) mounted in the root view but declared inside a
+/// view of the page, which alone listens to keys and captures them; the
+/// portal's child is the only focus stop.
+#[component]
+fn PortaledKeys() -> impl IntoElement {
+    let heard = signal(String::from("none"));
+    let focused = signal(String::from("none"));
+    let pressed = signal(0_u32);
+    view()
+        .flex_1()
+        .child(
+            view()
+                .flex_1()
+                .capture_keys(KeyCapture::All)
+                .on_key_down(move |event: &KeyEvent| {
+                    heard.set(format!(
+                        "{} {}",
+                        event.key.as_str(),
+                        event.default_prevented
+                    ))
+                })
+                .child(
+                    overlay()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .w(px(40.0))
+                        .h(px(16.0))
+                        .child(
+                            view()
+                                .focusable(true)
+                                .on_press(move |_: &()| pressed.update(|n| *n += 1))
+                                .on_focus(move |_: &()| focused.set("portaled".into()))
+                                .child(text("portaled child")),
+                        ),
+                ),
+        )
+        .child(
+            text(move || {
+                format!(
+                    "focused {} heard {} pressed {}",
+                    focused.get(),
+                    heard.get(),
+                    pressed.get()
+                )
+            })
+            .absolute()
+            .top(px(32.0)),
+        )
+}
+
+#[test]
+fn a_portaled_child_is_notified_and_captured_by_its_logical_ancestor() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    view.load(App::Rust(Root::new::<PortaledKeys>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "focused none");
+    view.handle(ctrl("n"));
+    draw_until(&mut view, &mut terminal, &rx, "focused portaled");
+    // The portal is mounted at the root, but its logical ancestor is the
+    // view that declared it: interest and capture follow that, and the
+    // rule keeps Enter from pressing the child.
+    assert_eq!(view.handle(key("Enter", Default::default())), Handled::Yes);
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused portaled heard Enter true pressed 0",
+    );
+}
+
+/// Two portals at the root: one declared inside a view that captures every
+/// key, its sibling declared by the page itself with the only focus stop.
+#[component]
+fn SiblingPortals() -> impl IntoElement {
+    let heard = signal(String::from("none"));
+    let focused = signal(String::from("none"));
+    view()
+        .flex_1()
+        .child(
+            view()
+                .flex_1()
+                .capture_keys(KeyCapture::All)
+                .on_key_down(move |event: &KeyEvent| {
+                    heard.set(format!(
+                        "{} {}",
+                        event.key.as_str(),
+                        event.default_prevented
+                    ))
+                })
+                .child(
+                    overlay()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .w(px(240.0))
+                        .h(px(16.0))
+                        .child(text("listening portal")),
+                ),
+        )
+        .child(
+            overlay()
+                .absolute()
+                .left(px(0.0))
+                .top(px(16.0))
+                .w(px(240.0))
+                .h(px(16.0))
+                .child(
+                    view()
+                        .focusable(true)
+                        .on_press(|_: &()| {})
+                        .on_focus(move |_: &()| focused.set("sibling".into()))
+                        .child(text("sibling child")),
+                ),
+        )
+        .child(
+            text(move || format!("focused {} heard {}", focused.get(), heard.get()))
+                .absolute()
+                .top(px(48.0)),
+        )
+}
+
+#[test]
+fn another_portals_capture_does_not_take_a_sibling_portals_keys() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    view.load(App::Rust(Root::new::<SiblingPortals>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "focused none");
+    view.handle(ctrl("n"));
+    draw_until(&mut view, &mut terminal, &rx, "focused sibling");
+    // The focus is in the page's own portal: the other portal's capture
+    // rule is not an ancestor of it.
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Ignored);
+    draw_until(&mut view, &mut terminal, &rx, "focused sibling heard none");
+}
+
+/// A view that captures every key and listens, around a disabled view that
+/// does both and a focus stop of its own: the focused stop hears the key,
+/// the disabled view hears nothing, and the enabled ancestor still decides.
+#[component]
+fn DisabledAncestorKeys() -> impl IntoElement {
+    let heard = signal(String::from("none"));
+    let disabled_heard = signal(String::from("none"));
+    let focused = signal(String::from("none"));
+    view()
+        .flex_1()
+        .capture_keys(KeyCapture::All)
+        .on_key_down(move |event: &KeyEvent| {
+            heard.set(format!(
+                "{} {}",
+                event.key.as_str(),
+                event.default_prevented
+            ))
+        })
+        .child(
+            view()
+                .disabled(true)
+                .capture_keys(KeyCapture::All)
+                .on_key_down(move |event: &KeyEvent| {
+                    disabled_heard.set(format!(
+                        "{} {}",
+                        event.key.as_str(),
+                        event.default_prevented
+                    ))
+                })
+                .child(
+                    view()
+                        .h(px(16.0))
+                        .focusable(true)
+                        .on_press(|_: &()| {})
+                        .on_focus(move |_: &()| focused.set("child".into()))
+                        .child(text("child")),
+                ),
+        )
+        .child(
+            text(move || {
+                format!(
+                    "focused {} heard {} disabled {}",
+                    focused.get(),
+                    heard.get(),
+                    disabled_heard.get()
+                )
+            })
+            .absolute()
+            .top(px(32.0)),
+        )
+}
+
+#[test]
+fn a_disabled_ancestors_rule_neither_captures_nor_hears_its_childs_key() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+    view.load(App::Rust(Root::new::<DisabledAncestorKeys>(|| ())))
+        .unwrap();
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused none heard none disabled none",
+    );
+    view.handle(ctrl("n"));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused child heard none disabled none",
+    );
+    // The child's key is the enabled ancestor's to capture; the disabled
+    // view between them neither takes it nor hears it.
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Yes);
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused child heard a true disabled none",
+    );
+}
+
+/// A shortcut the app binds, on a view that captures every key: the app's
+/// binding comes first, and the view hears no part of it.
+#[component]
+fn ShortcutBeforeCapture() -> impl IntoElement {
+    let shortcut = signal(0_u32);
+    let heard = signal(String::from("none"));
+    let focused = signal(String::from("none"));
+    on_key("ctrl+s", move |_| shortcut.update(|n| *n += 1));
+    view()
+        .flex_1()
+        .capture_keys(KeyCapture::All)
+        .on_key_down(move |event: &KeyEvent| {
+            heard.set(format!(
+                "{} {}",
+                event.key.as_str(),
+                event.default_prevented
+            ))
+        })
+        .child(
+            view()
+                .h(px(16.0))
+                .focusable(true)
+                .on_press(|_: &()| {})
+                .on_focus(move |_: &()| focused.set("button".into()))
+                .child(text("button")),
+        )
+        .child(text(move || {
+            format!(
+                "focused {} shortcut {} heard {}",
+                focused.get(),
+                shortcut.get(),
+                heard.get()
+            )
+        }))
+}
+
+#[test]
+fn an_app_shortcut_keeps_its_priority_over_a_capture_of_every_key() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    view.load(App::Rust(Root::new::<ShortcutBeforeCapture>(|| ())))
+        .unwrap();
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused none shortcut 0 heard none",
+    );
+    view.handle(ctrl("n"));
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused button shortcut 0 heard none",
+    );
+    // Ctrl+S is the app's: the view never hears it, captured or not.
+    assert_eq!(view.handle(ctrl("s")), Handled::Yes);
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused button shortcut 1 heard none",
+    );
+    // Any other key is the rule's to capture and the views' to hear.
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Yes);
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused button shortcut 1 heard a true",
+    );
+}
+
+/// A page that captures `a` and listens, with an opener whose sheet has the
+/// only stop after it. A sheet is a dialog: a `Modal` of its own.
+#[component]
+fn SheetKeys() -> impl IntoElement {
+    let open = signal(false);
+    let heard = signal(String::from("none"));
+    let focused = signal(String::from("none"));
+    view()
+        .flex_1()
+        .capture_keys(KeyCapture::keys(
+            [Keystroke::parse("a", Os::Linux).unwrap()],
+        ))
+        .on_key_down(move |event: &KeyEvent| {
+            heard.set(format!(
+                "{} {}",
+                event.key.as_str(),
+                event.default_prevented
+            ))
+        })
+        .child(
+            view()
+                .h(px(16.0))
+                .focusable(true)
+                .on_press(move |_: &()| open.set(true))
+                .on_focus(move |_: &()| focused.set("opener".into()))
+                .child(text("opener")),
+        )
+        .child(
+            nsh_base::sheet()
+                .open(move || Some(open.get()))
+                .side(nsh_core::overlay::Placement::Right)
+                .on_open_change(move |_: &nsh_base::SheetEvent| open.set(false))
+                .popup_style(|s| s.w(px(160.0)))
+                .child(
+                    view()
+                        .h(px(16.0))
+                        .focusable(true)
+                        .on_press(|_: &()| {})
+                        .on_focus(move |_: &()| focused.set("inside".into()))
+                        .child(text("inside")),
+                ),
+        )
+        .child(
+            text(move || format!("focused {} heard {}", focused.get(), heard.get()))
+                .absolute()
+                .top(px(32.0)),
+        )
+}
+
+#[test]
+fn a_sheet_is_the_keyboard_boundary_a_page_capture_does_not_cross() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    view.load(App::Rust(Root::new::<SheetKeys>(|| ()))).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "focused none");
+    view.handle(key("Tab", Default::default()));
+    draw_until(&mut view, &mut terminal, &rx, "focused opener");
+    // Enter is the page's to hear; presenting the sheet then moves the
+    // focus to its first tree stop, as a dialog's does.
+    view.handle(key("Enter", Default::default()));
+    draw_until(&mut view, &mut terminal, &rx, "focused inside");
+    // `nsh_base::sheet()` is a dialog, a `Modal`: the terminal's keyboard
+    // window. The page outside it neither hears nor captures the keys
+    // typed in it.
+    assert_eq!(view.handle(key("q", Default::default())), Handled::Ignored);
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Ignored);
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused inside heard Enter false",
+    );
+    // The sheet goes: the opener is the focus again, and the page's rule
+    // covers it as before.
+    view.handle(key("Escape", Default::default()));
+    draw_until(&mut view, &mut terminal, &rx, "focused opener");
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Yes);
+    draw_until(&mut view, &mut terminal, &rx, "focused opener heard a true");
+}
+
+/// A page that captures `a` and listens, with an opener whose dialog has the
+/// only stop after it: a `Modal` is a keyboard window of its own.
+#[component]
+fn DialogKeys() -> impl IntoElement {
+    let open = signal(false);
+    let heard = signal(String::from("none"));
+    let focused = signal(String::from("none"));
+    view()
+        .flex_1()
+        .capture_keys(KeyCapture::keys(
+            [Keystroke::parse("a", Os::Linux).unwrap()],
+        ))
+        .on_key_down(move |event: &KeyEvent| {
+            heard.set(format!(
+                "{} {}",
+                event.key.as_str(),
+                event.default_prevented
+            ))
+        })
+        .child(
+            view()
+                .h(px(16.0))
+                .focusable(true)
+                .on_press(move |_: &()| open.set(true))
+                .on_focus(move |_: &()| focused.set("opener".into()))
+                .child(text("opener")),
+        )
+        .child(when(open, move || {
+            nsh_base::dialog()
+                .on_close(move |_: &()| open.set(false))
+                .child(
+                    view()
+                        .absolute()
+                        .top(px(64.0))
+                        .w(px(160.0))
+                        .h(px(16.0))
+                        .focusable(true)
+                        .on_press(|_: &()| {})
+                        .on_focus(move |_: &()| focused.set("dialog".into()))
+                        .child(text("dialog stop")),
+                )
+        }))
+        .child(
+            text(move || format!("focused {} heard {}", focused.get(), heard.get()))
+                .absolute()
+                .top(px(32.0)),
+        )
+}
+
+#[test]
+fn a_dialog_is_the_keyboard_boundary_a_page_capture_does_not_cross() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    view.load(App::Rust(Root::new::<DialogKeys>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "focused none");
+    view.handle(key("Tab", Default::default()));
+    draw_until(&mut view, &mut terminal, &rx, "focused opener");
+    // Enter is the page's to hear (it is not captured); presenting the
+    // dialog then moves the focus to its first tree stop.
+    view.handle(key("Enter", Default::default()));
+    draw_until(&mut view, &mut terminal, &rx, "focused dialog");
+    // The dialog is a `Modal`, the terminal's keyboard window: the page
+    // outside it neither captures nor hears the key typed in it.
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Ignored);
+    draw_until(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "focused dialog heard Enter false",
+    );
+    // Escape is the dialog's; closing it restores the opener, where the
+    // page's rule applies again.
+    view.handle(key("Escape", Default::default()));
+    draw_until(&mut view, &mut terminal, &rx, "focused opener");
+    assert_eq!(view.handle(key("a", Default::default())), Handled::Yes);
+    draw_until(&mut view, &mut terminal, &rx, "focused opener heard a true");
 }

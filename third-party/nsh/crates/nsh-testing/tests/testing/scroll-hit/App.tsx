@@ -1,6 +1,6 @@
 import { mount, signal, Scroll, Text, View } from "nsh";
 
-// A scroll view whose content overflows its viewport (784 points of
+// A scroll view whose content overflows its viewport (864 points of
 // content in 744), over a bar the app draws below it. The button
 // `probe-toggle` sits across the fold: of its laid-out frame 724..784,
 // the top 20 points are visible, and its center — where a press lands —
@@ -8,7 +8,8 @@ import { mount, signal, Scroll, Text, View } from "nsh";
 // visible half. Expected: the press reaches the button, as a finger on
 // its visible half would. `probe-visible`, wholely above the fold, is
 // the control: a press inside the same scroll view works when nothing
-// clips the button.
+// clips the button. `probe-below` sits wholly below it, at 804..864;
+// its center at 834 lands on the bar, whose frame is 744..844.
 function App() {
   const pressed = signal("none");
   return (
@@ -28,6 +29,13 @@ function App() {
             style={{ width: 120, height: 60, alignItems: "center", justifyContent: "center" }}
           >
             <Text>Probe toggle</Text>
+          </View>
+          <View
+            testID="probe-below"
+            onPress={() => pressed.set("below")}
+            style={{ width: 120, height: 60, alignItems: "center", justifyContent: "center" }}
+          >
+            <Text>Below-fold toggle</Text>
           </View>
         </View>
       </Scroll>

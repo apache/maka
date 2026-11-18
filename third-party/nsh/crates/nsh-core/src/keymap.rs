@@ -781,6 +781,23 @@ impl KeyBinding {
     }
 }
 
+/// Where the keyboard focus is as a key comes ([`Keymap::find_with`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct KeyFocus {
+    /// A text input or hosted native view has it.
+    pub editing: bool,
+    /// It is on a control (a view that takes presses, not a text input)
+    /// in the focus scope: the newest modal over its window, else the
+    /// window. Return and Space are the control's
+    /// ([`Keymap::find_at`]).
+    pub control: bool,
+    /// It is on a view the newest modal over its window covers: a focus
+    /// the app left there (a popup closing gave it back to its trigger as
+    /// a dialog opened). The keys are not that view's.
+    pub covered: bool,
+}
+
 /// What a key does with a [`Keymap`] ([`Keymap::find`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMatch {
@@ -918,6 +935,45 @@ impl Keymap {
         repeat: bool,
         eligible: impl Fn(&KeyBinding) -> bool,
     ) -> KeyMatch {
+        let focus = KeyFocus {
+            editing,
+            control,
+            ..KeyFocus::default()
+        };
+        self.find_eligible(window, keystroke, focus, repeat, eligible)
+    }
+
+    /// [`Self::find_at`] with where the keyboard focus is as one value. A
+    /// focus the newest modal over its window covers ([`KeyFocus::covered`])
+    /// has no keys of its own: the bindings of the focus
+    /// ([`KeyBinding::for_focus`], a menu button's Return opening its menu
+    /// under a dialog) do not take the key, so the dialog's do.
+    pub fn find_with(
+        &self,
+        window: crate::NodeId,
+        keystroke: Keystroke,
+        focus: KeyFocus,
+        repeat: bool,
+    ) -> KeyMatch {
+        self.find_eligible(window, keystroke, focus, repeat, |b| {
+            !b.fallback && b.within.is_none()
+        })
+    }
+
+    /// Matches a binding in the focused window and the caller’s active scope.
+    pub fn find_eligible(
+        &self,
+        window: NodeId,
+        keystroke: Keystroke,
+        focus: KeyFocus,
+        repeat: bool,
+        eligible: impl Fn(&KeyBinding) -> bool,
+    ) -> KeyMatch {
+        let KeyFocus {
+            editing,
+            control,
+            covered,
+        } = focus;
         let pressing = control
             && !editing
             && crate::input::presses_focused_control(keystroke.key, keystroke.modifiers);
@@ -927,6 +983,7 @@ impl Keymap {
                 && b.window.is_none_or(|w| w == window)
                 && (b.for_focus || !pressing)
                 && eligible(b)
+                && !(b.for_focus && covered)
         });
         match found {
             None => KeyMatch::None,
@@ -1051,6 +1108,26 @@ mod tests {
             table.find_at(crate::ROOT_ID, cmd_enter, true, true, false),
             KeyMatch::Fire(3)
         );
+    }
+
+    #[test]
+    fn a_covered_focus_leaves_return_to_the_other_bindings() {
+        let enter = Keystroke::parse_with("enter", true).unwrap();
+        // A dialog's Return, then a menu button's under it, bound while
+        // it has the focus.
+        let table = Keymap::new(vec![
+            KeyBinding::new(1, enter, When::NotEditing, false),
+            KeyBinding::new(2, enter, When::NotEditing, false).focus_keys(true),
+        ]);
+        let find = |covered| {
+            let focus = KeyFocus {
+                covered,
+                ..KeyFocus::default()
+            };
+            table.find_with(crate::ROOT_ID, enter, focus, false)
+        };
+        assert_eq!(find(false), KeyMatch::Fire(2));
+        assert_eq!(find(true), KeyMatch::Fire(1));
     }
 
     #[test]

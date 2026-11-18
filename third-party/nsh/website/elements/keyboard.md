@@ -201,6 +201,87 @@ The height is the part of the keyboard that overlaps the NSH surface. When the w
 > To keep content above the keyboard, `env(keyboard-inset-height)` is the simpler form: it animates with the keyboard
 > natively, without running code.
 
+## Hardware keys on custom views
+
+A focused view hears the hardware key transitions its platform reports: `onKeyDown` / `onKeyUp` in TSX, or
+`on_key_down` / `on_key_up` in Rust. This suits a custom-rendered canvas or embedded interaction surface. Named
+shortcuts use `on_key` / `on_key_with`; text editing uses `Input`, and terminal sessions use `Terminal`.
+
+`KeyEvent` reports what the source actually gives:
+
+| Field | Meaning |
+|---|---|
+| `key` | The source's logical key: the DOM spelling for named keys (`"Enter"`, `"ArrowLeft"`), else the character the key reports, in its case and layout, never forced onto another layout. `"Unidentified"` when the source names none. |
+| `code` | The key's physical identity in the DOM's `KeyboardEvent.code` spelling (`"KeyA"`, `"ArrowLeft"`, `"NumpadEnter"`, `"ShiftLeft"`), mapped by the platform from its real native identifier. `""` when the source has none (GPUI's logical events, synthetic input); it is never guessed from `key`. |
+| `modifiers` | The modifiers held after this transition. |
+| `repeat` | An auto-repeat of a held key. |
+| `defaultPrevented` | The mounted `captureKeys` policy decided this transition: the platform runs no native default and types no text. It is this transition's decision, observable as the DOM's `defaultPrevented` is, not a veto a listener casts. |
+
+Both listeners return nothing. One platform event on the focused view bubbles to the enabled listening ancestors
+within the same native window, once each, for `onKeyDown` and `onKeyUp` alike. A real release the source reports
+reaches the focused view even when its press went elsewhere, as the DOM's does; losing the window's focus clears
+held state and invents no releases.
+
+The same typed props apply to host elements such as `Scroll`, `List` and `Overlay`. A listener or capture rule on
+one of these ancestors follows the focused descendant's logical ancestry, including children rendered in overlays.
+That forwarding only engages for an overlay whose logical ancestry has such a listener or rule: ordinary overlays
+without one (a menu, a popover, a dialog) keep their usual routing.
+
+A listener cannot decide handling: the UI thread never waits for app callbacks. GTK runs a key's default inside its
+own propagation loop, AppKit applies a window's default handling (a menu shortcut, a beep) on the event or the next
+one, Win32 reaches `TranslateMessage` and `DefWindowProc` after the window procedure returns, and GPUI notifies the
+listener from its `on_key_event` Bubble pass and reads the window's `prevent_default` after that pass: each has
+already run its default or not when the listener is told. `defaultPrevented` only reports what the mounted policy
+decided for that transition.
+
+Matching uses the platform's existing shortcut normalization, independently of the raw event: capture rules are
+canonical `nsh/keymap` keystrokes and match the stroke the platform's own shortcut matcher builds from the key, not
+the reported `key` string or the physical `code`. A key that produces no shortcut stroke (a modifier key, an
+unidentified key, another layout's letter) is taken only by `captureKeys="all"`.
+
+`captureKeys` in TSX (`{"none"}`, `{"all"}` or an array such as `{["mod+k", "escape"]}`), or
+`capture_keys(KeyCapture::All)` / `capture_keys(KeyCapture::keys(...))` in Rust, mounts the consumption rule before
+input arrives. The rule is parsed once into canonical shortcut keystrokes (the `nsh/keymap` syntax; `mod` is
+Command on Apple platforms, Control elsewhere), and `defaultPrevented` reports this transition's decision. The rule
+accepts reactive values; omitting it on a retained view restores `"none"`. Eligible app shortcuts keep their
+priority, focused native inputs keep the keys that edit them, and a capture cannot defeat a shortcut the operating
+system never delivers. A captured Tab stays in the view; an observed Tab follows normal traversal.
+
+```tsx
+import { signal, Text, View } from "nsh";
+
+function Pad() {
+  const log = signal("");
+  return (
+    <View
+      focusable
+      captureKeys={["mod+k", "shift+tab"]}
+      onKeyDown={(e) => log.set(`${e.key} ${e.code} ${e.defaultPrevented} ${e.repeat}`)}
+      onKeyUp={(e) => log.set(`up ${e.key} ${e.defaultPrevented}`)}
+    >
+      <Text>{log()}</Text>
+    </View>
+  );
+}
+```
+
+The Rust API is also exercised by the Linux-desktop headless driver; Rust UI sets can expose app-specific
+components and events to TSX. Input sources differ: a terminal that reports only strokes (legacy terminals) sends
+no synthetic releases, repeats or codes; a terminal speaking the kitty keyboard protocol reports releases and
+auto-repeats for the keys it sends as escape codes, and still no physical code (`code` is `""`), as GPUI's logical
+events have none either. Android reports `key` from the character the hardware keyboard types (else the key code's
+DOM name) and `code` only from a real scan code, so a synthetic `adb shell input keyevent` has `""`. A system key
+(Back, Home, volume, media, camera, call) is never captured, even by `captureKeys="all"`, and still reaches listeners.
+A `focusable` view takes the hardware keyboard's focus; Tab and Shift+Tab move between the stops and go to the
+embedding Android host at the first and last one, and while no view has the focus the first arrow key moves it to the
+first stop on screen. A `keymap` binding on that arrow keeps the key for the app, as does a `captureKeys` rule of a
+view that hears it. See `docs/dev/tooling.md` and each platform's development page
+for what its source reports.
+
+On iOS, a hardware keyboard reports `UIKey.characters` as `key` (its case and layout kept) and maps
+`UIKey.keyCode`'s USB HID usage to the DOM `code`. UIKit sends a held key's press once, so `repeat` is false. A Tab
+captured by `captureKeys` or bound in `keymap` arrives as a key command: its `code` is `""` and no release is invented.
+
 ## Platform notes
 
 - **iOS**: the room animates with the keyboard's own duration and an ease-in-ease-out curve.

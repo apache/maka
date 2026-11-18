@@ -15,7 +15,7 @@ const NULL_BODY = new Set([101, 103, 204, 205, 304]);
  * always, HTTP when `network` (a test session). `call` is the host's
  * operation call; callbacks end with `wake` (a pump).
  */
-export function installFetch(target, call, { active = () => true, wake = () => {}, network = false } = {}) {
+export function installFetch(target, call, { active = () => true, wake = () => {}, network = false, base = null } = {}) {
   const { Request, Response, ReadableStream, TypeError: RealmTypeError } = target;
   const nativeFetch = target.fetch;
   const failure = message => new RealmTypeError(`Network request failed: ${message}`);
@@ -100,6 +100,11 @@ export function installFetch(target, call, { active = () => true, wake = () => {
     }
   };
   async function fetch(input, init) {
+    // A relative URL is the site's (`base`) where the realm's document has
+    // no `<base>` of it.
+    if (base && (typeof input === "string" || input instanceof URL)) {
+      try { input = new URL(String(input), base).href; } catch {}
+    }
     // The app's files are the engine's to read (the browser knows no
     // `asset:`), HTTP only a test's; `data:` and `blob:` URLs, and what does
     // not parse, stay the browser's.

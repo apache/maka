@@ -240,6 +240,11 @@ pub enum TextViewEvent {
     /// viewer of its own).
     #[args(image)]
     ImagePress(Image),
+    /// The box of a task item was pressed: which task of
+    /// the document, and the state the press asks for. The document does
+    /// not change: the app gives the view its edited source.
+    #[args(event)]
+    TaskPress(TextViewTaskPressEvent),
     /// An action of a code block was pressed (after the built-in `copy`
     /// copied): its id and the code block.
     #[args(event)]
@@ -403,6 +408,17 @@ impl JsValue for TextViewLinkPressEvent {
         host.set_field(object.get().raw(), "target", target.into_raw())?;
         Ok(object)
     }
+}
+
+/// A press on a task item's box of a [`TextView`] (`onTaskPress`).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewTaskPressEvent {
+    /// Which task item of the document, counted from 0 in reading order
+    /// (its footnotes' after its blocks').
+    pub index: u32,
+    /// The state the press asks for: the opposite of the one shown.
+    pub checked: bool,
 }
 
 /// A press on a code block's action (`onCodeBlockAction`).
@@ -728,6 +744,47 @@ struct ChoiceAddress {
     path: String,
 }
 
+/// Resolve on press so recycled cells, closed disclosures and offscreen rows
+/// all use the current document's reading order.
+fn task_index(document: &Document, address: &ChoiceAddress) -> Option<u32> {
+    let count = |blocks: &[Block]| blocks.iter().map(Block::tasks).sum::<u32>();
+    let mut index = 0;
+    let mut blocks = document.blocks.as_slice();
+    if let Some(label) = &address.footnote {
+        index = count(blocks);
+        let i = document.footnotes.iter().position(|n| &n.label == label)?;
+        index += document.footnotes[..i]
+            .iter()
+            .map(|n| count(&n.children))
+            .sum::<u32>();
+        blocks = &document.footnotes[i].children;
+    }
+    let mut path = address.path.split('.').peekable();
+    loop {
+        let i = path.next()?.parse::<usize>().ok()?;
+        let block = blocks.get(i)?;
+        index += count(&blocks[..i]);
+        blocks = match block {
+            Block::Blockquote { children, .. } | Block::Details { children, .. } => children,
+            Block::Custom(node) => &node.children,
+            Block::List { items, .. } => {
+                let j = path.next()?.parse::<usize>().ok()?;
+                let item = items.get(j)?;
+                index += items[..j]
+                    .iter()
+                    .map(|it| u32::from(it.checked.is_some()) + count(&it.children))
+                    .sum::<u32>();
+                if path.peek().is_none() {
+                    return item.checked.map(|_| index);
+                }
+                index += u32::from(item.checked.is_some());
+                &item.children
+            }
+            _ => return None,
+        };
+    }
+}
+
 /// Kind changes at any ancestor replace its logical owner and choices.
 /// Footnotes are addressed by label, independently of their display number.
 fn choice_owners(document: &Document, address: &ChoiceAddress) -> Option<Vec<String>> {
@@ -848,6 +905,9 @@ struct Cx {
     /// How many lists the blocks being made are in (a copy keeps the depth
     /// it was made at, for content made later).
     list_depth: std::cell::Cell<u8>,
+    /// Which task item of the document the next one made is (a copy keeps
+    /// its place, for content made later).
+
     /// The line height of the text being made, which images in it are
     /// sized by.
     line: std::cell::Cell<f32>,
@@ -887,6 +947,7 @@ impl Cx {
             highlighter: use_context::<CodeHighlighter>(),
             caret_placed: Rc::default(),
             list_depth: std::cell::Cell::new(0),
+
             line: std::cell::Cell::new(BODY_SIZE * BODY_LINE),
             link: std::cell::RefCell::new(None),
             links: props.links.get(),
@@ -1355,6 +1416,7 @@ impl Cx {
                         computed(move || tail.get() && index.get() + 1 == items.with(Vec::len));
                     let mut child_cx = cx.clone();
                     child_cx.list_depth = std::cell::Cell::new(depth.saturating_add(1));
+                    let address = task.then(|| cx.choices.address(&key));
                     let content = child_cx.blocks(
                         view()
                             .flex_col()
@@ -1392,7 +1454,8 @@ impl Cx {
                             start,
                             total,
                             index.get(),
-                            item.get().1.checked,
+                            &item.get().1,
+                            address.as_ref(),
                             depth,
                         )
                     })
@@ -1425,12 +1488,31 @@ impl Cx {
         start: u32,
         total: usize,
         index: usize,
-        checked: Option<bool>,
+        item: &ListItem,
+        address: Option<&ChoiceAddress>,
         depth: u8,
     ) -> AnyElement {
         let terminal = is_terminal();
-        match checked {
+        let task_action = |checked: bool| {
+            let mut label = String::new();
+            if let Some(Block::Paragraph { content }) = item.children.first() {
+                super::document::inline_text(content, &mut label);
+            }
+            let document = self.choices.document;
+            let address = address.expect("task marker has a document address").clone();
+            let scope = self.scope;
+            (label, move || {
+                if let Some(index) = document.with_untracked(|d| task_index(d, &address)) {
+                    scope.emit(TextViewEvent::TaskPress(TextViewTaskPressEvent {
+                        index,
+                        checked: !checked,
+                    }));
+                }
+            })
+        };
+        match item.checked {
             Some(checked) if terminal => {
+                let (label, press) = task_action(checked);
                 let mut parts = vec![Part::ListMarker, Part::TaskMarker];
                 if checked {
                     parts.push(Part::TaskMarkerChecked);
@@ -1443,6 +1525,8 @@ impl Cx {
                         false => theme().muted_foreground,
                     })
                     .role(AccessibilityRole::Checkbox)
+                    .label(label)
+                    .on_press(press)
                     .accessibility_state(AccessibilityState {
                         checked: Some(if checked {
                             nsh_core::Checked::True
@@ -1467,6 +1551,7 @@ impl Cx {
                 self.part(marker, Part::ListMarker).into_element()
             }
             Some(checked) => {
+                let (label, press) = task_action(checked);
                 let mut parts = vec![Part::ListMarker, Part::TaskMarker];
                 if checked {
                     parts.push(Part::TaskMarkerChecked);
@@ -1481,6 +1566,8 @@ impl Cx {
                     .items_center()
                     .justify_center()
                     .role(AccessibilityRole::Checkbox)
+                    .label(label)
+                    .on_press(press)
                     .accessibility_state(AccessibilityState {
                         checked: Some(if checked {
                             nsh_core::Checked::True
@@ -1659,7 +1746,9 @@ impl Cx {
                     .into_element()
                 }
                 // Typeset, centered, scrolling sideways when wider than
-                // the view.
+                // the view. In a text, as the one thing in its line, so a
+                // selection takes it in as it does an inline formula
+                // (#2121).
                 None if let Some(formula) = self.formula(tex, true, BODY_SIZE * 1.1) => self
                     .attachment(
                         self.part(
@@ -1794,7 +1883,7 @@ impl Cx {
     /// the source grows, so keyboard focus and the user's wrap choice survive.
     fn code_block(&self, code: Memo<CodeBlock>, key: &str, tail: Memo<bool>) -> AnyElement {
         if is_terminal() && self.code_block_actions.is_empty() {
-            return self.terminal_code_block(code, tail);
+            return self.terminal_code_block(code, key.to_owned(), tail);
         }
         let wrapped = self.choices.signal(
             key,
@@ -1806,6 +1895,7 @@ impl Cx {
         let actions = computed(move || props.code_block_actions.get());
         let action_cx = self.clone();
         let action_key = key.to_owned();
+        let code_key = key.to_owned();
         let language = computed(move || code.get().language.unwrap_or_default());
         // The language at the start, the actions at the end.
         let header = self
@@ -1854,27 +1944,22 @@ impl Cx {
                 cx.math_loaded,
             );
             let code = code.get();
-            let body = match &cx.highlighter {
-                Some(h) => text("").children(h.spans(&code)),
-                None => match super::highlight::built_in(&code) {
-                    Some(spans) => text("").children(spans),
-                    None => text(code.code.clone()),
-                },
-            };
+            let body = cx.code_body(&code, &code_key);
+            let wrap = wrapped.get() || code.wrap;
             let body = cx
                 .source(body, code.source.clone())
                 .font_family(mono_font)
                 .px(px(16.0))
                 .py(px(14.0))
                 .min_w(px(0.0))
-                .when(wrapped.get(), |t| t.w_full())
+                .when(wrap, |t| t.w_full())
                 .when(cx.selectable, |t| t.select_text());
             let body = cx.caret_after(body, tail.get());
             let scope = cx.scope;
             cx.part(
                 scroll()
-                    .when(!wrapped.get(), |s| s.horizontal())
-                    .scrollable(!wrapped.get())
+                    .when(!wrap, |s| s.horizontal())
+                    .scrollable(!wrap)
                     .scrollbar(cx.code_scroll_indicator)
                     .on_scroll_intent(move |_: &ScrollIntent| {
                         scope.emit(TextViewEvent::ScrollIntent)
@@ -1886,12 +1971,30 @@ impl Cx {
         .into_element()
     }
 
+    fn code_body(&self, code: &CodeBlock, key: &str) -> Text {
+        match annotated(code) {
+            Some(content) => self.span(content, key),
+            None => match &self.highlighter {
+                Some(h) => text("").children(h.spans(code)),
+                None => match super::highlight::built_in(code) {
+                    Some(spans) => text("").children(spans),
+                    None => text(code.code.clone()),
+                },
+            },
+        }
+    }
+
     /// A code block in a terminal: a band as wide as its longest line and
     /// a Cell each side (at most the text's width, its longer lines
     /// wrapping), from the text's left edge, with no rows of padding; its
     /// language named above it in reverse (` ts `, bold, on the border
     /// color).
-    fn terminal_code_block(&self, code: Memo<CodeBlock>, tail: Memo<bool>) -> AnyElement {
+    fn terminal_code_block(
+        &self,
+        code: Memo<CodeBlock>,
+        key: String,
+        tail: Memo<bool>,
+    ) -> AnyElement {
         let cx = self.clone();
         dynamic(move || {
             let cx = Cx::read(
@@ -1903,13 +2006,7 @@ impl Cx {
                 cx.math_loaded,
             );
             let code = code.get();
-            let body = match &cx.highlighter {
-                Some(h) => text("").children(h.spans(&code)),
-                None => match super::highlight::built_in(&code) {
-                    Some(spans) => text("").children(spans),
-                    None => text(code.code.clone()),
-                },
-            };
+            let body = cx.code_body(&code, &key);
             let body = cx.caret_after(
                 cx.source(body, code.source.clone())
                     .font_family(mono_font)
@@ -2121,7 +2218,6 @@ impl Cx {
             .rounded(px(6.0))
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .hover(|s| s.bg(theme().foreground.opacity(0.08)))
             .active(|s| s.bg(theme().foreground.opacity(0.14)))
             .role(AccessibilityRole::Button)
@@ -3334,6 +3430,23 @@ fn ink_on(bg: Hsla) -> Hsla {
         rgb(0x1f1e1c).into()
     } else {
         rgb(0xf4f3f0).into()
+    }
+}
+
+/// A code block's annotated `content`, when it has one whose plain text is
+/// its `code` (what copying takes): other content would show one text and
+/// copy another, so it is ignored with a warning.
+fn annotated(code: &CodeBlock) -> Option<&[Inline]> {
+    if code.content.is_empty() {
+        return None;
+    }
+    let mut plain = String::new();
+    super::document::inline_text(&code.content, &mut plain);
+    if plain == code.code {
+        Some(&code.content)
+    } else {
+        log::warn!("TextView: a code block's content does not spell its code; showing the code");
+        None
     }
 }
 

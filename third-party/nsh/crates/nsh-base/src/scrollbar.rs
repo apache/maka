@@ -565,7 +565,8 @@ pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement
     // A hidden bar follows the pointer where it can show on hover (a
     // mouse in the `hover` mode), as `gpui-base`'s does; elsewhere it lets
     // the pointer through to what is under it.
-    let hover_reveals = move || ctl.mode.get() == ScrollbarMode::Hover && is_desktop();
+    let hover_reveals =
+        move || ctl.mode.get() == ScrollbarMode::Hover && is_desktop() && ctl.scrolls();
     // A hidden bar takes no touches anywhere in it: under the track's
     // `none`, a view inside with `pointerEvents` of its own would take
     // them again (CSS's inheritance), so the rail and the thumb's holder

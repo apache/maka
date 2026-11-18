@@ -20,4 +20,14 @@ impl Fps {
     pub(crate) fn set_fps_enabled(enabled: bool, cx: &mut ModuleCx) {
         cx.act(services::perf_monitor(enabled));
     }
+
+    /// How the performance monitor shows, now and whenever it shows later:
+    /// `"expanded"` (its whole panel, the default), `"collapsed"` (a pill
+    /// with the frame rate, colored by the frame budget) or `"hidden"`
+    /// (nothing on screen while it still measures). A click on the panel
+    /// switches between the first two. macOS's panel takes it; platforms
+    /// without a panel ignore it.
+    pub(crate) fn set_fps_mode(mode: crate::FpsMode, cx: &mut ModuleCx) {
+        cx.act(services::perf_monitor_mode(mode));
+    }
 }

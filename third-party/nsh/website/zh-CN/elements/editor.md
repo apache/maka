@@ -575,7 +575,7 @@ let editor!: EditorRef;
 
 ## 部件样式
 
-`class` 和 `style` 设置编辑器盒子的样式。`classes` 按部件接受 Tailwind 类，`styles` 按部件接受内联样式；部件的类在它自己的默认样式之后应用，因此优先，它的 `styles` 又优先于类。字体用 `fontFamily`、`fontSize` 和 `lineHeight` 设置，编辑器用它们测量文本。
+`class` 和 `style` 设置编辑器盒子的样式。`classes` 按部件接受 Tailwind 类，`styles` 按部件接受内联样式；部件的类在它自己的默认样式之后应用，因此优先，它的 `styles` 又优先于类。字体用 `fontFamily`、`fontSize` 和 `lineHeight` 设置，编辑器用它们测量文本；和所有文本一样，它随用户的文字大小（`fontScale()`）放大，行也随之变高。
 
 ```tsx
 <Editor

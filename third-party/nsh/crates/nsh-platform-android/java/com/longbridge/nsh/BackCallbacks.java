@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import android.annotation.TargetApi;
 import android.os.Build;
 import android.window.BackEvent;
 import android.window.OnBackAnimationCallback;
@@ -17,6 +18,7 @@ final class BackCallbacks {
         return (OnBackInvokedCallback) view::handleBack;
     }
 
+    @TargetApi(34)
     private static final class Animated implements OnBackAnimationCallback {
         private final NshView view;
         private final Mounter mounter;
@@ -48,6 +50,9 @@ final class BackCallbacks {
         public void onBackCancelled() {
             if (stack != null) stack.backCancelled();
             stack = null;
+            // A cancelled back key: its press is forgotten here, before a
+            // cancelled key-up may follow (Android 15 QPR1 to 16).
+            view.backCancelled();
         }
 
         @Override

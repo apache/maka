@@ -136,6 +136,10 @@ struct State {
     source_over: bool,
     font_size: f32,
     align: CanvasTextAlign,
+    // Static `source-over` paints that leave every pixel untouched.
+    fill_clear: bool,
+    stroke_clear: bool,
+    alpha_zero: bool,
     // What reads a changed value.
     ctm_dep: bool,
     line_width_dep: bool,
@@ -158,6 +162,9 @@ impl Default for State {
             source_over: true,
             font_size: 10.0,
             align: CanvasTextAlign::Start,
+            fill_clear: false,
+            stroke_clear: false,
+            alpha_zero: false,
             ctm_dep: false,
             line_width_dep: false,
             dash_dep: false,
@@ -169,6 +176,32 @@ impl Default for State {
 }
 
 impl State {
+    fn unshadowed_source_over(&self) -> bool {
+        self.source_over && !self.shadow_on && !self.alpha_dep
+    }
+
+    /// Whether an unshadowed `source-over` draw at zero constant alpha leaves
+    /// every pixel untouched.
+    fn alpha_noop(&self) -> bool {
+        self.unshadowed_source_over() && self.alpha_zero
+    }
+
+    /// Whether a `fill` leaves every pixel untouched.
+    fn fill_noop(&self) -> bool {
+        if !self.unshadowed_source_over() {
+            return false;
+        }
+        self.alpha_zero || (self.fill_clear && !self.fill_dep)
+    }
+
+    /// Whether a `stroke` leaves every pixel untouched.
+    fn stroke_noop(&self) -> bool {
+        if !self.unshadowed_source_over() {
+            return false;
+        }
+        self.alpha_zero || (self.stroke_clear && !self.stroke_dep)
+    }
+
     /// How far a stroke reaches past its path: half the line width under
     /// the transform's largest scale, times the miter limit for miter
     /// joins (a miter is at most that long) or √2 for square caps.
@@ -457,6 +490,17 @@ impl DamageScan {
                     path.dep |= state.ctm_dep || path_op_dep(op, &dep);
                     None
                 }
+                CanvasOp::Fill(..) | CanvasOp::FillRect(_) | CanvasOp::FillText { .. }
+                    if state.fill_noop() =>
+                {
+                    None
+                }
+                CanvasOp::Stroke(_) | CanvasOp::StrokeRect(_) | CanvasOp::StrokeText { .. }
+                    if state.stroke_noop() =>
+                {
+                    None
+                }
+                CanvasOp::DrawImage { .. } if state.alpha_noop() => None,
                 CanvasOp::Fill(p, _) => {
                     let (bounds, d) = shape(p.as_deref(), &path, &state, &n, &path_dep);
                     (all || d || state.alpha_dep || state.fill_dep).then_some(bounds)
@@ -496,10 +540,12 @@ impl DamageScan {
                     d.then(|| rect(&state.ctm, r.map(n)).inflate(state.stroke_pad()))
                 }
                 CanvasOp::FillStyle(p) => {
+                    state.fill_clear = matches!(p, Paint::Color(c) if c.is_transparent());
                     state.fill_dep = paint_dep(p);
                     None
                 }
                 CanvasOp::StrokeStyle(p) => {
+                    state.stroke_clear = matches!(p, Paint::Color(c) if c.is_transparent());
                     state.stroke_dep = paint_dep(p);
                     None
                 }
@@ -529,6 +575,7 @@ impl DamageScan {
                     None
                 }
                 CanvasOp::GlobalAlpha(a) => {
+                    state.alpha_zero = matches!(a, Num::Const(v) if *v <= 0.0);
                     state.alpha_dep = dep(a);
                     None
                 }
@@ -1039,5 +1086,38 @@ mod tests {
         ];
         // From (0, 0) along the top to (40, 0), round to (50, 10).
         assert_eq!(scan(&ops, 10.0, 0.0), r(-3.0, -3.0, 56.0, 16.0));
+    }
+
+    #[test]
+    fn transparent_paints_and_zero_alpha_are_omitted_without_shadows() {
+        let mut scan = DamageScan::default();
+        let clear = vec![
+            CanvasOp::FillStyle(Paint::Color(crate::style::Color::TRANSPARENT)),
+            CanvasOp::StrokeStyle(Paint::Color(crate::style::Color::TRANSPARENT)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(10.0), c(10.0), c(200.0), c(100.0)])),
+            CanvasOp::Fill(None, crate::canvas::FillRule::NonZero),
+            CanvasOp::Stroke(None),
+        ];
+        assert_eq!(scan.painted_after(&clear, 0, |_| 0.0), Damage::None);
+
+        let zero_alpha = vec![
+            CanvasOp::GlobalAlpha(c(0.0)),
+            CanvasOp::FillRect([c(20.0), c(30.0), c(50.0), c(50.0)]),
+        ];
+        assert_eq!(scan.painted_after(&zero_alpha, 0, |_| 0.0), Damage::None);
+
+        // A configured shadow still paints even when the foreground fill is
+        // transparent (`canvas.md`).
+        let shadowed = vec![
+            CanvasOp::ShadowColor(crate::style::Color(0x000000ff)),
+            CanvasOp::ShadowBlur(Points(4.0)),
+            CanvasOp::FillStyle(Paint::Color(crate::style::Color::TRANSPARENT)),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        assert!(matches!(
+            scan.painted_after(&shadowed, 0, |_| 0.0),
+            Damage::Rect(_)
+        ));
     }
 }

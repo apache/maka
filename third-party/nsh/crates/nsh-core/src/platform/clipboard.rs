@@ -254,9 +254,46 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
     }
 }
 
+/// HTML fragment `html` in Windows' `HTML Format` (CF_HTML): a header of
+/// byte offsets into the UTF-8 that follows, then a document holding the
+/// fragment between `StartFragment` and `EndFragment` comments, as apps
+/// that paste HTML on Windows read it.
+pub fn cf_html(html: &str) -> String {
+    const HEADER: &str = "Version:0.9\r\nStartHTML:{0}\r\nEndHTML:{1}\r\n\
+                          StartFragment:{2}\r\nEndFragment:{3}\r\n";
+    const BEFORE: &str = "<html><body>\r\n<!--StartFragment-->";
+    const AFTER: &str = "<!--EndFragment-->\r\n</body></html>";
+    // The offsets are ten digits each, so the header's length is known.
+    let header_len = HEADER.len() - 4 * 3 + 4 * 10;
+    let start_html = header_len;
+    let start_fragment = start_html + BEFORE.len();
+    let end_fragment = start_fragment + html.len();
+    let end_html = end_fragment + AFTER.len();
+    let header = HEADER
+        .replace("{0}", &format!("{start_html:010}"))
+        .replace("{1}", &format!("{end_html:010}"))
+        .replace("{2}", &format!("{start_fragment:010}"))
+        .replace("{3}", &format!("{end_fragment:010}"));
+    format!("{header}{BEFORE}{html}{AFTER}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cf_html_offsets_point_at_the_document_and_the_fragment() {
+        let fragment = "<p>a <b>b</b> \u{4e2d}</p>";
+        let out = cf_html(fragment);
+        let field = |name: &str| -> usize {
+            let at = out.find(&format!("{name}:")).unwrap() + name.len() + 1;
+            out[at..at + 10].parse().unwrap()
+        };
+        assert!(out.starts_with("Version:0.9\r\n"));
+        assert!(out[field("StartHTML")..].starts_with("<html>"));
+        assert_eq!(field("EndHTML"), out.len());
+        assert_eq!(&out[field("StartFragment")..field("EndFragment")], fragment);
+    }
 
     /// A 3×2 PNG's signature and header.
     const PNG: &[u8] = &[

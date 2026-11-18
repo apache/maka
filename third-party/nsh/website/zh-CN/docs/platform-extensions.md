@@ -56,6 +56,8 @@ let config = EngineConfig {
     environment: Environment {
         os: Os::Ios,                    // 设备的操作系统：应用中的 platform.os
         platform: Some("miniprogram"),  // 应用中的 platform.name
+        tab_bar: false,                 // 宿主提供的能力
+        clipboard_images: Some(false),
         idiom: Idiom::Phone,
         ..Environment::default()
     },
@@ -65,6 +67,8 @@ let config = EngineConfig {
 };
 let mut engine = LocalEngine::start(config, text_engine, sink).expect("the app starts");
 ```
+
+环境还说明平台提供哪些能力。`tab_bar`（默认开启）是 iOS 和 Android 上 `nsh/mobile` 的 `TabBar` 所用的系统标签栏；没有它的平台将其关闭，应用改用 `nsh/base` 的 `Tabs` 显示标签。`clipboard_images` 是剪贴板上的图片：默认与 NSH 自己的后端在 `os` 上一致（Android 上没有），平台用 `Some` 说明自己的情况；没有图片时 `Clipboard.readImage` 和 `writeImage` 以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 拒绝，`hasImage` 为 false。小程序两者都没有。
 
 `LocalEngine::pump()` 运行到期的工作，并返回下次到期的时间：平台在那个时间以及每次输入之后调用它。对用 Rust 编写的应用，以 `default-features = false` 依赖 `nsh-engine`，引擎就能构建到 `wasm32-unknown-unknown`。
 
@@ -110,6 +114,9 @@ impl TextEngine for MiniProgramTextEngine {
 ## 4. 送回输入
 
 `EngineControl` 发送用户的操作：视图上报按下事件时，点击用 `dispatch_event(id, EventKind::Press, EventPayload::None)`；滚动视图移动时用 `scroll(id, offset, 0)`；窗口或外观变化时用 `resize(size)` 和 `set_environment(environment)`；引擎请求的显示帧（`MountSink::request_frame`）到来时用 `frame()`。
+
+滚动视图可以用键盘移动（方向键、Page Up / Down、Home、End）的平台，在开始每次按键滚动之后调用
+`key_scrolled(id, key_move)`，传入这次按键的移动（`nsh_core::scroll::KeyMove`）：这样按一次 End，列表就会一直滚到末尾。
 
 ## 5. 加入命令行 target
 

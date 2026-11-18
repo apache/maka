@@ -42,7 +42,7 @@ NSH 没有“大而全”的汇总模块：每个 API 只存在于一个地方�
 | `nsh/desktop` | `isAvailable`、`Window`（标题、标题栏、最大化、全屏）、`titleBar`、`Menu`（应用菜单、右键菜单） | [nsh/desktop](./nsh-desktop.md) |
 | `nsh/web` | `Head`（页面的标题、描述和元数据，供搜索引擎和链接预览使用） | [nsh/web](./nsh-web.md) |
 | `nsh/i18n` | `t`、`setLocale`、`availableLocales`（应用的翻译和它显示的语言） | [nsh/i18n](./nsh-i18n.md) |
-| `nsh/updater` | `checkForUpdate`、`downloadUpdate`、`installAndRestart`（打包后的应用自我更新） | [nsh/updater](./nsh-updater.md) |
+| `nsh/updater` | `checkForUpdate`、`downloadUpdate`、`installAndRestart`、`installOnQuit`（打包后的应用自我更新） | [nsh/updater](./nsh-updater.md) |
 | Standard modules | `buffer`, `console`, `crypto`, `fs/promises`, `net`, `os`, `path`, `process`, `url`, `websocket`, `zlib` | [标准模块](./standard-modules.md) |
 | 全局对象 | `fetch`、`URL`、`TextEncoder`、`Blob`、`FormData`、`AbortController`、`Intl`、定时器、`console`、`requestAnimationFrame` 等（无需导入） | [全局 API](./globals.md) |
 

@@ -48,11 +48,9 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> Option<Event
                 .get("pressedButton")
                 .and_then(|v| v.as_str())
                 .and_then(mouse_button);
-            EventPayload::Mouse(nsh_core::MouseEvent::new(
-                position,
-                page_position,
-                modifiers,
-                pressed_button,
+            EventPayload::Mouse(with_pointer(
+                nsh_core::MouseEvent::new(position, page_position, modifiers, pressed_button),
+                &value,
             ))
         }
         // `{ position, pagePosition, delta, phase, modifiers }`, as
@@ -95,19 +93,22 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> Option<Event
         // it.
         EventKind::MouseUp => {
             let (position, page_position, modifiers) = pointer_at(&value);
-            EventPayload::Mouse(nsh_core::MouseEvent::released(
-                position,
-                page_position,
-                modifiers,
-                // A keyboard or scripted release names no button; the
-                // primary one is the release that `onPressUp` pairs with. A
-                // name this build does not know is no release to report: the
-                // `?` drops the event instead of reading it as the primary
-                // button.
-                match value.get("button").and_then(|v| v.as_str()) {
-                    None => nsh_core::MouseButton::Left,
-                    Some(name) => mouse_button(name)?,
-                },
+            EventPayload::Mouse(with_pointer(
+                nsh_core::MouseEvent::released(
+                    position,
+                    page_position,
+                    modifiers,
+                    // A keyboard or scripted release names no button; the
+                    // primary one is the release that `onPressUp` pairs with. A
+                    // name this build does not know is no release to report: the
+                    // `?` drops the event instead of reading it as the primary
+                    // button.
+                    match value.get("button").and_then(|v| v.as_str()) {
+                        None => nsh_core::MouseButton::Left,
+                        Some(name) => mouse_button(name)?,
+                    },
+                ),
+                &value,
             ))
         }
         EventKind::ContextMenu
@@ -311,4 +312,23 @@ fn audio_payload(value: &serde_json::Value) -> EventPayload {
         _ => return EventPayload::None,
     };
     EventPayload::Audio { id, event }
+}
+
+/// `event` with the pen fields of `value` (`pointerType`, `pressure`,
+/// `tiltX`, `tiltY`), when it has them.
+fn with_pointer(event: nsh_core::MouseEvent, value: &serde_json::Value) -> nsh_core::MouseEvent {
+    let Some(kind) = value
+        .get("pointerType")
+        .and_then(|v| v.as_str())
+        .and_then(nsh_core::PointerType::from_name)
+    else {
+        return event;
+    };
+    let num = |k: &str| value.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
+    event.with_pointer(
+        kind,
+        num("pressure").unwrap_or(event.pressure),
+        num("tiltX").unwrap_or(0.0),
+        num("tiltY").unwrap_or(0.0),
+    )
 }

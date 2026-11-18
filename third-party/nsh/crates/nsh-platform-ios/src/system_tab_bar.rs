@@ -199,16 +199,18 @@ fn lays_out_items_again(last: (f64, f64), size: (f64, f64)) -> bool {
     size.0 >= 1.0 && size != last
 }
 
-/// One tab as the app gave it (`TabBarItem`: `{ title, icon }`).
+/// One tab as the app gave it (`TabBarItem`: `{ title, icon, badge }`).
 #[derive(Debug, Default, PartialEq)]
 struct Tab {
     title: String,
     /// An SF Symbol's name, empty for none.
     icon: String,
+    /// Its badge: a text, `""` for one with no text, `None` for none.
+    badge: Option<String>,
 }
 
-/// The tabs of an `items` prop; what is not a `{ title, icon }` object is a
-/// tab without a title.
+/// The tabs of an `items` prop; what is not a `{ title, icon, badge }`
+/// object is a tab without a title.
 fn parse_items(items: &[JsonValue]) -> Vec<Tab> {
     let text = |item: &JsonValue, key: &str| {
         item.get(key)
@@ -221,6 +223,10 @@ fn parse_items(items: &[JsonValue]) -> Vec<Tab> {
         .map(|item| Tab {
             title: text(item, "title"),
             icon: text(item, "icon"),
+            badge: item
+                .get("badge")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
         })
         .collect()
 }
@@ -307,12 +313,19 @@ impl SystemTabBar {
                 let image = (!tab.icon.is_empty())
                     .then(|| UIImage::systemImageNamed(&NSString::from_str(&tab.icon)))
                     .flatten();
-                UITabBarItem::initWithTitle_image_tag(
+                let item = UITabBarItem::initWithTitle_image_tag(
                     UITabBarItem::alloc(self.mtm),
                     Some(&NSString::from_str(&tab.title)),
                     image.as_deref(),
                     index as isize,
-                )
+                );
+                // The system's badge, in its color (an empty text is its
+                // badge with no text, as large as a one-digit one);
+                // VoiceOver says it with the tab.
+                if let Some(badge) = &tab.badge {
+                    item.setBadgeValue(Some(&NSString::from_str(badge)));
+                }
+                item
             })
             .collect();
         *self.items.borrow_mut() = items;
@@ -403,13 +416,13 @@ mod tests {
         assert!(lays_out_items_again((430.0, 83.0), (932.0, 83.0)));
     }
 
-    /// Each tab carries its own title and icon; a tab without an icon has
-    /// none.
+    /// Each tab carries its own title, icon and badge; a tab without an
+    /// icon or a badge has none.
     #[test]
-    fn tabs_carry_their_titles_and_icons() {
+    fn tabs_carry_their_titles_icons_and_badges() {
         let tabs = parse_items(&[
-            json!({ "title": "Records", "icon": "list.bullet" }),
-            json!({ "title": "Stats" }),
+            json!({ "title": "Records", "icon": "list.bullet", "badge": "3" }),
+            json!({ "title": "Stats", "badge": "" }),
         ]);
         assert_eq!(
             tabs,
@@ -417,10 +430,12 @@ mod tests {
                 Tab {
                     title: "Records".into(),
                     icon: "list.bullet".into(),
+                    badge: Some("3".into()),
                 },
                 Tab {
                     title: "Stats".into(),
                     icon: String::new(),
+                    badge: Some(String::new()),
                 },
             ]
         );

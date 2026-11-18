@@ -4,7 +4,7 @@
 // `openUrl`: a promise for a URL it opens (the headless runtime answers none), one rejected with a `TypeError` for
 // a URL it never opens (it never throws). Its script checks each.
 import { Text, View, signal } from "nsh";
-import { colorScheme, fontScale, lifecycle, localeSettings, openUrl, pixelRatio, platform, setColorScheme, wakeCount, windowSize } from "nsh";
+import { horizontalSizeClass, verticalSizeClass, colorScheme, fontScale, lifecycle, localeSettings, openUrl, pixelRatio, platform, setColorScheme, wakeCount, windowSize } from "nsh";
 
 // Whether `Intl`'s local time is in the zone it names: formatting in that zone
 // writes what local time does (in 1970, a summer and a winter), on a machine in
@@ -27,10 +27,12 @@ function App() {
       <Text>{`Catalyst: ${platform.catalyst}`}</Text>
       <Text>{`Version: ${platform.version}`}</Text>
       <Text>{`Select: ${platform.select({ ios: "ios", android: "android", default: "other" })}`}</Text>
+      <Text>{`Select named: ${platform.select({ miniprogram: "miniprogram", ios: "ios", default: "other" })}`}</Text>
       <Text>{`Select mobile: ${platform.select({ mobile: "mobile", desktop: "desktop" })}`}</Text>
       <Text>{`Ratio: ${pixelRatio()}`}</Text>
       <Text>{`Font scale: ${fontScale()}`}</Text>
       <Text>{`Window: ${windowSize().width}x${windowSize().height}`}</Text>
+      <Text>{`Size classes: ${horizontalSizeClass()} ${verticalSizeClass()}`}</Text>
       <Text>{`Scheme: ${colorScheme()}`}</Text>
       <Text>{`Lifecycle: ${lifecycle()}`}</Text>
       <Text>{`Wakes: ${wakeCount()}`}</Text>

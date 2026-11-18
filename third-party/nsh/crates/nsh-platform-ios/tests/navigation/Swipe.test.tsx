@@ -76,3 +76,31 @@ test("vertical and reverse drags keep a hidden-header page in place", async () =
   await app.waitFor("text:depth:1");
   expect(app.shows("text:dismissed:1")).toBe(true);
 });
+
+for (const pad of ["start", "move"]) {
+  test(`a drag on a responder that claims on ${pad} and keeps native gestures out keeps its page`, async () => {
+    const app = await open("./App.tsx");
+    await app.press("text:Responders");
+    await app.waitFor("text:depth:2");
+    await app.wait(800);
+    await app.drag(`id:${pad}-pad`, { x: 280, y: 0 });
+    await app.wait(800);
+    expect(app.shows("text:pad:released")).toBe(true);
+    expect(app.shows("text:depth:2")).toBe(true);
+    expect(app.shows("text:dismissed:0")).toBe(true);
+    // The finger is free again: the edge swipe still pops.
+    await swipe(app);
+    await app.waitFor("text:depth:1");
+    expect(app.shows("text:dismissed:1")).toBe(true);
+  });
+}
+
+test("a drag on a responder that lets native gestures in pops its page", async () => {
+  const app = await open("./App.tsx");
+  await app.press("text:Responders");
+  await app.waitFor("text:depth:2");
+  await app.wait(800);
+  await app.drag("id:open-pad", { x: 280, y: 0 });
+  await app.waitFor("text:depth:1");
+  expect(app.shows("text:dismissed:1")).toBe(true);
+});

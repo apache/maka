@@ -70,9 +70,9 @@ use windows::{
                 DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
                 DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
                 DWRITE_TRIMMING_GRANULARITY_NONE, DWRITE_UNDERLINE, DWRITE_UNICODE_RANGE,
-                DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, IDWriteFactory2,
-                IDWriteFactory5, IDWriteFontCollection, IDWriteFontCollection1, IDWriteFontFace,
-                IDWriteFontFace2, IDWriteFontFallback, IDWriteFontFile,
+                DWRITE_WORD_WRAPPING_EMERGENCY_BREAK, DWRITE_WORD_WRAPPING_NO_WRAP,
+                IDWriteFactory2, IDWriteFactory5, IDWriteFontCollection, IDWriteFontCollection1,
+                IDWriteFontFace, IDWriteFontFace2, IDWriteFontFallback, IDWriteFontFile,
                 IDWriteInMemoryFontFileLoader, IDWriteInlineObject, IDWriteInlineObject_Impl,
                 IDWritePixelSnapping_Impl, IDWriteTextFormat, IDWriteTextFormat1,
                 IDWriteTextLayout, IDWriteTextLayout1, IDWriteTextRenderer,
@@ -253,7 +253,7 @@ pub(crate) fn ui_family() -> Arc<str> {
 fn family_names(name: &str, ui: &str) -> Vec<String> {
     let mut out = Vec::new();
     use nsh_core::FamilyName;
-    for family in nsh_core::font_families(name) {
+    nsh_core::for_each_font_family(name, |family| {
         let family = match family {
             FamilyName::Monospace => "Consolas",
             FamilyName::Serif => "Times New Roman",
@@ -263,7 +263,7 @@ fn family_names(name: &str, ui: &str) -> Vec<String> {
             _ => ui,
         };
         out.push(family.to_owned());
-    }
+    });
     if out.is_empty() {
         out.push(ui.to_owned());
     }
@@ -1148,7 +1148,7 @@ impl DWriteTextEngine {
             let _ = format.SetWordWrapping(if t.no_wrap {
                 DWRITE_WORD_WRAPPING_NO_WRAP
             } else {
-                DWRITE_WORD_WRAPPING_WRAP
+                DWRITE_WORD_WRAPPING_EMERGENCY_BREAK
             });
             let _ =
                 format.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, PITCH, PITCH_BASELINE);
@@ -1732,12 +1732,12 @@ impl TextEngine for DWriteTextEngine {
                             Points(m.x * size),
                         )
                     };
-                    let (up, down) = a.extent(font, alignments.get(a.index));
+                    let (up, down) = alignments.extent(a, font);
                     AttachmentBox {
                         index: a.index,
                         width: a.width.0,
                         height: a.height.0,
-                        top: a.ascent(font, alignments.get(a.index)).0,
+                        top: alignments.ascent(a, font).0,
                         up: up.0,
                         down: down.0,
                     }
@@ -1789,6 +1789,17 @@ impl TextEngine for DWriteTextEngine {
             width = width.min(max.max(0.0));
         }
         Size::new(Points(width.ceil()), Points(height.ceil()))
+    }
+
+    fn first_baseline(&self, p: &Prepared, width: Points) -> Option<Points> {
+        // Typeset at the size it measures `width` wide, as the text is laid
+        // out: the baseline of its first line (a run's is the same `top +
+        // ascent`; the line, as a line of only a break or an attachment has
+        // no runs).
+        let layout = self.layout(p, self.measure(p, Some(width)));
+        let layout = layout.downcast::<WinLayout>()?;
+        let first = &layout.lines.first()?.info;
+        Some(first.y + first.ascender)
     }
 
     fn layout(&self, p: &Prepared, size: Size<Points>) -> TextLayout {
@@ -2090,9 +2101,12 @@ pub(crate) fn set(
     let area_range = old.as_ref().and_then(|o| o.area_range.get());
     let selection = match old.and_then(|o| o.selection.map(|s| (s, o.text))) {
         Some((s, old)) if text.is_selectable() => {
-            // Offsets into other text mean nothing.
-            if old.text != text.text {
-                s.range.set(None);
+            // Offsets into other text mean nothing: the selection goes,
+            // and with it the view's place as the one selected, or the
+            // keys of a selection (Escape, Ctrl+C) would stay taken for
+            // a selection that is no more, with nothing left to clear it.
+            if old.text != text.text && s.range.take().is_some() {
+                forget_selected(view);
             }
             Some(s)
         }
@@ -2781,12 +2795,10 @@ pub(crate) fn clear_selected() {
 }
 
 pub(crate) fn has_selection(surface: &crate::surface::Surface) -> bool {
-    let view = SELECTED.with_borrow(|s| {
+    SELECTED.with_borrow(|s| {
         s.as_ref()
-            .filter(|(key, v)| *key == surface.key() && v.attached())
-            .map(|(_, v)| v.clone())
-    });
-    view.is_some_and(|v| selected_text(&v).is_some())
+            .is_some_and(|(key, v)| *key == surface.key() && v.attached())
+    })
 }
 
 pub(crate) fn clear_surface(surface: &crate::surface::Surface) {
@@ -2995,6 +3007,7 @@ fn selected_text(view: &NshView) -> Option<String> {
     let state = view.state();
     Some(state.text.as_ref()?.text.copied_text(a..b)).filter(|t| !t.is_empty())
 }
+
 
 /// Keys for the text selection (Ctrl+C, Ctrl+A, Escape); true when
 /// handled.
@@ -3291,6 +3304,21 @@ impl WinLayout {
                     descent: Points(descent),
                 }));
             }
+            // Attachments hold no glyphs: their room (a span's padding
+            // too) is in the background of their span.
+            let range = line.info.start..line.info.end;
+            pieces.extend(
+                self.inline
+                    .iter()
+                    .filter(|a| range.contains(&a.index))
+                    .map(|a| nsh_core::LinePiece {
+                        x: Points(a.x),
+                        width: Points(a.width),
+                        background: text.background_at(a.index),
+                        ascent: Points(0.0),
+                        descent: Points(0.0),
+                    }),
+            );
             pieces.sort_by(|a, b| a.x.0.total_cmp(&b.x.0));
             let clip = (line.info.x, line.info.x + line.info.width);
             nsh_core::BackgroundBox::join(pieces.iter().copied(), clip, |b| {
@@ -3392,6 +3420,7 @@ mod tests {
 
     #[test]
     fn families() {
+        assert_eq!(family_names(r#"'A\\B', 'A\"B'"#, "X"), [r"A\B", "A\"B"]);
         assert_eq!(family_names("Inter", "Segoe UI"), ["Inter"]);
         assert_eq!(family_names("system-ui", "Segoe UI"), ["Segoe UI"]);
         assert_eq!(family_names("ui-monospace", "X"), ["Consolas"]);
@@ -3643,6 +3672,42 @@ mod tests {
         // Its middle above the baseline.
         let (top, up, _) = place(nsh_core::VerticalAlign::Middle);
         assert!(top + 15.0 < up, "{top} {up}");
+    }
+
+    /// A text's first baseline (what `align-items: baseline` lines it up
+    /// by) is where its first line is drawn, wrapped or not, and grows
+    /// with the font.
+    #[test]
+    fn the_first_baseline_is_the_first_lines() {
+        let engine = engine();
+        let at_of = |content: &str, size: f32, width: Option<f32>| {
+            let t = text(&[(content, plain(size))]);
+            let (measured, layout) = layout_of(&engine, &t, width);
+            let prepared = engine.prepare(&t);
+            let baseline = engine
+                .first_baseline(&prepared, measured.width)
+                .expect("a first line");
+            let line = engine.lines(&layout).remove(0);
+            (baseline.0, line.y.0 + line.ascender.0)
+        };
+        let at = |size, width| at_of("Chat with the world", size, width);
+        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let (small, drawn) = at(12.0, None);
+        assert!(near(small, drawn), "{small} {drawn}");
+        let (wrapped, drawn) = at(12.0, Some(30.0));
+        assert!(
+            near(wrapped, drawn) && near(wrapped, small),
+            "{wrapped} {drawn}"
+        );
+        let (large, _) = at(24.0, None);
+        assert!(large > small, "{large} {small}");
+        // A first line of only a break has no runs: its own baseline, not
+        // the next line's.
+        let (broken, drawn) = at_of("\nChat", 12.0, None);
+        assert!(
+            near(broken, drawn) && near(broken, small),
+            "{broken} {drawn}"
+        );
     }
 
     #[test]
@@ -3930,6 +3995,8 @@ mod tests {
                 color: Color(0xeeee_eeff),
                 radius: px(4.0),
                 node: 4,
+                top: Default::default(),
+                bottom: Default::default(),
             }),
             ..style
         };
@@ -3953,6 +4020,45 @@ mod tests {
         let (_, rects) = boxes(Some(w * 0.7));
         assert!(rects.len() >= 2, "{rects:?}");
         assert!(rects[1].1 > rects[0].1);
+    }
+
+    /// A selectable text whose content changes loses its selection, and is
+    /// no longer the text the selection's keys go to.
+    #[test]
+    fn new_content_ends_the_selection_and_its_keys() {
+        let engine = engine();
+        let selectable = |s: &str| {
+            let mut t = text(&[(s, plain(15.0))]);
+            t.selectable = Some(true);
+            Arc::new(t)
+        };
+        let view = NshView::new(7, nsh_core::ViewKind::Text);
+        let show = |t: &Arc<AttributedText>| {
+            let (size, layout) = layout_of(&engine, t, None);
+            set(
+                &view,
+                t,
+                &layout,
+                Bounds::new(nsh_core::Point::default(), size),
+            );
+        };
+        let selected = || SELECTED.with_borrow(|s| s.as_ref().map(|(_, v)| v.clone()));
+        let first = selectable("Hello selectable world");
+        show(&first);
+        select(1, &view, Some((1, 9)));
+        assert!(selected() == Some(view.clone()));
+        // The same content again (another style, say) keeps it.
+        show(&selectable("Hello selectable world"));
+        assert_eq!(view_selection(&view).unwrap().range.get(), Some((1, 9)));
+        assert!(selected() == Some(view.clone()));
+        show(&selectable("Other words"));
+        assert_eq!(view_selection(&view).unwrap().range.get(), None);
+        assert!(selected().is_none(), "no text holds the selection's keys");
+        // And a selection made again is cleared as any other.
+        select(1, &view, Some((0, 5)));
+        assert!(selected() == Some(view.clone()));
+        clear_selected();
+        assert!(selected().is_none());
     }
 
     #[test]

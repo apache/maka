@@ -19,7 +19,10 @@
 //! chevron and a check are two sides of a box turned 45°, a radio's dot a
 //! round box, in the label's color. Images in a GTK style sheet load
 //! through gdk-pixbuf's loaders, which may not read SVG, so no image is
-//! used.
+//! used. The indicators are GTK's built-in icons, which are never smaller
+//! than their `-gtk-icon-size` (16px unless the theme says otherwise), so
+//! each box sets it to its own width: a check or chevron as wide as it is
+//! tall was a square, which turned 45° is a "V".
 //!
 //! A menu's items sit in a scrolled window, which is never shorter than its
 //! vertical scrollbar, shown or not. GTK's theme gives the slider 40px (44
@@ -88,23 +91,23 @@ popover.menu > contents > scrolledwindow > scrollbar.vertical > range > trough >
 popover.menu modelbutton check, popover.menu modelbutton radio, popover.menu modelbutton arrow {
   -gtk-icon-source: none; background-image: none; background-color: transparent;
   border: 0 solid currentColor; border-radius: 0; box-shadow: none; outline: none;
-  min-width: 14px; min-height: 14px; margin: 0; padding: 0;
+  min-width: 14px; min-height: 14px; -gtk-icon-size: 14px; margin: 0; padding: 0;
 }
 popover.menu modelbutton check, popover.menu modelbutton radio { margin-right: 8px; }
 popover.menu modelbutton check:checked {
-  min-width: 4px; min-height: 8px; margin: 1px 12px 3px 4px;
+  min-width: 4px; min-height: 8px; -gtk-icon-size: 4px; margin: 1px 12px 3px 4px;
   border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 popover.menu modelbutton radio:checked {
-  min-width: 6px; min-height: 6px; margin: 4px 12px 4px 4px;
+  min-width: 6px; min-height: 6px; -gtk-icon-size: 6px; margin: 4px 12px 4px 4px;
   border-radius: 9999px; background-color: currentColor;
 }
 popover.menu modelbutton arrow.right {
-  min-width: 4px; min-height: 4px; margin: 4px 6px 4px 10px;
+  min-width: 4px; min-height: 4px; -gtk-icon-size: 4px; margin: 4px 6px 4px 10px;
   border-width: 2px 2px 0 0; transform: rotate(45deg);
 }
 popover.menu modelbutton arrow.left {
-  min-width: 4px; min-height: 4px; margin: 4px 10px 4px 6px;
+  min-width: 4px; min-height: 4px; -gtk-icon-size: 4px; margin: 4px 10px 4px 6px;
   border-width: 0 0 2px 2px; transform: rotate(45deg);
 }
 ";
@@ -117,7 +120,7 @@ fn css_color(color: Hsla) -> String {
 
 #[cfg(test)]
 mod tests {
-    use gtk4::{self as gtk, gdk, gio, prelude::*};
+    use gtk4::{self as gtk, gdk, gio, glib, prelude::*};
     use nsh_core::element::{AdaptiveColor, Tokens};
 
     use super::css;
@@ -177,6 +180,76 @@ mod tests {
             gtk::style_context_remove_provider_for_display(&display, &provider);
             assert_eq!(window, items);
         });
+    }
+
+    /// The indicators are the size of their boxes, not of the theme's
+    /// icons: a check, a radio and a submenu's arrow, set or not, take the
+    /// same width, so the labels line up, and the check is taller than it
+    /// is wide (it was a square, drawn as a "V").
+    #[test]
+    fn indicators_take_their_boxes_size() {
+        crate::gtk_test::run(|| {
+            let display = gdk::Display::default().expect("a display");
+            let provider = gtk::CssProvider::new();
+            provider.load_from_string(&css(&Tokens::default()));
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            let actions = gio::SimpleActionGroup::new();
+            for (name, on) in [("on", true), ("off", false)] {
+                actions.add_action(&gio::SimpleAction::new_stateful(
+                    name,
+                    None,
+                    &on.to_variant(),
+                ));
+            }
+            actions.add_action(&gio::SimpleAction::new_stateful(
+                "pick",
+                Some(glib::VariantTy::STRING),
+                &"a".to_variant(),
+            ));
+            let model = gio::Menu::new();
+            model.append(Some("Checked"), Some("t.on"));
+            model.append(Some("Unchecked"), Some("t.off"));
+            model.append(Some("Picked"), Some("t.pick::a"));
+            model.append(Some("Not picked"), Some("t.pick::b"));
+            model.append_submenu(Some("More"), &gio::Menu::new());
+            let menu = gtk::PopoverMenu::from_model(Some(&model));
+            menu.insert_action_group("t", Some(&actions));
+            let mut indicators = Vec::new();
+            collect(menu.upcast_ref(), &mut indicators);
+            gtk::style_context_remove_provider_for_display(&display, &provider);
+            let names: Vec<_> = indicators.iter().map(|(name, ..)| name.as_str()).collect();
+            // The submenu's arrow, and the arrow back on its page.
+            assert_eq!(
+                names,
+                ["check", "check", "radio", "radio", "arrow", "arrow"]
+            );
+            // Each as wide as an unchecked check: 14px and its 8px margin.
+            for (name, checked, width, _) in &indicators {
+                assert_eq!(*width, 22, "{name} (checked: {checked})");
+            }
+            // The checked check: 8px, a 2px border and 1 + 3px margins.
+            assert_eq!((indicators[0].1, indicators[0].3), (true, 14));
+        });
+    }
+
+    /// Each indicator's name, whether it is set, and its width and height.
+    fn collect(widget: &gtk::Widget, out: &mut Vec<(String, bool, i32, i32)>) {
+        let name = widget.css_name();
+        if ["check", "radio", "arrow"].contains(&name.as_str()) {
+            let checked = widget.state_flags().contains(gtk::StateFlags::CHECKED);
+            let (width, ..) = widget.measure(gtk::Orientation::Horizontal, -1);
+            let (height, ..) = widget.measure(gtk::Orientation::Vertical, -1);
+            out.push((name.to_string(), checked, width, height));
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            collect(&widget, out);
+            child = widget.next_sibling();
+        }
     }
 
     fn scrolled_window(widget: &gtk::Widget) -> Option<gtk::ScrolledWindow> {

@@ -874,7 +874,7 @@ fn draw_borders(cx: &mut DrawCx<'_>, b: &Borders, w: f32, h: f32, radii: [f32; 4
     }
     // Sides that differ: the whole line stroked with each side's width and
     // color, clipped to that side's part of the box.
-    for (side, quad) in side_quads(w, h, widths).iter().enumerate() {
+    for (side, quad) in corner_quads(w, h, dash_corners(widths)).iter().enumerate() {
         let (bw, c) = (widths[side], b.colors[side]);
         if bw <= 0.0 || c.is_transparent() {
             continue;
@@ -983,12 +983,38 @@ fn fit_corners(w: f32, h: f32, c: Corners) -> Corners {
     }
 }
 
+/// The widths each corner of a dashed or dotted border is split by
+/// (top-left, top-right, bottom-right, bottom-left; the vertical side's,
+/// then the horizontal side's): where one of a corner's sides has no
+/// border it takes the other's, so the corner is cut as between equal
+/// sides. Such a border's line is stroked whole and only clipped, so a
+/// split that hands a side the edge of a side without a border (as
+/// [`side_quads`] does for the solid ring, which is empty there) would
+/// draw that edge's dashes too.
+fn dash_corners(widths: [f32; 4]) -> [(f32, f32); 4] {
+    let [t, r, b, l] = widths;
+    let even = |x: f32, y: f32| match (x > 0.0, y > 0.0) {
+        (true, false) => (x, x),
+        (false, true) => (y, y),
+        _ => (x, y),
+    };
+    [even(l, t), even(r, t), even(r, b), even(l, b)]
+}
+
 /// Each side's part of a `w` x `h` box with border `widths`, clockwise from
 /// the top: the corners are split along the lines from the outer corners
 /// through the inner ones (as CSS joins differing borders), ending at the
 /// box's middle lines.
 fn side_quads(w: f32, h: f32, widths: [f32; 4]) -> [[(f32, f32); 4]; 4] {
     let [t, r, b, l] = widths;
+    corner_quads(w, h, [(l, t), (r, t), (r, b), (l, b)])
+}
+
+/// [`side_quads`] with each corner split by its own pair of widths
+/// (top-left, top-right, bottom-right, bottom-left; the vertical side's,
+/// then the horizontal side's).
+fn corner_quads(w: f32, h: f32, corners: [(f32, f32); 4]) -> [[(f32, f32); 4]; 4] {
+    let [(tl_x, tl_y), (tr_x, tr_y), (br_x, br_y), (bl_x, bl_y)] = corners;
     // Each corner's split, from the outer corner inwards.
     let end = |(cx, cy): (f32, f32), (dx, dy): (f32, f32)| {
         let (dx, dy) = if dx == 0.0 && dy == 0.0 {
@@ -1012,10 +1038,10 @@ fn side_quads(w: f32, h: f32, widths: [f32; 4]) -> [[(f32, f32); 4]; 4] {
         let k = kx.min(ky);
         (cx + dx * k, cy + dy * k)
     };
-    let tl = end((0.0, 0.0), (l, t));
-    let tr = end((w, 0.0), (-r, t));
-    let br = end((w, h), (-r, -b));
-    let bl = end((0.0, h), (l, -b));
+    let tl = end((0.0, 0.0), (tl_x, tl_y));
+    let tr = end((w, 0.0), (-tr_x, tr_y));
+    let br = end((w, h), (-br_x, -br_y));
+    let bl = end((0.0, h), (bl_x, -bl_y));
     [
         [(0.0, 0.0), (w, 0.0), tr, tl],
         [(w, 0.0), (w, h), br, tr],
@@ -1285,6 +1311,25 @@ mod tests {
         assert!(close(c[0].0, 5.0) && close(c[1].0, 5.0));
         let c = fit_corners(100.0, 100.0, [(10.0, 20.0); 4]);
         assert_eq!(c[0], (10.0, 20.0));
+    }
+
+    #[test]
+    fn a_dashed_corner_without_one_border_splits_as_between_equal_sides() {
+        // Only the left border: its corners are cut at 45 degrees.
+        assert_eq!(
+            dash_corners([0.0, 0.0, 0.0, 2.0]),
+            [(2.0, 2.0), (0.0, 0.0), (0.0, 0.0), (2.0, 2.0)]
+        );
+        // Sides of their own widths split as solid ones do.
+        assert_eq!(
+            dash_corners([4.0, 2.0, 3.0, 1.0]),
+            [(1.0, 4.0), (2.0, 4.0), (2.0, 3.0), (1.0, 3.0)]
+        );
+        // Each corner by its own sides, not the wider neighbor's.
+        assert_eq!(
+            dash_corners([0.0, 6.0, 0.0, 2.0]),
+            [(2.0, 2.0), (6.0, 6.0), (6.0, 6.0), (2.0, 2.0)]
+        );
     }
 
     #[test]

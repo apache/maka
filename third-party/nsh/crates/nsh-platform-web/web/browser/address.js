@@ -10,8 +10,8 @@ const NOT_IN_AN_ADDRESS = /[\p{White_Space}\p{Cc}]/u;
 
 /**
  * Makes `urlScheme`'s `setUrl` (`nsh`'s `UrlScheme`) the page's. `page`:
- * `base()`, what `history.replaceState` resolves against (the page's
- * `document.baseURI`); `origin`, the page's. `url()` reads the core's
+ * `base()`, what the app's relative addresses resolve against (the site's
+ * base: `player.addressBase`); `origin`, the page's. `url()` reads the core's
  * address as it is, which has the page's from before the app's code runs.
  * The options (`{ history }`) go to the core as they are, which checks them.
  */

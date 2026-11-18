@@ -20,7 +20,11 @@
 // instance of its own), `assetBase` (where `asset:/<path>` is served) or
 // `assets` (a map from `<path>` to its URL, as `nsh package --target web`
 // writes it; relative URLs, these and the others, resolve against the
-// page's `document.baseURI` as the player is made: `player.baseURL`),
+// page's `document.baseURI` as the player is made, or `baseURL`:
+// `player.baseURL`), `baseURL` (the site's base, which the app's relative
+// URLs and addresses resolve against instead of the page's: a page served
+// at its app's routes names it so, as a strict `base-uri` refuses a
+// `<base href>`),
 // `readAsset(uri)` (the bytes of an asset the engine needs at
 // once, a font: a `Uint8Array` or null), `data` (the URLs of the files the
 // runtime fetches when it first needs them, by name, as `nsh package
@@ -57,6 +61,8 @@ const FOCUSED = 4;
  * modality as it is (`inputWith`). */
 const MODALITY_KEYS_SKIPPED = new Set(["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock", "Fn", "Hyper", "Super", "OS"]);
 const PRESS_EVENTS = ["onPress", "onLongPress", "onPressIn", "onPressOut"];
+/** The press listeners other than `onLongPress`, which alone leaves the taps to the views around. */
+const TAP_EVENTS = ["onPress", "onPressIn", "onPressOut"];
 const MOUSE_EVENTS = ["onMouseEnter", "onMouseLeave", "onMouseMove"];
 /** The DOM's `buttons` bits, in the order a held button is named by. */
 const MOUSE_BUTTONS = [[1, "left"], [2, "right"], [4, "middle"], [8, "back"], [16, "forward"]];
@@ -79,6 +85,14 @@ const ARIA_ROLES = {
   none: null, header: "heading", image: "img", imagebutton: "button", keyboardkey: "button", adjustable: "slider",
   search: "searchbox", text: null, summary: "status", togglebutton: "button", dropdownlist: "combobox",
 };
+
+/** Reconcile accessibility props with the element's current attributes. */
+function setAriaAttribute(el, name, value) {
+  const next = value == null || value === false ? null : String(value);
+  if (el.getAttribute(name) === next) return;
+  if (next === null) el.removeAttribute(name);
+  else el.setAttribute(name, next);
+}
 
 /**
  * The HTML element a view or text is drawn as, from what its props say it
@@ -135,6 +149,50 @@ const ENTER_LATE_MS = 250;
 
 /** View kinds whose frames, appearing and disappearing are navigation's. */
 const NAVIGATED = new Set(["stack", "screen", "modal", "header", "accessory"]);
+
+/** The status of an offscreen render's answer (`nsh_canvas_image`, `src/lib.rs`
+ * `CanvasImageStatus`): the image's bytes, or a message why there are none. */
+const CANVAS_IMAGE = { FAILED: 0, OK: 1, TOO_LARGE: 2 };
+
+/** An offscreen render over the browser's canvas size limit
+ * (`CANVAS_IMAGE.TOO_LARGE`). */
+class CanvasTooLarge extends Error {}
+
+function tooLarge(width, height) {
+  return `this browser cannot make a ${width} × ${height} pixel canvas (${width * height} pixels): it is over the browser's canvas size limit`;
+}
+
+/** A listener that does nothing: a blocking `wheel` listener's presence. */
+const noop = () => {};
+
+/** Whether `src` is on the page's origin. */
+function sameOrigin(src) {
+  try {
+    return new URL(src, location.href).origin === location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/** `logo@2x.png` → 2: the pixel density a file name declares, 1 without
+ * (`nsh_core::image::loader::density`). */
+function imageDensity(uri) {
+  const name = String(uri).split(/[/\\]/).pop();
+  const dot = name.lastIndexOf(".");
+  const stem = dot < 0 ? name : name.slice(0, dot);
+  const at = stem.lastIndexOf("@");
+  if (at < 0 || !stem.endsWith("x")) return 1;
+  const n = Number(stem.slice(at + 1, -1));
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+function originOf(src) {
+  try {
+    return new URL(src, location.href).origin;
+  } catch {
+    return src;
+  }
+}
 
 const KEYFRAMES = `
 @property --nsh-ko { syntax: "<number>"; inherits: false; initial-value: 1; }
@@ -251,8 +309,11 @@ img.nsh-fill { pointer-events: none; }
 .nsh-fit-none { object-fit: none; }
 .nsh-spacer { position: absolute; left: 0; top: 0; width: 1px; height: 1px; pointer-events: none; visibility: hidden; }
 /* Over the style's \`overflow: clip\`. */
-.nsh-scroll.nsh-ox.nsh-ox { overflow-x: auto; overflow-y: hidden; }
-.nsh-scroll.nsh-oy.nsh-oy { overflow-x: hidden; overflow-y: auto; }
+/* A one-axis scroll view keeps only its own axis's overscroll: a swipe
+   across it (vertical over a horizontal one, as over an editor's text
+   inside its vertical scroll) scrolls the scroll view around it. */
+.nsh-scroll.nsh-ox.nsh-ox { overflow-x: auto; overflow-y: hidden; overscroll-behavior-y: auto; }
+.nsh-scroll.nsh-oy.nsh-oy { overflow-x: hidden; overflow-y: auto; overscroll-behavior-x: auto; }
 .nsh-scroll.nsh-oxy.nsh-oxy { overflow: auto; }
 .nsh-scroll.nsh-onone.nsh-onone { overflow: hidden; }
 .nsh-scroll.nsh-zoom.nsh-zoom { touch-action: none; }
@@ -296,6 +357,12 @@ img.nsh-fill { pointer-events: none; }
    backdrop below and the views' own classes override it. */
 .nsh-root > .nsh-viewport { position: fixed; inset: 0; width: auto; height: auto; margin: 0; }
 .nsh-viewport { touch-action: none; border: 0; padding: 0; overflow: visible; color: inherit; background-color: transparent; }
+/* Anchored overlays over the window (overlays: "viewport", syncFloats) are popovers in the top layer too, at their
+   frames in the root moved by where the root is in the window (--nsh-float-x / -y, placeFloats). The second rule
+   undoes the popover's own box where the view's classes say nothing. */
+.nsh-root > .nsh-float { position: fixed; inset: auto; margin: var(--nsh-float-y, 0px) 0 0 var(--nsh-float-x, 0px);
+  touch-action: none; }
+:where(.nsh-float) { border: 0; padding: 0; overflow: visible; color: inherit; background-color: transparent; }
 .nsh-dialog-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.35); display: flex;
   align-items: center; justify-content: center; z-index: 1000; }
 .nsh-dialog { width: 270px; border-radius: 14px; background: rgba(245,245,245,.97); color: #000; text-align: center;
@@ -303,7 +370,7 @@ img.nsh-fill { pointer-events: none; }
 .nsh-dialog h3 { font-size: 17px; font-weight: 600; margin: 18px 16px 4px; }
 .nsh-dialog p { margin: 0 16px 18px; }
 .nsh-dialog button { display: block; width: 100%; border: 0; border-top: 0.5px solid rgba(0,0,0,.2); background: none;
-  font: 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #007aff; padding: 11px; cursor: pointer; }
+  font: 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #007aff; padding: 11px; cursor: default; }
 /* Dialogs on desktop browsers: the in-surface cards of the Linux and macOS backends. */
 .nsh-desktop .nsh-dialog-backdrop { background: rgba(0,0,0,.4); }
 .nsh-desktop .nsh-dialog { width: min(340px, calc(100% - 64px)); border-radius: 12px; padding: 20px; text-align: left;
@@ -335,6 +402,16 @@ img.nsh-fill { pointer-events: none; }
 .nsh-dialog button.cancel { font-weight: 600; }
 .nsh-desktop .nsh-dialog button.cancel { font-weight: 500; }
 .nsh-dialog button.destructive { color: #ff3b30; }
+.nsh-dialog button:disabled { opacity: .4; }
+.nsh-dialog-input { display: block; box-sizing: border-box; width: calc(100% - 32px); margin: 0 16px 16px; padding: 6px 8px;
+  border: 0.5px solid rgba(0,0,0,.25); border-radius: 7px; background: #fff; color: inherit; outline: none;
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.nsh-dialog h3 + .nsh-dialog-input { margin-top: 14px; }
+.nsh-desktop .nsh-dialog-input { width: 100%; margin: 12px 0 0; padding: 7px 10px; border: 1px solid #e5e5e5;
+  border-radius: 8px; font-size: 14px; }
+.nsh-desktop .nsh-dialog-input:focus { border-color: #a3a3a3; }
+.nsh-dark .nsh-dialog-input { background: rgba(28,28,30,.9); border-color: rgba(255,255,255,.2); }
+.nsh-desktop.nsh-dark .nsh-dialog-input { background: #0a0a0a; border-color: #262626; }
 .nsh-dark .nsh-dialog { background: rgba(44,44,46,.97); color: #fff; }
 .nsh-dark .nsh-dialog button { border-top-color: rgba(255,255,255,.15); color: #0a84ff; }
 .nsh-dark .nsh-dialog button.destructive { color: #ff453a; }
@@ -346,7 +423,7 @@ img.nsh-fill { pointer-events: none; }
 .nsh-sheet > div { border-radius: 14px; background: rgba(245,245,245,.97); color: #000; overflow: hidden; text-align: center; }
 .nsh-sheet .nsh-sheet-head { padding: 12px 16px; color: #8a8a8e; border-bottom: 0.5px solid rgba(0,0,0,.2); }
 .nsh-sheet .nsh-sheet-head b { display: block; font-weight: 600; }
-.nsh-sheet button { display: block; width: 100%; border: 0; background: none; padding: 16px; cursor: pointer;
+.nsh-sheet button { display: block; width: 100%; border: 0; background: none; padding: 16px; cursor: default;
   font: 19px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #007aff; }
 .nsh-sheet button + button { border-top: 0.5px solid rgba(0,0,0,.2); }
 .nsh-sheet button.cancel { font-weight: 600; }
@@ -396,7 +473,7 @@ img.nsh-fill { pointer-events: none; }
   border-left: 3px solid #ff6b6b; border-radius: 10px; white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
 .nsh-error-copy { float: right; position: sticky; top: 0; margin: 0 0 6px 10px; border: 0; border-radius: 6px;
   background: rgba(255,255,255,.12); color: #fff; font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  padding: 4px 12px; cursor: pointer; }
+  padding: 4px 12px; cursor: default; }
 .nsh-error-copy:hover { background: rgba(255,255,255,.2); }
 `;
 
@@ -438,6 +515,18 @@ function localOffset(ms) {
   return 0 - new Date(ms).getTimezoneOffset() * 60;
 }
 
+/**
+ * Whether the page can show the browser's share sheet: it has
+ * `navigator.share` and the page's permissions policy allows `web-share`
+ * (a frame of another origin needs `allow="web-share"`).
+ */
+function webShareAllowed() {
+  if (typeof navigator === "undefined" || typeof navigator.share !== "function") return false;
+  const doc = typeof document === "undefined" ? undefined : document;
+  const policy = doc?.permissionsPolicy ?? doc?.featurePolicy;
+  return typeof policy?.allowsFeature === "function" ? policy.allowsFeature("web-share") : true;
+}
+
 /** The browser's time zone (`Asia/Shanghai`), Intl's default; "" when unknown. */
 function timeZoneName() {
   return new Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
@@ -461,6 +550,39 @@ function regional(locale) {
     // A tag the browser does not take: the region's.
   }
   return known;
+}
+
+/** The characters of `text` as `maxLength` counts them: Unicode code
+ * points (an emoji is one, though a JS string holds two units for it). */
+function charLength(text) {
+  let n = 0;
+  for (const _ of text) n++;
+  return n;
+}
+
+let graphemes;
+
+/** The longest prefix of `text` of at most `max` characters
+ * ({@link charLength}) that ends between user-perceived characters, as the
+ * core's `clip_chars` cuts: a letter with its accent or an emoji with its
+ * skin tone goes in whole or not at all. */
+function clipChars(text, max) {
+  if (max <= 0) return "";
+  if (text.length <= max || charLength(text) <= max) return text;
+  graphemes ??= typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : null;
+  // Without `Intl.Segmenter`, between code points.
+  const parts = graphemes ? graphemes.segment(text) : text;
+  let used = 0;
+  let end = 0;
+  for (const part of parts) {
+    const segment = typeof part === "string" ? part : part.segment;
+    used += charLength(segment);
+    if (used > max) break;
+    end += segment.length;
+  }
+  return text.slice(0, end);
 }
 
 /**
@@ -496,19 +618,37 @@ const decoder = new TextDecoder();
  */
 const CLASSES = { sheets: {}, rules: new Map(), texts: new Map() };
 
+/** A style sheet of the runtime's own, after the page's and the earlier
+ * ones, holding `text`: a constructed sheet the document adopts, which a
+ * strict `style-src` allows (it refuses `<style>` elements), or in a
+ * browser without them a `<style>` element (`id`). */
+function runtimeSheet(id, text = "") {
+  if (typeof CSSStyleSheet === "function" && "replaceSync" in CSSStyleSheet.prototype && "adoptedStyleSheets" in document) {
+    const sheet = new CSSStyleSheet();
+    if (text) sheet.replaceSync(text);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    return sheet;
+  }
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent = text;
+  document.head.append(style);
+  return style.sheet;
+}
+
 /** The sheet of the generated classes (`nsh-classes`), after the runtime's
  * own rules, or of the views' own rules (`nsh-own`): changing a rule makes
  * the browser go over its whole sheet again, so those that change are
  * apart. */
 function classSheet(id) {
-  if (!CLASSES.sheets[id]) {
-    const style = document.createElement("style");
-    style.id = id;
-    document.head.append(style);
-    CLASSES.sheets[id] = style.sheet;
-  }
+  if (!CLASSES.sheets[id]) CLASSES.sheets[id] = runtimeSheet(id);
   return CLASSES.sheets[id];
 }
+
+/** The document's sheet of the runtime's own rules ([`KEYFRAMES`]), made
+ * by the first player of any copy of the runtime on the page. */
+const RUNTIME_SHEET = Symbol.for("nsh.runtimeSheet");
+
 
 /** Adds (or, for a view's own rule, replaces) class `name` with `text`.
  * The class is doubled: it wins over the runtime's rules of a class and a
@@ -635,8 +775,8 @@ const glueImports = new Map();
  * every player after the first imports it under a URL of its own: another
  * instance of the module. The first keeps the URL the page preloads.
  */
-function importGlue(url) {
-  const href = new URL(String(url), document.baseURI);
+function importGlue(url, base) {
+  const href = new URL(String(url), base);
   const imported = glueImports.get(href.href) ?? 0;
   glueImports.set(href.href, imported + 1);
   if (imported > 0) href.searchParams.set("player", String(imported));
@@ -860,7 +1000,7 @@ function frameViewport(frame, colorScheme) {
     frame.style.setProperty(name, value, "important");
   }
   try { frame.showPopover(); } catch (error) {
-    if (saved === null) frame.removeAttribute("style"); else frame.setAttribute("style", saved);
+    if (saved === null) frame.removeAttribute("style"); else frame.style.cssText = saved;
     if (popover === null) frame.removeAttribute("popover"); else frame.setAttribute("popover", popover);
     placeholder?.remove(); outer?.release(); throw error;
   }
@@ -870,7 +1010,7 @@ function frameViewport(frame, colorScheme) {
     if (frame._nshViewport !== state || --state.users) return;
     observer.disconnect();
     frame.hidePopover();
-    if (saved === null) frame.removeAttribute("style"); else frame.setAttribute("style", saved);
+    if (saved === null) frame.removeAttribute("style"); else frame.style.cssText = saved;
     if (popover === null) frame.removeAttribute("popover"); else frame.setAttribute("popover", popover);
     unlock();
     placeholder?.remove(); outer?.release(); delete frame._nshViewport;
@@ -914,17 +1054,17 @@ class Player {
     // app's relative URLs resolve against it once, so they still load
     // after the address moves to another directory (`history.pushState`
     // to `/sports/football`).
-    this.baseURL = document.baseURI;
+    // The site's base when the page names it (`baseURL`): the page's
+    // address is one of the app's routes, below it.
+    this.siteBase = options.baseURL == null ? null : new URL(String(options.baseURL), document.baseURI).href;
+    this.baseURL = this.siteBase ?? document.baseURI;
     this.assetBase = new URL(options.assetBase || "./", this.baseURL).href;
     const resolve = (urls) => urls && Object.fromEntries(Object.entries(urls).map(([key, url]) => [key, new URL(url, this.baseURL).href]));
     this.assets = resolve(options.assets);
     this.data = resolve(options.data);
     this.container = container;
-    if (!document.getElementById("nsh-style")) {
-      const style = document.createElement("style");
-      style.id = "nsh-style";
-      style.textContent = KEYFRAMES;
-      document.head.append(style);
+    if (!document[RUNTIME_SHEET]) {
+      Object.defineProperty(document, RUNTIME_SHEET, { value: runtimeSheet("nsh-style", KEYFRAMES) });
     }
     this.root = document.createElement("div");
     this.root.className = window.top === window ? "nsh-root" : "nsh-root nsh-embedded";
@@ -983,6 +1123,12 @@ class Player {
     if (options.dialogs === "viewport" && !this.viewportDialogs) {
       console.warn("[nsh] this browser has no popovers: dialogs cover the player, not the window");
     }
+    // Anchored overlays (popovers, menus, tooltips, a select's list) over
+    // the whole window rather than inside the container (`syncFloats`).
+    this.viewportOverlays = options.overlays === "viewport" && typeof HTMLElement.prototype.showPopover === "function";
+    if (options.overlays === "viewport" && !this.viewportOverlays) {
+      console.warn("[nsh] this browser has no popovers: overlays stay inside the player, not over the window");
+    }
     // Host events sent before the app runs (`begin`).
     this.hostEvents = [];
     if (window.top === window) document.documentElement.classList.add("nsh-page");
@@ -993,7 +1139,7 @@ class Player {
     // the CLI ran `wasm-bindgen --target web` on the runtime, and its glue
     // provides the module's other imports. It loads while the module
     // compiles; a failed compile does not leave its rejection unhandled.
-    const glueLoad = this.options.glue ? importGlue(this.options.glue) : null;
+    const glueLoad = this.options.glue ? importGlue(this.options.glue, this.baseURL) : null;
     glueLoad?.catch(() => {});
     const imports = {
       env: {
@@ -1232,7 +1378,8 @@ class Player {
    * the main module was published without) in parallel, each after the
    * side modules it imports from, and calls each gate once. `table` is the
    * page's `sides`: by name, `{ url, gate?, needs, onDemand? }` (`onDemand`:
-   * only `loadData` asks for it, nothing fetches it ahead). A page awaits it
+   * only a load that needs it, a chunk's or `loadData`'s, fetches it;
+   * `nsh package` marks every side module it writes so). A page awaits it
    * before a chunk that needs them runs (its `prepareChunk`).
    */
   loadSides(names, table) {
@@ -1250,7 +1397,9 @@ class Player {
     for (const name of names) {
       if (this.sideModules.has(name) || this.sideLoads.has(name)) continue;
       const compiled = this.compileSide(table[name].url, { priority: "low" });
-      compiled.catch(() => this.sideModules.delete(name));
+      compiled.catch(() => {
+        if (this.sideModules.get(name) === compiled) this.sideModules.delete(name);
+      });
       this.sideModules.set(name, compiled);
     }
   }
@@ -1279,14 +1428,24 @@ class Player {
     }
   }
 
-  /** The exports of side module `name`, once it and what it needs loaded. */
+  /**
+   * The exports of side module `name`, once it and what it needs loaded.
+   * Callers share one load; a failed one (the network, a server error) is
+   * forgotten, so the next load that needs the module tries again, while
+   * the side modules it needs that did load stay loaded.
+   */
   loadSide(name, table) {
-    if (!this.sideLoads.has(name)) {
+    let load = this.sideLoads.get(name);
+    if (!load) {
       const side = table?.[name];
       if (!side) return Promise.reject(new Error(`no side module ${name}`));
-      this.sideLoads.set(name, this.instantiateSide(name, side, table));
+      load = this.instantiateSide(name, side, table);
+      this.sideLoads.set(name, load);
+      load.catch(() => {
+        if (this.sideLoads.get(name) === load) this.sideLoads.delete(name);
+      });
     }
-    return this.sideLoads.get(name);
+    return load;
   }
 
   async instantiateSide(name, { url, gate, needs }, table) {
@@ -1491,10 +1650,45 @@ class Player {
       this.measure.font = font;
       const t = this.measure.measureText("Hg");
       const x = this.measure.measureText("x");
-      m = [t.fontBoundingBoxAscent ?? 0, t.fontBoundingBoxDescent ?? 0, x.actualBoundingBoxAscent ?? 0];
+      // Ascent and descent as the DOM draws a run (`.nsh-run`: absolutely
+      // placed, `font` shorthand, so `line-height: normal`): where its
+      // baseline falls in its box. Canvas rounds its font box to whole
+      // pixels (Chrome), each font its own way, which put runs of two fonts
+      // on one line up to a pixel and a half apart on a phone.
+      const dom = this.domMetrics(font);
+      m = dom
+        ? [dom[0], dom[1], x.actualBoundingBoxAscent ?? 0]
+        : [t.fontBoundingBoxAscent ?? 0, t.fontBoundingBoxDescent ?? 0, x.actualBoundingBoxAscent ?? 0];
       this.metricsCache.set(font, m);
     }
     return m;
+  }
+
+  /** `[ascent, descent]` of a run in `font` as the DOM lays it out, or
+   * null without a document to measure in. */
+  domMetrics(font) {
+    if (typeof document === "undefined" || !document.body) return null;
+    let probe = this.metricsProbe;
+    if (!probe || !probe.box.isConnected) {
+      const box = document.createElement("div");
+      box.setAttribute("aria-hidden", "true");
+      box.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden;pointer-events:none";
+      const run = document.createElement("span");
+      run.className = "nsh-run";
+      run.style.cssText = "left:0;top:0";
+      run.textContent = "Hg";
+      const mark = document.createElement("i");
+      mark.style.cssText = "display:inline-block;width:0;height:0;vertical-align:baseline";
+      run.append(mark);
+      box.append(run);
+      document.body.append(box);
+      probe = this.metricsProbe = { box, run, mark };
+    }
+    probe.run.style.font = font;
+    const top = probe.run.getBoundingClientRect();
+    const ascent = probe.mark.getBoundingClientRect().top - top.top;
+    if (!(top.height > 0)) return null;
+    return [ascent, top.height - ascent];
   }
 
   /**
@@ -1578,7 +1772,14 @@ class Player {
   reset() {
     this.stop();
     this.audioDispose();
+    this.askBeforeLeaving(false);
+    this.watchPageEnd(false);
     this.resetHistory();
+    // The next app sets its own (its first commit comes before the write).
+    if (this.windowTitle) {
+      this.windowTitle = null;
+      this.syncTitleSoon();
+    }
     this.app = (this.app ?? 0) + 1;
     const root = this.root;
     root.textContent = "";
@@ -1608,6 +1809,8 @@ class Player {
     this.hostEvents ??= [];
     // Fonts registered while it starts hold its first frame back (`fontLoading`).
     this.starting = true;
+    // The page's end is the app's (`watchPageEnd`).
+    this.watchPageEnd(true);
     // The app's address starts as its first entry's, which the core has
     // before the app's code runs (`nsh_set_page_url`).
     if (this.history) this.withStrings([this.firstUrl], (p, l) => this.wasm.nsh_set_page_url?.(p, l));
@@ -1619,6 +1822,11 @@ class Player {
       throw err;
     } finally {
       this.starting = false;
+    }
+    // The new engine's overlays go over the window too.
+    if (this.viewportOverlays) {
+      this.floatArea = null;
+      this.placeFloats();
     }
     if (!deferEvents) this.startedApp();
   }
@@ -1705,6 +1913,8 @@ class Player {
     this.frameLayers?.clear();
     if (this.viewportDialogs) this.dialogs = [];
     this.viewportObserver?.disconnect();
+    for (const el of this.floats ?? []) this.sinkFloat(el);
+    this.floats = [];
     this.fileOperations.clear();
     for (const id of [...this.requests.keys()]) this.fetchCancel(id);
     for (const id of [...this.websockets.keys()]) this.websocketCancel(id);
@@ -1835,6 +2045,7 @@ class Player {
     this.size = [width, height];
     this.call((w) => w.nsh_resize(width, height));
     this.environmentChanged();
+    if (this.viewportOverlays) this.placeFloats();
     for (const el of this.views.values()) if (el._kind === "modal" && el.isConnected && !el._leaving) this.placeModal(el);
   }
 
@@ -1874,6 +2085,7 @@ class Player {
     document.addEventListener("visibilitychange", changed);
     addEventListener("focus", changed);
     addEventListener("blur", changed);
+    this.watchPageCache(changed);
     visualViewport?.addEventListener("resize", changed);
     visualViewport?.addEventListener("scroll", changed);
     new MutationObserver(changed).observe(document.documentElement, { attributes: true, attributeFilter: ["dir", "lang"] });
@@ -1881,6 +2093,31 @@ class Player {
     this.safeProbe = document.createElement("div");
     this.safeProbe.className = "nsh-probe";
     document.body.append(this.safeProbe);
+    if (this.viewportOverlays) this.installFloats();
+  }
+
+  /** A page the browser keeps in its back / forward cache (a `pagehide`
+   * that is `persisted`) is in the background until a `pageshow` brings it
+   * back: the app sees the pair of edges whether or not the browser tells
+   * `visibilitychange` around them. A page that is discarded (`pagehide`
+   * not `persisted`) ends its app instead (`watchPageEnd`). Neither
+   * listener keeps a page out of that cache. */
+  watchPageCache(changed) {
+    const cached = (value) => (event) => {
+      if (!event.persisted) return;
+      this.pageCached = value;
+      changed();
+    };
+    window.addEventListener("pagehide", cached(true));
+    window.addEventListener("pageshow", cached(false));
+  }
+
+  /** The app's state (`lifecycle()`): `background` while the page is
+   * hidden (another tab, a minimized window) or in the back / forward
+   * cache, else whether it has the focus. */
+  lifecycle() {
+    if (this.pageCached || document.visibilityState === "hidden") return "background";
+    return document.hasFocus() ? "active" : "inactive";
   }
 
   /** The page's insets covered by system UI, where they overlap the root
@@ -1930,11 +2167,10 @@ class Player {
       keyboard: this.keyboardHeight(),
       appleKeyboard: APPLE,
       host: Boolean(this.options.host),
-      lifecycle: document.visibilityState === "hidden"
-        ? "background"
-        : document.hasFocus() ? "active" : "inactive",
+      lifecycle: this.lifecycle(),
       timeZone: timeZoneName(),
       screenColor: typeof window.EyeDropper === "function",
+      share: webShareAllowed(),
       notifications: typeof window.Notification === "function",
       audio: typeof (window.AudioContext ?? window.webkitAudioContext) === "function",
       // Shader views draw until the first one finds no WebGL 2 (`shaderGl`).
@@ -1986,6 +2222,10 @@ class Player {
     this.trapped = true;
     this.deferred = [];
     clearTimeout(this.timer);
+    // Nothing of the app's can run any more (save, quit): the page leaves
+    // as any other.
+    this.askBeforeLeaving(false);
+    this.watchPageEnd(false);
   }
 
   showError(message, { overlay = !this.trapped } = {}) {
@@ -2048,6 +2288,7 @@ class Player {
     if (this.removals.length) this.finishRemovals();
     if (this.readingHosts?.size) this.orderReading();
     if (this.relating?.size) this.linkRelations();
+    if (this.viewportOverlays) this.syncFloats();
   }
 
   /** The DOM id of view `id`: unique on the page, beside other players. */
@@ -2056,9 +2297,10 @@ class Player {
   }
 
   /** The views that name others (`aria-activedescendant`,
-   * `aria-controls`) point at them by DOM id, after the batch made them:
-   * a row may be made after the field naming it. A view named that is
-   * not there yet is looked for again after the next batch. */
+   * `aria-controls`, `aria-describedby`) point at them by DOM id, after
+   * the batch made them: a row may be made after the field naming it. A
+   * view named that is not there yet is looked for again after the next
+   * batch. */
   linkRelations() {
     const pending = this.relating;
     this.relating = null;
@@ -2067,7 +2309,11 @@ class Player {
       const p = el._props ?? {};
       // The element that keeps the focus: an input's field.
       const focused = el._field ?? el;
-      for (const [name, id] of [["aria-activedescendant", p.activeDescendant], ["aria-controls", p.controls]]) {
+      for (const [name, id] of [
+        ["aria-activedescendant", p.activeDescendant],
+        ["aria-controls", p.controls],
+        ["aria-describedby", p.describedBy],
+      ]) {
         if (focused !== el) el.removeAttribute(name);
         const target = id == null ? null : this.view(id);
         if (!target) {
@@ -2222,12 +2468,38 @@ class Player {
     const host = parent._layer ?? parent;
     // Appended children stay under a border drawn over them.
     const last = host._borderOver && host._border?.parentNode === host ? host._border : null;
-    host.insertBefore(child, before && before.parentNode === host ? before : last);
+    this.placeChild(host, child, before && before.parentNode === host ? before : last);
     this.showHosted(child);
     this.readingChanged(host);
     if (parent._kind === "stack") {
       this.changedStacks.add(parent);
       this.stackChanged(parent, child);
+    }
+  }
+
+  /// Puts `child` before `ref` in `host`. A restack (`zIndex` changed)
+  /// re-inserts a view already there; moving the node holding the focus
+  /// would drop it (and fire blur), so its siblings move around it instead.
+  placeChild(host, child, ref) {
+    const active = document.activeElement;
+    if (child.parentNode !== host || !active || active === document.body || !child.contains(active)) {
+      host.insertBefore(child, ref);
+      return;
+    }
+    if (child === ref || child.nextSibling === ref) return;
+    const moved = [];
+    let forward = false;
+    for (let n = child.nextSibling; n; n = n.nextSibling) {
+      if (n === ref) { forward = true; break; }
+    }
+    if (ref === null) forward = true;
+    if (forward) {
+      for (let n = child.nextSibling; n && n !== ref; n = n.nextSibling) moved.push(n);
+      for (const n of moved) host.insertBefore(n, child);
+    } else {
+      for (let n = ref; n && n !== child; n = n.nextSibling) moved.push(n);
+      const anchor = child.nextSibling;
+      for (const n of moved) host.insertBefore(n, anchor);
     }
   }
 
@@ -2460,6 +2732,16 @@ class Player {
   op_a([, id, prop, value]) {
     const el = this.view(id);
     if (!el) return;
+    // A view that left the page keeps its bindings until its node is
+    // collected (`op_d`), which may be long after: a view mounted and
+    // removed again and again (a looping pulse inside a condition) would
+    // have every batch write many views no one sees. One that was on the
+    // page and is off it now is skipped; it is written again with the
+    // batch that inserts it again (every batch writes every bound value,
+    // after its inserts). One never on the page yet is written, so it
+    // shows its values once it is; one animating out is still on it.
+    if (el.isConnected) el._onPage = true;
+    else if (el._onPage) return;
     if (prop.startsWith("canvas:") && el._shader) {
       this.shaderSlot(el, Number(prop.slice(7)), value);
       return;
@@ -2512,14 +2794,19 @@ class Player {
     // Its `--nsh-selection`.
     swapClass(el, "_selection", this.styleClass(selection));
     el._textLabel = runs.map((r) => r[2] + (r[6] ?? "")).join("").trimEnd();
-    if (el._props?.label == null) el.setAttribute("aria-label", el._textLabel);
+    if (el._props?.label == null) {
+      if (el._field) this.fieldAria(el, el._field);
+      else el.setAttribute("aria-label", el._textLabel);
+    }
   }
 
   /**
-   * A text whose plain runs are as many as before (a cell's new value, a
-   * counter): its spans take the new texts and places in place, so a text
-   * that changes often makes and removes no nodes. False when the runs
-   * cannot be updated so (backgrounds, links, another count).
+   * A text of plain runs that had plain runs (a cell's new value, a
+   * counter, an answer streamed in): its spans take the new texts and
+   * places in place, and only the runs it gained or lost are made or
+   * removed, so a text that changes often remakes no nodes for the lines
+   * that stayed. False when the runs cannot be updated so (backgrounds,
+   * links, runs of parts).
    */
   updateRuns(el, cx, cy, runs, styles, backgrounds, links) {
     if (backgrounds?.length || links?.length || !runs.length) return false;
@@ -2528,12 +2815,26 @@ class Player {
       if (child.classList.contains("nsh-run-bg")) return false;
       if (child.classList.contains("nsh-run")) spans.push(child);
     }
-    if (spans.length !== runs.length) return false;
+    if (!spans.length) return false;
     for (let i = 0; i < runs.length; i++) {
       const [, , text, , , parts] = runs[i];
+      if (parts || !text) return false;
+      if (i >= spans.length) continue;
       const node = spans[i].firstChild;
       // Only a span holding one text node, as `fillRun` leaves plain text.
-      if (parts || !text || !node || node.nodeType !== 3 || node.nextSibling) return false;
+      if (!node || node.nodeType !== 3 || node.nextSibling) return false;
+    }
+    // The runs it lost go; those it gained follow the last span kept (past
+    // its line's break, which `lineBreaks` keeps).
+    for (const span of spans.splice(runs.length)) span.remove();
+    let before = spans[spans.length - 1]?.nextSibling;
+    if (before?.nodeType === 3) before = before.nextSibling;
+    while (spans.length < runs.length) {
+      const span = document.createElement("span");
+      span.append(document.createTextNode(""));
+      if (el._animation.color) span.style.color = el._animation.color;
+      el.insertBefore(span, before ?? null);
+      spans.push(span);
     }
     runs.forEach(([x, y, text, style, start, , after], i) => {
       const span = spans[i];
@@ -2561,9 +2862,15 @@ class Player {
    * shows of them.
    */
   lineBreaks(el) {
-    for (const node of [...el.childNodes]) if (node.nodeType === 3) node.remove();
+    // A break already in its place stays: a text that changes often (an
+    // answer streamed in) moves no nodes for the lines it did not change.
+    for (const node of [...el.childNodes]) {
+      if (node.nodeType !== 3) continue;
+      const span = node.previousSibling;
+      if (!span?.classList?.contains("nsh-run") || span._after !== node.data) node.remove();
+    }
     for (const span of el.querySelectorAll(":scope > .nsh-run")) {
-      if (span._after) span.after(span._after);
+      if (span._after && span.nextSibling?.nodeType !== 3) span.after(span._after);
     }
   }
 
@@ -2685,6 +2992,10 @@ class Player {
       pagePosition: { x: pageX, y: pageY },
       modifiers: { control: !!e.ctrlKey, alt: !!e.altKey, shift: !!e.shiftKey, platform: !!e.metaKey },
       pressedButton: held ? held[1] : null,
+      pointerType: e.pointerType === "pen" ? "pen" : "mouse",
+      pressure: e.pressure ?? (held ? 0.5 : 0),
+      tiltX: e.tiltX || 0,
+      tiltY: e.tiltY || 0,
     };
   }
 
@@ -2723,7 +3034,7 @@ class Player {
     let el = this.view(id);
     if (!el) return;
     el = this.retag(el, elementTag(props));
-    if (props.href != null) el.setAttribute("href", props.href);
+    if (props.href != null) el.setAttribute("href", this.siteBase ? this.linkHref(props.href) : props.href);
     else el.removeAttribute("href");
     el._props = props;
     // A list in its parent's viewport: its cells are read in screen order.
@@ -2752,7 +3063,10 @@ class Player {
   retag(el, tag) {
     if (el.localName === tag || (el._kind !== "view" && el._kind !== "text")) return el;
     const next = document.createElement(tag);
-    for (const { name, value } of el.attributes) next.setAttribute(name, value);
+    // Inline styles (a frame's) through the CSSOM: a strict `style-src`
+    // refuses a `style` attribute set as text.
+    for (const { name, value } of el.attributes) if (name !== "style") next.setAttribute(name, value);
+    if (el.style.cssText) next.style.cssText = el.style.cssText;
     for (const key of Object.keys(el)) next[key] = el[key];
     next.append(...el.childNodes);
     el.replaceWith(next);
@@ -2775,13 +3089,15 @@ class Player {
   /** ARIA attributes from the accessibility props (`op_vp`). */
   updateAria(el) {
     const p = el._props ?? {};
-    const set = (name, value) => (value == null || value === false ? el.removeAttribute(name) : el.setAttribute(name, String(value)));
+    const set = (name, value) => setAriaAttribute(el, name, value);
     const role = ARIA_ROLES[p.role] ?? (p.role && p.role !== "none" ? p.role : el._pressable ? "button" : null);
     // A combo box that is an input is its field, which keeps the focus
     // (`fieldAria`).
     set("role", el._field && p.role === "combobox" ? null : role);
-    set("aria-label", p.label ?? el._textLabel);
-    set("aria-description", p.hint);
+    if (!el._field) {
+      set("aria-label", p.label ?? el._textLabel);
+      set("aria-description", p.hint);
+    }
     set("aria-disabled", p.disabled && "true");
     set("aria-selected", p.selected && "true");
     set("aria-checked", p.checked);
@@ -2801,9 +3117,9 @@ class Player {
     set("aria-valuetext", text);
     set("aria-live", p.live);
     set("aria-hidden", p.hidden && "true");
-    if (p.activeDescendant != null || p.controls != null || el._related) {
+    if (p.activeDescendant != null || p.controls != null || p.describedBy != null || el._related) {
       // Linked once the batch is applied (`linkRelations`).
-      el._related = p.activeDescendant != null || p.controls != null;
+      el._related = p.activeDescendant != null || p.controls != null || p.describedBy != null;
       (this.relating ??= new Set()).add(el);
     }
   }
@@ -2841,17 +3157,21 @@ class Player {
     this.updateAria(el);
   }
 
-  /** The states of input view `el` that belong on its `field` too: the
-   * field is the element screen readers read as the input. */
+  /** The name, description and states of input view `el` go on its `field`:
+   * the field is the element screen readers read as the input. */
   fieldAria(el, field) {
     const p = el._props ?? {};
-    const set = (name, value) => (value == null || value === false ? field.removeAttribute(name) : field.setAttribute(name, String(value)));
+    const set = (name, value) => setAriaAttribute(field, name, value);
+    set("aria-label", (p.label ?? el._textLabel) || null);
+    set("aria-description", p.hint || null);
+    // Props may arrive before the field exists; its wrapper then held the name.
+    setAriaAttribute(el, "aria-label", null);
+    setAriaAttribute(el, "aria-description", null);
     set("aria-invalid", p.invalid && "true");
     // A combo box's field is the combo box: the focus stays in it while
     // its list is open, and its active descendant is the highlighted row.
     const combobox = p.role === "combobox";
     set("role", combobox && "combobox");
-    set("aria-label", combobox && (p.label ?? null));
     set("aria-expanded", combobox && p.expanded != null ? String(p.expanded) : null);
     set("aria-haspopup", combobox && p.hasPopup && "listbox");
     // A field made after the relations takes them (`linkRelations`).
@@ -4894,11 +5214,27 @@ class Player {
     const cx = canvas.getContext("2d");
     cx.setTransform(ratio, 0, 0, ratio, 0, 0);
     cx.clearRect(0, 0, w, h);
+    this.replayCanvas(cx, el._ops, el._slots, (uri) => {
+      const img = this.canvasImage(uri, el);
+      // A cross-origin image without CORS taints the canvas for good
+      // (the browser never clears the flag): shaders' pictures leave
+      // it out (`paintTree`).
+      if (img && !this.paintable(img)) canvas._tainted = true;
+      return img;
+    });
+  }
+
+  /**
+   * Replays a drawing (`cv`'s operations, `src/canvas.rs`) onto 2D context
+   * `cx`, whose transform maps points: `slots` are its animated values
+   * (missing ones read 0), `image(uri)` the loaded image a `drawImage`
+   * names, or none (it draws nothing).
+   */
+  replayCanvas(cx, ops, slots, image) {
     cx.save();
-    const slots = el._slots;
-    const v = (n) => (Array.isArray(n) && n[0] === "$" ? (slots[n[1]] ?? 0) : n);
+    const v = (n) => (Array.isArray(n) && n[0] === "$" ? (slots?.[n[1]] ?? 0) : n);
     const paint = (p) => {
-      if (Array.isArray(p) && p[0] === "$") return slots[p[1]] ?? "transparent";
+      if (Array.isArray(p) && p[0] === "$") return slots?.[p[1]] ?? "transparent";
       if (p && typeof p === "object" && p.g) {
         const a = p.args;
         const g = p.g === "linear" ? cx.createLinearGradient(a[0], a[1], a[2], a[3])
@@ -4917,7 +5253,7 @@ class Player {
       }
       return p;
     };
-    for (const [name, ...args] of el._ops) {
+    for (const [name, ...args] of ops) {
       try {
         if (name.startsWith("=")) {
           const prop = name.slice(1);
@@ -4934,15 +5270,19 @@ class Player {
         } else if (name === "roundRect") {
           cx.roundRect(...args.slice(0, 4).map(v), args[4].map(v));
         } else if (name === "drawImage") {
-          const img = this.canvasImage(args[0], el);
+          const img = image(args[0]);
           if (!img) continue;
-          // A cross-origin image without CORS taints the canvas for good
-          // (the browser never clears the flag): shaders' pictures leave
-          // it out (`paintTree`).
-          if (!this.paintable(img)) canvas._tainted = true;
-          const dest = args.slice(2).map(v);
-          if (args[1]) cx.drawImage(img, ...args[1], ...dest);
-          else cx.drawImage(img, ...dest);
+          // The source in the image's pixels; a missing destination size
+          // is the source's over the file name's density (`@3x`), as an
+          // `Image`'s, never the screen's (`CanvasImage::density`).
+          const [sx, sy, sw, sh] = args[1] ?? [0, 0, img.naturalWidth || img.width, img.naturalHeight || img.height];
+          const [dx, dy, dw, dh] = args.slice(2).map(v);
+          const density = imageDensity(args[0]);
+          cx.drawImage(
+            img, sx, sy, sw, sh, dx, dy,
+            Number.isFinite(dw) ? dw : sw / density,
+            Number.isFinite(dh) ? dh : sh / density,
+          );
         } else if (name === "fillText" || name === "strokeText") {
           cx[name](args[0], ...args.slice(1).map(v));
         } else if (name === "setLineDash") {
@@ -4955,6 +5295,123 @@ class Player {
       }
     }
     cx.restore();
+  }
+
+  /**
+   * `OffscreenCanvas.convertToBlob` (`Command::RenderCanvas`): the drawing
+   * replayed as `draw` replays a canvas view's, into a transparent
+   * `width` × `height` pixel canvas of its own at `scale` pixels per point,
+   * its animated values at 0, once the images it names have loaded (a
+   * failed one draws nothing), and encoded as `type`. The bytes, or why
+   * there are none, go to the engine (`nsh_canvas_image`, with a
+   * `CANVAS_IMAGE` status): a canvas over the browser's size limit
+   * (`offscreenCanvas`) answers `TOO_LARGE`, which the app gets as
+   * `ERR_NSH_QUOTA_EXCEEDED`.
+   */
+  async renderCanvas(request, ops, width, height, scale, type) {
+    const app = this.app;
+    let status = CANVAS_IMAGE.OK;
+    let bytes;
+    try {
+      const uris = [...new Set(ops.filter(([name]) => name === "drawImage").map(([, uri]) => uri))];
+      const images = new Map(await Promise.all(uris.map(async (uri) => [uri, await this.offscreenImage(uri)])));
+      const { canvas, cx } = this.offscreenCanvas(width, height);
+      cx.setTransform(scale, 0, 0, scale, 0, 0);
+      this.replayCanvas(cx, ops, null, (uri) => images.get(uri));
+      let blob;
+      try {
+        blob = canvas.convertToBlob
+          ? await canvas.convertToBlob({ type })
+          : await new Promise((resolve) => canvas.toBlob(resolve, type));
+      } catch (err) {
+        // A size the canvas took but the encoder has no memory for.
+        if (err?.name === "RangeError" || err?.name === "IndexSizeError") throw new CanvasTooLarge(tooLarge(width, height));
+        throw err;
+      }
+      // `toBlob` hands no error, only nothing, when the bitmap is too large to encode.
+      if (!blob) throw new CanvasTooLarge(tooLarge(width, height));
+      bytes = new Uint8Array(await blob.arrayBuffer());
+    } catch (err) {
+      status = err instanceof CanvasTooLarge ? CANVAS_IMAGE.TOO_LARGE : CANVAS_IMAGE.FAILED;
+      bytes = String(err?.message ?? err);
+    }
+    if (app !== this.app) return;
+    this.call((w) => this.withStrings([bytes], (p, l) => w.nsh_canvas_image(request, status, p, l)));
+  }
+
+  /**
+   * A `width` × `height` pixel canvas and its 2D context for an offscreen
+   * render, or a `CanvasTooLarge` when the browser cannot make one that size.
+   * Past their limits (iOS WebKit's is 16777216 pixels in all; Chromium's and
+   * Firefox's are larger than the core's own) browsers make no context,
+   * throw, or make a canvas that silently draws nothing, so one opaque pixel
+   * is drawn in the far corner and read back before the drawing: a canvas
+   * that kept it holds every pixel. Sizes that failed are remembered
+   * (`tooLargeCanvases`): any size at least as large in both sides fails
+   * again without allocating.
+   */
+  offscreenCanvas(width, height) {
+    const known = (this.tooLargeCanvases ??= []);
+    if (known.some(([w, h]) => width >= w && height >= h)) throw new CanvasTooLarge(tooLarge(width, height));
+    const fail = () => {
+      known.push([width, height]);
+      if (known.length > 8) known.shift();
+      return new CanvasTooLarge(tooLarge(width, height));
+    };
+    let canvas;
+    let cx;
+    try {
+      canvas = typeof OffscreenCanvas !== "undefined"
+        ? new OffscreenCanvas(width, height)
+        : Object.assign(document.createElement("canvas"), { width, height });
+      cx = canvas.getContext("2d");
+    } catch {
+      throw fail();
+    }
+    if (!cx) throw fail();
+    const x = width - 1;
+    const y = height - 1;
+    let kept;
+    try {
+      cx.fillRect(x, y, 1, 1);
+      kept = cx.getImageData(x, y, 1, 1).data[3] === 255;
+      cx.clearRect(x, y, 1, 1);
+    } catch {
+      kept = false;
+    }
+    if (!kept) throw fail();
+    return { canvas, cx };
+  }
+
+  /**
+   * The image at `uri` for an offscreen render, loaded (null when it fails):
+   * one that would taint the canvas (another origin's without CORS) is
+   * asked for again with CORS, so the image can still be read back. One that
+   * fails is skipped with a warning, as every platform skips it; when it
+   * loads without CORS but not with it, the warning says that its server
+   * sends no CORS headers.
+   */
+  offscreenImage(uri) {
+    const src = this.asset(uri);
+    const cached = this.images.get(src);
+    if (cached?.ready && this.paintable(cached.img)) return Promise.resolve(cached.img);
+    const load = (cors) => new Promise((resolve) => {
+      const img = new Image();
+      if (cors) img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+    const cors = !/^(data|blob):/.test(src) && !sameOrigin(src);
+    return load(cors).then(async (img) => {
+      if (img) return img;
+      if (cors && await load(false)) {
+        console.warn(`[nsh] offscreen canvas: ${uri} is skipped: its server (${originOf(src)}) sends no CORS headers (Access-Control-Allow-Origin), so the page cannot read it back; on the web, images come from the page's origin or servers that allow CORS`);
+      } else {
+        console.warn(`[nsh] offscreen canvas: ${uri} could not be loaded and is skipped`);
+      }
+      return null;
+    });
   }
 
   canvasImage(uri, el) {
@@ -5023,12 +5480,20 @@ class Player {
       field.enterKeyHint = { done: "done", go: "go", next: "next", search: "search", send: "send" }[config.returnKey] ?? "enter";
     } else field.removeAttribute("enterkeyhint");
     field.readOnly = !config.editable;
-    field.autocapitalize = config.autoCapitalize === "none" ? "off" : config.autoCapitalize;
-    field.spellcheck = config.autoCorrect;
+    // A password shown as plain text (a password field that is not secure)
+    // is never capitalized or checked (the closest the browser has to
+    // Android's visible password keyboard).
+    const password = !config.secure && (config.autoComplete === "current-password" || config.autoComplete === "new-password");
+    const correct = config.autoCorrect && !password;
+    field.autocapitalize = password || config.autoCapitalize === "none" ? "off" : config.autoCapitalize;
+    field.spellcheck = correct;
+    // `spellcheck` alone only stops suggestions: Chrome on Android still asks
+    // the keyboard to autocorrect unless this attribute is off.
+    field.setAttribute("autocorrect", correct ? "on" : "off");
     if (config.autoComplete != null) field.setAttribute("autocomplete", config.autoComplete);
     else field.removeAttribute("autocomplete");
-    if (config.maxLength != null) field.maxLength = config.maxLength;
-    else field.removeAttribute("maxlength");
+    field._maxLength = config.maxLength ?? null;
+    this.fieldLimit(field);
     el._config = config;
     field.classList.toggle("nsh-ph", !!config.placeholderColor);
     // A built-in bar of the app's takes the textarea's indicator's place.
@@ -5041,6 +5506,7 @@ class Player {
   }
 
   wireInput(el, field) {
+    field.addEventListener("beforeinput", (e) => this.beforeInput(field, e));
     field.addEventListener("input", () => this.textChanged(el, field));
     field.addEventListener("scroll", () => this.inputScrolled(el, field), { passive: true });
     if (typeof ResizeObserver === "function") {
@@ -5052,6 +5518,7 @@ class Player {
     // characters chosen).
     field.addEventListener("compositionstart", (e) => {
       field._composing = true;
+      this.fieldLimit(field);
       this.compositionChanged(el, field, e.data ?? "");
     });
     field.addEventListener("compositionupdate", (e) => this.compositionChanged(el, field, e.data ?? ""));
@@ -5068,8 +5535,10 @@ class Player {
     field.addEventListener("keydown", (e) => {
       // A key a shortcut takes (`keyDown`, after this) is the shortcut's
       // alone, as on the native platforms, where the field never sees it: a
-      // RichEditor would delete twice on Backspace.
-      if (el._events.has("onKeyPress") && !consumedShortcut(this.shortcut(e, true))) {
+      // RichEditor would delete twice on Backspace, and a Return an
+      // autocomplete list binds would submit the field as well.
+      const taken = consumedShortcut(this.shortcut(e, true));
+      if (el._events.has("onKeyPress") && !taken) {
         const key = e.key === "Backspace" || e.key === "Enter" || e.key === "Escape" || e.key?.length === 1 ? e.key : null;
         if (key) this.event(el._id, "onKeyPress", { key });
       }
@@ -5078,7 +5547,7 @@ class Player {
       // commits an input method's composition never submits.
       const submit = el._config?.submit ?? "blurAndSubmit";
       const lineBreak = field.tagName === "TEXTAREA" && (submit === "newline" || e.shiftKey || e.altKey);
-      if (e.key === "Enter" && !lineBreak && !e.isComposing && e.keyCode !== 229) {
+      if (e.key === "Enter" && !lineBreak && !e.isComposing && e.keyCode !== 229 && !taken) {
         e.preventDefault();
         this.event(el._id, "onSubmitEditing", { text: field.value, count: field._count });
         if (submit === "blurAndSubmit") field.blur();
@@ -5110,7 +5579,44 @@ class Player {
     this.call((w) => w.nsh_input_scroll(el._id, ...now));
   }
 
+  /** `field`'s `maxlength` for its `maxLength`: the browser counts UTF-16
+   * units, `maxLength` characters ({@link charLength}), so the limit is the
+   * units the text has plus one per character of room left, set again
+   * after each edit. An input method's composition, whose text the page
+   * cannot cut, stays within `maxLength` characters that way: a character
+   * of one unit leaves the limit as it was, one of two (an emoji) raises it
+   * by one. */
+  fieldLimit(field) {
+    const max = field._maxLength;
+    if (max == null) {
+      field.removeAttribute("maxlength");
+      return;
+    }
+    const value = field.value;
+    field.maxLength = value.length + Math.max(0, max - charLength(value));
+  }
+
+  /** Before the user's insertion of known text (typing, a paste, a drop, the
+   * app's `insertText`) into `field`: its `maxlength` takes exactly what of
+   * that text fits by characters ({@link clipChars}), so the browser cuts
+   * it there itself, keeping its own undo. */
+  beforeInput(field, e) {
+    const max = field._maxLength;
+    if (max == null || !e.inputType?.startsWith("insert")) return;
+    const text = e.inputType === "insertCompositionText" ? null : e.data ?? e.dataTransfer?.getData("text/plain") ?? null;
+    if (text == null) {
+      this.fieldLimit(field);
+      return;
+    }
+    const value = field.value;
+    const start = field.selectionStart ?? value.length;
+    const end = field.selectionEnd ?? start;
+    const kept = value.slice(0, start) + value.slice(end);
+    field.maxLength = kept.length + clipChars(text, max - charLength(kept)).length;
+  }
+
   textChanged(el, field) {
+    this.fieldLimit(field);
     this.inputScrolled(el, field);
     if (field.value === field._known) return;
     field._known = field.value;
@@ -5225,7 +5731,12 @@ class Player {
       return;
     }
     field._known = text;
-    if (field.value !== text) field.value = text;
+    if (field.value !== text) {
+      // The app's value is never cut to `maxLength`, as on every platform
+      // (the browser's `maxlength` limits only the user's edits).
+      field.value = text;
+      this.fieldLimit(field);
+    }
   }
 
   op_ic([, id, x, y, w, h]) {
@@ -5551,19 +6062,35 @@ class Player {
     return 0;
   }
 
+  /** A link's `href` under the site's base, as a `<base href>` would have
+   * it (the page's own address is one of the app's routes). */
+  linkHref(href) {
+    try {
+      return new URL(String(href), this.siteBase).href;
+    } catch {
+      return String(href);
+    }
+  }
+
+  /** What the app's relative addresses and links resolve against: the
+   * site's base (`baseURL`), else the page's current base, as
+   * `history.replaceState` resolves them. */
+  addressBase() {
+    return this.siteBase ?? document.baseURI;
+  }
+
   /** `UrlScheme.setUrl` / `set_app_url`: the current entry's address, once
    * the entries of the pages pushed or popped with it exist
    * (`syncHistory`); with `push` (`history: "push"`) an entry of its own
    * after it, unless the turn pushed a page's (which takes the address) or
    * it is the address shown. In one turn the last address wins, and a push
-   * wins over a replace. Resolved as `replaceState` resolves it (against
-   * `<base href>`); one of another origin is dropped (TS's `setUrl` throws
-   * for it first, in `runtime.js`). */
+   * wins over a replace. Resolved against `addressBase()`; one of another
+   * origin is dropped (TS's `setUrl` throws for it first, in `runtime.js`). */
   setPageUrl(url, push = false) {
     if (!this.history) return;
     let resolved;
     try {
-      resolved = new URL(url, document.baseURI);
+      resolved = new URL(url, this.addressBase());
     } catch {
       console.warn(`[nsh] the app's address is not a URL: ${url}`);
       return;
@@ -5576,6 +6103,42 @@ class Player {
     if (push) this.pageUrlPush = true;
     this.pageUrlSets = (this.pageUrlSets ?? 0) + 1;
     this.syncHistorySoon();
+  }
+
+  // The document's title: a mounted `Head`'s (`nsh/web`), else the main
+  // window's (`WindowRef.set({ title })`, where the app is the page), else
+  // the page's own. A browser gives an entry the document's title while it
+  // is current, so the title is written once the turn's entries exist: a
+  // page pushed with it takes it, the entry left keeps its own, and on a
+  // page popped it waits for the traversal to land.
+
+  /** The title of `nsh/web`'s heads, merged (`null`: none sets one). */
+  setHeadTitle(title) {
+    this.headTitle = title ?? null;
+    this.syncTitleSoon();
+  }
+
+  /** The main window's title; an empty one gives the page its own back. */
+  setWindowTitle(title) {
+    if (!this.history) return;
+    this.windowTitle = title || null;
+    this.syncTitleSoon();
+  }
+
+  syncTitleSoon() {
+    if (this.pageTitle === undefined) this.pageTitle = document.title;
+    if (this.titleSync) return;
+    this.titleSync = setTimeout(() => {
+      this.titleSync = 0;
+      // `syncHistory` and a traversal's landing write it after theirs.
+      if (!this.historySync && !this.ignoredPops) this.syncTitle();
+    }, 0);
+  }
+
+  syncTitle() {
+    if (this.pageTitle === undefined) return;
+    const title = this.headTitle ?? this.windowTitle ?? this.pageTitle;
+    if (document.title !== title) document.title = title;
   }
 
   backDepth() {
@@ -5624,8 +6187,7 @@ class Player {
       this.pageUrl = null;
       this.pageUrlPush = false;
       try {
-        // Resolved as `replaceState` does, against `<base href>` when the
-        // page has one.
+        // Absolute: `setPageUrl` resolved it.
         if (push) this.pushEntry(depth, url);
         else history.replaceState(history.state, "", url);
         this.shownUrl = url;
@@ -5634,6 +6196,7 @@ class Player {
         this.showError(`UrlScheme.setUrl(${JSON.stringify(url)}): ${error?.message ?? error}`);
       }
     }
+    if (!this.ignoredPops) this.syncTitle();
   }
 
   popState(e) {
@@ -5645,6 +6208,7 @@ class Player {
       if (this.historyDepth < this.backDepth()) this.syncHistorySoon();
       if (this.pageUrl != null) this.syncHistorySoon();
       else this.tellAddress(false);
+      if (!this.historySync) this.syncTitle();
       return;
     }
     // A move of the user's: an answer the app owed for the one before is
@@ -6100,6 +6664,134 @@ class Player {
     el.style.transformOrigin = scaled ? "0 0" : "";
   }
 
+  // Overlays over the window ------------------------------------------
+
+  /** `overlays: "viewport"`: follows where the root is in the window, which
+   * the page's scrolling and layout move, and the presses on the page
+   * around it. */
+  installFloats() {
+    const moved = () => this.placeFloats();
+    // Any scroll view of the page around the container moves it: a
+    // capturing listener hears them all. The app's own scroll views move
+    // nothing of it, and their scrolling is a hot path: left alone.
+    addEventListener("scroll", (e) => {
+      if (!(e.target instanceof Node && this.root.contains(e.target))) moved();
+    }, { capture: true, passive: true });
+    addEventListener("resize", moved);
+    // The on-screen keyboard shrinks the visual viewport only.
+    visualViewport?.addEventListener("resize", moved);
+    // What is above the container on the page changing size moves it
+    // without a scroll.
+    new ResizeObserver(moved).observe(document.documentElement);
+    document.addEventListener("pointerdown", (e) => this.pressAround(e), true);
+    this.placeFloats();
+  }
+
+  /**
+   * Anchored overlays drawn over the window (`overlays: "viewport"`): the
+   * root's children from its first overlay placed against an anchor on
+   * (the core puts the overlays above the root's own views, in the order
+   * they stack) are manual popovers in the browser's top layer, so the
+   * container's clipping, stacking and transforms leave them whole. Each
+   * stays where it is in the root, so its events, focus and `inert` are as
+   * before; the overlays shown after it are lifted with it, to stay above
+   * it. Overlays without an anchor before the first (a fixed view, a
+   * backdrop) stay in the container. A lifted view the batch moved in the
+   * DOM left the top layer, and is raised again with those above it.
+   */
+  syncFloats() {
+    const lifted = [];
+    for (const child of this.root.children) {
+      if (child._id === undefined || child._kind === "modal") continue;
+      if (lifted.length || child._props?.anchored) lifted.push(child);
+    }
+    const before = this.floats ?? [];
+    let kept = 0;
+    while (kept < lifted.length && lifted[kept] === before[kept] && lifted[kept].matches(":popover-open")) kept++;
+    for (const el of before) if (!lifted.includes(el)) this.sinkFloat(el);
+    if (kept === lifted.length) {
+      this.floats = lifted;
+      return;
+    }
+    // Raising again what is open takes the focus out of it.
+    const focus = document.activeElement;
+    for (const el of lifted.slice(kept)) this.liftFloat(el);
+    this.floats = lifted;
+    // Dialogs and alerts over the window stay above them.
+    for (const layer of this.root.children) {
+      if (layer.classList.contains("nsh-viewport") && layer.matches(":popover-open")) {
+        layer.hidePopover();
+        layer.showPopover();
+      }
+    }
+    if (focus && focus !== document.activeElement && focus.isConnected) focus.focus({ preventScroll: true });
+    this.placeFloats();
+  }
+
+  /** Shows overlay `el` in the top layer, above what is there already. */
+  liftFloat(el) {
+    el.classList.add("nsh-float");
+    el.popover = "manual";
+    // As a dialog's layer (`raise`): the browser waits for the root's
+    // blocking `wheel` listener only over the root's box. Added once, and
+    // again to a view drawn as another element since (`retag`).
+    el.addEventListener("wheel", noop, { passive: false });
+    if (el.matches(":popover-open")) el.hidePopover();
+    el.showPopover();
+  }
+
+  /** Overlay `el` is drawn in the container again (or went). */
+  sinkFloat(el) {
+    if (!el.classList.contains("nsh-float")) return;
+    if (el.matches(":popover-open")) el.hidePopover();
+    el.removeAttribute("popover");
+    el.classList.remove("nsh-float");
+    el.removeEventListener("wheel", noop);
+  }
+
+  /**
+   * Where the lifted overlays go: their frames are in the root's
+   * coordinates, moved by where the root is in the window (its CSS
+   * variables), and the core places them in the window less its safe
+   * area, in those coordinates (`nsh_overlay_area`), so they flip and
+   * stay inside it by the window's edges rather than the container's.
+   */
+  placeFloats() {
+    if (!this.wasm || this.stopping) return;
+    const r = this.root.getBoundingClientRect();
+    const x = `${r.left}px`, y = `${r.top}px`;
+    if (this.floatOrigin !== x + y) {
+      this.floatOrigin = x + y;
+      this.root.style.setProperty("--nsh-float-x", x);
+      this.root.style.setProperty("--nsh-float-y", y);
+    }
+    // The window without its scroll bars, less its safe area.
+    const doc = document.documentElement;
+    const [w, h] = [doc.clientWidth, doc.clientHeight];
+    const [top, right, bottom, left] = this.safeProbe
+      ? this.safeArea({ left: 0, top: 0, right: w, bottom: h })
+      : [0, 0, 0, 0];
+    // Not under the on-screen keyboard, which covers the layout viewport's
+    // bottom (as `keyboardHeight`; not while zoomed).
+    const vv = visualViewport;
+    const visible = vv && vv.scale <= 1.01 ? Math.min(h, vv.offsetTop + vv.height) : h;
+    const area = [left - r.left, top - r.top, Math.max(0, w - left - right), Math.max(0, visible - top - bottom)];
+    const key = area.join();
+    if (this.floatArea === key) return;
+    this.floatArea = key;
+    this.call((wasm) => wasm.nsh_overlay_area(...area));
+  }
+
+  /** A press on the page around the container while overlays are lifted
+   * over it: they hear `onPressOutside`, as for a press in the root
+   * outside them (a popover closes). */
+  pressAround(e) {
+    if (!this.floats?.length || this.stopping || !this.wasm) return;
+    if (e.target instanceof Node && this.root.contains(e.target)) return;
+    const [x, y] = this.point(e, null);
+    this.call((w) => w.nsh_press_outside(x, y));
+  }
+
   /** Going back or Escape on a modal: it asks to close (`onRequestClose`,
    * reason `"cancel"`); with `closeOnEscape` it closes natively, then
    * reports `onDismiss`. */
@@ -6162,7 +6854,14 @@ class Player {
     if (html != null) {
       let head = "";
       if (base) head += `<base href="${base.replace(/"/g, "&quot;")}">`;
-      if (el._token) head += `<script>${webBridge(el._token)}</script>`;
+      // By URL where the browser host is (`browser/web-bridge.js`): a
+      // strict `script-src` the web view inherits allows it ('self').
+      const bridge = this.browserHost?.webBridge;
+      if (el._token) {
+        head += bridge
+          ? `<script src="${bridge.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}" data-nsh-token="${el._token}"></script>`
+          : `<script>${webBridge(el._token)}</script>`;
+      }
       if (!scroll) head += "<style>html,body{overflow:hidden!important}</style>";
       if (before) head += `<script>${before.replace(/<\/script/gi, "<\\/script")}</script>`;
       const tail = after ? `<script>${after.replace(/<\/script/gi, "<\\/script")}</script>` : "";
@@ -6179,7 +6878,9 @@ class Player {
       frame.removeAttribute("srcdoc");
       if (scroll) frame.removeAttribute("scrolling");
       else frame.setAttribute("scrolling", "no");
-      if (url) frame.src = url;
+      // A relative URL is the site's (`linkHref`), which no `<base href>`
+      // names when the page gives it to the player.
+      if (url) frame.src = this.siteBase ? this.linkHref(url) : url;
       else frame.removeAttribute("src");
     }
     // After the batch: its events may come after its props.
@@ -6332,7 +7033,13 @@ class Player {
         break;
       }
       case "zoomTo": if (el) this.zoomCommand(el, ...args); break;
-      case "dialog": this.dialog(args[0], args[1], args[2], args[3], args[4] ?? [], args[5] ?? true, args[6] ?? false); break;
+      case "setResponder": this.responderBlocks = !!args[0]; break;
+      case "clearResponder": this.responderBlocks = false; break;
+      case "dialog":
+        this.dialog(args[0], args[1], args[2], args[3], args[4] ?? [], args[5] ?? true, args[6] ?? false,
+          args[7] ?? null, args[8] ?? null, args[9] ?? false, args[10] ?? false);
+        break;
+      case "closeDialog": this.closeDialog(args[0]); break;
       case "reload": {
         const frame = el?._frameEl;
         if (!frame) break;
@@ -6356,6 +7063,10 @@ class Player {
       case "notificationPermission": this.notificationPermission(args[0], args[1]); break;
       case "showNotification": this.showNotification(args[0], args[1], args[2], args[3], args[4]); break;
       case "closeNotification": this.notifications?.get(args[0])?.close(); break;
+      case "closeAllNotifications":
+        for (const notification of this.notifications?.values() ?? []) notification.close();
+        this.notifications?.clear();
+        break;
       case "audioLoad": this.audioLoad(args[0], () => this.audioBytesFromBase64(args[1]), args[3]); break;
       case "audioLoadUrl": this.audioLoad(args[0], () => this.audioFetch(args[1], args[2]), args[3]); break;
       case "audioPlay": this.audioPlay(args[0], args[1], args[2]); break;
@@ -6371,12 +7082,15 @@ class Player {
       case "setBadge": this.setBadge(args[0]); break;
       case "openUrl": this.event(ROOT_ID, "onOpenUrl", { id: args[0], opened: this.openUrl(args[1]) }); break;
       case "setClipboard": this.writeClipboard(args[0]); break;
+      case "setClipboardItem": this.writeClipboard(args[0], args[1] ?? undefined); break;
       case "readClipboard": this.readClipboard(args[0], args[1]); break;
       case "setClipboardImage": this.writeClipboardImage(args[0]); break;
       case "readClipboardImage": this.readClipboardImage(args[0], args[1]); break;
       // Pages see no local paths: never any files.
       case "readClipboardFiles": this.event(ROOT_ID, "onClipboard", { id: args[0], has: false, files: "" }); break;
       case "pickScreenColor": this.pickScreenColor(args[0]); break;
+      case "share": this.share(args[0], args[1], args[2], args[3], args[4]); break;
+      case "renderCanvas": this.renderCanvas(...args); break;
       case "pickImages": this.pickImages(args[0], args[1], args[2], args[3], args[4]); break;
       case "pickFiles": this.pickFiles(args[0], args[1], args[2], args[3]); break;
       case "hostCall": this.hostCall(args[0], args[1], args[2]); break;
@@ -6385,6 +7099,12 @@ class Player {
       case "back": this.defaultBack(); break;
       case "setAppUrl": this.setPageUrl(args[0]); break;
       case "pushAppUrl": this.setPageUrl(args[0], true); break;
+      case "quitOnRequest": this.askBeforeLeaving(!args[0]); break;
+      // The app's `quit()`: its answer while it is asked about leaving the
+      // page (the page may go); a page cannot close its own tab, so at
+      // other times the page stays as it is.
+      case "quit": if (this.quitAsked) this.quitAsked.granted = true; break;
+      case "setTitle": this.setWindowTitle(args[0]); break;
       case "exitApp": {
         const app = this.app;
         // Finish the current engine call before releasing its surface.
@@ -6392,12 +7112,23 @@ class Player {
         break;
       }
       case "announce":
-        // Cleared first: the same text again is announced again.
-        this.live.textContent = "";
-        setTimeout(() => { this.live.textContent = args[0]; }, 50);
+        this.announce(args[0]);
         break;
       case "a11yFocus":
         if (!el) break;
+        // An input: its field, as `focus` gives it.
+        if (el._field) {
+          el._field.focus();
+          break;
+        }
+        // A page moves a screen reader only with the keyboard focus: a
+        // field the user is typing in keeps it, and the view is read out
+        // instead, as the screen reader would read it there.
+        if (this.typing(el)) {
+          const text = (el.getAttribute("aria-label") || el.textContent || "").trim();
+          if (text) this.announce(text);
+          break;
+        }
         if (!el.hasAttribute("tabindex")) {
           el.tabIndex = -1;
           el._a11yFocus = true;
@@ -6410,26 +7141,162 @@ class Player {
 
 
 
+  /** Whether leaving the page (closing its tab, reloading, going to
+   * another site) asks the app first: on while the app listens to quit
+   * requests (`quitOnRequest` false). A `beforeunload` listener can keep a
+   * page out of the back / forward cache in some browsers, so it is there
+   * only while it is needed. */
+  askBeforeLeaving(ask) {
+    if (typeof window === "undefined" || !ask === !this.leaveGuard) return;
+    if (ask) {
+      this.leaveGuard = (event) => {
+        if (this.deliverQuitRequest()) return;
+        event.preventDefault();
+        // Browsers before `preventDefault` was enough.
+        event.returnValue = "";
+      };
+      window.addEventListener("beforeunload", this.leaveGuard);
+    } else {
+      window.removeEventListener("beforeunload", this.leaveGuard);
+      this.leaveGuard = null;
+    }
+  }
+
+  /** The user is leaving the page: the app hears the quit request as the
+   * desktops' quit key reports it, its listeners running before this
+   * returns. Whether the app quit meanwhile: the page then leaves without
+   * asking. Otherwise the browser asks the user, and what the listeners
+   * started (their own question, a save) is on the page should the user
+   * stay. A request the engine cannot take now (it is running: the page
+   * left from inside an engine call) or that fails leaves the question to
+   * the browser. This only decides: `beforeunload` comes before the
+   * browser commits to leaving, and the page may still stay (the user
+   * cancels another listener's question, the navigation is a download),
+   * so the app's quit listeners start only once the page is really gone
+   * (`watchPageEnd`). */
+  deliverQuitRequest() {
+    if (this.depth > 0 || this.trapped) return false;
+    const asked = { granted: false };
+    this.quitAsked = asked;
+    try {
+      this.call((w) => w.nsh_quit_request());
+    } catch (err) {
+      console.error("[nsh]", err);
+      return false;
+    } finally {
+      this.quitAsked = null;
+    }
+    return asked.granted;
+  }
+
+  /** While an app runs: the page being discarded ends it, as the process
+   * ending ends a desktop app, whichever way the user left (the app let
+   * the page go, the user chose to leave in the browser's question,
+   * nothing listened to quit requests). Its quit listeners start then,
+   * once (`nsh_quit`): what they do synchronously completes, work they
+   * await runs for as long as the page remains. A `pagehide` that keeps
+   * the page in the back / forward cache (`persisted`) ends nothing: the
+   * app runs on when the page comes back. A `pagehide` listener keeps no
+   * page out of that cache. */
+  watchPageEnd(watch) {
+    if (typeof window === "undefined" || !watch === !this.pageEnd) return;
+    if (watch) {
+      this.pageEnd = (event) => {
+        if (event.persisted) return;
+        this.watchPageEnd(false);
+        this.call((w) => w.nsh_quit());
+      };
+      window.addEventListener("pagehide", this.pageEnd);
+    } else {
+      window.removeEventListener("pagehide", this.pageEnd);
+      this.pageEnd = null;
+    }
+  }
+
+  /** Has screen readers read `text` (`announce`), through the live region. */
+  announce(text) {
+    // Cleared first: the same text again is announced again.
+    this.live.textContent = "";
+    setTimeout(() => { this.live.textContent = text; }, 50);
+  }
+
+  /** Whether the keyboard focus is in a text field, other than `el`, that
+   * the user may be typing in (`setAccessibilityFocus` leaves it there). */
+  typing(el) {
+    const a = document.activeElement;
+    if (!a || a === el || !a.isConnected || a.closest?.("[inert]")) return false;
+    if (a.isContentEditable) return true;
+    if (a.tagName === "TEXTAREA") return true;
+    return a.tagName === "INPUT" && !/^(button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/.test(a.type);
+  }
+
   /**
-   * `Clipboard.writeText`. The async Clipboard API needs a secure context
-   * (and, in some browsers, a user gesture); a copy command is the fallback.
+   * `Clipboard.writeText` / `write`: `text`, and `html` when given as
+   * `text/html` beside it (one item, as a browser copies a selection).
+   * Within the user's gesture (a key or a press whose batch is applied
+   * while its event runs, as a RichEditor's copy is) a copy command whose
+   * event takes the types, as ProseMirror copies: synchronous, with no
+   * permission or secure context. Else the async Clipboard API (a secure
+   * context; some browsers want a gesture), then a copy command over a
+   * selected offscreen text area.
    */
-  writeClipboard(text) {
+  writeClipboard(text, html) {
+    if (navigator.userActivation?.isActive !== false && this.copyCommand(text, html)) return;
     const copy = () => {
+      const focused = document.activeElement;
       const area = document.createElement("textarea");
       area.value = text;
       area.className = "nsh-offscreen";
       document.body.append(area);
+      // Safari copies only a selection.
       area.select();
-      try {
-        document.execCommand("copy");
-      } catch {
-        // Nothing left to try.
-      }
+      this.copyCommand(text, html);
       area.remove();
+      // The selection took the focus from the field that had it (a
+      // RichEditor's input).
+      if (focused && focused !== document.body && focused.isConnected) focused.focus({ preventScroll: true });
     };
-    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(copy);
-    else copy();
+    if (html !== undefined && navigator.clipboard?.write && typeof ClipboardItem === "function") {
+      const item = new ClipboardItem({
+        "text/plain": new Blob([text], { type: "text/plain" }),
+        "text/html": new Blob([html], { type: "text/html" }),
+      });
+      navigator.clipboard.write([item]).catch(copy);
+    } else if (html === undefined && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(copy);
+    } else {
+      copy();
+    }
+  }
+
+  /** A copy command whose `copy` event puts `text`, and `html` when
+   * given, on the clipboard; whether it did. Cancelling `beforecopy` lets
+   * Blink and WebKit copy with nothing selected. */
+  copyCommand(text, html) {
+    const doc = globalThis.document;
+    if (typeof doc?.execCommand !== "function") return false;
+    let done = false;
+    const enable = (event) => event.preventDefault();
+    const fill = (event) => {
+      if (!event.clipboardData) return;
+      event.clipboardData.setData("text/plain", text);
+      if (html !== undefined) event.clipboardData.setData("text/html", html);
+      event.preventDefault();
+      // Not the copy of selected text (`copyText`) as well.
+      event.stopImmediatePropagation();
+      done = true;
+    };
+    doc.addEventListener("beforecopy", enable, true);
+    doc.addEventListener("copy", fill, true);
+    try {
+      doc.execCommand("copy");
+    } catch {
+      // Refused: the caller tries the next way.
+    } finally {
+      doc.removeEventListener("beforecopy", enable, true);
+      doc.removeEventListener("copy", fill, true);
+    }
+    return done;
   }
 
   /**
@@ -6448,6 +7315,43 @@ class Player {
       color = parseInt(sRGBHex.slice(1, 7), 16) * 256 + 255;
     } catch {}
     this.event(ROOT_ID, "onScreenColor", color === undefined ? { id: request } : { id: request, color });
+  }
+
+  // `share`: the browser's share sheet (`navigator.share`, which the
+  // environment's `share` reports). A page has no local files to share, and
+  // a browser that cannot share this content says so: both are reported as
+  // unavailable, never as shared. The user closing the sheet rejects with
+  // an `AbortError`: dismissed.
+  async share(request, title, text, url, files) {
+    const unavailable = (error) => this.event(ROOT_ID, "onShare",
+      { id: request, error, code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+    const data = {};
+    if (title != null) data.title = title;
+    if (text != null) data.text = text;
+    if (url != null) data.url = url;
+    if (files) return unavailable("share: a page shares no local files");
+    if (!webShareAllowed()) return unavailable("share: this browser has no share sheet for this page");
+    if (typeof navigator.canShare === "function" && !navigator.canShare(data)) {
+      return unavailable("share: this browser cannot share this content");
+    }
+    try {
+      await navigator.share(data);
+      this.event(ROOT_ID, "onShare", { id: request, action: "shared" });
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        this.event(ROOT_ID, "onShare", { id: request, action: "dismissed" });
+      } else if (err?.name === "NotAllowedError") {
+        // The browser refuses the sheet here: the page's permissions policy
+        // (a frame without `web-share`) or a share without a user gesture.
+        unavailable(`share: the browser does not allow sharing here (${err?.message ?? err})`);
+      } else if (err?.name === "InvalidStateError") {
+        // An earlier share's sheet is still open: a browser shows one at a
+        // time and keeps it until the user closes it.
+        unavailable(`share: the browser still shows an earlier share (${err?.message ?? err})`);
+      } else {
+        this.event(ROOT_ID, "onShare", { id: request, error: `share: ${err?.message ?? err}` });
+      }
+    }
   }
 
   // Audio (`Sound`, `AudioPlayer`) -----------------------------------------
@@ -7430,9 +8334,13 @@ class Player {
    * buttons in a row, the last regular one the default), otherwise as
    * iOS's alert and action sheet. Answers the button's index, -1 when
    * dismissed (a click beside it, or Escape, when cancelable); Escape
-   * presses the cancel button if any (`keyDown`, `_cancel`).
+   * presses the cancel button if any (`keyDown`, `_cancel`). An alert with
+   * `input` (not null) has a text field starting with it, focused, its
+   * text answered as `value`: Enter in it presses the default button, and
+   * while a `required` field is empty only the cancel buttons are enabled.
    */
-  dialog(dialogId, title, message, buttons, styles, cancelable, sheet) {
+  dialog(dialogId, title, message, buttons, styles, cancelable, sheet, input = null, placeholder = null,
+    selectAll = false, required = false) {
     // `AlertDialog` always brings the app's actions: no label of NSH's own.
     const list = buttons;
     const style = (i) => styles[i] ?? "default";
@@ -7447,16 +8355,24 @@ class Player {
     let down = null;
     backdrop.addEventListener("pointerdown", (e) => { down = e.target; }, true);
     const pressed = (e, el) => e.detail === 0 || (down !== null && el.contains(down));
-    const close = (index) => {
-      if (answered) return;
+    // Off the surface, once: false when it was already.
+    const takeDown = () => {
+      if (answered) return false;
       answered = true;
       backdrop.remove();
       this.releaseFrame(backdrop);
       this.dialogs = this.dialogs.filter((d) => d !== backdrop);
       this.scopeFocus();
       if (restore?.isConnected) restore.focus({ preventScroll: true });
-      this.event(ROOT_ID, "onDialog", { id: dialogId, index });
+      return true;
     };
+    let field = null;
+    const close = (index) => {
+      if (!takeDown()) return;
+      this.event(ROOT_ID, "onDialog", field ? { id: dialogId, index, value: field.value } : { id: dialogId, index });
+    };
+    backdrop._dialogId = dialogId;
+    backdrop._takeDown = takeDown;
     const cancel = list.findIndex((_, i) => style(i) === "cancel");
     backdrop._cancel = () => (cancel >= 0 ? close(cancel) : cancelable && close(-1));
     const button = (index) => {
@@ -7511,6 +8427,15 @@ class Player {
         p.textContent = message;
         box.append(p);
       }
+      if (input !== null) {
+        field = document.createElement("input");
+        field.type = "text";
+        field.className = "nsh-dialog-input";
+        field.value = input;
+        if (placeholder !== null) field.placeholder = placeholder;
+        field.setAttribute("aria-label", title ?? message ?? placeholder ?? "");
+        box.append(field);
+      }
       const actions = document.createElement("div");
       // Desktop: up to three in a row; iOS: two side by side.
       const row = desktop ? list.length <= 3 : list.length === 2;
@@ -7528,6 +8453,23 @@ class Player {
       });
       focus ??= actions.firstChild;
       box.append(actions);
+      if (field) {
+        const all = [...actions.children];
+        const enable = () => {
+          if (!required) return;
+          const empty = field.value === "";
+          all.forEach((b, i) => { b.disabled = empty && style(i) !== "cancel"; });
+        };
+        enable();
+        field.addEventListener("input", enable);
+        field.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter" || e.isComposing) return;
+          e.preventDefault();
+          const b = all[preferred];
+          if (b && !b.disabled) close(preferred);
+        });
+        focus = field;
+      }
     }
     backdrop.addEventListener("click", (e) => e.target === backdrop && down === backdrop && cancelable && close(-1));
     backdrop.append(box);
@@ -7536,6 +8478,15 @@ class Player {
     (this.dialogs ??= []).push(backdrop);
     this.scopeFocus();
     focus?.focus({ preventScroll: true });
+    if (field) {
+      if (selectAll) field.select();
+      else field.setSelectionRange(field.value.length, field.value.length);
+    }
+  }
+
+  /** Takes back the dialog `dialog` showed as `dialogId` (`closeDialog`), reporting nothing: the core answered it. */
+  closeDialog(dialogId) {
+    this.dialogs?.find((d) => d._dialogId === dialogId)?._takeDown();
   }
 
   /** Dialogs and other system UI look as the desktop backends' with the desktop idiom, else as on phones. */
@@ -7658,6 +8609,14 @@ class Player {
     root.addEventListener("pointerdown", () => this.inputWith(1), true);
     window.addEventListener("keydown", (e) => MODALITY_KEYS_SKIPPED.has(e.key) || this.inputWith(0), true);
     root.addEventListener("pointerdown", (e) => this.pointerDown(e));
+    // A responder that blocks native scrolling (`setResponder`, a
+    // `TouchClaim`'s `block_native`) keeps its touches: the browser would
+    // scroll the scroll view around it and cancel them. One the browser
+    // already scrolls (`cancelable` false) stays the browser's, as a
+    // native scroll view that started dragging first takes them over.
+    root.addEventListener("touchmove", (e) => {
+      if (this.responderBlocks && e.cancelable) e.preventDefault();
+    }, { passive: false });
     // A link (`Link` with an `href`) is the app's to press: a plain click
     // stays in the app (its `onPress`), a click with a modifier or the
     // middle button opens its `href` as the browser would.
@@ -7819,6 +8778,58 @@ class Player {
     }
   }
 
+  /** Whether `view` or an enabled logical ancestor hears raw keys
+   * (`onKeyDown` / `onKeyUp`) or captures them (`captureKeys`), from the
+   * core's own tree: an overlay's content is that tree's, whatever its DOM
+   * ancestry. Only then does a transition need a `KeyEvent`. Cheap, and
+   * without allocation. */
+  keyInterest(view) {
+    return this.wasm?.nsh_key_interest?.(view._id) > 0;
+  }
+
+  /**
+   * Reports a raw key transition on `view` to the core, which decides with
+   * the mounted capture rules of it and its enabled ancestors and routes
+   * one event to the view and its ancestors (no duplicates here): true
+   * when the policy captured the key, so the browser's default does not
+   * run. The event carries what the browser reported — `e.key` as its
+   * logical key (its actual case and layout) and the DOM's own `e.code`
+   * (`KeyA`, `ArrowLeft`; empty when the browser names none) — never a
+   * US-layout guess, and never derived from the logical key. `stroke` is
+   * the page's canonical shortcut key (`keyCode(e)`), the one `nsh_key`
+   * matches and `captureKeys` names: not a layout guess from the code.
+   */
+  rawKey(view, down, e, stroke) {
+    if (!this.wasm?.nsh_key_event) return false;
+    // An input method owns a composing key (some browsers report 229 rather
+    // than `isComposing`): the raw key is not the app's.
+    if (e.isComposing || e.keyCode === 229) return false;
+    const key = typeof e.key === "string" && e.key !== "" ? e.key : "Unidentified";
+    const code = typeof e.code === "string" ? e.code : "";
+    const modifiers = (e.ctrlKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.shiftKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    let captured = false;
+    // The event's entry into the engine returns the pump delay, as every
+    // entry does; the capture answer of that transition comes separately.
+    this.call(() => {
+      const delay = this.withStrings([key, code], (kp, kl, cp, cl) =>
+        this.wasm.nsh_key_event(view._id, down ? 1 : 0, stroke, kp, kl, cp, cl,
+          modifiers, e.repeat ? 1 : 0));
+      captured = this.wasm.nsh_key_captured?.() > 0;
+      return delay;
+    });
+    return captured;
+  }
+
+  /** The view that holds the keyboard focus in this player, when it is a
+   * view of the app's and not a native field, page or video, which keeps
+   * its own keys. */
+  keyFocusView() {
+    const focus = document.activeElement;
+    if (!focus || focus === document.body || !this.root.contains(focus)) return null;
+    if (focus.isContentEditable || focus.closest?.(".nsh-field, [contenteditable], iframe, video")) return null;
+    return this.viewOf(focus);
+  }
+
   /**
    * The app's shortcut (`nsh/keymap`) key `e` fires, matched natively
    * against the mounted table: its binding, -2 for a held key whose binding
@@ -7837,9 +8848,14 @@ class Player {
   keyDown(e) {
     if (this.wasm) this.modifiersChanged(e);
     if (!this.wasm || !this.takesKeys()) return;
-    const focus = document.activeElement;
-    const inRoot = focus && this.root.contains(focus);
-    const editing = inRoot && !!focus.closest(".nsh-field, iframe");
+    // Where the key was pressed, not where the focus is by now: a field's
+    // own handler (its submit, its Escape) may have closed the field, and
+    // the focus with it, before the key reached the window. The path was
+    // fixed when the key was dispatched.
+    const path = e.composedPath();
+    const focus = path.includes(this.root) ? path[0] : document.activeElement;
+    const inRoot = path.includes(this.root) || (focus && this.root.contains(focus));
+    const editing = inRoot && (!!focus.isContentEditable || !!focus.closest(".nsh-field, [contenteditable], iframe"));
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey;
     // The control the focus is on, which Return and Space press (a stop
     // that takes no presses, a `focusable` chart, hears them through the
@@ -7858,6 +8874,18 @@ class Player {
       return;
     }
     if (e.defaultPrevented || e.isComposing) return;
+    // A key the focus hears as a raw transition goes to the core with the
+    // browser's own logical key and DOM code, and its canonical
+    // shortcut stroke for `captureKeys`; a mounted capture rule takes it
+    // before the browser's defaults, as the native backends do. The core
+    // answers from its own logical tree (an overlay's ancestors included).
+    // Native fields, pages and videos keep their own keys.
+    const keyView = this.keyFocusView();
+    if (keyView && this.keyInterest(keyView) && this.rawKey(keyView, true, e, keyCode(e))) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     // Then they press the control (`nsh_core::input::presses_focused_control`):
     // a binding of Return elsewhere does not act instead of the control the
     // focus was moved to.
@@ -7906,6 +8934,24 @@ class Player {
 
   keyUp(e) {
     if (this.wasm) this.modifiersChanged(e);
+    // The release of a key the core reports on the focused view: it decides
+    // anew whether the mounted capture policy matches this transition
+    // (`nsh_key_event`), as a browser delivers the release to whatever has
+    // the focus now.
+    let captured = false;
+    if (this.wasm && !e.isComposing && e.keyCode !== 229) {
+      const keyView = this.keyFocusView();
+      if (keyView && this.keyInterest(keyView)) captured = this.rawKey(keyView, false, e, keyCode(e));
+    }
+    if (captured) {
+      e.preventDefault();
+      e.stopPropagation();
+      // A release the policy took cancels what an uncaptured press armed
+      // (Space down, Shift pressed, Space released): no onPress, and the
+      // pressed states clear. Another key's captured release leaves it.
+      if (e.key === " " && this.keyPress) this.keyPressEnd(false);
+      return;
+    }
     if (e.key === " " && this.keyPress) this.keyPressEnd(true);
   }
 
@@ -8071,10 +9117,16 @@ class Player {
     const pos = h ? el.scrollLeft : el.scrollTop;
     const max = h ? el.scrollWidth - el.clientWidth : el.scrollHeight - el.clientHeight;
     const page = (h ? el.clientWidth : el.clientHeight) * 0.875;
-    const d = { ArrowUp: -40, ArrowLeft: -40, ArrowDown: 40, ArrowRight: 40, PageUp: -page, PageDown: page,
-      " ": e.shiftKey ? -page : page, Home: -pos, End: max - pos }[k];
+    // The key's move, as `nsh_key_scroll` takes it: by points (0), by
+    // pages (1), to the start (2), to the end (3).
+    const [kind, amount] = { ArrowUp: [0, -40], ArrowLeft: [0, -40], ArrowDown: [0, 40], ArrowRight: [0, 40],
+      PageUp: [1, -1], PageDown: [1, 1], " ": [1, e.shiftKey ? -1 : 1], Home: [2, 0], End: [3, 0] }[k];
+    const d = [amount, amount * page, -pos, max - pos][kind];
     if (el._snapPoints) this.snapStep(el, Math.sign(d));
     else this.scrollSmoothly(el, h ? d : 0, h ? 0 : d, true);
+    // A list follows its real end from here on (rows never rendered are
+    // only estimated), and the other keys leave it.
+    this.call((w) => w.nsh_key_scroll(el._id, kind, amount));
     return true;
   }
 
@@ -8173,6 +9225,7 @@ class Player {
       takes = true;
     } else {
       [el, takes] = this.wheelListenerOf(e.target) ?? [null, false];
+      if (takes && !e.ctrlKey) takes = this.wheelAlong(el, e);
       const lock = this.wheelLock;
       if (takes && lock && now - lock.t <= 200 && lock.el.isConnected) takes = false;
     }
@@ -8189,6 +9242,22 @@ class Player {
       modifiers: { control: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, platform: e.metaKey },
     });
     return takes;
+  }
+
+  /** Whether listener `el` takes wheel `e` along its axis
+   * (`input::wheel_along`): a `panActivation` naming one axis takes only
+   * wheels along it (Ctrl + wheel is checked by the caller); the others
+   * reach the scroll views around it. */
+  wheelAlong(el, e) {
+    const a = el._props?.panActivation;
+    if (!a) return true;
+    const [ax, ay, fx, fy] = a;
+    const x = ax != null || fy != null;
+    const y = ay != null || fx != null;
+    if (x === y) return true;
+    let [dx, dy] = [e.deltaX, e.deltaY];
+    if (e.shiftKey && !dx) [dx, dy] = [dy, 0];
+    return (Math.abs(dx) > Math.abs(dy)) === x;
   }
 
   /** The nearest view around `target` listening to `onWheel`, and whether
@@ -8427,10 +9496,13 @@ class Player {
         y: p.y - top,
         changed: id === changedId,
         pointerType: p.pointerType,
+        pressure: p.pressure, tiltX: p.tiltX, tiltY: p.tiltY,
       });
     }
     if (!points.length) return;
-    const json = JSON.stringify({ phase, time: performance.now(), points, activated });
+    // The keys held when the changed pointer went down, as its press's.
+    const modifiers = this.pointers.get(changedId)?.modifiers;
+    const json = JSON.stringify({ phase, time: performance.now(), points, activated, modifiers });
     this.call(() => this.withStrings([json], (p, l) => this.wasm.nsh_touch(p, l)));
   }
 
@@ -8480,11 +9552,13 @@ class Player {
     // touches scroll natively, except in zoomable views, which pan and
     // pinch here.
     const scrollView = isField ? null : chain.find((v) => v._kind === "scroll") ?? null;
+    const link = isField ? null : this.linkPress(e.target, target);
     const p = {
       x, y, layer, startX: x, startY: y, t: performance.now(), vx: 0, vy: 0,
       pointerType: e.pointerType,
+      pressure: e.pressure, tiltX: e.tiltX || 0, tiltY: e.tiltY || 0,
       touchPath: chain.filter((v) => v._events.has("onTouch")).map((v) => v._id),
-      press: isField ? null : this.linkPress(e.target, target) ?? chain.find((v) => PRESS_EVENTS.some((n) => v._events.has(n)) && !v._props?.disabled) ?? null,
+      ...(isField ? { press: null } : link ? { press: link } : this.pickPress(chain)),
       // What presses report: the modifier keys at the press and its clicks.
       modifiers: { control: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, platform: e.metaKey },
       clicks: e.pointerType === "mouse" ? this.clickCount(x, y) : 1,
@@ -8510,6 +9584,27 @@ class Player {
     if ((p.scroll || p.pan) && !isField) e.preventDefault();
   }
 
+  /** The press of the views in `chain` (innermost first): `{ press,
+   * longPress }`. The innermost enabled view with a press listener gets it;
+   * one that listens only to `onLongPress` leaves the taps to the nearest
+   * enabled view outwards that listens to them, as a long press recognizer
+   * takes no taps from the views around it, and keeps the long press
+   * (`input::pick_press`). */
+  pickPress(chain) {
+    const taps = (v) => TAP_EVENTS.some((n) => v._events.has(n));
+    let long = null;
+    for (const v of chain) {
+      if (v._props?.disabled || !PRESS_EVENTS.some((n) => v._events.has(n))) continue;
+      if (!long) {
+        if (taps(v)) return { press: v, longPress: null };
+        long = v;
+      } else if (taps(v)) {
+        return { press: v, longPress: long };
+      }
+    }
+    return { press: long, longPress: null };
+  }
+
   /** The press target of a press on a link's run in text view `view`: the
    * link's node, its events, placed as the text (as on the other
    * platforms, a link's press reports positions in its text). */
@@ -8528,11 +9623,12 @@ class Player {
     const el = p.press;
     p.pressed = true;
     if (el._events.has("onPressIn")) this.event(el._id, "onPressIn", this.pressPayload(p));
-    if (el._events.has("onLongPress")) {
+    const long = p.longPress ?? el;
+    if (long._events.has("onLongPress")) {
       p.longTimer = setTimeout(() => {
         p.long = true;
-        this.event(el._id, "onLongPress", this.pressPayload(p));
-      }, el._props?.longPressDelay ?? 500);
+        this.event(long._id, "onLongPress", this.pressPayload(p));
+      }, long._props?.longPressDelay ?? 500);
     }
   }
 
@@ -8608,6 +9704,9 @@ class Player {
     p.x = x;
     p.y = y;
     p.t = now;
+    p.pressure = e.pressure;
+    p.tiltX = e.tiltX || 0;
+    p.tiltY = e.tiltY || 0;
     this.track(p, now);
     const tx = x - p.startX;
     const ty = y - p.startY;
@@ -8627,7 +9726,9 @@ class Player {
         this.call((w) => w.nsh_pan(p.pan._id, 0, 0, 0, 0, 0));
       } else if (p.scroll && !gated) {
         p.mode = "scroll";
-        p.scrollStart = [p.scroll.scrollLeft, p.scroll.scrollTop];
+        p.at = [p.scroll.scrollLeft, p.scroll.scrollTop];
+        p.dragged = [0, 0];
+        p.handoff = [null, null];
         cancelAnimationFrame(p.scroll._zoomAnimation);
         this.drive(p.scroll, 1);
         this.scrollEvent(p.scroll, "onScrollDragStart");
@@ -8643,11 +9744,90 @@ class Player {
       this.call((w) => w.nsh_pan(p.pan._id, 1, tx, ty, vx, vy));
     } else if (p.mode === "scroll") {
       e.preventDefault();
-      const s = p.scroll;
-      s.scrollLeft = p.scrollStart[0] - tx;
-      s.scrollTop = p.scrollStart[1] - ty;
+      const d = [p.dragged[0] - tx, p.dragged[1] - ty];
+      p.dragged = [tx, ty];
+      for (const axis of [0, 1]) this.chainDrag(p, axis, d[axis]);
     }
     void dx;
+  }
+
+  /**
+   * Moves the zoomable view pointer `p` pans by `d` along `axis` (0: x),
+   * and what it cannot take the nearest scroll view around it that can
+   * move that way, as UIKit's nested scroll views do: a pager pages from
+   * an image not zoomed in, or panned to its edge. Turning back, that view
+   * goes back to where it was before the image pans again.
+   */
+  chainDrag(p, axis, d) {
+    if (!d) return;
+    const pos = (el) => (axis ? el.scrollTop : el.scrollLeft);
+    const max = (el) => Math.max(0, axis ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth);
+    const set = (el, v) => (axis ? (el.scrollTop = v) : (el.scrollLeft = v));
+    let h = p.handoff[axis];
+    if (h && (h.at - h.start) * d < 0) {
+      const back = Math.abs(d) < Math.abs(h.at - h.start) ? d : h.start - h.at;
+      h.at += back;
+      set(h.el, h.at);
+      d -= back;
+    }
+    const s = p.scroll;
+    const at = Math.min(Math.max(p.at[axis] + d, 0), max(s));
+    d -= at - p.at[axis];
+    p.at[axis] = at;
+    set(s, at);
+    if (Math.abs(d) < 0.01) return;
+    if (!h) {
+      const el = this.ancestors(s).slice(1).find((v) => v._kind === "scroll" && v._behavior?.enabled !== false
+        && (this.zooms(v) || !!v._horizontal === !axis) && (d < 0 ? pos(v) > 0.5 : pos(v) < max(v) - 0.5));
+      if (!el) return;
+      h = p.handoff[axis] = { el, start: pos(el), at: pos(el) };
+      // It snaps once released (`releaseHandoff`), not under the finger.
+      el.style.scrollSnapType = "none";
+      if (el._momentum) {
+        el._momentum = false;
+        this.scrollEvent(el, "onMomentumEnd");
+      }
+      this.drive(el, 1);
+      this.scrollEvent(el, "onScrollDragStart");
+    }
+    h.at = Math.min(Math.max(h.at + d, 0), max(h.el));
+    set(h.el, h.at);
+  }
+
+  /** Ends the part of a drag scroll view `el` took along `axis`
+   * (`chainDrag`), released at `v` points per second: a snapping view
+   * settles on a snap point, another glides. */
+  releaseHandoff(el, axis, v) {
+    this.scrollEvent(el, "onScrollDragEnd");
+    if (el._snapPoints) {
+      this.drive(el, -1);
+      el._restoreSnap = true;
+      if (!this.snapTo(el, this.releaseSnap(el, v / 1000))) {
+        el._restoreSnap = false;
+        el.style.scrollSnapType = "";
+        this.ownEnd(el);
+      }
+    } else {
+      el.style.scrollSnapType = "";
+      // Its end undoes `drive`.
+      this.glide(el, axis ? 0 : v, axis ? v : 0);
+    }
+  }
+
+  /** The snap point a snapping view released at `v` (points per ms)
+   * settles on, as the core's `snap_target` picks it: faster than 0.3,
+   * pages and snap intervals (one stop per scroll here) move one point,
+   * other snap points round where the glide would go that way; slower,
+   * the nearest. */
+  releaseSnap(el, v) {
+    const b = el._behavior;
+    const dir = v > 0.3 ? 1 : v < -0.3 ? -1 : 0;
+    if (!dir || b.paging || b.snapInterval > 0) return this.snapPoint(el, dir);
+    // Snapping glides decelerate by 0.99 per ms (`scroll::rate`).
+    const projected = (el._horizontal ? el.scrollLeft : el.scrollTop) - v / Math.log(0.99);
+    const points = el._snapPoints;
+    return (dir > 0 ? points.find((q) => q >= projected - 0.5) : [...points].reverse().find((q) => q <= projected + 0.5))
+      ?? this.snapPoint(el, dir);
   }
 
   /** The gate's node id when its pan activates with this move (else undefined). */
@@ -8681,6 +9861,7 @@ class Player {
       return;
     }
     if (cancelled && p.scrolls?.length) this.touchScroll(p, this.point(e, p.layer));
+    p.pressure = 0;
     if (p.touchPath.length) this.touchEvent(cancelled ? 3 : 2, e.pointerId);
     this.pointers.delete(e.pointerId);
     if (this.twoFinger) {
@@ -8695,7 +9876,16 @@ class Player {
       this.call((w) => w.nsh_pan(p.pan._id, cancelled ? 3 : 2, p.x - p.startX, p.y - p.startY, vx, vy));
     } else if (p.mode === "scroll") {
       this.scrollEvent(p.scroll, "onScrollDragEnd");
-      this.glide(p.scroll, -p.vx, -p.vy);
+      this.track(p, performance.now());
+      const [vx, vy] = cancelled ? [0, 0] : this.velocity(p);
+      const glide = [-p.vx, -p.vy];
+      for (const axis of [0, 1]) {
+        if (!p.handoff[axis]) continue;
+        // The image stays at its edge; the view around goes on.
+        glide[axis] = 0;
+        this.releaseHandoff(p.handoff[axis].el, axis, axis ? -vy : -vx);
+      }
+      this.glide(p.scroll, glide[0], glide[1]);
     } else if (p.press) {
       if (!cancelled) [p.x, p.y] = this.point(e, p.layer);
       const rect = p.press.getBoundingClientRect();
@@ -8764,6 +9954,12 @@ class Player {
 
   startTwoFinger() {
     const [a, b] = [...this.pointers.values()];
+    // A pinch takes over from a pan that moved a scroll view around.
+    for (const p of [a, b]) {
+      if (!p.handoff) continue;
+      for (const axis of [0, 1]) if (p.handoff[axis]) this.releaseHandoff(p.handoff[axis].el, axis, 0);
+      p.handoff = [null, null];
+    }
     const el = a.pinch ?? b.pinch;
     if (!el) {
       const zoom = a.zoom ?? b.zoom;

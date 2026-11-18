@@ -20,7 +20,8 @@
   gradients, `drawImage` (all three forms, images by URI or asset: native canvases load them through their
   platform's image module, which rasterizes an SVG with `nsh_core::svg` and hands its bitmap to the canvas, as bytes no
   decoder reads fail; draw an SVG into an explicit destination rectangle, its raster is sized in the loader's own
-  pixels; the web's draws what the browser draws). Any number argument and colors may be animated values
+  pixels; the web's draws what the browser draws; a missing destination size is the source's pixels over
+  `CanvasImage::density`, the file name's `@Nx` as an `Image`'s, never the screen's scale, on every platform). Any number argument and colors may be animated values
   (`createAnimatedValue`, `interpolate`, ...): those become slots bound like style values (`AnimationProp::CanvasArg`) and the
   platform redraws on its own while they animate, without JS (only what they change on iOS and macOS: "Partial
   redraws" below). Deriving a node again (`interpolate`, `mul`, ... in a `draw`
@@ -34,8 +35,52 @@
   (`CanvasOp::methods` / `properties`) and their declarations are generated (`canvas::declarations`); what has logic
   (overloads, `roundRect`'s radii, `save` / `restore`, gradients, images) is written in `canvas.rs`. The core's decoder
   (`nsh_core::js::canvas::decode`) reads the recorded list. Recording costs: `docs/dev/performance.md`. iOS replays
-  into the `drawRect:` context, keeping its own transform and path in view space; Android `CanvasBox.java` interprets an `int[]` (`encode.rs`). Not
+  into the `drawRect:` context, keeping its own transform and path in view space; Android `CanvasPainter.java` interprets an `int[]` (`encode.rs`) for `CanvasBox.java` and offscreen renders. Not
   supported: `getImageData` / `putImageData`, filters.
+
+**Offscreen canvases** (`OffscreenCanvas` of `nsh`, `nsh-js` `canvas/offscreen.rs`; Rust:
+`Painter::render` with `canvas::render::RenderOptions`). An object of a size of its own whose `getContext("2d")` is
+a context recording as `<Canvas draw>`'s does (`new_recording`, never closed); `convertToBlob` decodes what it
+recorded into a `Drawing` (the same `max_canvas_ops` limit) and pushes `Op::RenderCanvas` with a JS call number.
+A `clearRect` covering the whole canvas under the identity transform, with no clip and no `save` open, starts the
+recording anew (`offscreen.rs` `Reuse`; the browser runtime's `canvas.js` `track`, op 605 asking which property
+values took effect): it keeps only the state HTML keeps across the clear, each property's last value that took effect
+and the current path, so a canvas reused for many images neither replays earlier ones nor reaches the limit. The
+transform counts as the identity until a call changes it (`translate(0, 0)` and the like do not) and again after
+`setTransform` / `resetTransform` to it; nothing is dropped when the kept state reads an animated value or the path
+was added under another transform. `width` and `height` are read-only, so there is no size reset.
+The core (`core/canvas_render.rs`, `canvas::render`) checks the size against `MAX_SIDE` / `MAX_PIXELS`, takes the
+screen's pixel ratio when no `scale` is given, and sends `Command::RenderCanvas` on the root to platforms whose
+`Environment::canvas_render` is set (elsewhere it answers `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` at once); the
+platform's `EventKind::CanvasImage` (`EventPayload::CanvasImage`) settles the promise with a `Blob`
+(`JsHost::new_blob`). Request ids are unique in the process (an `AtomicU32`), not per core: after a hot reload the
+platform may still answer the replaced core's render, which must not settle the new core's request of that number.
+Each request has a deadline (`render::TIMEOUT`, 30 s) that rejects it with `ETIMEDOUT` and frees its slot of
+`MAX_PENDING`; an answer after it is dropped. macOS (`nsh-platform-macos` `canvas/offscreen.rs`) loads the images the drawing names
+through the shared loader, then replays it with `CanvasState::paint` into an sRGB `CGBitmapContext` of its own
+(`nsh-platform-apple` `canvas_image.rs`, shared with iOS, as the ImageIO encoding is) on a
+global queue, y down at `scale`, animated slots at 0, and encodes it with ImageIO. Every platform loads the
+images first through its shared loader (one that fails is skipped with a warning) and replays the drawing with its
+on-screen painter, so the image matches the canvas:
+- iOS (`canvas/offscreen.rs`): `canvas::paint`, the code of `CanvasView`'s `drawRect:`, into a `CGBitmapContext` on a
+  global queue, ImageIO; images wait in the `ImageLoader` under the root's id (`Mounter::image_loaded`).
+- Android (`CanvasRender.java`): `CanvasPainter` on a `Bitmap` on one background thread, `Bitmap.compress`; the
+  command is `encode.rs` opcode 55, the reply `Native.canvasImage` (bytes as a `byte[]`).
+- Windows (`canvas/offscreen.rs`): the on-screen `record`ed command list drawn into a D2D bitmap of the UI thread's
+  device (the painter's resources are that thread's), read back once a Direct3D event query polled from a thread
+  timer says the GPU is done, so the UI thread never waits for it, encoded with WIC's PNG encoder on a thread.
+- Linux (`canvas/offscreen.rs`): the Cairo `Replay` into an `ImageSurface` on the main thread (Pango text needs it),
+  encoded by GDK (`save_to_png_bytes`) on a thread.
+- GPUI (`canvas/offscreen.rs`): the tiny-skia `Replay` on a thread into one pixmap the size of the image (scratch
+  pixmaps only for shadows and composites, sized to what they touch); text without outlines (emoji, color glyphs) is
+  not in the image (`docs/dev/gpui.md`).
+- Web (`web/nsh.js` `renderCanvas`): the on-screen `replayCanvas` onto an `OffscreenCanvas` (or a `<canvas>`),
+  images loaded CORS-clean, `convertToBlob`, back through `nsh_canvas_image` with a status (`CANVAS_IMAGE`,
+  `src/lib.rs` `CanvasImageStatus`: image, failed, too large); the browser runtime's `nsh` exports its own
+  `OffscreenCanvas` (`web/browser/canvas.js`, op 604), apart from the browser's global one. Browsers cap canvases
+  below the core's limits (WebKit on iOS at 16777216 pixels in all) and past them draw nothing instead of failing, so
+  `offscreenCanvas` reads back one pixel drawn in the far corner before the drawing; a canvas that lost it, no context
+  or the encoder's `RangeError` answers `TooLarge` (`docs/dev/web.md` "Platform services").
 
 **Partial redraws.** While animated values animate, iOS, macOS and Windows redraw only the area the changed values
 affect: `nsh_core::canvas::DamageScan` finds it from the recorded operations, falling back to a full redraw
@@ -47,7 +92,10 @@ replays only the damaged area; Linux and macOS (`canvas.rs` `Prefix`) also keep 
 animated operation, for long drawings; canvases macOS repaints often are replayed by Core Animation on its threads (`canvas.rs` `Cadence`)
 (`docs/dev/macos.md`). macOS can split a small source-over animated suffix of a shorter drawing into its own
 content layer, retaining the preceding picture between drawing changes. `DamageScan::painted_after` bounds all
-suffix paints in the preceding state; unsupported or large suffixes keep the whole-canvas path.
+suffix paints in the preceding state; unsupported or large suffixes keep the whole-canvas path. Unsplit canvases on
+macOS also size their content layer to the 32-point-tile-aligned bounds from `DamageScan::painted_after` (and omit the
+layer when `Damage::None`), skipping unshadowed `source-over` paints with constant transparent colors or zero
+`globalAlpha` so stacked per-mark canvases do not allocate full-view backing stores.
 On Linux, a canvas out of sight (outside a clipping ancestor or the window) is not
 drawn until it comes into sight: its animations ask for no frames. Android, the web runtime and the GPUI backend (which rasterizes the drawing, text outlines
 included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `canvas.rs`) still redraw the

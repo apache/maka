@@ -49,6 +49,6 @@ function NotePage(props: { note: Note }) {
 | `meta` | `HeadMeta[]` | 更多 `<meta>`：每项是 `{ name, content }`（`"robots"`、`"twitter:card"`）或 `{ property, content }`（Open Graph 的 `"og:image"`）。 |
 | `jsonLd` | `object` | 结构化数据（[schema.org](https://schema.org)），写成 JSON-LD `<script>`。 |
 
-可以同时挂载多个 head：应用自己的，以及栈中每个页面各一个。最后挂载的 head 设置的内容生效，其余内容取自之前挂载的 head，因此位于顶部的页面决定文档标题，它被弹出后，下面的页面重新决定。不再有任何已挂载 head 设置的内容会被移除；没有 head 时，文档原有的标题和语言会恢复。每个属性都是响应式的：读取 signal 的 head 会随之更新。
+可以同时挂载多个 head：应用自己的，以及栈中每个页面各一个。最后挂载的 head 设置的内容生效，其余内容取自之前挂载的 head，因此位于顶部的页面决定文档标题，它被弹出后，下面的页面重新决定。不再有任何已挂载 head 设置的内容会被移除；没有 head 设置标题时，文档标题取主窗口的标题（`currentWindow().set({ title })`，Rust 中是 `current_window().set(..)`），否则恢复文档原有的标题；没有 head 设置语言时，文档原有的语言会恢复。每个属性都是响应式的：读取 signal 的 head 会随之更新。
 
 [Web](../docs/web.md#搜索引擎) 展示了一个能被搜索引擎收录、每个页面都有自己 URL 的完整站点。

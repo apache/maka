@@ -75,6 +75,9 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
         view.getLocationInWindow(at);
         root.getLocationInWindow(rootAt);
         node.setPosition(0, 0, w, h);
+        // An older backdrop's pre-draw can build this view's display list before this node has one
+        // (#2101): the view drew nothing and stays clean, so redraw it once the node has content.
+        boolean had = node.hasDisplayList();
         RecordingCanvas canvas = node.beginRecording(w, h);
         // The window, moved so the view's place is at the origin.
         canvas.translate(rootAt[0] - at[0], rootAt[1] - at[1]);
@@ -85,6 +88,7 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
             recording = false;
             node.endRecording();
         }
+        if (!had) view.invalidate();
         return true;
     }
 

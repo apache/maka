@@ -170,6 +170,24 @@ fn add_component(name: &str, missing: &Path) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+/// Whether the component `name` of this CLI's distribution was built with
+/// it; outside a distribution (a checkout's build, a runtime laid out by
+/// hand) whatever is there is used.
+fn distribution_current(name: &str) -> bool {
+    let Some(root) = crate::component::distribution() else {
+        return true;
+    };
+    // Laid out without the component machinery: no record to check.
+    if !root
+        .join("components")
+        .join(format!("{name}.json"))
+        .exists()
+    {
+        return true;
+    }
+    crate::component::current(&root, name)
+}
+
 /// This `nsh`, through symlinks: an installer links `~/.local/bin/nsh` (or
 /// `/opt/homebrew/bin/nsh`) to the distribution's `bin/nsh`, whose runtimes
 /// are next to the real file. macOS reports the path as it was run, Linux
@@ -213,7 +231,7 @@ fn prebuilt_android(dev: bool) -> anyhow::Result<PathBuf> {
     let exe = cli_exe()?;
     let bin = exe.parent().context("cli has no parent directory")?;
     let dist = bin.join("../runtime/android").join(variant);
-    if dist.join("classes.dex").exists() {
+    if dist.join("classes.dex").exists() && distribution_current("android") {
         return Ok(dist);
     }
     if add_component("android", &dist.join("classes.dex"))? {
@@ -429,7 +447,9 @@ pub(crate) fn web(kind: WebKind, build: bool) -> anyhow::Result<Option<WebRuntim
     }
     let exe = cli_exe()?;
     let bin = exe.parent().context("cli has no parent directory")?;
-    if let Some(runtime) = found(bin.join("../runtime/web")) {
+    if let Some(runtime) = found(bin.join("../runtime/web"))
+        && (!build || distribution_current("web"))
+    {
         return Ok(Some(runtime));
     }
     if build && add_component("web", &bin.join("../runtime/web").join(kind.file()))? {
@@ -532,7 +552,7 @@ pub(crate) fn file_for(
     let bin = exe.parent().context("cli has no parent directory")?;
     // Distribution: bin/nsh + runtime/.
     let dist = bin.join("../runtime").join(platform.dir()).join(&file_name);
-    if dist.exists() {
+    if dist.exists() && platform.component().is_none_or(distribution_current) {
         return Ok(dist);
     }
     if let Some(component) = platform.component()
@@ -654,6 +674,11 @@ fn metal_toolchain_missing() -> bool {
             .args(["metal", "--version"])
             .output()
             .is_ok_and(|out| out.status.success())
+}
+
+/// The nsh checkout this CLI was built in, if it was built in one.
+pub(crate) fn cli_checkout() -> Option<PathBuf> {
+    checkout(cli_exe().ok()?.parent()?)
 }
 
 /// The workspace of a cargo checkout of nsh this CLI was built in

@@ -207,7 +207,7 @@ impl<M: TextEngine> Core<M> {
     }
 
     fn responder_event_now(&self, about: &TouchPoint, touch: &TouchEvent) -> ResponderEvent {
-        ResponderEvent::new(about, touch.timestamp, self.components.touch.gesture)
+        ResponderEvent::new(about, touch, self.components.touch.gesture)
     }
 
     /// Asks the nodes of `path` (innermost first) whether one claims the

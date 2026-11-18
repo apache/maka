@@ -89,11 +89,13 @@ TSX 的这些对象和其他属性一样是响应式的；从对象中移除的�
 | `.input_accessory(..)` | `ios={{ inputAccessoryViewID }}` | `Input` | 显示在键盘上方的 `InputAccessoryView`。 |
 | `.auto_fill(..)` | `ios={{ textContentType }}` | `Input` | iOS 对自动填充类型的叫法（Rust 的 `AutoFill` 覆盖两个平台）。 |
 | `.supported_orientations(..)` | `ios={{ supportedOrientations }}` | `Dialog` | 允许的方向。 |
+| `.supported_orientations(..)` | `ios={{ supportedOrientations }}`、`android={{ supportedOrientations }}` | `NavPage` | 页面显示时屏幕可以采用的方向（[NavPage](../elements/nav-stack.md#navpage-props)）。 |
 | `.back_forward_gestures(..)` | `ios={{ allowsBackForwardNavigationGestures }}` | `WebView` | 滑动在页面历史中前进后退。 |
 | `.header_right_system_item(..)` | `ios={{ headerRightSystemItem }}` | `NavPage` | 标题栏末尾显示 UIKit 自带的按钮，按下即按下 `headerRight`。 |
 | `.header_left_system_item(..)` | `ios={{ headerLeftSystemItem }}` | `NavPage` | 标题栏开头显示 UIKit 自带的按钮，按下即按下 `headerLeft`。 |
 | `.header_right_symbol(..)` | `ios={{ headerRightSymbol }}` | `NavPage` | 标题栏末尾显示 UIKit 自带的 SF Symbol 按钮，按下即按下 `headerRight`。 |
 | `.header_left_symbol(..)` | `ios={{ headerLeftSymbol }}` | `NavPage` | 标题栏开头显示 UIKit 自带的 SF Symbol 按钮，按下即按下 `headerLeft`。 |
+| `.header_right_items(..)` | `ios={{ headerRightItems }}` | `NavPage` | 标题栏末尾的多个 UIKit 按钮；每个可有 `onPress` / `nsh/desktop` 的 `MenuItem` 菜单；见[导航](./navigation.md)。 |
 | `.back_forward_gestures(..)` | `desktop={{ allowsBackForwardNavigationGestures }}` | `WebView` | macOS：双指在触控板上轻扫，在页面历史中前进后退；Windows：在触摸屏上轻扫；Linux：在触控板上轻扫。 |
 | `.window_drag(..)` | `desktop={{ windowDrag }}` | 所有元素 | 按住它拖动窗口，像系统标题栏一样（见 [nsh/desktop](../modules/nsh-desktop.md#自定义标题栏)）。 |
 | `.window_control(..)` | `desktop={{ windowControl }}` | 所有元素 | 这个视图就是窗口的最小化、最大化或关闭按钮，由应用绘制。 |
@@ -106,7 +108,7 @@ TSX 的这些对象和其他属性一样是响应式的；从对象中移除的�
 
 ## 平台模块
 
-在 Rust 中，只有一个平台才有的 API 是 `nsh_core::prelude` 的函数（`on_back_press`、`haptic`、`input_accessory_view`）和 `nsh_core::element::desktop` 的函数（窗口：`window`、`current_window` 及其 `WindowRef`、`title_bar`、`displays`；应用：`quit`、`restart`；菜单：`set_application_menu`、`popup_menu`）；在其他平台上它们什么都不做。在 TSX 中，`nsh/mobile` 存放 iOS 和 Android 的 API（其中一些只属于其中一个平台），`nsh/desktop` 存放桌面的 API。两者在所有平台上都可以导入，因此同一个包可以到处运行：在其他平台上，它们的函数会立即返回，组件不占空间。每个模块都导出 `isAvailable`，在自己的平台上为 `true`；`platform.os` 区分具体平台。
+在 Rust 中，只有一个平台才有的 API 是 `nsh_core::prelude` 的函数（`on_back_press`、`haptic`、`input_accessory_view`）和 `nsh_core::element::desktop` 的函数（窗口：`window`、`current_window` 及其 `WindowRef`、`title_bar`、`displays`；应用：`quit`、`restart`、`launch_at_login`、`set_launch_at_login`；菜单：`set_application_menu`、`popup_menu`）；在其他平台上它们什么都不做，应用也不会登录时打开：`launch_at_login` 返回 `false`，`set_launch_at_login` 以 `LaunchAtLoginError::Unavailable` 失败。在 TSX 中，`nsh/mobile` 存放 iOS 和 Android 的 API（其中一些只属于其中一个平台），`nsh/desktop` 存放桌面的 API。两者在所有平台上都可以导入，因此同一个包可以到处运行：在其他平台上，它们的函数会立即返回，组件不占空间。每个模块都导出 `isAvailable`，在自己的平台上为 `true`；`platform.os` 区分具体平台。
 
 ### nsh/mobile
 
@@ -242,7 +244,7 @@ if (platform.os === "android") {
 
 ### platform.select
 
-在 Rust 中用 `match os()` 选择值，桌面用 `is_desktop()`。在 TSX 中，`platform.select(spec)` 返回当前平台对应的值。它依次查找该操作系统自己的键，然后按[上面的规则](#桌面与移动端)（`platform.desktop`）查找 `desktop` 或 `mobile`，再是 `native`（除 Web 外的所有平台），最后是 `default`：
+在 Rust 中用 `match os()` 选择值，桌面用 `is_desktop()`（在 NSH 之外构建的平台可用 `platform_name()`）。在 TSX 中，`platform.select(spec)` 返回当前平台对应的值。它先查找 `platform.name`（在 NSH 之外构建的平台，如 `"miniprogram"`），再查找该操作系统自己的键（`platform.os`），然后按[上面的规则](#桌面与移动端)（`platform.desktop`）查找 `desktop` 或 `mobile`，再是 `native`（除 Web 外的所有平台），最后是 `default`：
 
 ```rust tabs
 use nsh_core::{element::Os, prelude::*};

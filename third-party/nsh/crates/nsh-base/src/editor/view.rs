@@ -64,6 +64,7 @@ pub(crate) fn parts<E: Element>(el: E, props: EditorProps, list: &'static [Edito
 
 /// The editor.
 pub(crate) fn render(ed: Ed) -> impl IntoElement {
+    let props = ed.props;
     let lh = {
         let ed = ed.clone();
         move || {
@@ -71,14 +72,6 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
             ed.st.borrow().line_height()
         }
     };
-    let font = {
-        let ed = ed.clone();
-        move || {
-            ed.text_rev.get();
-            ed.st.borrow().font.clone()
-        }
-    };
-    let (font_a, font_b, font_c) = (font.clone(), font.clone(), font);
     let vscroll_ed = ed.clone();
     let layout_ed = ed.clone();
     let place_ed = ed.clone();
@@ -99,9 +92,13 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
             None => Length::Auto,
         })
         .text_color(move || theme().foreground)
-        .font_family(move || font_a().family)
-        .text_size(move || Length::from(font_b().size))
-        .line_height(move || nsh_core::LineHeight::from(font_c().line_height))
+        // The app's own font: the core grows it by the user's text size, as
+        // the controller's `drawn_font` measures it.
+        .font_family(move || super::controller::font_family(props.font_family.get()))
+        .text_size(move || Length::from(props.font_size.get()))
+        .line_height(move || {
+            nsh_core::LineHeight::from(crate::terminal::row_height(props.line_height.get()))
+        })
         .child(
             scroll()
                 .element_ref(&ed.vscroll)
@@ -511,7 +508,6 @@ fn fold_hit(
                 .top(move || Length::from(lh() * slot.get().1 as f32))
                 .w(move || Length::from(fold_width()))
                 .h(move || Length::from(lh2()))
-                .cursor_pointer()
                 .on_mouse_enter(move |_: &MouseEvent| pointer.hover.set(Some(row())))
                 .on_mouse_leave(move |_: &MouseEvent| {
                     if pointer.hover.get_untracked() == Some(row()) {
@@ -1215,6 +1211,11 @@ fn row_view(
             .absolute()
             .top_0()
             .left(move || Length::from(indent()))
+            // A row is one line: a text the platform draws a little wider
+            // than measured is cut where the content ends, never wrapped
+            // over the next row.
+            .number_of_lines(1u32)
+            .text_overflow(nsh_core::EllipsizeMode::Clip)
             // Only a folded row's text takes presses (its placeholder
             // unfolds): over the scroll views, any other row's glyphs would
             // keep a finger or a wheel on them from the scroll views below.
@@ -1522,6 +1523,7 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         ed.clone(),
     );
     let value = ed.sink_value;
+    let content = ed.clone();
     input()
         .element_ref(&ed.input)
         .absolute()
@@ -1546,10 +1548,21 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         })
         .caret(false)
         .multiline(true)
+        // The app's scroll bars belong to the text area, not the caret sink.
+        .scrollbar(false)
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)
         .value(move || value.get())
+        // The native field is only a keyboard sink; its semantic value is
+        // the document, including off-screen rows and external updates.
+        .accessibility_value(move || {
+            content.text_rev.get();
+            Some(nsh_core::AccessibilityValue {
+                text: Some(content.text().into()),
+                ..Default::default()
+            })
+        })
         .label(move || props.accessibility_label.get().unwrap_or_default())
         .on_change(move |text: &str| change.sink_changed(text))
         .on_composition_change(move |c: &Composition| composition.composition(c.composing, &c.text))

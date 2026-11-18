@@ -1,10 +1,11 @@
 # Dock and Resizable
 
 `nsh/base`'s dockable workspace (`DockArea`) and the resizable splits it is built from (`ResizablePanelGroup`,
-`ResizablePanel`), in `crates/nsh-base/src/dock/` and `crates/nsh-base/src/resizable/`. Both are ports of
+`ResizablePanel`), in `crates/nsh-base/src/dock/` and `crates/nsh-base/src/resizable/`, and `SplitView`, whose columns
+are the area's outside iOS ("SplitView" below). Both are ports of
 `gpui-base`'s (`gpui-kit/crates/base/src/dock/`, `resizable/`): the same vocabulary, the same layout algebra, the same
 persisted format, with NSH's component model in place of GPUI entities and renderer traits. The user-facing pages are
-`website/elements/dock.md` and `website/elements/resizable.md`; how each module works inside is in its `//!` docs
+`website/elements/dock.md`, `website/elements/resizable.md` and `website/elements/split-view.md`; how each module works inside is in its `//!` docs
 (`dock/mod.rs` is the long version of this page's first half).
 
 ## Layers
@@ -158,6 +159,8 @@ Docking has a mobile counterpart, so the dock runs on every platform and adapts 
     a dismissed one stays placed out of view (`display: none` around its overlays, which also keeps it from taking
     Escape), so its panels keep their content;
   - the bottom dock is a bottom sheet, the same way;
+  - while the software keyboard is up, the drawers and the bottom sheet ride above it as `Sheet`'s panels do
+    (`popup.rs`), and the bottom sheet stays below the status bar however large its dock's size;
   - a tab drag reorders within the strip and creates no splits.
   The compact presentation keeps its own presented dock: at most one, none on entering it, whatever the layout's
   `open` says. `toggleDock` / `setDockOpen` present one (dismissing the other) or dismiss it, and a press on its
@@ -216,6 +219,51 @@ panel where it was, and the app persists one layout.
   in a row, 24 in a column) and the band sits in that Cell. A drag follows the pointer Cell by Cell; the band is a
   stop of the keyboard focus whose arrows along its axis move it one Cell, each step one drag (`resize_handle.rs`
   `terminal_band`).
+
+## SplitView
+
+`nsh/base`'s `SplitView` (`crates/nsh-base/src/split_view.rs`, its module doc the long version) is two or three columns
+of the app's `NavStack`s: `sidebar`, an optional `content` and `detail` (slots), with `columnVisibility` (`automatic`,
+`all`, `doubleColumn`, `detailOnly`, SwiftUI's `NavigationSplitViewVisibility`) and `onColumnVisibilityChange`. The value
+is controlled as `Sheet`'s `open` is: the component keeps its own without one, and a change the app does not take
+is shown again once the app has answered (`after_answer`), except under `automatic`, which keeps what the user
+shows. Where the room is compact one column shows, the first the visibility shows (`automatic` the sidebar):
+`ColumnVisibility::compact_column`.
+
+- **iOS and Mac Catalyst**: a `UISplitViewController` (`crates/nsh-platform-ios/src/split.rs`), the native component
+  `SPLIT_VIEW_COMPONENT` (`nsh/split-view`). The view renders one wrapper per column, in column order, each placing
+  its slot, and the component's container after them, on top; the mounter finds each column's stack in its wrapper
+  (`Mounter::split_column_stacks`) and gives the stack's `UINavigationController` to the split as the column's
+  (`StackHost::join_split`; the stack no longer contains itself). The wrappers show nothing: they lay each stack out
+  at the size the split gives its column, which the backend reports (`layout`, from the navigation controllers'
+  layout passes). The app's visibility is the preferred display mode (`split::display_mode`, by the split's own
+  behavior: tile, overlay, displace); a display mode the user or the system shows instead is reported
+  (`columnVisibilityChange`), not the system's while the window turns or is resized under `automatic`, and the
+  component's `revision` shows the app's value again (`showColumn` / `hideColumn` where the preferred mode did not
+  change). Collapsed, the split shows its compact column: a navigation controller of the split's
+  (`SplitHost::compact`, a `StackHost` whose callbacks the mounter routes by the split's id) holding the columns'
+  pages in order, as far as the visibility goes (`split::compact_columns`); the columns' controllers are emptied
+  (`StackHost::detach_screens`) and given their pages back when it expands. A page pushed on any column goes onto
+  the compact stack (a collapsed column's dirty stack reconciles its split's), a page the user leaves that is not
+  its stack's first is that stack's native pop (`Dismiss`), and going back from a column's first page reports the
+  column now on top (`compactColumnChange`), whose stack keeps its pages. The system's own `UISplitViewController`
+  collapse is not used: it would move the stacks' controllers between navigation controllers behind the mounter's
+  back. `nsh/mobile`'s `TabBar` follows the pages the split shows as it follows a stack's in the split's place
+  (`split::bar_role`): looked for from the split's view, hidden while a page of any expanded column (or of the
+  compact stack, collapsed) has `hidesBottomBarWhenPushed`.
+- **Elsewhere**: the dock area's code (`dock::area_view`, an `AreaCx` made with events of the split's own and
+  `resizable` off: its docks have no handle, and its splits provide `ShowHandles(false)` to the group they make,
+  which then places no handles, nothing a pointer drags or a screen reader adjusts; the group provides handles again
+  to its panels' content), rendered in the split's own view so the slots it
+  places in the panels are its own. The full layout is the sidebar in the left dock and the content and the detail
+  splitting the center, at fixed widths (`SIDEBAR_WIDTH`, `CONTENT_WIDTH`: iPadOS's defaults); the compact one is
+  one tab group of every column, showing the first the visibility shows; no tab bar shows. The split passes the
+  area its `compact`: the window's horizontal size class (`horizontal_size_class()`, below 600 points of its width),
+  not the area's own width, as UIKit collapses a split by its size class, so the app decides what a selection does
+  by the same value on every platform. The two layouts are made once with their ids (`Layouts`), so a change of what
+  shows keeps every group, and every column stays placed in both presentations, so a column's stack keeps its pages
+  and their state. Nothing the user does there changes what shows: the app steps between columns (a back button in
+  a column's header, `BackHandler`).
 
 ## Accessibility
 

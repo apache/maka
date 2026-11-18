@@ -120,7 +120,15 @@ pub mod nodes {
                 ],
                 content: Some("paragraph block*".into()),
                 defining: true,
-                attrs: vec![("checked".into(), attr(Some(Value::Bool(false))))],
+                // A task made by splitting a checked one starts unchecked
+                // (Tiptap's `keepOnSplit: false`).
+                attrs: vec![(
+                    "checked".into(),
+                    AttrSpec {
+                        keep_on_split: false,
+                        ..attr(Some(Value::Bool(false)))
+                    },
+                )],
                 // The editor's view draws its checkbox.
                 extra: [("render".to_owned(), Value::from("task"))].into(),
                 ..Default::default()

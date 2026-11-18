@@ -170,6 +170,12 @@ fn Features(props: FeaturesProps) -> impl IntoElement {
                         let mut classes = nsh_base::rich_editor::view::RichEditorClasses::default();
                         classes.content = Some("pl-8".into());
                         classes.task_checkbox = Some("w-4 h-4".into());
+                        // A code block with a background and padding of its
+                        // own.
+                        classes.nodes = Some(std::collections::BTreeMap::from([(
+                            "codeBlock".to_owned(),
+                            "bg-muted px-4 py-2".to_owned(),
+                        )]));
                         classes
                     })
                     .size_full()
@@ -546,4 +552,381 @@ fn a_padded_root_keeps_the_sink_in_the_viewport_and_fills_its_height() {
     app.press_at("text:cdab", Point::new(px(265.0), px(80.0)))
         .unwrap();
     see(&mut app, "Sel 5-5 true");
+}
+
+/// The selection's boxes drawn with text `text`: the views before it in
+/// its box (the text is drawn over them).
+fn selection_boxes(app: &Headless, text: &str) -> (Bounds<Points>, Vec<Bounds<Points>>) {
+    let nodes = app.screen().layout_nodes();
+    let i = nodes
+        .iter()
+        .position(|n| n.text.as_ref().is_some_and(|t| t.text.text == text))
+        .unwrap_or_else(|| panic!("no text {text}"));
+    let boxes = nodes[..i]
+        .iter()
+        .filter(|n| n.parent == nodes[i].parent && n.text.is_none())
+        .map(|n| n.bounds)
+        .collect();
+    (nodes[i].bounds, boxes)
+}
+
+#[test]
+fn selection_boxes_are_drawn_in_task_items_and_code_blocks() {
+    let mut app = start_features(
+        json!({"type": "doc", "content": [
+            {"type": "todo", "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "buy milk"}]}
+            ]},
+            {"type": "codeBlock", "content": [{"type": "text", "text": "let x"}]},
+        ]}),
+        true,
+    );
+    app.type_text("id:editor", "").unwrap();
+    keys(&mut app, &["ctrl+a"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    // A code block's own background would hide boxes drawn under the
+    // blocks: each textblock draws its own under its text.
+    for text in ["buy milk", "let x"] {
+        let (text_box, boxes) = selection_boxes(&app, text);
+        assert_eq!(boxes.len(), 1, "one selection box under {text}");
+        let b = boxes[0];
+        // From the text's start (after a task's checkbox, inside a code
+        // block's padding), on its line, through its end.
+        assert_eq!(b.origin, text_box.origin, "{text}");
+        assert_eq!(b.size.height, text_box.size.height, "{text}");
+        assert!(b.size.width >= text_box.size.width, "{text}");
+    }
+}
+
+#[derive(Clone, PartialEq, Props)]
+struct InlineImageProps {
+    session: Option<EditorSession>,
+}
+
+/// An editor, a press that types at the start of the document, and a
+/// press that shows how far apart the session puts the caret before and
+/// after its inline image, and the position it finds just after the
+/// image.
+#[component]
+fn InlineImage(props: InlineImageProps) -> impl IntoElement {
+    let session = props.session.clone().expect("a session");
+    let shown = signal(String::new());
+    let (asked, typed) = (session.clone(), session.clone());
+    view()
+        .child(
+            view()
+                .test_id("editor")
+                .w(px(600.0))
+                .h(px(200.0))
+                .child(rich_editor().editor(session)),
+        )
+        .child(
+            view()
+                .on_press(move || {
+                    let mut tr = typed.state().tr();
+                    tr.insert_text("x", Some(1), Some(1));
+                    typed.dispatch(tr).unwrap();
+                })
+                .child(text("Type")),
+        )
+        .child(
+            view()
+                .on_press(move || {
+                    let mut image = 0;
+                    asked.state().doc().descendants(&mut |n, pos, _, _| {
+                        if n.ty().name() == "image" {
+                            image = pos;
+                        }
+                        true
+                    });
+                    let x = |pos| asked.coords_at_pos(pos).map_or(-1.0, |b| b.origin.x.0);
+                    let back = asked.coords_at_pos(image + 1).and_then(|b| {
+                        asked.pos_at_coords(b.origin + nsh_core::geometry::point(px(1.0), px(1.0)))
+                    });
+                    // The image's own box: where the caret before it is,
+                    // as wide as the image.
+                    let rect = asked
+                        .node_rect(image)
+                        .map(|b| ((b.origin.x.0 - x(image)).round(), b.size.width.0.round()));
+                    shown.set(format!(
+                        "Image {image} gap {} {:?} rect {:?}",
+                        (x(image + 1) - x(image)).round(),
+                        back.map(|p| p - image),
+                        rect
+                    ));
+                })
+                .child(text("Measure")),
+        )
+        .child(text(move || shown.get()))
+        .child(text("Ready"))
+}
+
+/// An app over `doc`, with the editor and the presses of `InlineImage`.
+fn inline_image_app(doc: serde_json::Value) -> Headless {
+    let schema = feature_schema();
+    let plugins = starter::plugins(&schema);
+    let doc = schema.node_from_json(&doc).unwrap();
+    let state =
+        EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins)).unwrap();
+    let session = EditorSession::new(state, NodeViews::new());
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<InlineImage>(move || InlineImageProps {
+            session: Some(session.clone()),
+        }))
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Ready").unwrap();
+    app
+}
+
+fn image_80() -> serde_json::Value {
+    json!({"type": "image", "attrs": {"src": "data:image/png;base64,", "width": 80, "height": 16}})
+}
+
+/// The caret on either side of an inline image is as far apart as the
+/// image is wide: the image's attachment character stands for its view,
+/// not for a character of the font.
+#[test]
+fn the_caret_steps_over_an_inline_images_width() {
+    // `ab` is 1..3, the image 3..4, `cd` 4..6.
+    let mut app = inline_image_app(
+        json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "ab"},
+            image_80(),
+            {"type": "text", "text": "cd"},
+        ]}]}),
+    );
+    app.press("text:Measure").unwrap();
+    // 80 apart, and a point just after the image is after it.
+    see(&mut app, "Image 3 gap 80 Some(1) rect Some((0.0, 80.0))");
+    // Typing before it in its block moves it within the block.
+    app.press("text:Type").unwrap();
+    app.press("text:Measure").unwrap();
+    see(&mut app, "Image 4 gap 80 Some(1) rect Some((0.0, 80.0))");
+}
+
+/// An edit in an earlier block moves an inline image's position; the
+/// caret still steps over its width.
+#[test]
+fn the_caret_steps_over_an_inline_image_moved_by_an_edit_above() {
+    let mut app = inline_image_app(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "xy"}]},
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "ab"},
+            image_80(),
+            {"type": "text", "text": "cd"},
+        ]},
+    ]}));
+    app.press("text:Measure").unwrap();
+    see(&mut app, "Image 7 gap 80 Some(1) rect Some((0.0, 80.0))");
+    app.press("text:Type").unwrap();
+    app.press("text:Measure").unwrap();
+    see(&mut app, "Image 8 gap 80 Some(1) rect Some((0.0, 80.0))");
+}
+
+#[derive(Clone, PartialEq, Props)]
+struct SelectedBlockProps {
+    session: Option<EditorSession>,
+    /// The editor's height.
+    height: f32,
+    /// Where the `picture` starts.
+    at: usize,
+}
+
+/// An editor with a bubble menu, a press that selects the block
+/// `picture` (a node selection) and scrolls it into view, and a press
+/// that shows whether the session's selection box is the picture's box.
+#[component]
+fn SelectedBlock(props: SelectedBlockProps) -> impl IntoElement {
+    let session = props.session.clone().expect("a session");
+    let shown = signal(String::new());
+    let (select, asked) = (session.clone(), session.clone());
+    let at = props.at;
+    view()
+        .child(
+            view()
+                .test_id("editor")
+                .w(px(600.0))
+                .h(px(props.height))
+                .child(
+                    rich_editor()
+                        .editor(session)
+                        .size_full()
+                        .bubble_menu(view().test_id("bubble").w(px(60.0)).h(px(20.0))),
+                ),
+        )
+        .child(
+            view()
+                .on_press(move || {
+                    let mut tr = select.state().tr();
+                    tr.set_selection(NodeSelection::create(tr.doc(), at));
+                    tr.scroll_into_view();
+                    select.dispatch(tr).unwrap();
+                })
+                .child(text("Select")),
+        )
+        .child(
+            view()
+                .on_press(move || {
+                    let node = asked.node_rect(at);
+                    shown.set(format!(
+                        "Picture {:?} selection is it {}",
+                        node.map(|b| (b.size.width.0, b.size.height.0)),
+                        node.is_some() && asked.selection_rect() == node
+                    ));
+                })
+                .child(text("Measure")),
+        )
+        .child(text(move || shown.get()))
+        .child(text("Ready"))
+}
+
+/// The bounds of the view with test id `id`.
+fn bounds_of(app: &Headless, id: &str) -> Bounds<Points> {
+    app.screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|n| n.test_id.as_deref() == Some(id))
+        .unwrap_or_else(|| panic!("no view {id}"))
+        .bounds
+}
+
+/// A node selection of a block atom has no text and no caret: what is
+/// placed by the selection (the session's `selection_rect`, the bubble
+/// menu, the native input taking the keys) goes by the node's box, as
+/// Tiptap's bubble menu goes by the node's DOM, not to the content's top
+/// left corner.
+/// An app of `SelectedBlock` over `paragraphs` one-letter paragraphs, a
+/// 600 by 40 `picture` and a paragraph.
+fn selected_block_app(paragraphs: usize, height: f32) -> Headless {
+    let schema = feature_schema();
+    let plugins = starter::plugins(&schema);
+    let mut content: Vec<Value> = (0..paragraphs)
+        .map(|_| json!({"type": "paragraph", "content": [{"type": "text", "text": "a"}]}))
+        .collect();
+    content.push(json!({"type": "picture", "attrs": {"width": 200, "height": 40}}));
+    content.push(json!({"type": "paragraph", "content": [{"type": "text", "text": "d"}]}));
+    let doc = schema
+        .node_from_json(&json!({"type": "doc", "content": content}))
+        .unwrap();
+    let state =
+        EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins)).unwrap();
+    let session = EditorSession::new(state, NodeViews::new());
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<SelectedBlock>(move || SelectedBlockProps {
+            session: Some(session.clone()),
+            height,
+            at: paragraphs * 3,
+        }))
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Ready").unwrap();
+    app
+}
+
+/// The view of the selected `picture`: as wide as the content, as high
+/// as the image.
+fn picture_bounds(app: &Headless) -> Bounds<Points> {
+    app.screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|n| {
+            n.text.is_none()
+                && n.test_id.is_none()
+                && n.bounds.size == Size::new(px(600.0), px(40.0))
+        })
+        .expect("the picture's view")
+        .bounds
+}
+
+#[test]
+fn a_selected_block_atom_places_the_bubble_menu_and_the_input_at_its_box() {
+    // Three paragraphs are 0..9, the picture 9..10.
+    let mut app = selected_block_app(3, 400.0);
+    app.press("text:Select").unwrap();
+    app.wait(Duration::from_millis(100)).unwrap();
+    app.press("text:Measure").unwrap();
+    // A block's box: as wide as the content, as high as the image.
+    see(&mut app, "Picture Some((600.0, 40.0)) selection is it true");
+
+    let editor = bounds_of(&app, "editor");
+    let picture = picture_bounds(&app);
+    assert!(
+        picture.origin.y > editor.origin.y,
+        "the picture is below the text"
+    );
+    // Above the picture by the default offset (8), centred on it.
+    let bubble = bounds_of(&app, "bubble");
+    assert_eq!(
+        bubble.origin.y + bubble.size.height + px(8.0),
+        picture.origin.y
+    );
+    assert_eq!(
+        bubble.origin.x + bubble.size.width / 2.0,
+        picture.origin.x + picture.size.width / 2.0
+    );
+    // The native input is on the picture, not at the editor's top, where
+    // a browser would scroll the page as it focuses it.
+    let input = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|n| n.kind == nsh_core::ViewKind::Input)
+        .expect("the editor's input")
+        .bounds;
+    assert!(
+        input.origin.y >= picture.origin.y
+            && input.origin.y <= picture.origin.y + picture.size.height,
+        "the input at {:?}, the picture at {:?}",
+        input.origin,
+        picture
+    );
+}
+
+/// Selecting a block atom out of view scrolls it into view whole, as
+/// ProseMirror scrolls a node selection's DOM node: it has no caret to
+/// scroll to.
+#[test]
+fn a_selected_block_atom_out_of_view_is_scrolled_into_view() {
+    let mut app = selected_block_app(30, 120.0);
+    let editor = bounds_of(&app, "editor");
+    assert!(picture_bounds(&app).origin.y > editor.origin.y + editor.size.height);
+    app.press("text:Select").unwrap();
+    app.wait(Duration::from_millis(200)).unwrap();
+    let picture = picture_bounds(&app);
+    assert!(
+        picture.origin.y >= editor.origin.y
+            && picture.origin.y + picture.size.height <= editor.origin.y + editor.size.height,
+        "the picture at {picture:?}, the editor at {editor:?}"
+    );
+}
+
+#[test]
+fn range_selection_boxes_update_only_overlapped_blocks_and_clear_on_collapse() {
+    let mut app = start(paragraphs(&["alpha", "bravo", "charlie"]));
+    focus_start(&mut app);
+    keys(&mut app, &["shift+down"]);
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(selection_boxes(&app, "alpha").1.len(), 1);
+    assert!(selection_boxes(&app, "charlie").1.is_empty());
+
+    keys(&mut app, &["ctrl+a"]);
+    app.wait(Duration::from_millis(50)).unwrap();
+    for text in ["alpha", "bravo", "charlie"] {
+        let (_, boxes) = selection_boxes(&app, text);
+        assert_eq!(boxes.len(), 1, "selected box under {text}");
+    }
+
+    keys(&mut app, &["left"]);
+    app.wait(Duration::from_millis(50)).unwrap();
+    for text in ["alpha", "bravo", "charlie"] {
+        let (_, boxes) = selection_boxes(&app, text);
+        assert!(boxes.is_empty(), "cleared box under {text}");
+    }
 }

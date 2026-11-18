@@ -14,6 +14,12 @@ public final class AppActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         DevActivity.edgeToEdge(this);
+        // `nsh run` passes the app's declared environment as extras. Only a
+        // development build (debuggable) takes them: the activity is
+        // exported, so any app could start a store build with extras.
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            DevActivity.applyEnv(getIntent().getExtras());
+        }
         view = new NshView(this);
         // An app on its own, not a module embedded in another app: no limits.
         view.useStandaloneLimits();

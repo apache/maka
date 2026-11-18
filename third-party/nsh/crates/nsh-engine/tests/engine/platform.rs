@@ -68,7 +68,7 @@ fn first_frame_of(app: &str, tag: &str, os: Os, idiom: Idiom) -> Vec<MountItem> 
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -81,6 +81,8 @@ fn first_frame_of(app: &str, tag: &str, os: Os, idiom: Idiom) -> Vec<MountItem> 
         chunk_loader: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     rx.recv_timeout(Duration::from_secs(5))
@@ -187,7 +189,12 @@ const shown = () => {
 };
 const listed = () =>
   displays().length
-    ? displays().map((d) => `${d.id} ${d.primary} ${d.visibleBounds.size.width}`).join(",")
+    ? displays()
+        .map((d) => {
+          const cutouts = d.cutouts.map((c) => `${c.origin.x}+${c.size.width}x${c.size.height}`);
+          return `${d.id} ${d.primary} ${d.visibleBounds.size.width} [${cutouts.join(";")}]`;
+        })
+        .join(",")
     : "no displays";
 
 mount(() => <Text>{`${shown()} | ${listed()}`}</Text>);
@@ -216,12 +223,14 @@ fn js_reads_the_window_and_the_displays_and_restores_bounds() {
     })
     .unwrap();
     let rect = |x: f32, w: f32, h: f32| Bounds::new(point(px(x), px(0.0)), size(px(w), px(h)));
-    let display = Display::new(
+    let mut display = Display::new(
         DisplayId(0xab),
         rect(0.0, 1440.0, 900.0),
         rect(0.0, 1440.0, 875.0),
         true,
     );
+    // A notch at the top's middle.
+    display.cutouts = vec![rect(620.0, 200.0, 32.0)];
     let window = rect(100.0, 800.0, 600.0);
     let mut state = WindowState::new(window, WindowPlacement::new(WindowMode::Normal, window));
     state.display = Some(display.id);
@@ -277,7 +286,7 @@ fn js_reads_the_window_and_the_displays_and_restores_bounds() {
     let (text, restored) = read("normal 100 false false 00000000000000ab");
     assert_eq!(
         text,
-        "normal 100 false false 00000000000000ab | 00000000000000ab true 1440"
+        "normal 100 false false 00000000000000ab | 00000000000000ab true 1440 [620+200x32]"
     );
     assert_eq!(
         restored,
@@ -369,6 +378,73 @@ fn js_turns_the_performance_monitor_on_and_follows_it() {
     read("fps true");
     engine.control().set_perf_monitor(None);
     read("fps false");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_performance_monitor_reports_its_stats_once_a_second() {
+    let dir = std::env::temp_dir().join(format!("nsh-perf-stats-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("App.tsx");
+    std::fs::write(
+        &entry,
+        r#"import { mount, perfStats, Text } from "nsh";
+mount(() => <Text>{`reading ${perfStats()?.fps ?? "none"}`}</Text>);
+"#,
+    )
+    .unwrap();
+    let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+        entry,
+        minify: false,
+        split: false,
+        ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let config = EngineConfig::new(nsh_engine::App::Js(Bundle::source(bundle.code)));
+    let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+    // The text it shows, until `done` holds of it.
+    let read = |done: &dyn Fn(&str) -> bool| -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while let Ok(batch) = rx.recv_deadline(deadline) {
+            for item in batch.items {
+                if let MountItem::Text { text, .. } = item
+                    && done(&text.text)
+                {
+                    return text.text.to_string();
+                }
+            }
+        }
+        panic!("the reading never showed");
+    };
+    read(&|t| t == "reading none");
+    // The platform installs a monitor and shows frames, one a refresh,
+    // until the reading has them.
+    let monitor = std::sync::Arc::new(nsh_engine::perf::PerfMonitor::new());
+    engine.control().set_perf_monitor(Some(monitor.clone()));
+    let showing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let frames = {
+        let (monitor, showing) = (monitor.clone(), showing.clone());
+        std::thread::spawn(move || {
+            while showing.load(std::sync::atomic::Ordering::SeqCst) {
+                monitor.record_work(Duration::from_millis(1), true);
+                monitor.vsync(std::time::Instant::now(), Duration::from_millis(16));
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        })
+    };
+    let shown = read(&|t| {
+        t.strip_prefix("reading ")
+            .and_then(|n| n.parse::<f32>().ok())
+            .is_some_and(|fps| fps > 0.0)
+    });
+    showing.store(false, std::sync::atomic::Ordering::SeqCst);
+    frames.join().unwrap();
+    assert!(shown.starts_with("reading "), "{shown}");
+    // Removed, it reads none again.
+    engine.control().set_perf_monitor(None);
+    read(&|t| t == "reading none");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -833,4 +909,191 @@ fn macos_props_apply_on_macos_through_the_mount() {
         linux.iter().find_map(|style| style.glass_tint_color),
         Some(Color(0xff00_00ff))
     );
+}
+
+const CLASS_PLATFORM_APP: &str = r#"import { mount, View } from "nsh";
+
+mount(() => (
+  <View class="ios:bg-[#ff0000] android:bg-[#00ff00] web:bg-[#0000ff]" />
+));
+"#;
+
+#[test]
+fn platform_classes_follow_the_os() {
+    use nsh_core::Color;
+    let background = |os| {
+        first_frame_of(CLASS_PLATFORM_APP, "class-platform", os, Idiom::Phone)
+            .into_iter()
+            .find_map(|item| match item {
+                MountItem::ViewStyle { style, .. } => Some(style.background_color),
+                _ => None,
+            })
+    };
+    assert_eq!(background(Os::Ios), Some(Color(0xff00_00ff)));
+    assert_eq!(background(Os::Android), Some(Color(0x00ff_00ff)));
+    assert_eq!(background(Os::Web), Some(Color(0x0000_ffff)));
+}
+
+const SELECT_NAME_APP: &str = r##"import { mount, platform, Text } from "nsh";
+
+let reads = 0;
+const once = platform.select({
+  get ios() {
+    reads += 1;
+    return undefined;
+  },
+  default: "fallback",
+});
+
+const exact = platform.select({
+  example: "e",
+  miniprogram: "mp",
+  android: "a",
+  ios: "i",
+  mobile: "m",
+  native: "n",
+  default: "d",
+});
+const osFallback = platform.select({
+  example: undefined,
+  android: "a",
+  ios: "i",
+  mobile: "m",
+  default: "d",
+});
+const kindFallback = platform.select({
+  web: "w",
+  mobile: "m",
+  desktop: "d",
+  default: "-",
+});
+const nativeFallback = platform.select({
+  web: "w",
+  native: "n",
+  default: "-",
+});
+
+mount(() => (
+  <Text>{`${platform.name} ${platform.os} ${exact} ${osFallback} ${kindFallback} ${nativeFallback} ${once}:${reads}`}</Text>
+));
+"##;
+
+#[test]
+fn platform_select_matches_the_platform_name_before_the_os() {
+    let dir = std::env::temp_dir().join(format!("nsh-select-name-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("App.tsx");
+    std::fs::write(&entry, SELECT_NAME_APP).unwrap();
+    let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+        entry,
+        minify: false,
+        split: false,
+        ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let run = |environment: Environment| {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let config = EngineConfig {
+            environment,
+            ..EngineConfig::new(nsh_engine::App::Js(Bundle::source(bundle.code.clone())))
+        };
+        let _engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("first frame")
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                MountItem::Text { text, .. } => Some(text.text.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        run(Environment {
+            os: Os::Android,
+            platform: Some("example"),
+            idiom: Idiom::Phone,
+            ..Environment::default()
+        }),
+        vec!["example android e a m n fallback:0"]
+    );
+    assert_eq!(
+        run(Environment {
+            os: Os::Ios,
+            platform: Some("miniprogram"),
+            idiom: Idiom::Phone,
+            ..Environment::default()
+        }),
+        vec!["miniprogram ios mp i m n fallback:1"]
+    );
+    // Built-in platforms have `name == os`, so the OS key is read once.
+    assert_eq!(
+        run(Environment {
+            os: Os::Ios,
+            idiom: Idiom::Phone,
+            ..Environment::default()
+        }),
+        vec!["ios ios i i m n fallback:1"]
+    );
+}
+
+#[test]
+fn size_classes_react_to_resize_and_native_traits_in_js() {
+    use nsh_core::platform::SizeClass;
+    let dir = std::env::temp_dir().join(format!("nsh-size-classes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("App.tsx");
+    std::fs::write(
+        &entry,
+        r#"
+import { mount, Text, horizontalSizeClass, verticalSizeClass } from "nsh";
+mount(() => <Text>{`${horizontalSizeClass()} ${verticalSizeClass()}`}</Text>);
+"#,
+    )
+    .unwrap();
+    let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+        entry,
+        minify: false,
+        split: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let mut environment = Environment {
+        window: Size::new(px(390.0), px(844.0)),
+        os: Os::Android,
+        ..Default::default()
+    };
+    let config = EngineConfig {
+        viewport: environment.window,
+        environment,
+        ..EngineConfig::new(nsh_engine::App::Js(Bundle::source(bundle.code)))
+    };
+    let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+    let read =
+        |expected: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while let Ok(batch) = rx.recv_deadline(deadline) {
+                if batch.items.iter().any(
+                    |item| matches!(item, MountItem::Text { text, .. } if text.text == expected),
+                ) {
+                    return;
+                }
+            }
+            panic!("no text {expected:?}");
+        };
+    read("compact regular");
+    environment.window = Size::new(px(600.0), px(599.0));
+    engine.control().set_environment(environment);
+    read("regular compact");
+    environment.os = Os::Ios;
+    environment.horizontal_size_class = Some(SizeClass::Compact);
+    environment.vertical_size_class = Some(SizeClass::Regular);
+    engine.control().set_environment(environment);
+    read("compact regular");
+    environment.horizontal_size_class = None;
+    environment.vertical_size_class = None;
+    engine.control().set_environment(environment);
+    read("regular compact");
 }

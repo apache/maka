@@ -34,7 +34,7 @@ jobs:
     if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check the workflows' paths
         run: |
           python3 -c "import yaml" 2>/dev/null || pip install pyyaml

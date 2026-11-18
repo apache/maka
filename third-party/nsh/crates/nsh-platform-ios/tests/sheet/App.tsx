@@ -1,5 +1,5 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
-import { Sheet } from "nsh/base";
+import { Input, Sheet } from "nsh/base";
 
 function App() {
   const open = signal(false);
@@ -10,6 +10,7 @@ function App() {
   const cancelled = signal(0);
   const scrollY = signal(0);
   const taps = signal(0);
+  const editing = signal(false);
   const show = (next: string) => {
     mode.set(next);
     enabled.set(next !== "Default");
@@ -21,14 +22,20 @@ function App() {
       <Text>{`closed:${closed()} reason:${reason()} cancel:${cancelled()}`}</Text>
       <Text>{`scroll:${Math.round(scrollY())}`}</Text>
       <Text>{`taps:${taps()}`}</Text>
-      <Each of={["Short", "Scroll", "Short scroll", "Default", "Decline"]}>
+      <Text>{`editing:${editing()}`}</Text>
+      <Each of={["Short", "Scroll", "Short scroll", "Default", "Decline", "Editing"]}>
         {(name) => <View onPress={() => show(name())} style={{ height: 44 }}><Text>{name()}</Text></View>}
       </Each>
       <View onPress={() => taps.update((n) => n + 1)} style={{ height: 44 }}><Text>Underlying button</Text></View>
       <Sheet
         open={open()}
         closeOnSwipe={enabled()}
-        popupStyle={{ backgroundColor: "#ffffff", borderTopLeftRadius: 18, borderTopRightRadius: 18 }}
+        popupStyle={{
+          backgroundColor: "#ffffff",
+          borderTopLeftRadius: 18,
+          borderTopRightRadius: 18,
+          paddingBottom: mode() === "Editing" ? "env(keyboard-inset-height)" : 0,
+        }}
         backdropStyle={{ backgroundColor: "rgba(0,0,0,0.6)" }}
         onOpenChange={({ open: next, reason: why }) => {
           reason.set(why);
@@ -54,10 +61,13 @@ function App() {
             setTimeout(() => open.set(true), 220);
           }} style={{ flex: 1 }}><Text>Cycle</Text></View>
         </View>
-        <If when={mode() === "Scroll" || mode() === "Short scroll"} else={<View style={{ height: 180 }}><Text>Sheet body</Text></View>}>
-          <Scroll testID="scroll" style={{ height: 400 }} onScroll={(e) => scrollY.set(e.offset.y)}>
+        <If when={mode() === "Editing"}>
+          <Input testID="field" style={{ height: 44 }} onFocus={() => editing.set(true)} onBlur={() => editing.set(false)} />
+        </If>
+        <If when={mode() === "Scroll" || mode() === "Short scroll" || mode() === "Editing"} else={<View style={{ height: 180 }}><Text>Sheet body</Text></View>}>
+          <Scroll testID="scroll" style={{ height: mode() === "Editing" ? 240 : 400 }} onScroll={(e) => scrollY.set(e.offset.y)}>
             <View testID="scroll-start" style={{ height: 60 }}><Text>Sheet body</Text></View>
-            <If when={mode() === "Scroll"}>
+            <If when={mode() !== "Short scroll"}>
               <Each of={Array.from({ length: 24 }, (_, i) => i)}>
                 {(i) => <View testID={`row-${i()}`} style={{ height: 44 }}><Text>{`Row ${i()}`}</Text></View>}
               </Each>

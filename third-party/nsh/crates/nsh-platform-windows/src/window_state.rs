@@ -82,6 +82,120 @@ fn window_rect(hwnd: HWND) -> Option<RECT> {
         .then_some(rect)
 }
 
+/// What a window's rectangle takes beyond what shows of it, in pixels:
+/// left, top, right, bottom.
+pub(crate) type Margins = (i32, i32, i32, i32);
+
+/// What shows of `hwnd`: its window rectangle without the part of its
+/// frame that does not show. Windows 10 and 11 keep a window's resize
+/// borders outside its visible edge (left, right and bottom; a few pixels
+/// that take the pointer but draw nothing), and a maximized window's frame
+/// hangs over its monitor's edges. A window's bounds are what the user
+/// sees of it, as on the other platforms.
+fn visible_rect(hwnd: HWND) -> Option<RECT> {
+    let rect = window_rect(hwnd)?;
+    Some(inset(rect, margins(hwnd, rect)))
+}
+
+/// What `hwnd`'s rectangle `rect` takes beyond its visible edge now.
+fn margins(hwnd: HWND, rect: RECT) -> Margins {
+    if window::is_full_screen(hwnd) {
+        return (0, 0, 0, 0);
+    }
+    if zoomed(hwnd) {
+        // What hangs over the work area. The compositor's frame bounds
+        // follow the window's a moment later: as the window maximizes,
+        // when its state is read, they are still its normal frame's.
+        return work_area_of(hwnd).map_or((0, 0, 0, 0), |work| {
+            (
+                (work.left - rect.left).max(0),
+                (work.top - rect.top).max(0),
+                (rect.right - work.right).max(0),
+                (rect.bottom - work.bottom).max(0),
+            )
+        });
+    }
+    frame_margins(hwnd, rect)
+        .or_else(|| window::normal_margins(hwnd, window::dpi(hwnd)))
+        .unwrap_or_else(|| crate::chrome::invisible_frame(hwnd))
+}
+
+/// The work area of the monitor `hwnd` is on, in pixels.
+fn work_area_of(hwnd: HWND) -> Option<RECT> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: plain calls with a local out value.
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        GetMonitorInfoW(monitor, &mut info).as_bool()
+    }
+    .then_some(info.rcWork)
+}
+
+/// What `rect` takes beyond the frame the desktop compositor shows of
+/// `hwnd`: `None` without its answer, or with one that is not of this
+/// rectangle (a frame not inside it, or past a frame's width from it).
+fn frame_margins(hwnd: HWND, rect: RECT) -> Option<Margins> {
+    use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
+    let mut frame = RECT::default();
+    // SAFETY: a RECT out value, as the attribute is.
+    let ok = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut frame as *mut RECT as *mut _,
+            std::mem::size_of::<RECT>() as u32,
+        )
+    }
+    .is_ok();
+    let m = (
+        frame.left - rect.left,
+        frame.top - rect.top,
+        rect.right - frame.right,
+        rect.bottom - frame.bottom,
+    );
+    // A frame's resize border is a few pixels at most (8 at 100%), the
+    // same on the left and the right: anything else is a frame the
+    // compositor has not caught up with yet (one that just moved).
+    let limit = 8 * window::dpi(hwnd) as i32 / 96 + 1;
+    let fits = |v: i32| (0..=limit).contains(&v);
+    (ok && m.0 == m.2 && fits(m.0) && fits(m.1) && fits(m.3)).then_some(m)
+}
+
+/// What `hwnd`'s rectangle takes beyond its visible edge in the normal
+/// mode: what its normal rectangle (`rcNormalPosition`, a whole window
+/// rectangle) gives and takes. A maximized or full screen window's frame
+/// is not its normal one; what it was the last time the window was in
+/// the normal mode is ([`crate::window::normal_margins`]), else what the
+/// system's frame leaves invisible.
+fn normal_margins(hwnd: HWND) -> Margins {
+    let dpi = window::dpi(hwnd);
+    if !zoomed(hwnd)
+        && !window::is_full_screen(hwnd)
+        && let Some(m) = window_rect(hwnd).and_then(|rect| frame_margins(hwnd, rect))
+    {
+        window::set_normal_margins(hwnd, m, dpi);
+        return m;
+    }
+    window::normal_margins(hwnd, dpi).unwrap_or_else(|| crate::chrome::invisible_frame(hwnd))
+}
+
+fn inset(rect: RECT, (l, t, r, b): Margins) -> RECT {
+    RECT {
+        left: rect.left + l,
+        top: rect.top + t,
+        right: rect.right - r,
+        bottom: rect.bottom - b,
+    }
+}
+
+fn outset(rect: RECT, (l, t, r, b): Margins) -> RECT {
+    inset(rect, (-l, -t, -r, -b))
+}
+
 /// `WINDOWPLACEMENT`'s rectangles are in workspace coordinates (from the
 /// work area's corner) for windows that are not tool windows: the offset
 /// to screen pixels on `screen`.
@@ -122,18 +236,16 @@ pub(crate) fn state(hwnd: HWND) -> Option<WindowState> {
     if !top_level(hwnd) {
         return None;
     }
-    let rect = window_rect(hwnd)?;
+    let rect = visible_rect(hwnd)?;
     let placement = placement_of(hwnd)?;
+    let normal_margins = normal_margins(hwnd);
     with_screens(|screens| {
         let screen = screen_of(screens, hwnd, rect)?;
         // SAFETY: plain queries on a live window.
-        let (minimized, shown, foreground) = unsafe {
-            (
-                IsIconic(hwnd).as_bool(),
-                IsWindowVisible(hwnd).as_bool(),
-                GetForegroundWindow() == hwnd,
-            )
-        };
+        let (minimized, shown) =
+            unsafe { (IsIconic(hwnd).as_bool(), IsWindowVisible(hwnd).as_bool()) };
+        // In a background app: the window that would have the keyboard.
+        let foreground = window::foreground() == hwnd;
         let full = window::is_full_screen(hwnd);
         let maximized = !full
             && (zoomed(hwnd) || (minimized && placement.flags.contains(WPF_RESTORETOMAXIMIZED)));
@@ -151,10 +263,14 @@ pub(crate) fn state(hwnd: HWND) -> Option<WindowState> {
                     .native_screen(windowed.rcNormalPosition)
                     .cloned()
                     .unwrap_or_else(|| screen.clone());
-                offset(windowed.rcNormalPosition, workspace_offset(hwnd, &on))
+                let rect = offset(windowed.rcNormalPosition, workspace_offset(hwnd, &on));
+                inset(rect, normal_margins)
             }
             _ if !minimized && !maximized && !full => rect,
-            _ => offset(placement.rcNormalPosition, workspace_offset(hwnd, &screen)),
+            _ => inset(
+                offset(placement.rcNormalPosition, workspace_offset(hwnd, &screen)),
+                normal_margins,
+            ),
         };
         let normal_bounds = screens
             .native_screen(normal)
@@ -282,11 +398,13 @@ pub(crate) fn set_bounds(hwnd: HWND, frame: &WindowFrame) {
     let Some(rect) = window_rect(hwnd) else {
         return;
     };
+    let margins = margins(hwnd, rect);
+    let visible = inset(rect, margins);
     let target = with_screens(|screens| {
-        let current = screen_of(screens, hwnd, rect)?;
-        let bounds = moved(current.bounds(rect), frame);
+        let current = screen_of(screens, hwnd, visible)?;
+        let bounds = moved(current.bounds(visible), frame);
         let target = screens.logical_screen(bounds).unwrap_or(&current);
-        Some(target.native_bounds(bounds))
+        Some(outset(target.native_bounds(bounds), margins))
     });
     let Some(target) = target else {
         return;
@@ -340,7 +458,7 @@ pub(crate) fn set_placement(hwnd: HWND, placement: WindowPlacement) {
     };
     let Some(normal) = with_screens(|screens| {
         let screen = screens.logical_screen(placement.bounds)?.clone();
-        let rect = screen.native_bounds(placement.bounds);
+        let rect = outset(screen.native_bounds(placement.bounds), normal_margins(hwnd));
         let workspace = workspace_offset(hwnd, &screen);
         Some(offset(rect, (-workspace.0, -workspace.1)))
     }) else {
@@ -388,6 +506,8 @@ pub(crate) fn center(hwnd: HWND, display: Option<DisplayId>) {
     let Some(rect) = window_rect(hwnd) else {
         return;
     };
+    let margins = margins(hwnd, rect);
+    let rect = inset(rect, margins);
     let target = with_screens(|screens| {
         let current = screen_of(screens, hwnd, rect)?;
         let target = display
@@ -403,7 +523,7 @@ pub(crate) fn center(hwnd: HWND, display: Option<DisplayId>) {
             ),
             bounds.size,
         );
-        Some(target.native_bounds(centered))
+        Some(outset(target.native_bounds(centered), margins))
     });
     if let Some(r) = target {
         // SAFETY: a plain call on a live window.
@@ -422,16 +542,18 @@ pub(crate) fn center(hwnd: HWND, display: Option<DisplayId>) {
 }
 
 /// The outer rectangle (pixels) that a window with content `content`
-/// (points) gets at `origin` (screen points; centered on `center_on`'s
-/// work area, a rectangle in points, without it) on the display there,
-/// its frame `frame` pixels (left, top, right, bottom) at that display's
-/// scale: what opening a window asks for.
+/// (points) gets with its visible top left corner at `origin` (screen
+/// points; what shows of it centered on `center_on`'s work area, a
+/// rectangle in points, without it) on the display there, its frame
+/// `frame` pixels (left, top, right, bottom) at that display's scale, of
+/// which `hidden` do not show ([`visible_rect`]): what opening a window
+/// asks for.
 pub(crate) fn opening_rect(
     content: nsh_core::geometry::Size<Points>,
     origin: Option<nsh_core::geometry::Point<Points>>,
     center_on: Option<Bounds<Points>>,
     display: Option<DisplayId>,
-    frame: impl Fn(f32) -> (i32, i32, i32, i32),
+    frame: impl Fn(f32) -> (Margins, Margins),
 ) -> Option<RECT> {
     with_screens(|screens| {
         let screen = match (origin, center_on, display) {
@@ -442,19 +564,18 @@ pub(crate) fn opening_rect(
         }
         .or(display.and_then(|id| screens.by_id(id)))
         .or(screens.primary())?;
+        let (extents, hidden) = frame(screen.scale);
+        // The frame that shows, in points.
+        let shown = |a: i32, b: i32| Points((a - b).max(0) as f32 / screen.scale);
+        let (l, t) = (shown(extents.0, hidden.0), shown(extents.1, hidden.1));
+        let (r, b) = (shown(extents.2, hidden.2), shown(extents.3, hidden.3));
         let area = center_on.unwrap_or(screen.display.visible_bounds);
         let at = origin.unwrap_or(point(
-            area.origin.x + (area.size.width - content.width) / 2.0,
-            area.origin.y + (area.size.height - content.height) / 2.0,
+            area.origin.x + (area.size.width - (l + content.width + r)) / 2.0,
+            area.origin.y + (area.size.height - (t + content.height + b)) / 2.0,
         ));
-        let inner = screen.native_bounds(Bounds::new(at, content));
-        let (l, t, r, b) = frame(screen.scale);
-        Some(RECT {
-            left: inner.left - l,
-            top: inner.top - t,
-            right: inner.right + r,
-            bottom: inner.bottom + b,
-        })
+        let inner = screen.native_bounds(Bounds::new(point(at.x + l, at.y + t), content));
+        Some(outset(inner, extents))
     })
 }
 
@@ -475,10 +596,14 @@ pub(crate) fn open_at(
     for _ in 0..2 {
         let scale = window::dpi(hwnd) as f32 / 96.0;
         let extents = window::frame_extents(hwnd);
+        let hidden = normal_margins(hwnd);
         let frame = |at: f32| {
             let k = at / scale;
-            let e = |v: i32| (v as f32 * k).round() as i32;
-            (e(extents.0), e(extents.1), e(extents.2), e(extents.3))
+            let e = |(l, t, r, b): Margins| {
+                let e = |v: i32| (v as f32 * k).round() as i32;
+                (e(l), e(t), e(r), e(b))
+            };
+            (e(extents), e(hidden))
         };
         let Some(rect) = opening_rect(content, origin, center_on, display, frame) else {
             return;
@@ -512,7 +637,7 @@ pub(crate) fn size_content(hwnd: HWND, content: nsh_core::geometry::Size<Points>
 
 /// The bounds of `hwnd` in screen points, if it is on a display.
 pub(crate) fn bounds_of(hwnd: HWND) -> Option<Bounds<Points>> {
-    let rect = window_rect(hwnd)?;
+    let rect = visible_rect(hwnd)?;
     with_screens(|screens| Some(screen_of(screens, hwnd, rect)?.bounds(rect)))
 }
 

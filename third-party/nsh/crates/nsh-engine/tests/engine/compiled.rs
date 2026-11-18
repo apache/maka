@@ -75,7 +75,7 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -88,6 +88,8 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         chunk_loader: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -255,7 +257,7 @@ fn start_app_culling(
         limits: nsh_engine::Limits::default(),
         ui_sets: vec![nsh_base::registry(), crate::test_ui::registry()],
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -268,6 +270,8 @@ fn start_app_culling(
         chunk_loader: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -428,6 +432,75 @@ fn dialogs_in_a_scroll_view_open_with_content_culling() {
     assert!(text_id(&batch, "far down").is_some());
 }
 
+const SLIDING_CARDS: &str = r#"import { createAnimatedValue, mount, Scroll, Text, View } from "nsh";
+
+// A page of sections that fade and slide 14pt up into place as they appear.
+function Card(props: { index: number }) {
+  const t = createAnimatedValue(0);
+  t.timing(1, { duration: 300, delay: Math.min(8, props.index) * 40 });
+  const y = t.interpolate({ inputRange: [0, 1], outputRange: [14, 0] });
+  return (
+    <View style={{ height: 200, opacity: t, transform: [{ translateY: y }] }}>
+      <Text>{`card ${props.index}`}</Text>
+    </View>
+  );
+}
+
+mount(() => (
+  <Scroll style={{ flex: 1 }}>
+    {Array.from({ length: 30 }, (_, i) => (
+      <Card index={i} />
+    ))}
+  </Scroll>
+));
+"#;
+
+/// Sections that slide in by a few points are culled as still ones: the
+/// page makes those near the screen, not all of them in its first frames,
+/// and the others as it scrolls to them.
+#[test]
+fn sliding_sections_are_made_as_they_come_near() {
+    let (engine, rx) = start_app_culling(SLIDING_CARDS, (px(44.0), px(96.0)), true);
+    let mut texts = Vec::new();
+    let mut scroll = None;
+    // Every batch the start sends, its paced views included.
+    while let Ok(batch) = rx.recv_timeout(Duration::from_millis(500)) {
+        for item in &batch.items {
+            match item {
+                MountItem::Text { text, .. } => texts.push(text.text.to_string()),
+                MountItem::Create {
+                    id,
+                    kind: nsh_core::ViewKind::Scroll,
+                } => scroll = Some(*id),
+                _ => {}
+            }
+        }
+    }
+    let has = |texts: &[String], t: &str| texts.iter().any(|x| x == t);
+    // 844pt of screen and one around it: cards 0 to 8 (8 starts at 1600,
+    // 14pt of slide short of 1688), not 9 (1800) and on.
+    assert!(has(&texts, "card 0") && has(&texts, "card 8"), "{texts:?}");
+    assert!(
+        !has(&texts, "card 9") && !has(&texts, "card 29"),
+        "{texts:?}"
+    );
+    // Scrolled to the end, the last cards come.
+    engine.control().scroll(
+        scroll.expect("the scroll view"),
+        nsh_core::geometry::point(Points(0.0), Points(6000.0 - 844.0)),
+        0,
+    );
+    let mut texts = Vec::new();
+    while let Ok(batch) = rx.recv_timeout(Duration::from_millis(500)) {
+        for item in &batch.items {
+            if let MountItem::Text { text, .. } = item {
+                texts.push(text.text.to_string());
+            }
+        }
+    }
+    assert!(has(&texts, "card 29"), "{texts:?}");
+}
+
 const MODAL_DISMISS: &str = r#"import { mount, signal, Text, View } from "nsh";
 import { Dialog } from "nsh/base";
 
@@ -474,6 +547,58 @@ fn removed_modal_hears_its_dismissal() {
     control.dispatch_event(modal, EventKind::Dismiss, EventPayload::None);
     let batch = next(&rx, |b| text_id(b, "dismissed").is_some());
     assert!(text_id(&batch, "dismissed").is_some());
+}
+
+const REPLACED_WITH_OPEN_DIALOG: &str = r#"import { mount, signal, Text, View } from "nsh";
+import { createNavStack, Dialog, NavPage, NavStack } from "nsh/base";
+
+const nav = createNavStack<{ name: string }>([{ name: "list" }]);
+const sheet = signal(true);
+
+// Garbage with cycles, so QuickJS collects them.
+function churn() {
+  for (let i = 0; i < 200000; i++) {
+    const a: { b?: unknown } = {};
+    a.b = { a };
+  }
+}
+
+setTimeout(() => {
+  nav.setRoutes([{ name: "list" }, { name: "item" }]);
+  churn();
+  setTimeout(() => churn(), 0);
+}, 0);
+
+mount(() => (
+  <NavStack state={nav} style={{ flex: 1 }}>
+    {(route) =>
+      route.name === "list" ? (
+        <NavPage title="List">
+          <View style={{ flex: 1 }}>
+            <Dialog open={sheet()} presentation="pageSheet" onOpenChange={({ open }) => sheet.set(open)}>
+              <Text>in the sheet</Text>
+            </Dialog>
+          </View>
+        </NavPage>
+      ) : (
+        <NavPage title="Item">
+          <Text>item</Text>
+        </NavPage>
+      )
+    }
+  </NavStack>
+));
+"#;
+
+/// Routes replaced under a page with an open dialog, then cycles
+/// collected: the dialog's dismissal handler is freed once, not again
+/// when the engine stops (#1643).
+#[test]
+fn replacing_a_page_with_an_open_dialog_survives_collection() {
+    let (engine, rx) = start_app(REPLACED_WITH_OPEN_DIALOG);
+    next(&rx, |b| text_id(b, "item").is_some());
+    while rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
+    drop(engine);
 }
 
 const BUILT_ONCE: &str = r#"import { mount, signal, Text, View } from "nsh";
@@ -581,6 +706,99 @@ fn a_changing_child_leaves_its_siblings() {
         })
         .collect();
     assert!(remade.is_empty(), "{remade:#?}");
+}
+
+const CHILDREN_BESIDE_A_BRANCH: &str = r#"
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+
+const open = signal(true);
+function Card(props: { children?: any }) {
+  return (
+    <View>
+      {open() ? <Text>open</Text> : <Text>closed</Text>}
+      {props.children}
+    </View>
+  );
+}
+
+const saved = signal(false);
+mount(() => (
+  <View>
+    <Card>
+      {open() ? <Input testID="a" /> : null}
+      {saved() ? <Text>saved</Text> : null}
+    </Card>
+    <Text onPress={() => saved.set(true)}>save</Text>
+  </View>
+));
+"#;
+
+/// The same when the component shows its children beside a branch of its
+/// own (`{cond ? a : b}{props.children}`): each of the children's
+/// functions keeps a memo of its own, so `saved` changing runs only the
+/// child that reads it, and the input beside it is not made again.
+#[test]
+fn children_beside_a_branch_leave_their_siblings() {
+    let (engine, rx) = start_app(CHILDREN_BESIDE_A_BRANCH);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let save = text_id(&first, "save").expect("the save text");
+    engine
+        .control()
+        .dispatch_event(save, EventKind::Press, EventPayload::None);
+    let batch = next(&rx, |b| texts(b).iter().any(|t| t == "saved"));
+    let remade: Vec<&MountItem> = batch
+        .items
+        .iter()
+        .filter(|i| {
+            matches!(
+                i,
+                MountItem::Create {
+                    kind: nsh_core::ViewKind::Input,
+                    ..
+                } | MountItem::Remove { .. }
+                    | MountItem::Delete { .. }
+            )
+        })
+        .collect();
+    assert!(remade.is_empty(), "{remade:#?}");
+}
+
+const IF_ELSE_EXPRESSION: &str = r#"
+import { mount, signal, Text, View } from "nsh";
+
+const shown = signal(false);
+const label = signal("first label");
+mount(() => (
+  <View>
+    <Text>
+      <If when={shown()} else={label()}>shown</If>
+    </Text>
+    <Text onPress={() => label.set("second label")}>change</Text>
+  </View>
+));
+"#;
+
+/// `<If>`'s `else` that is an expression, not an element, follows what it
+/// reads, as the same expression among the children does.
+#[test]
+fn an_if_else_expression_follows_its_reads() {
+    let (engine, rx) = start_app(IF_ELSE_EXPRESSION);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    assert!(
+        texts(&first).contains(&"first label".to_owned()),
+        "{:?}",
+        texts(&first)
+    );
+    let change = text_id(&first, "change").expect("the change text");
+    engine
+        .control()
+        .dispatch_event(change, EventKind::Press, EventPayload::None);
+    next(&rx, |b| texts(b).iter().any(|t| t == "second label"));
 }
 
 const BRANCH_EXPRESSION: &str = r#"
@@ -986,7 +1204,7 @@ fn dialogs_report_cancels_and_closes_with_their_reason() {
         .items
         .iter()
         .find_map(|i| match i {
-            MountItem::ModalConfig { id, config } if *id == modal => Some(*config),
+            MountItem::ModalConfig { id, config } if *id == modal => Some(config.clone()),
             _ => None,
         })
         .expect("its config");
@@ -1020,6 +1238,82 @@ fn dialogs_report_cancels_and_closes_with_their_reason() {
     control.dispatch_event(modal, EventKind::RequestClose, EventPayload::None);
     next(&rx, |b| {
         log_of(b).is_some_and(|l| l.ends_with(",cancel,cancel,change false cancel"))
+    });
+}
+
+const SHEET_DETENTS: &str = r#"import { mount, signal, Text, View } from "nsh";
+import { Dialog } from "nsh/base";
+
+const log = signal<string[]>([]);
+
+mount(() => (
+  <View style={{ flex: 1 }}>
+    <Text>{`log ${log().join(",")}`}</Text>
+    <Dialog
+      presentation="pageSheet"
+      detents={["medium", { height: 200 }, { fraction: 0.4 }, "bogus", { fraction: 3 }, { height: -1 }, { height: NaN }] as any}
+      detent="medium"
+      defaultDetent="large"
+      grabber
+      largestUndimmedDetent={{ fraction: 0.4 }}
+      onDetentChange={({ detent }) => log.update((l) => [...l, JSON.stringify(detent)])}
+    >
+      <Text>in sheet</Text>
+    </Dialog>
+  </View>
+));
+"#;
+
+/// A dialog's sheet options reach the platform from TSX as the core's
+/// `SheetDetent`s, detents that are not one left out; the platform's
+/// `DetentChange` payload reaches the app as the same JS value.
+#[test]
+fn sheet_detents_reach_the_platform_and_the_users_moves_the_app() {
+    use nsh_core::{SheetDetent, geometry::Percentage};
+    let (engine, rx) = start_app(SHEET_DETENTS);
+    let control = engine.control();
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let modal = modal_of(&first).expect("a dialog");
+    let config = first
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::ModalConfig { id, config } if *id == modal => Some(config.clone()),
+            _ => None,
+        })
+        .expect("its config");
+    assert_eq!(
+        config.detents,
+        vec![
+            SheetDetent::Medium,
+            SheetDetent::Height(Points(200.0)),
+            SheetDetent::Fraction(Percentage(0.4)),
+        ]
+    );
+    assert_eq!(config.detent, Some(SheetDetent::Medium));
+    assert_eq!(config.default_detent, Some(SheetDetent::Large));
+    assert!(config.grabber);
+    assert_eq!(
+        config.largest_undimmed_detent,
+        Some(SheetDetent::Fraction(Percentage(0.4)))
+    );
+    control.dispatch_event(
+        modal,
+        EventKind::DetentChange,
+        SheetDetent::Height(Points(200.0)).change_payload(),
+    );
+    next(&rx, |b| {
+        log_of(b).as_deref() == Some(r#"log {"height":200}"#)
+    });
+    control.dispatch_event(
+        modal,
+        EventKind::DetentChange,
+        SheetDetent::Large.change_payload(),
+    );
+    next(&rx, |b| {
+        log_of(b).as_deref() == Some(r#"log {"height":200},"large""#)
     });
 }
 
@@ -1229,6 +1523,272 @@ fn pages_keep_or_pop_by_their_flags() {
         "{:?}",
         texts(&batch)
     );
+}
+
+const PAGE_HEADER_ITEMS: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { NavPage, NavStack, createNavStack } from "nsh/base";
+
+const nav = createNavStack(["home"]);
+const log = signal<string[]>([]);
+const filter = signal("all");
+const suspended = signal(false);
+
+mount(() => (
+  <View style={{ flex: 1 }}>
+    <Text>{`log ${log().join(",")}`}</Text>
+    <NavStack state={nav} style={{ flex: 1 }}>
+      {(route) => (
+        <NavPage
+          title={route}
+          headerRight={<Text>fallback</Text>}
+          ios={{
+            headerRightItems: [
+              {
+                key: "edit",
+                systemItem: "edit",
+                onPress: () => log.update((l) => [...l, "press edit"]),
+              },
+              {
+                key: "more",
+                symbol: "ellipsis.circle",
+                menu: [
+                  {
+                    label: suspended() ? "Reinstate" : "Suspend",
+                    onSelect: () => {
+                      suspended.set(!suspended());
+                      log.update((l) => [...l, suspended() ? "menu suspend" : "menu reinstate"]);
+                    },
+                  },
+                  {
+                    label: "Open",
+                    checked: filter() === "open",
+                    onSelect: () => {
+                      filter.set("open");
+                      log.update((l) => [...l, "menu open"]);
+                    },
+                  },
+                ],
+              },
+              { key: "add", systemItem: "add", onPress: () => log.update((l) => [...l, "press add"]) },
+            ],
+          }}
+        >
+          <Text>{`filter ${filter()}`}</Text>
+          <Text>{`suspended ${suspended()}`}</Text>
+        </NavPage>
+      )}
+    </NavStack>
+  </View>
+));
+"##;
+
+/// Trailing `ios.headerRightItems` reach the platform in the screen's
+/// config; presses and menu selections report the root's `Menu` event
+/// with the items' ids. Re-binding (same keys) assigns new ids; stale
+/// ones no longer run.
+#[test]
+fn pages_report_trailing_header_item_presses_and_menu_selections() {
+    let (engine, rx) = start_app(PAGE_HEADER_ITEMS);
+    let control = engine.control();
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let config = first
+        .items
+        .iter()
+        .rev()
+        .find_map(|i| match i {
+            MountItem::ScreenConfig { config, .. } => Some((**config).clone()),
+            _ => None,
+        })
+        .expect("a page");
+    assert_eq!(config.right_items.len(), 3);
+    assert_eq!(
+        config.right_items[0].content,
+        nsh_core::HeaderItemContent::SystemItem(nsh_core::HeaderSystemItem::Edit)
+    );
+    assert!(config.right_items[0].press_id != 0);
+    assert_eq!(
+        config.right_items[1].content,
+        nsh_core::HeaderItemContent::Symbol("ellipsis.circle".into())
+    );
+    let menu = config.right_items[1].menu.as_ref().expect("more menu");
+    assert_eq!(menu.len(), 2);
+    let suspend_id = match &menu[0] {
+        nsh_core::desktop::MenuItem::Action(action) => {
+            assert_eq!(action.label, "Suspend");
+            assert!(action.id != 0);
+            action.id
+        }
+        other => panic!("expected an action, got {other:?}"),
+    };
+    let edit_id = config.right_items[0].press_id;
+    control.dispatch_event(
+        nsh_core::ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![("id", nsh_core::PayloadValue::Number(edit_id as f64))]),
+    );
+    next(&rx, |b| log_of(b).as_deref() == Some("log press edit"));
+    control.dispatch_event(
+        nsh_core::ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![(
+            "id",
+            nsh_core::PayloadValue::Number(suspend_id as f64),
+        )]),
+    );
+    let batch = next(&rx, |b| {
+        log_of(b).as_deref() == Some("log press edit,menu suspend")
+    });
+    assert!(
+        texts(&batch).contains(&"suspended true".to_owned()),
+        "{:?}",
+        texts(&batch)
+    );
+    let updated = batch
+        .items
+        .iter()
+        .rev()
+        .find_map(|i| match i {
+            MountItem::ScreenConfig { config, .. } => Some((**config).clone()),
+            _ => None,
+        })
+        .expect("updated page");
+    assert!(
+        nsh_core::element::header::same_right_buttons(&config.right_items, &updated.right_items),
+        "same keys keep the UIBarButtonItems"
+    );
+    let new_edit_id = updated.right_items[0].press_id;
+    let reinstate_id = match &updated.right_items[1].menu.as_ref().unwrap()[0] {
+        nsh_core::desktop::MenuItem::Action(action) => {
+            assert_eq!(action.label, "Reinstate");
+            action.id
+        }
+        other => panic!("expected an action, got {other:?}"),
+    };
+    assert_ne!(new_edit_id, edit_id);
+    assert_ne!(reinstate_id, suspend_id);
+    // Stale ids from the previous binding do nothing.
+    control.dispatch_event(
+        nsh_core::ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![("id", nsh_core::PayloadValue::Number(edit_id as f64))]),
+    );
+    assert!(rx.try_recv().is_err(), "stale edit id must not run");
+    // The current binding's press id still runs (what a kept UIKit target
+    // must report after update_right_item refreshes press_id).
+    control.dispatch_event(
+        nsh_core::ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![(
+            "id",
+            nsh_core::PayloadValue::Number(new_edit_id as f64),
+        )]),
+    );
+    next(&rx, |b| {
+        log_of(b).as_deref() == Some("log press edit,menu suspend,press edit")
+    });
+    control.dispatch_event(
+        nsh_core::ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![(
+            "id",
+            nsh_core::PayloadValue::Number(reinstate_id as f64),
+        )]),
+    );
+    let batch = next(&rx, |b| {
+        log_of(b).as_deref() == Some("log press edit,menu suspend,press edit,menu reinstate")
+    });
+    assert!(
+        texts(&batch).contains(&"suspended false".to_owned()),
+        "{:?}",
+        texts(&batch)
+    );
+}
+
+const SELECTION_MENU: &str = r##"import { mount, signal, Text, View } from "nsh";
+
+const log = signal<string[]>([]);
+const label = signal("Highlight");
+
+mount(() => (
+  <View style={{ flex: 1 }}>
+    <Text>{`log ${log().join(",")}`}</Text>
+    <View
+      selectable
+      selectionMenu={[
+        { label: label(), onSelect: () => { log.update((l) => [...l, label()]); label.set("Unhighlight"); } },
+        { type: "separator" },
+        { label: "Define", disabled: true },
+      ]}
+    >
+      <Text>Some words</Text>
+    </View>
+  </View>
+));
+"##;
+
+/// The items of a selectable view's `selectionMenu` reach its view props;
+/// a chosen item's `onSelect` runs when the platform reports its id as the
+/// root's `Menu` event, and items set again get new ids (stale ones do
+/// nothing).
+#[test]
+fn selection_menu_items_run_when_chosen() {
+    use nsh_core::desktop::MenuItem;
+
+    let (engine, rx) = start_app(SELECTION_MENU);
+    let control = engine.control();
+    let menu_of = |batch: &MountBatch| {
+        batch.items.iter().rev().find_map(|i| match i {
+            MountItem::ViewProps { props, .. } if props.selectable_view => {
+                Some(props.selection_menu.clone())
+            }
+            _ => None,
+        })
+    };
+    let first = next(&rx, |b| menu_of(b).is_some());
+    let menu = menu_of(&first).unwrap();
+    let [
+        MenuItem::Action(highlight),
+        MenuItem::Separator,
+        MenuItem::Action(define),
+    ] = &menu[..]
+    else {
+        panic!("two items and a separator: {menu:?}");
+    };
+    assert_eq!(highlight.label, "Highlight");
+    assert!(highlight.id != 0);
+    assert_eq!(define.label, "Define");
+    assert!(!define.enabled);
+    let choose = |id: u32| {
+        control.dispatch_event(
+            nsh_core::ROOT_ID,
+            EventKind::Menu,
+            EventPayload::Map(vec![("id", nsh_core::PayloadValue::Number(id as f64))]),
+        );
+    };
+    choose(highlight.id);
+    let batch = next(&rx, |b| menu_of(b).is_some());
+    let updated = menu_of(&batch).unwrap();
+    let MenuItem::Action(unhighlight) = &updated[0] else {
+        panic!("an action: {updated:?}");
+    };
+    assert_eq!(unhighlight.label, "Unhighlight");
+    assert_ne!(unhighlight.id, highlight.id);
+    let mut seen = log_of(&batch);
+    while seen.as_deref() != Some("log Highlight") {
+        seen = log_of(&next(&rx, |b| log_of(b).is_some()));
+    }
+    // The old id does nothing.
+    choose(highlight.id);
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err()
+    );
+    choose(unhighlight.id);
+    next(&rx, |b| {
+        log_of(b).as_deref() == Some("log Highlight,Unhighlight")
+    });
 }
 
 const PAGE_HEADER: &str = r#"import { mount, Text, View } from "nsh";
@@ -1454,4 +2014,255 @@ fn set_routes_keeps_pages_that_stay_and_parts_take_test_ids() {
             _ => None,
         });
     assert_eq!(backdrop, Some(Some(false)), "the backdrop is no Tab stop");
+}
+
+const SET_ROUTES_KINDS: &str = r#"import { mount, signal, Text, View } from "nsh";
+import { NavPage, NavStack, createNavStack } from "nsh/base";
+
+const page = { name: "page" };
+const name = (route: unknown) => (typeof route === "object" ? (route as { name: string }).name : String(route));
+const nav = createNavStack<unknown>(["a", "a", 1, page, NaN]);
+const made = signal<string[]>([]);
+setTimeout(() => nav.setRoutes(["a", 1, page, "a", "b", 1, NaN]), 0);
+
+mount(() => (
+  <View style={{ flex: 1 }}>
+    <Text>{`made ${made().join(" ")}`}</Text>
+    <NavStack state={nav} style={{ flex: 1 }}>
+      {(route) => {
+        made.update((all) => [...all, name(route)]);
+        return <NavPage title={name(route)}><Text>{name(route)}</Text></NavPage>;
+      }}
+    </NavStack>
+  </View>
+));
+"#;
+
+/// `setRoutes` keeps, for each route that stays, the first page of that
+/// route not kept yet, routes compared as `===` does: strings by content,
+/// objects by identity, numbers by value (`NaN` never), however many.
+#[test]
+fn set_routes_keeps_the_pages_of_routes_of_every_kind() {
+    let (_engine, rx) = start_app(SET_ROUTES_KINDS);
+    let mut all = Vec::new();
+    while let Ok(b) = rx.recv_timeout(Duration::from_millis(500)) {
+        all.extend(texts(&b));
+    }
+    // The five pages, then only those of "b", the second 1 and NaN: the
+    // first "a", 1, `page` and the second "a" keep theirs.
+    let last = all.iter().rev().find(|t| t.starts_with("made"));
+    assert_eq!(
+        last.map(String::as_str),
+        Some("made a a 1 page NaN b 1 NaN"),
+        "{all:?}"
+    );
+}
+
+const SPARSE_ARRAYS: &str = r#"
+import { Animated, mount, nativeComponent, PanResponder, Path2D, split, Text, View } from "nsh";
+import { createNavStack } from "nsh/base";
+
+const huge = () => new Array(2 ** 32 - 1);
+function Children() {
+  return <View>{huge()}</View>;
+}
+function Rows() {
+  return <View><Each of={huge()}>{() => <Text>row</Text>}</Each></View>;
+}
+function attempt(render: () => unknown) {
+  try {
+    render();
+    return "rendered";
+  } catch (e) {
+    const error = e as Error;
+    return `${error.name}${error.message.includes("cannot be read") ? "" : `(${error.message})`}`;
+  }
+}
+function AtTheBound() {
+  return <View>{new Array(2 ** 20)}</View>;
+}
+function JustOver() {
+  return <View>{new Array(2 ** 20 + 1)}</View>;
+}
+// Each array is short; nested in itself they hold 1000 ** 64 items. Reading
+// it depth first ends at the nesting bound, and checking whether it holds
+// functions (first) ends at the item budget.
+function Cycle() {
+  const a: unknown[] = new Array(1000).fill(0);
+  a.fill(a);
+  return <View>{a}</View>;
+}
+// A proxy whose length grows after it was checked.
+function Growing() {
+  let reads = 0;
+  const array = new Proxy([1, 2, 3], {
+    get: (target, key, receiver) =>
+      key === "length" ? (++reads > 1 ? 2 ** 32 - 1 : 3) : Reflect.get(target, key, receiver),
+  });
+  return <View><Each of={array}>{() => <Text>row</Text>}</Each></View>;
+}
+const Native = nativeComponent("Probe", { props: huge() as never[] });
+const pan = PanResponder.create({});
+// Within the bound, but read pairwise or nested: on `main` each of these
+// ran for far longer than the frame is waited for (from 1.6 s for 2 ** 13
+// routes, quadratic; 4.4 s for 2 ** 20 keys of 2 ** 10 props, a product;
+// 8 s and 3.7 GB for a canvas argument eight wide).
+const names = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+function Nested() {
+  const a: unknown[] = new Array(1000).fill(0);
+  return a.fill(a);
+}
+// A stack at the bound refuses another screen and can still be popped.
+function Full() {
+  const stack = createNavStack(new Array(2 ** 20).fill("a"));
+  const pushed = attempt(() => stack.push("b"));
+  stack.pop();
+  return `${pushed},${stack.routes().length}`;
+}
+const results = [
+  `children:${attempt(Children)}`,
+  `at:${attempt(AtTheBound)}`,
+  `each:${attempt(Rows)}`,
+  `over:${attempt(JustOver)}`,
+  `cycle:${attempt(Cycle)}`,
+  `growing:${attempt(Growing)}`,
+  `stagger:${attempt(() => Animated.stagger(10, huge()))}`,
+  `sequence:${attempt(() => Animated.sequence(huge()))}`,
+  `split:${attempt(() => split({}, huge() as string[]))}`,
+  `stack:${attempt(() => createNavStack(huge()))}`,
+  `setRoutes:${attempt(() => createNavStack([]).setRoutes(huge()))}`,
+  `native:${attempt(() => <Native />)}`,
+  `grant:${attempt(() => pan.panHandlers.onResponderGrant({ touches: huge() } as never))}`,
+  `move:${attempt(() => pan.panHandlers.onResponderMove({ touches: huge() } as never))}`,
+  `canvas:${attempt(() => new Path2D().moveTo(Nested() as never, 0))}`,
+  `routes:${attempt(() => createNavStack(names("a", 2 ** 15)).setRoutes(names("b", 2 ** 15)))}`,
+  `keys:${attempt(() => split(Object.fromEntries(names("p", 2 ** 15).map((k) => [k, 0])), names("k", 2 ** 17)))}`,
+  `full:${Full()}`,
+];
+mount(() => <Text>{results.join(" ")}</Text>);
+"#;
+
+/// A sparse array is as long as it says, and the renderer reads arrays
+/// natively, where the time budget cannot interrupt: one that says it has
+/// billions of items is refused with a `RangeError` instead of holding the
+/// engine thread for billions of reads.
+#[test]
+fn arrays_too_long_to_render_are_refused() {
+    let (_engine, rx) = start_app(SPARSE_ARRAYS);
+    let first = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("first frame");
+    assert_eq!(
+        texts(&first),
+        [
+            "children:RangeError at:rendered each:RangeError over:RangeError \
+             cycle:TypeError(nsh: children nested too deeply) growing:rendered \
+             stagger:RangeError sequence:RangeError split:RangeError \
+             stack:RangeError setRoutes:RangeError native:RangeError \
+             grant:RangeError move:RangeError canvas:rendered routes:rendered \
+             keys:rendered full:RangeError(nsh: a navigation stack holds at most \
+             1048576 screens),1048575"
+        ],
+        "{:?}",
+        texts(&first)
+    );
+}
+
+const DECODED_VALUES: &str = r#"
+import { Animated, createAnimatedValue, mount, nativeComponent, Scroll, Text, View } from "nsh";
+import { List } from "nsh";
+
+function attempt(render: () => unknown) {
+  try {
+    render();
+    return "rendered";
+  } catch (e) {
+    const error = e as Error;
+    return `${error.name}${error.message.includes("cannot be read") ? "" : `(${error.message})`}`;
+  }
+}
+// As long as an array can be: its length is a float past 2 ** 31, which
+// rquickjs's `Array::len` asserted is an integer, aborting the process.
+const huge = () => new Array(2 ** 32 - 1);
+const self: unknown[] = [];
+self.push(self);
+const theme: Record<string, unknown> = {};
+theme.theme = theme;
+const keys: Record<string, number> = {};
+for (let i = 0; i < 2 ** 16; i++) keys[`k${i}`] = i;
+const outputs = huge();
+outputs[0] = "red";
+const Probe = nativeComponent("Probe", { props: ["data"] } as never) as never as (props: { data: unknown }) => never;
+const value = createAnimatedValue(0);
+let shared: any = Animated.timing(value, { toValue: 1, duration: 10 });
+for (let i = 0; i < 63; i++) shared = Animated.sequence(new Array(1000).fill(shared));
+// Within the bound alone, over it four times: a composite's keyframes are
+// counted with the rest of what it runs.
+const frames = Animated.keyframes(value, { keyframes: new Array(2 ** 19).fill(0), duration: 10 });
+const sharedFrames = Animated.sequence(new Array(4).fill(frames));
+const results = [
+  `styleSelf:${attempt(() => <View style={self as never} />)}`,
+  `styleSparse:${attempt(() => <View style={huge() as never} />)}`,
+  `styleKeys:${attempt(() => <View style={keys as never} />)}`,
+  `fontVariant:${attempt(() => <Text style={{ fontVariant: huge() as never }}>x</Text>)}`,
+  `boxShadow:${attempt(() => <View style={{ boxShadow: huge() as never }} />)}`,
+  `transform:${attempt(() => <View style={{ transform: huge() as never }} />)}`,
+  `translate:${attempt(() => <View style={{ translate: huge() as never }} />)}`,
+  `outputRange:${attempt(() => value.interpolate({ inputRange: [0, 1], outputRange: outputs }))}`,
+  `inputRange:${attempt(() => value.interpolate({ inputRange: huge(), outputRange: [0, 1] }))}`,
+  `native:${attempt(() => <Probe data={huge()} />)}`,
+  `scrollbar:${attempt(() => <Scroll scrollbar={theme as never}><Text>x</Text></Scroll>)}`,
+  `sticky:${attempt(() => <List each={[1]} stickyHeaderIndices={huge() as never}>{() => <Text>x</Text>}</List>)}`,
+  `captureKeys:${attempt(() => <View focusable captureKeys={huge() as never} />)}`,
+];
+// A start returns a promise: what it cannot decode rejects it.
+const settled = (start: () => Promise<unknown>) =>
+  start().then(
+    () => "resolved",
+    (e: Error) => `${e.name}${e.message.includes("cannot be read") ? "" : `(${e.message})`}`,
+  );
+Promise.all([
+  settled(() => Animated.timing(value, { toValue: 1, easing: huge() as never }).start()),
+  settled(() => Animated.decay(value, { velocity: 1, clamp: huge() as never }).start()),
+  settled(() => shared.start()),
+  settled(() => sharedFrames.start()),
+]).then(([easing, clamp, sharedRuns, sharedKeyframes]) => {
+  results.push(`easing:${easing}`, `clamp:${clamp}`, `shared:${sharedRuns}`, `keyframes:${sharedKeyframes}`);
+  mount(() => <Text>{results.join(" ")}</Text>);
+});
+"#;
+
+/// What the decoders read of the values apps pass natively, where neither
+/// the time budget nor the interpreter's stack limit applies: an array as
+/// long as an array can be (which aborted the process), one holding itself
+/// (which overflowed the engine thread's stack) and composites sharing
+/// their children (10^189 runs) are refused; a style of 2^16 keys and a
+/// theme holding itself are read.
+#[test]
+fn values_too_long_or_nested_in_themselves_are_refused_when_decoded() {
+    let (_engine, rx) = start_app(DECODED_VALUES);
+    // The results are mounted once the starts settled: a start that did not
+    // reject would run its animation, and frames of it come first.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut shown = Vec::new();
+    while let Ok(batch) = rx.recv_deadline(deadline) {
+        shown = texts(&batch);
+        if shown.iter().any(|t| t.starts_with("styleSelf:")) {
+            break;
+        }
+    }
+    assert_eq!(
+        shown,
+        [
+            "styleSelf:TypeError(nsh: styles nested too deeply) styleSparse:RangeError \
+             styleKeys:rendered fontVariant:RangeError boxShadow:RangeError \
+             transform:RangeError translate:RangeError outputRange:RangeError \
+             inputRange:RangeError native:RangeError(a native component value is nested \
+             deeper than 64 or has more than 1048576 entries) scrollbar:rendered \
+             sticky:RangeError captureKeys:RangeError easing:RangeError clamp:TypeError(decay: `clamp` must be \
+             [min, max]) shared:RangeError keyframes:RangeError"
+        ],
+        "{:?}",
+        shown
+    );
 }

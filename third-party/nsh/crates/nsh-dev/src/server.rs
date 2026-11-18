@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 
 use crate::protocol::{
     BundleFormat, ClientMessage, FetchReply, HostPlatform, LogLevel, PROTOCOL_VERSION,
-    ServerMessage, StepOutcome, TestNetwork, TestStep, WS_PATH,
+    RunningBuild, ServerMessage, StepOutcome, TestNetwork, TestStep, WS_PATH,
 };
 
 /// What a dev host did, for the server's owner to show ([`DevServer::start`]).
@@ -139,6 +139,11 @@ struct Shared {
     limits: Mutex<Option<String>>,
     /// The state a newly connected client must see first.
     latest: Mutex<Option<Event>>,
+    /// The hot updates of the latest builds, oldest first, each from the
+    /// one before: a host reconnecting on one of these builds catches up
+    /// through them instead of reloading ([`ClientMessage::Hello`]'s
+    /// `running`). A build without one starts the chain again.
+    patches: Mutex<std::collections::VecDeque<Arc<Patch>>>,
     events: broadcast::Sender<Event>,
     bytecode_version: String,
     /// This run of the server ([`ServerMessage::Hello`]).
@@ -198,7 +203,9 @@ impl DevServer {
     /// and, from `assets_root`, only images, fonts, audio and video outside
     /// hidden directories ([`asset_in_root`]): never the app's sources, its
     /// `nsh.json`, `.env` or other configuration. `/ws` refuses browsers
-    /// whose page is not the server's own ([`allowed_origin`]).
+    /// whose page is not the server's own ([`allowed_origin`]); the other
+    /// paths refuse a `Host` that is not an IP address or `localhost`
+    /// ([`address_host`]).
     pub fn start(
         addr: SocketAddr,
         bytecode_version: impl Into<String>,
@@ -217,6 +224,7 @@ impl DevServer {
             install: Mutex::default(),
             limits: Mutex::default(),
             latest: Mutex::new(None),
+            patches: Mutex::default(),
             events: broadcast::channel(16).0,
             bytecode_version: bytecode_version.into(),
             session: new_session(),
@@ -234,11 +242,14 @@ impl DevServer {
         });
         let listener = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
         let addr = listener.local_addr()?;
+        // The layer wraps the routes and the fallback added before it; `/ws`
+        // checks a browser's `Origin` itself ([`allowed_origin`]).
         let app = Router::new()
-            .route(WS_PATH, get(upgrade))
             .route("/bundle.js", get(bundle_source))
             .route("/assets/{*path}", get(asset))
             .fallback(web_file)
+            .layer(axum::middleware::from_fn(addresses_only))
+            .route(WS_PATH, get(upgrade))
             .with_state(shared.clone());
         runtime.spawn(async move {
             if let Err(err) = axum::serve(listener, app).await {
@@ -414,17 +425,28 @@ impl DevServer {
             *next += 1;
             *next
         };
-        if let Some((code, map)) = patch
-            && version > 1
-        {
-            // Only for clients connected now: new clients get the bundle.
-            let _ = self.shared.events.send(Event::Patch(Arc::new(Patch {
-                version,
-                base: version - 1,
-                code: code.into(),
-                source_map: map.map(Into::into),
-                ui_sets: ui_sets.clone(),
-            })));
+        match patch {
+            Some((code, map)) if version > 1 => {
+                let patch = Arc::new(Patch {
+                    version,
+                    base: version - 1,
+                    code: code.into(),
+                    source_map: map.map(Into::into),
+                    ui_sets: ui_sets.clone(),
+                });
+                // Kept before the bundle becomes the latest, for hosts
+                // that missed it.
+                {
+                    let mut patches = self.shared.patches.lock().expect("patches lock");
+                    if patches.len() == KEPT_PATCHES {
+                        patches.pop_front();
+                    }
+                    patches.push_back(patch.clone());
+                }
+                // To clients connected now; new clients get the bundle.
+                let _ = self.shared.events.send(Event::Patch(patch));
+            }
+            _ => self.shared.patches.lock().expect("patches lock").clear(),
         }
         self.set(Event::Bundle(Arc::new(Bundle {
             version,
@@ -442,6 +464,7 @@ impl DevServer {
     /// an app of Rust only, whose hosts are built with it): they run it in
     /// place of a bundle.
     pub fn publish_root(&self) {
+        self.shared.patches.lock().expect("patches lock").clear();
         self.set(Event::Root);
     }
 
@@ -697,15 +720,57 @@ pub(crate) fn allowed_origin(origin: Option<&str>, host: Option<&str>) -> bool {
     if !origin_host.eq_ignore_ascii_case(host) {
         return false;
     }
-    // The host without its port: `[::1]:80`, `127.0.0.1:80`, `localhost`.
-    let name = match host.strip_prefix('[') {
-        Some(rest) => match rest.split_once(']') {
-            Some((ip, port)) if port.is_empty() || port.starts_with(':') => ip,
-            _ => return false,
-        },
-        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
+    address_host(host)
+}
+
+/// Refuses (`403`) a request whose `Host` is not an IP address or
+/// `localhost` ([`address_host`]). Under DNS rebinding a page's own name
+/// resolves to this machine, so its requests are same-origin and carry no
+/// `Origin`: only the `Host`, that name, tells them apart from the server's
+/// own pages and the hosts on devices, which name it by its address.
+async fn addresses_only(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let allowed = match request.headers().get(header::HOST) {
+        Some(host) => host.to_str().is_ok_and(address_host),
+        // HTTP/1.0, or an absolute URI that names the host.
+        None => request.uri().host().is_none_or(address_host),
+    };
+    if !allowed {
+        log::warn!(
+            "dev server: refused {} for the host {}: connect by the machine's IP address",
+            request.uri().path(),
+            request
+                .headers()
+                .get(header::HOST)
+                .and_then(|host| host.to_str().ok())
+                .unwrap_or_default()
+        );
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(request).await
+}
+
+/// Whether `host` (a `Host` header, maybe with its port) is an IP address
+/// or `localhost`: names that no other site's DNS gives. A name may be
+/// rebound to this machine by its site's DNS (a public name) or by anyone
+/// on the network (`.local`, a name of one label), so only these pass.
+pub(crate) fn address_host(host: &str) -> bool {
+    let Some(name) = host_name(host) else {
+        return false;
     };
     name.eq_ignore_ascii_case("localhost") || name.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// The name or address of a `Host` without its port: `[::1]:80` → `::1`,
+/// `127.0.0.1:80` → `127.0.0.1`, `localhost` → `localhost`; `None` for an
+/// IPv6 address with anything but a port after it.
+fn host_name(host: &str) -> Option<&str> {
+    match host.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((ip, port)) if port.is_empty() || port.starts_with(':') => Some(ip),
+            _ => None,
+        },
+        None => Some(host.rsplit_once(':').map_or(host, |(name, _)| name)),
+    }
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -725,6 +790,7 @@ async fn serve_client(mut socket: WebSocket, shared: Arc<Shared>) -> Result<(), 
         platform,
         ui_sets,
         tests,
+        running,
     } = serde_json::from_str(&text)?
     else {
         return Err("expected hello".into());
@@ -799,6 +865,13 @@ async fn serve_client(mut socket: WebSocket, shared: Arc<Shared>) -> Result<(), 
     }
     // The app's requests the test answers, by id: what cancels them.
     let fetches: Arc<Mutex<Cancels>> = Arc::default();
+    if let Some(Event::Bundle(bundle)) = &latest {
+        // Back on a build it missed the updates since: those first, then
+        // the bundle, which it already runs.
+        for patch in missed_patches(&shared, running, bundle.version) {
+            send_event(&mut socket, &shared, &mut host, &Event::Patch(patch)).await?;
+        }
+    }
     if let Some(event) = latest {
         send_event(&mut socket, &shared, &mut host, &event).await?;
     }
@@ -861,6 +934,33 @@ async fn serve_client(mut socket: WebSocket, shared: Arc<Shared>) -> Result<(), 
             },
         }
     }
+}
+
+/// How many builds' hot updates the server keeps for hosts that reconnect.
+const KEPT_PATCHES: usize = 32;
+
+/// The hot updates that take a host running `running` to build `latest`,
+/// in order: none when it already runs it, runs another server's build,
+/// or a build of the chain is missing (it reloads the bundle then).
+fn missed_patches(shared: &Shared, running: Option<RunningBuild>, latest: u64) -> Vec<Arc<Patch>> {
+    let Some(running) = running.filter(|r| r.session == shared.session && r.version < latest)
+    else {
+        return Vec::new();
+    };
+    let patches = shared.patches.lock().expect("patches lock");
+    let chain: Vec<Arc<Patch>> = patches
+        .iter()
+        .filter(|p| p.base >= running.version && p.version <= latest)
+        .cloned()
+        .collect();
+    let mut at = running.version;
+    for patch in &chain {
+        if patch.base != at {
+            return Vec::new();
+        }
+        at = patch.version;
+    }
+    if at == latest { chain } else { Vec::new() }
 }
 
 /// What the server knows of a connected host.
@@ -1152,6 +1252,42 @@ mod tests {
             );
         }
         assert!(!allowed_origin(Some("http://127.0.0.1:18790"), None));
+    }
+
+    #[test]
+    fn only_addresses_and_localhost_reach_the_servers_files() {
+        use super::address_host;
+        // What the hosts on devices and the web host's pages name the
+        // server by: the addresses the CLI prints, and `localhost`.
+        for host in [
+            "127.0.0.1:18790",
+            "192.168.1.20:18790",
+            "192.168.1.20",
+            "[::1]:18790",
+            "[::1]",
+            "localhost:18790",
+            "LOCALHOST",
+        ] {
+            assert!(address_host(host), "{host}");
+        }
+        // Names that DNS can rebind to this machine: a site's, and the
+        // network's (mDNS, a name of one label); and what is no host.
+        for host in [
+            "evil.example:18790",
+            "evil.example.:18790",
+            "rebind.127.0.0.1.nip.io:18790",
+            "127.0.0.1.evil.example",
+            "localhost.evil.example",
+            "my-mac.local:18790",
+            "my-mac:18790",
+            "127.0.0.1%25evil:18790",
+            ":18790",
+            "",
+            "[::1]x",
+            "[evil.example]:18790",
+        ] {
+            assert!(!address_host(host), "{host}");
+        }
     }
 
     #[test]

@@ -20,3 +20,13 @@ test("the safe area is the test's", async () => {
   expect(after(app.texts(), "Top")).toBe("47");
   expect(after(app.texts(), "Bottom")).toBe("34");
 });
+
+test("size classes use each window dimension", async () => {
+  // Native window decorations can reduce the requested content size. Exact
+  // 600pt boundaries are covered by the core tests.
+  const app = await open("../App.tsx", { width: 500, height: 700 });
+  await app.press("role:button[System]");
+  await app.waitFor("Size classes");
+  expect(after(app.texts(), "Horizontal")).toBe("Compact");
+  expect(after(app.texts(), "Vertical")).toBe("Regular");
+});

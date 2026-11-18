@@ -122,6 +122,25 @@ impl From<&ImageAsset> for ImageSrc {
 }
 
 impl ImageSrc {
+    /// The natural size in points that [`super::image`] lays out at when
+    /// its style leaves width or height unset. A single styled dimension
+    /// keeps this size's aspect ratio; two styled dimensions set the box.
+    /// The source's pixels and their dimensions stay the same.
+    ///
+    /// ```
+    /// use nsh_core::{
+    ///     element::ImageSrc,
+    ///     geometry::{Size, px},
+    /// };
+    ///
+    /// let pixels = vec![7u8; 200 * 100 * 4];
+    /// let src = ImageSrc::rgba(200, 100, pixels).size(Size::new(px(100.0), px(50.0)));
+    /// ```
+    pub fn size(mut self, size: Size<Points>) -> Self {
+        self.size = Some((size.width.0, size.height.0));
+        self
+    }
+
     /// Whether its URL is empty: no image, as an `<Image>` whose `src`
     /// is `""` shows none.
     pub fn is_empty(&self) -> bool {
@@ -145,10 +164,11 @@ impl ImageSrc {
     /// premultiplied) 8-bit RGBA, rows top to bottom with no padding,
     /// `width * height * 4` bytes, held as they are (`Vec<u8>`,
     /// `Arc<[u8]>`, ...; not copied). It lays out at `width` × `height`
-    /// points, as a `data:` image does. Frames made elsewhere (a renderer,
-    /// a camera, a thread drawing a preview) show without being encoded;
-    /// each buffer is an image of its own, which the caches drop once no
-    /// view shows it.
+    /// points, as a `data:` image does; [`Self::size`] sets its natural
+    /// layout size for a buffer drawn at another pixel density. Frames
+    /// made elsewhere (a renderer, a camera, a thread drawing a preview)
+    /// show without being encoded; each buffer is an image of its own,
+    /// which the caches drop once no view shows it.
     ///
     /// ```ignore
     /// let pixels: Arc<[u8]> = render_page(); // 1192 × 1684 × 4 bytes

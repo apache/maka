@@ -45,6 +45,8 @@ final class TouchTracker {
         View view;
         int[] path;
         float x, y;
+        /** Pressure (0 to 1), pen tilt in degrees (the DOM's tiltX / tiltY), pointer kind (0 touch, 1 pen, 2 mouse). */
+        float pressure = 0.5f, tiltX, tiltY, kind;
     }
 
     TouchTracker(Mounter mounter, View root) {
@@ -276,6 +278,24 @@ final class TouchTracker {
     /** `PanActivation::MIN_DISTANCE`: how far a pan without active offsets moves before it activates (points). */
     private static final float MIN_PAN_DISTANCE = 10;
 
+    /** The pressure, tilt and kind of pointer {@code i} of {@code e}. */
+    private static void pointer(Tracked t, MotionEvent e, int i) {
+        int tool = e.getToolType(i);
+        boolean pen = tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER;
+        t.kind = pen ? 1 : tool == MotionEvent.TOOL_TYPE_MOUSE ? 2 : 0;
+        t.pressure = Math.max(0f, Math.min(1f, e.getPressure(i)));
+        if (pen) {
+            // AXIS_TILT: radians from the perpendicular; AXIS_ORIENTATION: radians clockwise from up.
+            double tan = Math.tan(e.getAxisValue(MotionEvent.AXIS_TILT, i));
+            double o = e.getAxisValue(MotionEvent.AXIS_ORIENTATION, i);
+            t.tiltX = (float) Math.toDegrees(Math.atan(Math.sin(o) * tan));
+            t.tiltY = (float) Math.toDegrees(Math.atan(-Math.cos(o) * tan));
+        } else {
+            t.tiltX = 0;
+            t.tiltY = 0;
+        }
+    }
+
     /** Positions of the tracked fingers; false if none moved. */
     private boolean update(MotionEvent e) {
         boolean moved = false;
@@ -286,6 +306,7 @@ final class TouchTracker {
             moved |= x != t.x || y != t.y;
             t.x = x;
             t.y = y;
+            pointer(t, e, i);
         }
         return moved;
     }
@@ -298,7 +319,7 @@ final class TouchTracker {
         int n = tracked.size();
         int[] ids = new int[n], targets = new int[n], pathLengths = new int[n];
         boolean[] isChanged = new boolean[n];
-        float[] coords = new float[n * 4];
+        float[] coords = new float[n * 8];
         int pathTotal = 0;
         float d = mounter.density;
         int[] rootAt = new int[2], at = new int[2];
@@ -313,10 +334,14 @@ final class TouchTracker {
                 pathTotal += t.path.length;
             }
             t.view.getLocationInWindow(at);
-            coords[i * 4] = t.x / d;
-            coords[i * 4 + 1] = t.y / d;
-            coords[i * 4 + 2] = (t.x + rootAt[0] - at[0]) / d;
-            coords[i * 4 + 3] = (t.y + rootAt[1] - at[1]) / d;
+            coords[i * 8] = t.x / d;
+            coords[i * 8 + 1] = t.y / d;
+            coords[i * 8 + 2] = (t.x + rootAt[0] - at[0]) / d;
+            coords[i * 8 + 3] = (t.y + rootAt[1] - at[1]) / d;
+            coords[i * 8 + 4] = t.pressure;
+            coords[i * 8 + 5] = t.tiltX;
+            coords[i * 8 + 6] = t.tiltY;
+            coords[i * 8 + 7] = t.kind;
         }
         int[] flat = new int[pathTotal];
         for (int i = 0, k = 0; i < n; i++) {

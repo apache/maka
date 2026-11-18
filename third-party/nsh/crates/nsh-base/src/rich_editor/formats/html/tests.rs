@@ -235,6 +235,129 @@ fn clipboard_slice_fits_its_context() {
     assert_eq!(parser.parse_with_context("", &at).content.size(), 0);
 }
 
+/// What an editor copies is pasted back as the same slice: its open
+/// depths and the nodes it was open through (`data-pm-slice`).
+#[test]
+fn a_copied_slice_reads_back_with_its_context() {
+    let schema = starter::schema();
+    let parser = DomParser::from_schema(&schema);
+    let doc = parser.parse(
+        "<blockquote><ul><li><p>abc</p></li></ul></blockquote><p>x</p>",
+        &ParseOptions::default(),
+    );
+    // `b`, inside the paragraph of the item of the list of the quote.
+    let slice = doc.slice(5, 6, true).unwrap();
+    assert_eq!(slice.open_start, 4);
+    let html = crate::rich_editor::formats::DomSerializer::from_schema(&schema)
+        .serialize_for_clipboard(&slice);
+    assert_eq!(
+        html,
+        r#"<p data-pm-slice="1 1 [&quot;blockquote&quot;,null,&quot;bulletList&quot;,null,&quot;listItem&quot;,null]">b</p>"#
+    );
+    let at = doc.resolve(doc.content().size() - 1).unwrap();
+    let back = parser.parse_from_clipboard(&html, &at);
+    assert_eq!(back, slice);
+    // HTML from elsewhere has no context: the paragraph alone.
+    let other = parser.parse_from_clipboard("<p>b</p>", &at);
+    assert_eq!(show_fragment(&other.content), r#"paragraph("b")"#);
+    assert_eq!((other.open_start, other.open_end), (1, 1));
+}
+
+/// `data-pm-slice` is read as ProseMirror's regular expression reads
+/// it: what does not match leaves the HTML read as any other, a `-N`
+/// without a space after it is context, and context that is no JSON
+/// leaves the slice unwrapped.
+#[test]
+fn malformed_slice_data_reads_as_prosemirror_reads_it() {
+    assert_eq!(slice_data("1 1 []"), Some((1, 1, 0, "[]")));
+    assert_eq!(slice_data("0 0 -2 []"), Some((0, 0, 2, "[]")));
+    assert_eq!(slice_data("0 0 -2x []"), Some((0, 0, 0, "-2x []")));
+    assert_eq!(slice_data("0 0 -2"), Some((0, 0, 0, "-2")));
+    assert_eq!(
+        slice_data("1 1 [\"a\"]\n[\"b\"]"),
+        Some((1, 1, 0, "[\"a\"]"))
+    );
+    assert_eq!(slice_data("1 1"), None);
+    assert_eq!(slice_data("a 1 []"), None);
+    assert_eq!(slice_data(" 1 1 []"), None);
+    assert_eq!(
+        slice_data("99999999999999999999999 0 []").map(|d| d.0),
+        Some(usize::MAX)
+    );
+
+    let schema = starter::schema();
+    let parser = DomParser::from_schema(&schema);
+    let doc = parser.parse("<p>x</p>", &ParseOptions::default());
+    let at = doc.resolve(1).unwrap();
+    // No match: other HTML, its whitespace collapsed.
+    let other = parser.parse_from_clipboard(r#"<p data-pm-slice="1 1">a  b</p>"#, &at);
+    assert_eq!(show_fragment(&other.content), r#"paragraph("a b")"#);
+    // The first element with the attribute decides, even when it does not match.
+    let first = parser.parse_from_clipboard(
+        r#"<p data-pm-slice="x">a  b</p><p data-pm-slice="1 1 []">c</p>"#,
+        &at,
+    );
+    assert_eq!(
+        show_fragment(&first.content),
+        r#"paragraph("a b"), paragraph("c")"#
+    );
+    // Context that is no JSON: the slice as it was copied, unwrapped.
+    let broken = parser.parse_from_clipboard(r#"<p data-pm-slice="1 1 [oops">a  b</p>"#, &at);
+    assert_eq!(show_fragment(&broken.content), r#"paragraph("a  b")"#);
+    assert_eq!((broken.open_start, broken.open_end), (1, 1));
+    // An odd context array: pairs counted from its end, as ProseMirror
+    // counts them (`blockquote`, `null`; the leading `x` is left over).
+    let odd = parser.parse_from_clipboard(
+        r#"<p data-pm-slice="1 1 [&quot;x&quot;,&quot;blockquote&quot;,null]">a</p>"#,
+        &at,
+    );
+    assert_eq!(show_fragment(&odd.content), r#"blockquote(paragraph("a"))"#);
+    assert_eq!((odd.open_start, odd.open_end), (2, 2));
+}
+
+/// A context node whose type has required attributes stops the
+/// wrapping (ProseMirror's `addContext`), even when the copy recorded
+/// them: its attributes cannot be trusted to make a valid node.
+#[test]
+fn context_stops_at_a_type_with_required_attributes() {
+    let schema = SchemaSpec::from_json(&json!({
+        "nodes": [
+            ["doc", {"content": "block+"}],
+            ["section", {"content": "block+", "group": "block", "attrs": {"id": {}},
+                         "parseDOM": [{"tag": "section"}], "toDOM": ["section", 0]}],
+            ["box", {"content": "block+", "group": "block",
+                     "parseDOM": [{"tag": "div.box"}], "toDOM": ["div", {"class": "box"}, 0]}],
+            ["para", {"content": "text*", "group": "block", "parseDOM": [{"tag": "p"}], "toDOM": ["p", 0]}],
+            ["text", {}]
+        ]
+    }))
+    .unwrap();
+    let parser = DomParser::from_schema(&schema);
+    let serializer = crate::rich_editor::formats::DomSerializer::from_schema(&schema);
+    let doc = Node::from_json(
+        &schema,
+        &json!({"type": "doc", "content": [
+            {"type": "section", "attrs": {"id": "s"}, "content": [
+                {"type": "box", "content": [{"type": "para", "content": [{"type": "text", "text": "abc"}]}]}
+            ]}
+        ]}),
+    )
+    .unwrap();
+    // `b`: inside the paragraph of the box of the section.
+    let slice = doc.slice(4, 5, true).unwrap();
+    assert_eq!(slice.open_start, 3);
+    let html = serializer.serialize_for_clipboard(&slice);
+    assert_eq!(
+        html,
+        r#"<p data-pm-slice="1 1 [&quot;section&quot;,{&quot;id&quot;:&quot;s&quot;},&quot;box&quot;,null]">b</p>"#
+    );
+    let at = doc.resolve(4).unwrap();
+    let back = parser.parse_from_clipboard(&html, &at);
+    // The box wraps it again; the section, whose `id` is required, does not.
+    assert_eq!(show_fragment(&back.content), r#"box(para("b"))"#);
+    assert_eq!((back.open_start, back.open_end), (2, 2));
+}
+
 #[test]
 fn rules_from_schema_json() {
     let schema = SchemaSpec::from_json(&json!({

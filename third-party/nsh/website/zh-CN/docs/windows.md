@@ -81,7 +81,8 @@ nsh package App.tsx --target windows [--run]   # TSX 应用
 `.nsh\out\<Name>.iss`，一个 [Inno Setup](https://jrsoftware.org/isinfo.php) 脚本；装有 Inno Setup 6 时（`winget install
 JRSoftware.InnoSetup`）会把它编译成 `.nsh\out\<Name>-setup.exe`。安装程序不需要管理员权限：它为当前用户安装到
 `%LOCALAPPDATA%\Programs\<Name>`，添加开始菜单快捷方式（带应用 id，任务栏和通知都用它），并在“已安装的应用”中添加可卸载它的条目。
-它的 AppId 就是应用 id，所以新版本的安装程序会先关闭应用，再原地升级已安装的版本；升级和卸载都不会动应用的数据。`nsh.json`
+它的 AppId 就是应用 id，所以新版本的安装程序会先关闭应用，再原地升级已安装的版本；升级和卸载都不会动应用的数据。卸载程序会删除
+应用的[登录项](../modules/nsh-desktop.md#登录时打开)，前提是它启动的正是被卸载的这个副本。`nsh.json`
 中的图标会直接嵌入可执行文件（资源管理器和任务栏都会显示它），不需要额外的工具；在其他系统上打包则保留默认图标。应用 id
 用于在任务栏中归组应用的窗口。`--run` 会在打包后启动应用。可执行文件没有签名：要分发，请用你自己的证书签名（`signtool`）。
 
@@ -133,6 +134,10 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 `AppSource::Bundle(bundle)`。`Root::tokens` 为根组件设置[主题](./rust.md#主题)，`Root::app_id` 设置保存其数据所用的 id。
 
 `AppOptions::notifications` 把进程的[通知](../modules/nsh.md#notifications)交给视图运行的应用：横幅、点击和角标都归它。默认关闭，这时嵌入应用的通知是 `unavailable`，你的应用的通知仍归你；`run_app` 会打开它。
+
+`AppOptions::login_item` 让 `run_app` 运行的应用拥有[登录项](../modules/nsh-desktop.md#登录时打开)：当前用户 `Run` 键下
+以 `app_id` 命名、启动本可执行文件的值。默认关闭，且只有 `run_app` 读取它，所以嵌入应用 不会登录时打开；
+`nsh package` 构建的应用的运行器会打开它。
 
 `AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小（`CacheOptions`：默认为系统的缓存目录和 256 MiB 图片）。
 

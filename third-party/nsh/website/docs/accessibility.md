@@ -54,6 +54,7 @@ view()
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | The value of a range or textual element. |
 | `.accessibility_active_descendant(..)` | `accessibilityActiveDescendant` | `ViewRef \| null` | The item that is active inside the focused element: a combo box's highlighted option, a list's cursor row. |
 | `.accessibility_controls(..)` | `accessibilityControls` | `ViewRef \| null` | The element whose content this one controls: a combo box's list. |
+| `.accessibility_described_by(..)` | `accessibilityDescribedBy` | `ViewRef \| null` | The element whose text describes this one: a field's error line. |
 | | `accessibilityActions` | `{ name, label? }[]` | Actions offered to assistive technologies. |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | An action was performed (Rust: its name). |
 | `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | Hides the view and its subtree from assistive technologies. |
@@ -196,6 +197,44 @@ const rows = signal<ViewRef[]>([]);
 
 On the web these are `aria-activedescendant` and `aria-controls`; on macOS VoiceOver reads the active item as the control's selected child. `Select`, `Combobox` and `Command` name their highlighted item and their list this way, and on the other platforms they read the highlighted item to the screen reader themselves.
 
+### An element that describes another
+
+A form shows a field's error or help in a line of its own, apart from the field. `accessibilityDescribedBy` names that line on the field, so a screen reader reads its text after the field's name each time the focus comes to it, and reads the new text when the line changes. It takes a ref of the element named, as `accessibilityControls` does; its labels and texts are the field's description, in the place of the field's own `accessibilityDescription`, which comes back while the element named is not on screen. The line may be `accessibilityHidden`, so that it is read once, with its field: an element named reads its text all the same. Every platform reads it where it reads a description; on the web it is `aria-describedby`.
+
+```rust tabs
+// A field and the error line under it.
+let error = element_ref();
+view()
+    .child(
+        input()
+            .label("Name")
+            .accessibility_state(move || AccessibilityState {
+                invalid: message.get().is_some(),
+                ..AccessibilityState::default()
+            })
+            .accessibility_described_by(move || message.get().map(|_| error)),
+    )
+    .child(when(
+        move || message.get().is_some(),
+        move || text(move || message.get().unwrap_or_default()).element_ref(&error),
+    ))
+```
+
+```tsx tabs
+// A field and the error line under it.
+const error = signal<ViewRef>();
+<View>
+  <Input
+    accessibilityLabel="Name"
+    accessibilityState={{ invalid: message() != null }}
+    accessibilityDescribedBy={message() != null ? error() ?? null : null}
+  />
+  <If when={message()}>
+    <Text ref={error}>{message()}</Text>
+  </If>
+</View>
+```
+
 ## Actions
 
 A pressable view supports activation already. For anything else, declare actions with `accessibilityActions` and handle them with `onAccessibilityAction`; a Rust component hears the performed action's name with `.on_accessibility_action(|name: &str| ..)`:
@@ -270,6 +309,8 @@ view()
   <Text>$120</Text>
 </View>
 ```
+
+A labelled container stays a container: the label of a `"list"`, `"listbox"`, `"group"`, `"toolbar"`, `"radiogroup"`, `"tablist"`, `"navigation"`, `"region"` or `"dialog"` names what the screen reader moves into, and the elements inside are still reached one by one. VoiceOver also says where a list starts and ends. Make the container accessible only when it should be read as a whole.
 
 Hide what adds nothing: decorative images, dividers, an icon next to a text that already says the same.
 

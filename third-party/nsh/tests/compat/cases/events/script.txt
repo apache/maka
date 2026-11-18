@@ -1,4 +1,13 @@
 # What a user does and sees (compat/apps.rs): each case after its tap.
+# events-keyboard: both transitions bubble once, never to a sibling.
+tap id:case-events-keyboard
+expect Key route: none
+event id:keyboard-target onKeyDown key=Enter code=Enter defaultPrevented=false repeat=false
+expect Key route: target-down outer-down
+event id:keyboard-target onKeyUp key=Enter code=Enter defaultPrevented=false repeat=false
+expect Key route: target-down outer-down target-up outer-up
+covers [events] onKeyDown
+covers [events] onKeyUp
 # events-context-menu
 tap id:case-events-context-menu
 expect Menu: none
@@ -164,7 +173,11 @@ expect Web: start https://example.com/ "" loading true back false forward false 
 event id:web onDownload state=started id=d1 url=https://example.com/r.pdf filename=r.pdf path=/data/downloads/d1/r.pdf
 event id:web onDownload state=finished id=d1 url=https://example.com/r.pdf filename=r.pdf path=/data/downloads/d1/r.pdf bytes=2048
 event id:web onDownload state=failed id=d2 url=https://example.com/x.csv filename=x.csv path=/data/downloads/d2/x.csv message="network lost"
-expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - | download finished r.pdf 2048 - | download failed x.csv - network lost
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - source=transfer reason=- code=- | download finished r.pdf 2048 - source=transfer reason=- code=- | download failed x.csv - network lost source=transfer reason=- code=-
+event id:web onDownload state=cancelled id=d3 url=https://example.com/c.csv filename=c.csv path=/data/downloads/d3/c.csv source=request reason=app
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - source=transfer reason=- code=- | download finished r.pdf 2048 - source=transfer reason=- code=- | download failed x.csv - network lost source=transfer reason=- code=- | download cancelled c.csv - - source=request reason=app code=-
+event id:web onDownload state=failed id=d5 url=https://example.com/export filename=export.csv source=none code=ERR_NSH_DOWNLOAD_DISCARDED
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - source=transfer reason=- code=- | download finished r.pdf 2048 - source=transfer reason=- code=- | download failed x.csv - network lost source=transfer reason=- code=- | download cancelled c.csv - - source=request reason=app code=- | download failed export.csv - - source=none reason=- code=ERR_NSH_DOWNLOAD_DISCARDED
 covers [nsh] Image
 covers [nsh] Video
 covers [nsh] WebView

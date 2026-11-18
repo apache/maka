@@ -2,6 +2,7 @@
 //! what a user does with them and what the app hears and shows.
 
 mod accordion;
+mod alert_dialog;
 mod avatar;
 mod button;
 mod calendar;
@@ -16,6 +17,7 @@ mod date_picker;
 mod dialog;
 mod diff;
 mod dock;
+mod dropdown_presence;
 mod editor;
 mod editor_completion;
 mod editor_definition;
@@ -28,7 +30,9 @@ mod hover_card;
 mod link;
 mod menu;
 mod menu_list;
+mod menu_presentation;
 mod menu_room;
+mod menu_typeahead;
 mod number_input;
 mod otp_input;
 mod pagination;
@@ -42,9 +46,16 @@ mod scrollbar;
 mod select;
 mod sheet;
 mod slider;
+mod split_view;
 mod submenu;
 mod switch;
 mod tabs;
+#[cfg(feature = "term")]
+mod term;
+#[cfg(feature = "term")]
+mod term_cells;
+#[cfg(feature = "term")]
+mod term_input;
 mod terminal;
 mod text_view;
 mod time_field;

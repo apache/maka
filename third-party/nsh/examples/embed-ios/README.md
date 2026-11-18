@@ -68,4 +68,5 @@ loads from `nsh dev` instead and reloads on every change.
 
 `NshAppView` is main-actor isolated; `NshTrust` is thread-safe. The host view controller can forward
 the app's status bar: `NshAppView.preferredStatusBarStyle`, `.prefersStatusBarHidden`,
-`.preferredStatusBarUpdateAnimation`.
+`.preferredStatusBarUpdateAnimation`, and the orientations of the page shown:
+`NshAppView.supportedInterfaceOrientations` (`nil` when no page sets them).

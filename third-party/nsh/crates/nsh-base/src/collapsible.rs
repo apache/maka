@@ -12,14 +12,15 @@ use nsh_core::{
 
 /// The reveal: the frames that the region's change moves in the commit
 /// that opens or closes it (its own, its content's, and what follows it)
-/// spring to their new places on `gpui-component`'s `spring_control` (a
-/// 180 ms response, critically damped: a height should not overshoot, as
-/// `gpui-base`'s `Spring::with_damping` says); the rest of that commit (a
-/// list updating elsewhere) changes at once. Views inserted and removed in
-/// it are not animated: the content shows at once, clipped by the region
-/// growing around it.
-pub(crate) fn reveal_motion() -> LayoutTransition {
-    LayoutTransition::spring(Spring::new(180.0))
+/// spring to their new places on the app's `spring`, or by default on
+/// `gpui-component`'s `spring_control` (a 180 ms response, critically
+/// damped: a height should not overshoot, as `gpui-base`'s
+/// `Spring::with_damping` says); the rest of that commit (a list updating
+/// elsewhere) changes at once. Views inserted and removed in it are not
+/// animated: the content shows at once, clipped by the region growing
+/// around it.
+pub(crate) fn reveal_motion(spring: Option<Spring>) -> LayoutTransition {
+    LayoutTransition::spring(spring.unwrap_or_else(|| Spring::new(180.0)))
 }
 
 /// The props of [`Collapsible`].
@@ -41,6 +42,12 @@ pub struct CollapsibleProps {
     /// `gap` of the collapsible's separates it from the children.
     #[prop(default)]
     pub reveal: Prop<bool>,
+    /// The spring the reveal moves on (`{ stiffness, damping, mass }`, as
+    /// `AnimatedValue.spring`'s): the app's own motion token. Without one,
+    /// a 180 ms response, critically damped (`gpui-component`'s
+    /// `spring_control`). Read when `open` changes; used only with
+    /// `reveal`, and not with reduced motion.
+    pub reveal_spring: Prop<Option<Spring>>,
     /// What expands: placed after the children while `open`, out of the
     /// tree otherwise. It is made once and kept, so what is inside keeps
     /// its state (an input's text, a scroll position) from one opening to
@@ -66,7 +73,12 @@ pub struct CollapsibleProps {
 pub fn Collapsible(props: CollapsibleProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let (open, reveal) = (props.open, props.reveal);
     let region = element_ref();
-    let mounted = follow_open(open.into_reactive(), reveal.into_reactive(), region);
+    let mounted = follow_open(
+        open.into_reactive(),
+        reveal.into_reactive(),
+        props.reveal_spring.into_reactive(),
+        region,
+    );
     let content = move || props.content.place(|content| content);
     view().child(props.children).child(
         when(reveal, move || {
@@ -82,7 +94,8 @@ pub fn Collapsible(props: CollapsibleProps, _cx: Scope<NoEvent>) -> impl IntoEle
 
 /// Follows `open` for a region whose content comes and goes, revealed while
 /// `reveal` holds and motion is not reduced: each change of `open` animates
-/// the frames `region` moves in the commit that makes it ([`reveal_motion`]), and
+/// the frames `region` moves in the commit that makes it on `spring`
+/// ([`reveal_motion`]), and
 /// the signal returned says whether the content is in the tree. It turns
 /// on with `open`, and off with it, or once the region has closed after a
 /// reveal. The region's clip (zero high while closed) is the caller's:
@@ -90,6 +103,7 @@ pub fn Collapsible(props: CollapsibleProps, _cx: Scope<NoEvent>) -> impl IntoEle
 pub(crate) fn follow_open(
     open: Reactive<bool>,
     reveal: Reactive<bool>,
+    spring: Reactive<Option<Spring>>,
     region: ElementRef,
 ) -> Signal<bool> {
     let initial = untracked(|| open.get());
@@ -107,8 +121,9 @@ pub(crate) fn follow_open(
             let current = generation.get().wrapping_add(1);
             generation.replace(current);
             let animated = reveal.get() && !reduce_motion();
+            let motion = reveal_motion(spring.get());
             if animated {
-                region.animate_layout(reveal_motion());
+                region.animate_layout(motion);
             }
             if open || !animated {
                 mounted.set(open);
@@ -116,14 +131,11 @@ pub(crate) fn follow_open(
             }
             // Out once the region has closed. The platform runs the reveal
             // and reports no end, so its time is the end.
-            set_timeout(
-                Duration::from_millis(reveal_motion().run_ms() as u64),
-                move || {
-                    if generation.get() == current {
-                        mounted.set(false);
-                    }
-                },
-            );
+            set_timeout(Duration::from_millis(motion.run_ms() as u64), move || {
+                if generation.get() == current {
+                    mounted.set(false);
+                }
+            });
         });
     });
     mounted

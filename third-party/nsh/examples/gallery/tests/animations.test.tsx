@@ -18,3 +18,13 @@ test("the motion presets switch groups and play on a tap", async () => {
   await app.wait(1200);
   expect(app.shows("fadeOut")).toBe(true);
 });
+
+test("the bounded drag switches its range", async () => {
+  const app = await open("../App.tsx");
+  await app.press("label:Animations");
+  await app.waitFor("Bounded drag");
+  await app.drag("id:bounded-knob", { x: 200, y: 0 });
+  await app.press("role:tab[Narrow]");
+  await app.drag("id:bounded-knob", { x: -40, y: 0 });
+  expect(app.shows("drag.diffClamp(0, max)")).toBe(true);
+});

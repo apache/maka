@@ -9,7 +9,10 @@ demo: el-tooltip
 
 A tooltip is a short hint next to what it is about: what an icon button does, the full text of a truncated label.
 On the desktops and in desktop browsers it shows once the pointer has rested on its trigger for `delay` (500 ms), and
-hides when the pointer leaves or presses the trigger. On every device it also shows at once when the keyboard moves
+hides when the pointer leaves or presses the trigger. Once one tooltip has shown, the pointer reads on without
+waiting: moving to another trigger within 300 ms of leaving shows that one's tooltip at once, so each
+tool of a toolbar tells what it is as the pointer passes; a press on a trigger or Escape ends it, and the next
+tooltip waits for its `delay` again. On every device it also shows at once when the keyboard moves
 the focus to its trigger (Tab, the arrow keys, a shortcut, or the app's `focus()` after a key), and hides when the
 focus leaves or Escape is pressed, so keyboard users read the same hints. A click or a tap that focuses the trigger
 leaves the tooltip to the pointer, as `focus-visible:` styles do: the press hides it, and the pointer resting on the

@@ -933,8 +933,8 @@ pub(crate) fn inset(rect: CGRect, d: CGFloat) -> CGRect {
 /// borders `[top, right, bottom, left]` wide, for an even-odd fill. Inner
 /// corners are elliptical where the adjacent sides differ.
 fn ring_path(rect: CGRect, radii: CornerRadii, widths: [CGFloat; 4]) -> CFRetained<CGMutablePath> {
-    let path = rounded(rect, radii);
     let [top, right, bottom, left] = widths;
+    let [tl, tr, br, bl] = radii.to_array().map(|r| r.0 as CGFloat);
     let inner = CGRect::new(
         CGPoint::new(rect.origin.x + left, rect.origin.y + top),
         CGSize::new(
@@ -943,9 +943,38 @@ fn ring_path(rect: CGRect, radii: CornerRadii, widths: [CGFloat; 4]) -> CFRetain
         ),
     );
     if inner.size.width <= 0.0 || inner.size.height <= 0.0 {
+        return rounded(rect, radii);
+    }
+    // Without rounded corners, emit only the sides that have thickness: two
+    // concentric rectangles share collinear edges on 0-width sides, which Core
+    // Animation's Metal rasterizer antialiases into a 1px seam across cells at
+    // fractional scroll offsets.
+    if tl <= 0.0 && tr <= 0.0 && br <= 0.0 && bl <= 0.0 {
+        let path = CGMutablePath::new();
+        let (x0, y0, w, h) = (
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height,
+        );
+        let add_rect = |x: CGFloat, y: CGFloat, rw: CGFloat, rh: CGFloat| {
+            if rw > 0.0 && rh > 0.0 {
+                // SAFETY: `path` is a live mutable path and the transform is null.
+                unsafe {
+                    CGMutablePath::add_rect(
+                        Some(&path),
+                        std::ptr::null(),
+                        CGRect::new(CGPoint::new(x, y), CGSize::new(rw, rh)),
+                    );
+                }
+            }
+        };
+        add_rect(x0, y0, w, top);
+        add_rect(x0, y0 + h - bottom, w, bottom);
+        add_rect(x0, y0 + top, left, h - top - bottom);
+        add_rect(x0 + w - right, y0 + top, right, h - top - bottom);
         return path;
     }
-    let [tl, tr, br, bl] = radii.to_array().map(|r| r.0 as CGFloat);
     // (horizontal, vertical) radii of each inner corner.
     let corner = |r: CGFloat, h: CGFloat, v: CGFloat| ((r - h).max(0.0), (r - v).max(0.0));
     let corners = [
@@ -954,8 +983,162 @@ fn ring_path(rect: CGRect, radii: CornerRadii, widths: [CGFloat; 4]) -> CFRetain
         corner(br, right, bottom),
         corner(bl, left, bottom),
     ];
+    // One open flat edge opposite rounded corners (e.g. a closing cell with
+    // `border-x border-b rounded-b`, or a header with `border-x border-t rounded-t`):
+    // join the outer clockwise U and the inner counterclockwise U into one
+    // closed U-polygon so no segment crosses the open span.
+    if let Some(open) = open_u_side(widths, [tl, tr, br, bl]) {
+        let outer_corners = [tl, tr, br, bl].map(|r| (r, r));
+        if let Some(path) =
+            joined_u_path(rect, outer_corners, inner, corners, radii.continuous, open)
+        {
+            return path;
+        }
+    }
+    let path = rounded(rect, radii);
     add_outline(&path, inner, corners, radii.continuous, false);
     path
+}
+
+/// Returns the index `0..4` (`top`, `right`, `bottom`, `left`) when that side
+/// and its two corners are zero while the other three sides have positive width.
+fn open_u_side(widths: [CGFloat; 4], radii: [CGFloat; 4]) -> Option<usize> {
+    let [top, right, bottom, left] = widths;
+    let [tl, tr, br, bl] = radii;
+    let candidates = [
+        (
+            top <= 0.0 && tl <= 0.0 && tr <= 0.0,
+            right > 0.0 && bottom > 0.0 && left > 0.0,
+        ),
+        (
+            right <= 0.0 && tr <= 0.0 && br <= 0.0,
+            bottom > 0.0 && left > 0.0 && top > 0.0,
+        ),
+        (
+            bottom <= 0.0 && br <= 0.0 && bl <= 0.0,
+            left > 0.0 && top > 0.0 && right > 0.0,
+        ),
+        (
+            left <= 0.0 && bl <= 0.0 && tl <= 0.0,
+            top > 0.0 && right > 0.0 && bottom > 0.0,
+        ),
+    ];
+    candidates
+        .iter()
+        .position(|&(is_open, rest_closed)| is_open && rest_closed)
+}
+
+/// Joins the 3-sided outer CW contour and inner CCW contour around `open`
+/// (`0` = top, `1` = right, `2` = bottom, `3` = left) into a single U-polygon.
+fn joined_u_path(
+    outer: CGRect,
+    outer_corners: [(CGFloat, CGFloat); 4],
+    inner: CGRect,
+    inner_corners: [(CGFloat, CGFloat); 4],
+    continuous: bool,
+    open: usize,
+) -> Option<CFRetained<CGMutablePath>> {
+    let path = CGMutablePath::new();
+    add_open_u(&path, outer, outer_corners, continuous, false, open, true)?;
+    add_open_u(&path, inner, inner_corners, continuous, true, open, false)?;
+    CGMutablePath::close_subpath(Some(&path));
+    Some(path)
+}
+
+/// Appends the 3 closed sides of `rect` (omitting side `open`) to `path`,
+/// starting with `move_to` (`first_move`) or `line_to`.
+fn add_open_u(
+    path: &CGMutablePath,
+    rect: CGRect,
+    corners: [(CGFloat, CGFloat); 4],
+    continuous: bool,
+    reverse: bool,
+    open: usize,
+    first_move: bool,
+) -> Option<()> {
+    use nsh_core::{
+        Corners, Point, Points,
+        geometry::{bounds, point, size},
+        shape::Segment,
+    };
+    let pt = |v: CGFloat| Points(v as f32);
+    let b = bounds(
+        point(pt(rect.origin.x), pt(rect.origin.y)),
+        size(pt(rect.size.width), pt(rect.size.height)),
+    );
+    let [tl, tr, br, bl] = corners.map(|(h, v)| size(pt(h), pt(v)));
+    let mut raw = Vec::with_capacity(14);
+    nsh_core::shape::rounded_rect(
+        b,
+        Corners {
+            top_left: tl,
+            top_right: tr,
+            bottom_right: br,
+            bottom_left: bl,
+        },
+        continuous,
+        reverse,
+        &mut |s| {
+            if !matches!(s, Segment::Close) {
+                raw.push(s);
+            }
+        },
+    );
+    let Segment::Move(first) = *raw.first()? else {
+        return None;
+    };
+    raw[0] = Segment::Line(first);
+    let end_of = |s: Segment| match s {
+        Segment::Move(p) | Segment::Line(p) => p,
+        Segment::Cubic([_, _, p]) => p,
+        Segment::Close => first,
+    };
+    let (x0, y0) = (b.origin.x.0, b.origin.y.0);
+    let (x1, y1) = (x0 + b.size.width.0, y0 + b.size.height.0);
+    let (cw_enter, cw_leave) = match open {
+        0 => ((x0, y0), (x1, y0)),
+        1 => ((x1, y0), (x1, y1)),
+        2 => ((x1, y1), (x0, y1)),
+        _ => ((x0, y1), (x0, y0)),
+    };
+    let (enter, leave) = if reverse {
+        (cw_leave, cw_enter)
+    } else {
+        (cw_enter, cw_leave)
+    };
+    let near = |p: Point<Points>, q: (f32, f32)| {
+        (p.x.0 - q.0).abs() <= 1e-3 && (p.y.0 - q.1).abs() <= 1e-3
+    };
+    let n = raw.len();
+    let cut = (0..n).find(|&i| {
+        matches!(raw[i], Segment::Line(to) if near(to, leave) && near(end_of(raw[(i + n - 1) % n]), enter))
+    })?;
+    let cg = |p: Point<Points>| (p.x.0 as CGFloat, p.y.0 as CGFloat);
+    let p = Some(path);
+    let m = std::ptr::null();
+    let start = cg(end_of(raw[cut]));
+    // SAFETY: `path` is a live mutable path and the transform is null.
+    unsafe {
+        if first_move {
+            CGMutablePath::move_to_point(p, m, start.0, start.1);
+        } else {
+            CGMutablePath::add_line_to_point(p, m, start.0, start.1);
+        }
+        for step in 1..n {
+            match raw[(cut + step) % n] {
+                Segment::Move(to) | Segment::Line(to) => {
+                    let (x, y) = cg(to);
+                    CGMutablePath::add_line_to_point(p, m, x, y);
+                }
+                Segment::Cubic([c1, c2, to]) => {
+                    let ((a, b), (c, d), (x, y)) = (cg(c1), cg(c2), cg(to));
+                    CGMutablePath::add_curve_to_point(p, m, a, b, c, d, x, y);
+                }
+                Segment::Close => {}
+            }
+        }
+    }
+    Some(())
 }
 
 /// A rectangle with the corners `radii` (circular or continuous).
@@ -1182,5 +1365,198 @@ mod tests {
         assert!(container.mask().is_some_and(|m| *m == *shape));
         set_clip_mask(&container, None, false);
         assert!(container.mask().is_none());
+    }
+
+    /// Collects every line/curve chord `(from, to)` of `path` (`CloseSubpath`
+    /// closes back to the subpath's `MoveToPoint`).
+    fn path_chords(path: &CGMutablePath) -> Vec<((f64, f64), (f64, f64))> {
+        use objc2_core_graphics::{CGPath, CGPathElement, CGPathElementType};
+
+        struct Walk {
+            chords: Vec<((f64, f64), (f64, f64))>,
+            start: (f64, f64),
+            cur: (f64, f64),
+        }
+
+        unsafe extern "C-unwind" fn visit(
+            info: *mut std::ffi::c_void,
+            element: std::ptr::NonNull<CGPathElement>,
+        ) {
+            // SAFETY: `info` points to `walk` on the stack below, and CoreGraphics
+            // passes a valid `CGPathElement` for the duration of this callback.
+            let walk = unsafe { &mut *(info.cast::<Walk>()) };
+            let el = unsafe { element.as_ref() };
+            let pt = |i: usize| unsafe {
+                let p = *el.points.as_ptr().add(i);
+                (p.x, p.y)
+            };
+            match el.r#type {
+                CGPathElementType::MoveToPoint => {
+                    let p = pt(0);
+                    walk.start = p;
+                    walk.cur = p;
+                }
+                CGPathElementType::AddLineToPoint => {
+                    let p = pt(0);
+                    if (p.0 - walk.cur.0).abs() > 1e-6 || (p.1 - walk.cur.1).abs() > 1e-6 {
+                        walk.chords.push((walk.cur, p));
+                    }
+                    walk.cur = p;
+                }
+                CGPathElementType::AddQuadCurveToPoint => {
+                    let p = pt(1);
+                    walk.chords.push((walk.cur, p));
+                    walk.cur = p;
+                }
+                CGPathElementType::AddCurveToPoint => {
+                    let p = pt(2);
+                    walk.chords.push((walk.cur, p));
+                    walk.cur = p;
+                }
+                CGPathElementType::CloseSubpath => {
+                    if (walk.start.0 - walk.cur.0).abs() > 1e-6
+                        || (walk.start.1 - walk.cur.1).abs() > 1e-6
+                    {
+                        walk.chords.push((walk.cur, walk.start));
+                    }
+                    walk.cur = walk.start;
+                }
+                _ => {}
+            }
+        }
+
+        let mut walk = Walk {
+            chords: Vec::new(),
+            start: (0.0, 0.0),
+            cur: (0.0, 0.0),
+        };
+        let cg_path: &CGPath = path;
+        // SAFETY: `walk` outlives this synchronous walk.
+        unsafe {
+            CGPath::apply(
+                Some(cg_path),
+                std::ptr::from_mut(&mut walk).cast(),
+                Some(visit),
+            )
+        };
+        walk.chords
+    }
+
+    #[test]
+    fn partial_square_borders_emit_no_segments_on_zero_width_sides() {
+        let rect = CGRect::new(CGPoint::ZERO, CGSize::new(80.0, 32.0));
+        // `border-x`: left = 1, right = 1, top = 0, bottom = 0.
+        let ring = ring_path(rect, CornerRadii::default(), [0.0, 1.0, 0.0, 1.0]);
+        let chords = path_chords(&ring);
+        assert!(
+            !chords.iter().any(|&(a, b)| {
+                let on_top_or_bottom = (a.1 == 0.0 && b.1 == 0.0) || (a.1 == 32.0 && b.1 == 32.0);
+                on_top_or_bottom && (a.0 - b.0).abs() > 1.0
+            }),
+            "0-width top/bottom sides must not emit span-wide collinear segments: {chords:?}"
+        );
+    }
+
+    #[test]
+    fn open_u_rounded_borders_emit_no_segments_across_the_open_side() {
+        let rect = CGRect::new(CGPoint::ZERO, CGSize::new(100.0, 40.0));
+        for continuous in [false, true] {
+            let r = px(10.0);
+            let cases = [
+                // Open top (`border-x border-b rounded-b`).
+                (
+                    [0.0, 2.0, 2.0, 2.0],
+                    CornerRadii {
+                        top_left: px(0.0),
+                        top_right: px(0.0),
+                        bottom_right: r,
+                        bottom_left: r,
+                        continuous,
+                    },
+                    0usize,
+                ),
+                // Open right (`border-y border-l rounded-l`).
+                (
+                    [2.0, 0.0, 2.0, 2.0],
+                    CornerRadii {
+                        top_left: r,
+                        top_right: px(0.0),
+                        bottom_right: px(0.0),
+                        bottom_left: r,
+                        continuous,
+                    },
+                    1,
+                ),
+                // Open bottom (`border-x border-t rounded-t`).
+                (
+                    [2.0, 2.0, 0.0, 2.0],
+                    CornerRadii {
+                        top_left: r,
+                        top_right: r,
+                        bottom_right: px(0.0),
+                        bottom_left: px(0.0),
+                        continuous,
+                    },
+                    2,
+                ),
+                // Open left (`border-y border-r rounded-r`).
+                (
+                    [2.0, 2.0, 2.0, 0.0],
+                    CornerRadii {
+                        top_left: px(0.0),
+                        top_right: r,
+                        bottom_right: r,
+                        bottom_left: px(0.0),
+                        continuous,
+                    },
+                    3,
+                ),
+            ];
+            for (widths, radii, open_side) in cases {
+                let ring = ring_path(rect, radii, widths);
+                let chords = path_chords(&ring);
+                let crosses_open = chords.iter().any(|&(a, b)| match open_side {
+                    0 => a.1 == 0.0 && b.1 == 0.0 && (a.0 - b.0).abs() > 2.5,
+                    1 => a.0 == 100.0 && b.0 == 100.0 && (a.1 - b.1).abs() > 2.5,
+                    2 => a.1 == 40.0 && b.1 == 40.0 && (a.0 - b.0).abs() > 2.5,
+                    _ => a.0 == 0.0 && b.0 == 0.0 && (a.1 - b.1).abs() > 2.5,
+                });
+                assert!(
+                    !crosses_open,
+                    "open side {open_side} (continuous={continuous}) crossed by segment: {chords:?}"
+                );
+
+                // Verify the filled U-polygon paints the three closed sides and leaves the interior clear.
+                let layer = CALayer::new();
+                layer.setFrame(rect);
+                let shape = CAShapeLayer::new();
+                shape.setFrame(rect);
+                // SAFETY: an immutable Core Animation constant.
+                shape.setFillRule(unsafe { kCAFillRuleEvenOdd });
+                shape.setFillColor(cg_color(Color(0x000000ff)).as_deref());
+                shape.setPath(Some(&ring));
+                layer.addSublayer(&shape);
+                let rgba = pixels(&layer, 100, 40);
+                // Center of the box is clear.
+                assert_eq!(rgba[(20 * 100 + 50) * 4 + 3], 0);
+                // `CGBitmapContext` is unflipped: `CG` `y = 0` is buffer row `h - 1`.
+                let (open_pt, closed_pt) = match open_side {
+                    0 => ((50, 39), (50, 0)),
+                    1 => ((99, 20), (0, 20)),
+                    2 => ((50, 0), (50, 39)),
+                    _ => ((0, 20), (99, 20)),
+                };
+                assert_eq!(
+                    rgba[(open_pt.1 * 100 + open_pt.0) * 4 + 3],
+                    0,
+                    "open side {open_side} midpoint should be transparent"
+                );
+                assert_eq!(
+                    rgba[(closed_pt.1 * 100 + closed_pt.0) * 4 + 3],
+                    255,
+                    "closed side opposite {open_side} midpoint should be opaque"
+                );
+            }
+        }
     }
 }

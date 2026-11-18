@@ -218,8 +218,8 @@ pub struct DataTableTarget {
 
 /// A press of the body (`onRowPress`): the row, and the column under the
 /// pointer (none on a row's number), the clicks in a row and the modifier
-/// keys held, for the app's own handling of rows (a selection of several,
-/// opening a row).
+/// keys held, for the app's own handling (a selection of several rows or
+/// cells, opening a row).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsObject)]
 #[non_exhaustive]
 pub struct DataTablePress {
@@ -238,6 +238,40 @@ pub struct DataTablePress {
     pub alt: bool,
     /// Command (Apple platforms) or the Super key was held.
     pub platform: bool,
+}
+
+/// A press of a title (`onColumnPress`): the column, the clicks in a row
+/// and the modifier keys held, for the app's own handling of columns (a
+/// selection of several). Sorting is the sort button's, and a drag that
+/// moved the column is a move.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct DataTableColumnPress {
+    /// The column, its index among the `columns`.
+    pub column: u32,
+    /// The presses in a row: 2 for a double press.
+    pub clicks: u32,
+    /// Shift was held.
+    pub shift: bool,
+    /// Control was held.
+    pub control: bool,
+    /// Option (Apple platforms) or Alt was held.
+    pub alt: bool,
+    /// Command (Apple platforms) or the Super key was held.
+    pub platform: bool,
+}
+
+/// A class of one cell (`cellClasses`). `row` is its row in the data, the
+/// number `onRowPress` reports, and `column` its index among the `columns`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct DataTableCellClass {
+    /// The row, from 0 in the data.
+    pub row: u32,
+    /// The column, its index among the `columns`.
+    pub column: u32,
+    /// Classes added after the cell part's and the column's `cellClass`.
+    pub class: SharedString,
 }
 
 /// Where a context menu was asked for (`onContextMenu`).
@@ -322,8 +356,11 @@ pub struct DataTableDump {
 /// total and `data` the rows from `dataStart` on, which the app fetches as
 /// `onVisibleRowsChange` tells (or `onLoadMore`). Rows, columns or cells
 /// select (`rowSelectable`, `columnSelectable`, `cellSelectable`,
-/// `selection`, with the arrow keys, Home, End, Page Up and Down, Tab), columns resize, move, stay fixed at the left and
-/// sort (the app sorts: `sort`, `onSortChange`), titles can sit under group
+/// `selection`, with the arrow keys, Home, End, Page Up and Down, Tab). An
+/// app keeps a selection of several rows, cells or columns itself
+/// (`selectOnModifierPress`, `onRowPress`, `onColumnPress`, `cellClasses`).
+/// Columns resize, move, stay fixed at the left and sort (the app sorts:
+/// `sort`, `onSortChange`), titles can sit under group
 /// labels, and a cell or a title can be drawn by the app (`renderCell`,
 /// `renderHeaderCell`). The table supplies layout and alignment; the app
 /// styles its parts (`classes`, `styles`).
@@ -349,6 +386,12 @@ pub struct DataTableProps {
     /// order muted, an alert highlighted) with no call into JS per row.
     #[prop(default)]
     pub row_classes: Prop<Vec<SharedString>>,
+    /// Classes of single cells, after the part's and the column's
+    /// `cellClass`: each names a data row and a column (the same indexes
+    /// `onRowPress` reports). The cell's text stays the table's, so an app
+    /// paints a selection of cells with no call into JS per cell.
+    #[prop(default)]
+    pub cell_classes: Prop<Vec<DataTableCellClass>>,
     /// The height of a body row, in points (default 32; in a terminal a
     /// row is one Cell, whatever this is).
     #[prop(default = Points(32.0))]
@@ -378,12 +421,13 @@ pub struct DataTableProps {
     /// its row (when `rowSelectable`).
     #[prop(default)]
     pub cell_selectable: Prop<bool>,
-    /// Whether a press of a row with Shift or the platform's secondary
-    /// modifier (Command on Apple platforms, Control elsewhere) held selects
-    /// it (default true). An app that keeps its own selection of several
-    /// rows sets false and handles those presses itself (a selected cell
-    /// pressed so does not become its row either). It applies where the
-    /// platform reports the modifiers of a press.
+    /// Whether a press with Shift or the platform's secondary modifier
+    /// (Command on Apple platforms, Control elsewhere) held selects, as a
+    /// press without it does (default true): a row, a cell or a title. An
+    /// app that keeps its own selection of several rows, cells or columns
+    /// sets false and handles those presses itself (`onRowPress`,
+    /// `onColumnPress`). It applies where the platform reports the
+    /// modifiers of a press.
     #[prop(default = true)]
     pub select_on_modifier_press: Prop<bool>,
     /// What is selected, when the app sets it (a user's selection is
@@ -469,6 +513,12 @@ pub enum DataTableEvent {
     /// with Shift or the secondary modifier here.
     #[args(event)]
     RowPress(DataTablePress),
+    /// A title was pressed (not its sort button, and not a drag that moved
+    /// the column). With `selectOnModifierPress` off, a press with Shift or
+    /// the secondary modifier leaves the table's selection and the app
+    /// handles it here, whether or not the column selects.
+    #[args(event)]
+    ColumnPress(DataTableColumnPress),
     /// A row, cell or title was pressed twice.
     #[args(target)]
     DoublePress(DataTableTarget),

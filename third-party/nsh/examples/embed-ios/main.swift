@@ -187,6 +187,11 @@ final class EmbedController: UIViewController, NshScrollWatcher {
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation {
         NshAppView.preferredStatusBarUpdateAnimation
     }
+
+    // Let the page shown decide the orientations (`supportedOrientations`).
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        NshAppView.supportedInterfaceOrientations ?? super.supportedInterfaceOrientations
+    }
 }
 
 /// `embed.badge`: a native label the nsh app lays out (`nativeComponent`).

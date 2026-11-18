@@ -144,6 +144,7 @@ mount(App);
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `reveal` | `.reveal(..)` | `boolean` | `false` | 与 `Collapsible` 的 `reveal` 一样带动效展开和收起：面板裁剪内容，高度从零弹到内容自身的高度再弹回，临界阻尼（约 265 毫秒，不过冲），之后的分区随之移动。系统要求减少动态效果时立即展开和收起。 |
+| `revealSpring` | `.reveal_spring(..)` | `{ stiffness?, damping?, mass? }`（Rust `Spring`） | 无 | 展开动效使用的弹簧，与 `Collapsible` 的 `revealSpring` 一样：`AnimatedValue.spring` 的选项及其默认值，不设置时使用上面的临界阻尼弹簧。只在设置 `reveal` 时生效；减少动态效果时仍立即展开和收起。 |
 | `keepMounted` | `.keep_mounted(..)` | `boolean` | `false` | 分区收起时内容仍留在树中，但不可见、不接收键盘焦点、屏幕阅读器也读不到：视频保持位置，网页视图保持页面。不设置时，面板收起后（动效结束后）内容离开树，再次展开时恢复原样。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对这个区域的称呼：通常是分区标题，与标题读出的一致。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容。 |

@@ -553,7 +553,6 @@ fn card(selected: Signal<bool>) -> impl IntoElement {
         .dark(|s| s.border_2())
         // App state.
         .style_when(selected, |s| s.bg(move || theme().accent))
-        .cursor_pointer()
         .child(
             text("Title")
                 .flex_1()

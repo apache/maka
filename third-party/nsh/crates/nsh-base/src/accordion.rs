@@ -11,7 +11,11 @@
 
 use std::rc::Rc;
 
-use nsh_core::{AccessibilityState, element::Style, prelude::*};
+use nsh_core::{
+    AccessibilityState,
+    element::{Spring, Style},
+    prelude::*,
+};
 
 use crate::{
     collapsible::follow_open,
@@ -239,13 +243,19 @@ pub fn AccordionTrigger(props: AccordionTriggerProps, _cx: Scope<NoEvent>) -> im
 pub struct AccordionPanelProps {
     /// Opens and closes with a reveal, as `Collapsible`'s `reveal`: the
     /// panel clips its content and its height springs from zero to the
-    /// content's own and back, critically damped (`gpui-component`'s
-    /// accordion, `MotionReveal`), and the items after it move with it.
+    /// content's own and back, critically damped by default
+    /// (`gpui-component`'s accordion, `MotionReveal`; `revealSpring` sets
+    /// the spring), and the items after it move with it.
     /// Off by default (the panel comes and goes at once), and with reduced
     /// motion. The panel is in the layout while closed, zero high, so its
     /// padding and borders belong on a view of its content.
     #[prop(default)]
     pub reveal: Prop<bool>,
+    /// The spring the reveal moves on, as `Collapsible`'s `revealSpring`
+    /// (`{ stiffness, damping, mass }`); without one, the critically
+    /// damped default. Used only with `reveal`, and not with reduced
+    /// motion.
+    pub reveal_spring: Prop<Option<Spring>>,
     /// The content stays in the tree while closed (`gpui-base`'s
     /// `keep_mounted`), out of sight, of the keyboard focus and of screen
     /// readers: a video keeps its place, a web view its page. Without it
@@ -273,7 +283,12 @@ pub fn AccordionPanel(props: AccordionPanelProps, _cx: Scope<NoEvent>) -> impl I
         .unwrap_or_else(|| computed(|| false));
     let (reveal, keep) = (props.reveal, props.keep_mounted);
     let region = element_ref();
-    let mounted = follow_open(open.into_reactive(), reveal.into_reactive(), region);
+    let mounted = follow_open(
+        open.into_reactive(),
+        reveal.into_reactive(),
+        props.reveal_spring.into_reactive(),
+        region,
+    );
     let content = when(move || mounted.get() || keep.get(), move || props.children);
     let terminal = is_terminal();
     view()

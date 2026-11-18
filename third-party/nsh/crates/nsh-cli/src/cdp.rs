@@ -245,10 +245,11 @@ impl Browser {
         let mut page = Page {
             browser: self.clone(),
             context,
+            target: String::new(),
             session: String::new(),
             closed: AtomicBool::new(false),
         };
-        let target = id(
+        page.target = id(
             self.call(
                 None,
                 "Target.createTarget",
@@ -260,7 +261,7 @@ impl Browser {
             self.call(
                 None,
                 "Target.attachToTarget",
-                json!({ "targetId": target, "flatten": true }),
+                json!({ "targetId": page.target, "flatten": true }),
             )?,
             "sessionId",
         )?;
@@ -356,6 +357,8 @@ static NEXT_PROFILE: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct Page {
     browser: Arc<Browser>,
     context: String,
+    /// Its target, closed before the context goes.
+    target: String,
     session: String,
     closed: AtomicBool,
 }
@@ -371,9 +374,19 @@ impl Page {
         &self.browser
     }
 
-    /// Closes the page and its context.
+    /// Closes the page and its context. The page goes first, with
+    /// `Target.closeTarget`, which runs none of its `beforeunload` listeners:
+    /// an app listening to quit requests is not asked, and no leave dialog
+    /// holds the page.
     pub(crate) fn close(&self) {
         if !self.closed.swap(true, Ordering::Relaxed) {
+            if !self.target.is_empty() {
+                let _ = self.browser.call(
+                    None,
+                    "Target.closeTarget",
+                    json!({ "targetId": self.target }),
+                );
+            }
             let _ = self.browser.call(
                 None,
                 "Target.disposeBrowserContext",

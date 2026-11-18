@@ -13,12 +13,12 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "svg", "net", "sound"]
 # JS apps (bundles, signed packages); without it, the library only runs a
 # Rust app and links no QuickJS.
 js = ["nsh-engine/js-core"]
 # Development support: dev server client, log forwarding, error overlay.
-dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
+dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "dep:nsh-dev", "dep:nsh-testing", "svg", "net", "sound"]
 # Web views with WebKitGTK 6.0 (`libwebkitgtk-6.0-dev` to build,
 # `libwebkitgtk-6.0-4` to run); without it a web view shows a placeholder.
 webview = ["dep:webkit6"]
@@ -47,18 +47,37 @@ zlib = ["js", "nsh-engine/zlib"]
 # The standard JS module `crypto` and the globals of Web Crypto.
 crypto = ["js", "nsh-engine/crypto"]
 
+# The native WebSocket client (tokio-tungstenite, rustls). Without it
+# `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+websocket = ["nsh-core/websocket"]
+# App self-updates (`nsh/updater`). Without it a check finds no update.
+updater = ["nsh-core/updater"]
+
+# SVG images (resvg). Without it an SVG is recognized and shows nothing,
+# its load failing with a message naming the feature.
+svg = ["nsh-core/svg"]
+# HTTP: `fetch` and remote images (ureq, rustls). Without it `fetch`
+# rejects and an `<Image>` shows only files, assets and inline data.
+net = ["nsh-core/loader", "nsh-engine/net"]
+# Sounds (`Sound`), decoded and mixed with GStreamer (its core and base
+# plug-ins: `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` to
+# build). Without it a sound's load fails as not supported, naming the
+# feature. `AudioPlayer` and `Video` play through GTK's media support and
+# need no GStreamer to build.
+sound = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-audio"]
+
 [dependencies]
 log.workspace = true
 
 # Empty off Linux (like the other platform crates off their targets).
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-core = { workspace = true, features = ["svg", "loader"] }
-nsh-engine = { workspace = true, features = ["net"] }
+nsh-core.workspace = true
+nsh-engine.workspace = true
 nsh-base.workspace = true
 gtk4.workspace = true
-gstreamer.workspace = true
-gstreamer-app.workspace = true
-gstreamer-audio.workspace = true
+gstreamer = { workspace = true, optional = true }
+gstreamer-app = { workspace = true, optional = true }
+gstreamer-audio = { workspace = true, optional = true }
 # GIF and WebP (first frame), which GDK cannot decode without gdk-pixbuf loaders;
 # JPEG (and PNG) shrunk to the size a view shows them at.
 image = { workspace = true, features = ["gif", "jpeg", "webp"] }
@@ -70,4 +89,6 @@ ttf-parser.workspace = true
 crossbeam-channel.workspace = true
 nsh-dev = { workspace = true, features = ["client"], optional = true }
 nsh-testing = { workspace = true, features = ["agent"], optional = true }
-webkit6 = { workspace = true, optional = true }
+# 2.42: downloads (`WebKitDownload`), which the web view's destination
+# decisions use.
+webkit6 = { workspace = true, optional = true, features = ["v2_42"] }

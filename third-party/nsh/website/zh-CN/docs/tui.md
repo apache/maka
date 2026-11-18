@@ -88,6 +88,21 @@ nsh run App.tsx --target tui --points-per-cell 10x20
 没有绑定接收的 Ctrl 快捷键会再作为 Cmd 匹配一次，菜单和提示（`keymap.label`、`Command`）也把这些快捷键显示为 Ctrl，
 即在这里要按的键（`mod+o` 显示为 `⌃O`）。
 
+**原始按键事件。** 与桌面一致，获得焦点的自定义视图也能直接听到按键：`onKeyDown` / `onKeyUp`（Rust 视图的
+`on_key_down` / `on_key_up`）收到 `KeyEvent`，其中 `key` 是终端报告的逻辑按键（`a`、`A`、`ArrowLeft`、`Enter`），
+并带有终端报告的 `modifiers` 和 `repeat`。`code` 始终为空：终端不报告硬件按键身份，宿主也绝不根据按键输入的字符推断。
+`defaultPrevented` 是捕获规则（`capture_keys`）的决定，与应用 keymap 使用同一套规范快捷键匹配；被捕获的按键会被标记，
+不执行终端的默认行为，但监听者仍能听到。应用自己的快捷键保持优先，文本框和 Minibuffer 保留自己的按键。dialog（`Modal`）是
+键盘边界；sheet 是同一窗口内的浮层，其中的按键跟随声明它的视图，门户（overlay）同理，与桌面一致。
+
+终端能报告什么取决于协议；报告不出的一律不编造：
+
+| 终端 | `KeyEvent` 得到的信息 |
+|---|---|
+| 纯文本 / 传统终端 | 只有按下：每次按键一个 key down，没有松开，自动重复以新的按下到达；没有物理 code |
+| kitty 键盘协议 | 独立宿主会协商该协议：以转义序列发送的按键（方向键、功能键、带修饰键的按键）报告松开和自动重复；Enter、Tab、Backspace 和普通文本仍是按下；仍无物理 code |
+| Windows 控制台 | crossterm 读取控制台的按键松开记录，因此会收到松开；自动重复按控制台报告的形式到达；仍无物理 code |
+
 **搜索。** Ctrl+S 和 Ctrl+R 像 readline 和 Emacs 那样随输入搜索屏幕上的文本。查询显示在最底一行，前面是 `/`（向前）或
 `?`（向后），匹配处高亮，焦点移到匹配所属的控件。Ctrl+S / Ctrl+R 跳到下一个 / 上一个匹配，Backspace 或 Ctrl+H 撤回上一个
 按键，Enter 在当前匹配处结束搜索，Escape 或 Ctrl+G 把焦点和滚动位置恢复到搜索之前。

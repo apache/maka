@@ -76,9 +76,13 @@ jobs:
         # macOS runners are the scarcest: pull requests check Linux, main's
         # scheduled runs both.
         os: ${{ github.event_name == 'schedule' && fromJSON('["ubuntu-24.04", "macos-15"]') || fromJSON('["ubuntu-24.04"]') }}
-    runs-on: ${{ matrix.os }}
+    # The Linux run of a pull request from this repository runs on the
+    # self-hosted runner; forks' pull requests, the scheduled runs (which
+    # save the dependencies' caches forks restore) and the other systems run
+    # on GitHub's runners (docs/dev/tooling.md "Runners").
+    runs-on: ${{ (matrix.os == 'ubuntu-24.04' && github.event_name != 'schedule' && !(github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository)) && fromJSON('["public", "Linux", "X64"]') || matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # QuickJS is C (bindgen needs libclang).
       - name: Install clang
@@ -86,9 +90,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
 
       - name: Setup Rust
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      # The self-hosted runner is shared: install the toolchain without
+      # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
+      - name: Setup Rust (self-hosted)
+        if: runner.environment == 'self-hosted'
+        run: |
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$bin:$PATH"
+          command -v rustup || curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          rustup toolchain install stable --profile minimal -c clippy
+          echo "$bin" >> "$GITHUB_PATH"
 
       # huacnlee/cargo, and the dependencies' builds: main's runs save
       # them, pull requests restore them.

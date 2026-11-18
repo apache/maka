@@ -45,6 +45,10 @@ macro_rules! parts {
                     $( DataTablePart::$variant => self.$field.as_ref().map(|s| &s.0), )*
                 }
             }
+
+            pub(crate) fn is_empty(&self) -> bool {
+                $( self.$field.is_none() && )* true
+            }
         }
     };
 }

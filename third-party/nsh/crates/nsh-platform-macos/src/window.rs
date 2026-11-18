@@ -163,6 +163,10 @@ define_class!(
 
         #[unsafe(method(sendEvent:))]
         fn send_event(&self, event: &NSEvent) {
+            #[cfg(feature = "dev")]
+            if let Some(placed) = crate::synth::placed(event) {
+                return self.sendEvent(&placed);
+            }
             if !self.ivars().background.get() || !self.pass_title_bar_press(event) {
                 // SAFETY: NSWindow's own dispatch of the event.
                 unsafe { msg_send![super(self), sendEvent: event] }
@@ -244,6 +248,17 @@ define_class!(
         #[unsafe(method(canBecomeMainWindow))]
         fn can_become_main(&self) -> bool {
             false
+        }
+
+        #[unsafe(method(sendEvent:))]
+        fn send_event(&self, event: &NSEvent) {
+            // The test agent's events where it made them, as in NshWindow.
+            #[cfg(feature = "dev")]
+            if let Some(placed) = crate::synth::placed(event) {
+                return self.sendEvent(&placed);
+            }
+            // SAFETY: NSWindow's own dispatch of the event.
+            unsafe { msg_send![super(self), sendEvent: event] }
         }
     }
 );
@@ -482,13 +497,13 @@ pub(crate) fn sheet_window(surface: &Surface) -> Option<Retained<NSWindow>> {
     own.or_else(|| surface.root.ns().window())
 }
 
-/// The window an open or save panel slides down from: the
-/// [`sheet_window`] while the user sees it ([`panel_placement`]). A sheet
-/// of a window out of sight (a tray app's hidden main window, a minimized
-/// one, one kept off every screen) stays out of sight with it, so the
-/// panel shows in a window of its own instead (`None`), the app activated
-/// first as `focus()` activates it: a panel of an inactive app opens
-/// behind the front app's windows.
+/// The window an open or save panel, or an alert ([`crate::system`]),
+/// slides down from: the [`sheet_window`] while the user sees it
+/// ([`panel_placement`]). A sheet of a window out of sight (a tray app's
+/// hidden main window, a minimized one, one kept off every screen) stays
+/// out of sight with it, so the panel shows in a window of its own instead
+/// (`None`), the app activated first as `focus()` activates it: a panel of
+/// an inactive app opens behind the front app's windows.
 pub(crate) fn panel_window(surface: &Surface) -> Option<Retained<NSWindow>> {
     let window = sheet_window(surface);
     let app = NSApplication::sharedApplication(surface.mtm);
@@ -1121,14 +1136,7 @@ fn request(surface: &Rc<Surface>, id: NodeId, request: &WindowRequest) {
     let mtm = surface.mtm;
     match request {
         WindowRequest::Show => show(surface, id, &window, false),
-        WindowRequest::Hide => {
-            if let Some(w) = surface.windows.borrow().get(&id) {
-                w.showing.set(Showing::Done);
-            }
-            crate::input::window_hidden(surface, id);
-            window.orderOut(None);
-            lost_key(surface, &window);
-        }
+        WindowRequest::Hide => hide(surface, id, &window),
         WindowRequest::Focus => show(surface, id, &window, true),
         WindowRequest::Close => close_request(surface, id, &window),
         WindowRequest::Minimize => {
@@ -1200,6 +1208,43 @@ fn request(surface: &Rc<Surface>, id: NodeId, request: &WindowRequest) {
     report(surface, id);
 }
 
+/// `hide()` (and the main window's close with `keepAliveOnClose`): window
+/// `id` is ordered out, one in full screen once it has left full screen
+/// ([`crate::window_state::hide`]), so its space does not stay behind.
+pub(crate) fn hide(surface: &Surface, id: NodeId, window: &NSWindow) {
+    crate::input::window_hidden(surface, id);
+    if let Some(w) = surface.windows.borrow().get(&id) {
+        w.showing.set(Showing::Done);
+    }
+    let now = if id == ROOT_ID {
+        crate::window_state::hide(&surface.window, window)
+    } else {
+        with_watch(surface, id, |watch| {
+            crate::window_state::hide(watch, window)
+        })
+        .unwrap_or(true)
+    };
+    if now {
+        window.orderOut(None);
+        lost_key(surface, window);
+    }
+}
+
+/// A window the app hid in full screen is back on its desktop: it is
+/// ordered out.
+pub(crate) fn hidden_after_full_screen(surface: &Surface, target: Target) {
+    let id = match target {
+        Target::Main => ROOT_ID,
+        Target::Own(id) => id,
+    };
+    let Some(window) = window_of(surface, id) else {
+        return;
+    };
+    window.orderOut(None);
+    lost_key(surface, &window);
+    report(surface, id);
+}
+
 /// `f` with the watch of window `id` (the main window's for the root).
 fn with_target_watch(surface: &Surface, id: NodeId, f: impl FnOnce(&Watch)) {
     if id == ROOT_ID {
@@ -1212,6 +1257,8 @@ fn with_target_watch(surface: &Surface, id: NodeId, f: impl FnOnce(&Watch)) {
 /// Shows window `id` (`focus`: and makes it key); a new window waiting for
 /// its first frame shows with it.
 fn show(surface: &Surface, id: NodeId, window: &NSWindow, focus: bool) {
+    // Shown again while it leaves full screen: it stays.
+    with_target_watch(surface, id, crate::window_state::shown);
     if let Some(w) = surface.windows.borrow().get(&id)
         && let Showing::Waiting(_) = w.showing.get()
     {
@@ -1258,7 +1305,7 @@ fn order_front(surface: &Surface, window: &NSWindow, activate: bool, key: bool, 
 }
 
 /// How [`order_front`] activates the app (and [`panel_window`], for an
-/// open or save panel shown alone).
+/// open or save panel or an alert shown alone).
 #[derive(Debug, PartialEq, Eq)]
 enum Activation {
     /// Not at all: it is active, the window does not activate it (a panel),
@@ -1268,7 +1315,8 @@ enum Activation {
     /// new window) stays out of the way of the app the user is in.
     Ask,
     /// It takes the keyboard from the app in front (`focus()`, an open or
-    /// save panel shown alone), as other toolkits' focus calls do.
+    /// save panel or an alert shown alone), as other toolkits' focus calls
+    /// do.
     Take,
 }
 
@@ -1507,23 +1555,19 @@ fn place(
         .or_else(|| parent.and_then(|p| p.screen()))
         .or_else(|| surface.root.ns().window().and_then(|w| w.screen()))
         .or_else(|| NSScreen::mainScreen(mtm));
-    let position = position.unwrap_or(match kind {
-        WindowKind::Dialog if parent.is_some() => WindowPosition::ParentCenter,
-        WindowKind::Popup | WindowKind::Overlay => WindowPosition::Center,
-        _ if display.is_some() => WindowPosition::Center,
-        _ => {
-            // Cascaded from the parent's (or the main window's) top left.
-            let step = CASCADE * (surface.windows.borrow().len() % 8 + 1) as f64;
-            let from = parent
-                .map(|p| p.frame())
-                .or_else(|| surface.root.ns().window().map(|w| w.frame()));
-            let top_left = from.map_or(NSPoint::new(step, step), |f| {
-                NSPoint::new(f.origin.x + step, f.origin.y + f.size.height - step)
-            });
-            window.setFrameTopLeftPoint(top_left);
-            return;
-        }
-    });
+    let Some(position) = opening_position(position, kind, parent.is_some(), display.is_some())
+    else {
+        // Cascaded from the parent's (or the main window's) top left.
+        let step = CASCADE * (surface.windows.borrow().len() % 8 + 1) as f64;
+        let from = parent
+            .map(|p| p.frame())
+            .or_else(|| surface.root.ns().window().map(|w| w.frame()));
+        let top_left = from.map_or(NSPoint::new(step, step), |f| {
+            NSPoint::new(f.origin.x + step, f.origin.y + f.size.height - step)
+        });
+        window.setFrameTopLeftPoint(top_left);
+        return;
+    };
     match position {
         WindowPosition::At(p) => {
             let primary = crate::window_state::primary_height(mtm);
@@ -1539,6 +1583,25 @@ fn place(
             }
         }
     }
+}
+
+/// Where a window opens: the app's `position` (`WindowOptions`'
+/// `default_position`) when it gives one, else its kind's default; `None`
+/// cascades it from its parent's (or the main window's) top left. Kept
+/// apart from placing the window, so a default is never chosen, and
+/// applied, over the app's position.
+fn opening_position(
+    position: Option<WindowPosition>,
+    kind: WindowKind,
+    parent: bool,
+    display: bool,
+) -> Option<WindowPosition> {
+    position.or(match kind {
+        WindowKind::Dialog if parent => Some(WindowPosition::ParentCenter),
+        WindowKind::Popup | WindowKind::Overlay => Some(WindowPosition::Center),
+        _ if display => Some(WindowPosition::Center),
+        _ => None,
+    })
 }
 
 /// A batch was applied: the windows waiting for their first frame show
@@ -1655,6 +1718,9 @@ pub(crate) fn launched_main(surface: &Surface, mode: Option<WindowMode>, shown: 
 /// The standalone app's main window shows: the first time, it takes the
 /// mode it opens in.
 pub(crate) fn main_shown(surface: &Surface) {
+    // Shown again while it leaves full screen (the Dock icon, a link):
+    // it stays.
+    crate::window_state::shown(&surface.window);
     if let Some(mode) = surface.main_open_mode.take()
         && let Some(window) = surface.root.ns().window()
     {
@@ -1946,6 +2012,9 @@ fn main_close_press(surface: &Surface, reason: CloseReason) -> bool {
     if held.pending_close.get().is_some() {
         return false;
     }
+    if crate::app::ask_main_window_quit(surface.key(), held.close_on_press.get()) {
+        return false;
+    }
     let serial = held.serial.get() + 1;
     held.serial.set(serial);
     let close = held.close_on_press.get();
@@ -2091,6 +2160,7 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
     }
     crate::input::window_hidden(surface, id);
     dock::set(surface.key(), id, None);
+    crate::input::window_closed(surface, &w.view);
     let window = w.window.clone();
     close(w);
     lost_key(surface, &window);
@@ -2464,6 +2534,59 @@ pub(crate) mod dock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_opens_where_the_app_asks() {
+        let at = WindowPosition::At(point(Points(1180.0), Points(720.0)));
+        let kinds = [
+            WindowKind::Normal,
+            WindowKind::Dialog,
+            WindowKind::Panel,
+            WindowKind::Popup,
+            WindowKind::Overlay,
+        ];
+        for kind in kinds {
+            for parent in [false, true] {
+                for display in [false, true] {
+                    for asked in [at, WindowPosition::Center, WindowPosition::ParentCenter] {
+                        assert_eq!(
+                            opening_position(Some(asked), kind, parent, display),
+                            Some(asked),
+                            "{kind:?}, parent {parent}, display {display}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_without_a_position_opens_where_its_kind_does() {
+        use WindowKind::{Dialog, Normal, Overlay, Panel, Popup};
+        use WindowPosition::{Center, ParentCenter};
+        // (kind, parent, display) -> default; `None` cascades. A parent
+        // comes before a display for a dialog.
+        let cases = [
+            (Normal, false, false, None),
+            (Normal, true, false, None),
+            (Normal, false, true, Some(Center)),
+            (Panel, true, false, None),
+            (Panel, true, true, Some(Center)),
+            (Dialog, false, false, None),
+            (Dialog, false, true, Some(Center)),
+            (Dialog, true, false, Some(ParentCenter)),
+            (Dialog, true, true, Some(ParentCenter)),
+            (Popup, false, false, Some(Center)),
+            (Overlay, true, false, Some(Center)),
+        ];
+        for (kind, parent, display, expected) in cases {
+            assert_eq!(
+                opening_position(None, kind, parent, display),
+                expected,
+                "{kind:?}, parent {parent}, display {display}"
+            );
+        }
+    }
 
     fn inputs(kind: WindowKind) -> StyleInputs {
         StyleInputs {

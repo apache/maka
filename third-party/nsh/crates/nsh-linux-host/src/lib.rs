@@ -14,6 +14,11 @@
 //!   passes the app's (`nsh.json` `"id"`). The app's data (`Storage` of `nsh`)
 //!   is kept under the id its bundle carries, in the system's data
 //!   directory.
+//! - `--background` runs the app in the background where a user may type
+//!   on the display: its windows show without taking the focus from the
+//!   app the user works in, and the test agent's keys go to the widgets
+//!   (`nsh test --target linux` passes it; on Xvfb, with no keyboard but
+//!   its own virtual ones, the app runs as in the foreground).
 //!
 //! Without arguments it connects to the dev server on this machine.
 //!
@@ -59,13 +64,14 @@ pub fn main() -> std::process::ExitCode {
             "--trace" => options.trace = true,
             // The performance monitor's readings, once a second.
             "--fps" => options.fps = true,
+            "--background" => options.background = true,
             "--app-id" => {
                 if let Some(id) = args.next().filter(|id| !id.is_empty()) {
                     options.app_id = id;
                 }
             }
-            // Where apps keep their data (`nsh test --target` gives each app
-            // a fresh one); the system's data directory otherwise.
+            // The app's data directory (`nsh test --target` gives each app a
+            // fresh one); the one under its id in the system's otherwise.
             "--data-dir" => {
                 options.data_dir = args.next().map(PathBuf::from);
                 // Its caches too (downloaded images): a test's app starts with none.

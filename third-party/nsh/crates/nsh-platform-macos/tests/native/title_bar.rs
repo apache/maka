@@ -15,7 +15,9 @@ use nsh_core::{
 use nsh_platform_macos as platform;
 use platform::{
     objc2::{MainThreadMarker, MainThreadOnly},
-    objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowButton, NSWindowStyleMask},
+    objc2_app_kit::{
+        NSApplication, NSBackingStoreType, NSScreen, NSWindow, NSWindowButton, NSWindowStyleMask,
+    },
     objc2_foundation::{NSDate, NSPoint, NSRect, NSSize, NSString},
 };
 
@@ -34,7 +36,12 @@ fn Bar() -> impl IntoElement {
             let mut bar = TitleBarOptions::default();
             if want != 0 {
                 bar.style = TitleBarStyle::Hidden;
-                bar.height = Some(Points(want as f32));
+                if want == 52 || want == 53 {
+                    bar.controls_offset = Some(point(px(18.0), px(19.0)));
+                }
+                if want != 53 {
+                    bar.height = Some(Points(want as f32));
+                }
             }
             let mut attributes = WindowAttributes::default();
             attributes.title_bar = Some(bar);
@@ -137,6 +144,12 @@ fn assert_centered(window: &NSWindow, system: &[(f64, f64)], bar: f64, when: &st
 #[allow(clippy::field_reassign_with_default)]
 pub(super) fn run() {
     let mtm = MainThreadMarker::new().unwrap();
+    let app = NSApplication::sharedApplication(mtm);
+    app.finishLaunching();
+    assert!(
+        NSScreen::screens(mtm).count() > 0,
+        "native title bar checks need a display"
+    );
     // SAFETY: The window is created on the process main thread.
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -185,7 +198,76 @@ pub(super) fn run() {
             "the system's title bar gets its traffic lights back: {light:?}, was {before:?}"
         );
     }
-    println!("title bar: 36 and 60 point bars centered, system bar restored");
+    for bar in [52, 53] {
+        window.orderOut(None);
+        WANT.store(bar, Ordering::SeqCst);
+        pump(500);
+        assert_offset(&window, &system, "offset before show");
+        window.makeKeyAndOrderFront(None);
+        pump(100);
+        assert_offset(&window, &system, "offset after show");
+        for _ in 0..3 {
+            let mut frame = window.frame();
+            frame.size.width += 30.0;
+            frame.size.height += 20.0;
+            window.setFrame_display(frame, true);
+            pump(100);
+            assert_offset(&window, &system, "offset after resize");
+            window.resignKeyWindow();
+            window.makeKeyWindow();
+            pump(100);
+            assert_offset(&window, &system, "offset after becoming key");
+        }
+        if bar == 52 {
+            // A layout notification can arrive after AppKit reset only
+            // close, while the other two still have the custom offset.
+            let close = window
+                .standardWindowButton(NSWindowButton::CloseButton)
+                .unwrap();
+            let mut origin = close.frame().origin;
+            origin.x = system[0].0;
+            close.setFrameOrigin(origin);
+            pump(100);
+            assert_offset(&window, &system, "after a partial AppKit layout");
+            assert_clickable(&window, "offset with bar height");
+        }
+        set_bar(0, 0);
+        for (light, original) in lights(&window).iter().zip(&system) {
+            assert!(
+                (light.0 - original.0).abs() <= 0.5,
+                "removing offset restores AppKit x: {light:?}, {original:?}"
+            );
+        }
+    }
+    println!("title bar: centered and offset buttons survive resize and key changes");
     surface.stop();
     window.close();
+}
+
+fn assert_offset(window: &NSWindow, system: &[(f64, f64)], when: &str) {
+    let actual = lights(window);
+    println!(
+        "{when}: scale={}, lights={actual:?}",
+        window.backingScaleFactor()
+    );
+    for (light, original) in actual.iter().zip(system) {
+        assert!(
+            (light.0 - actual[0].0 - (original.0 - system[0].0)).abs() <= 0.5,
+            "{when}: spacing must match AppKit: {actual:?}, default {system:?}"
+        );
+    }
+    assert!(
+        (actual[0].0 - 18.0).abs() <= 0.5,
+        "{when}: close x: {actual:?}"
+    );
+    for kind in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        let button = window.standardWindowButton(kind).unwrap();
+        let rect = button.convertRect_toView(button.bounds(), None);
+        let top = window.frame().size.height - rect.origin.y - rect.size.height;
+        assert!((top - 19.0).abs() <= 0.5, "{when}: top={top}, expected 19");
+    }
 }

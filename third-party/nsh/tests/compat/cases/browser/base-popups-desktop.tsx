@@ -1,7 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the popups of
 // `nsh/base` on a desktop: a `Popover` that a press outside leaves open
 // (`closeOnPressOutside`), a `Menu` as a popup on a side of its trigger
-// (its side, alignment, gap and margin), a `ContextMenu` the secondary
+// (its side, alignment, gap and margin) whose items a letter reaches
+// (typeahead), a `ContextMenu` the secondary
 // button opens where the pointer is (its gap and margin) and one the app
 // opens (`open`) below its trigger, a `Tooltip` (an element's
 // `tooltip`) shown after the pointer rests on its trigger (`delay`) and hidden when it leaves,
@@ -35,7 +36,7 @@ function App() {
         popupStyle={{ width: 90, height: 600 }}
         trigger={<View style={{ height: 30 }}><Text>DeskMenu</Text></View>}
       >
-        <MenuItem><Text>DeskItem</Text></MenuItem>
+        <MenuItem onSelect={() => log.set("Log: chose DeskItem")}><Text>DeskItem</Text></MenuItem>
       </Menu>
       <ContextMenu
         offset={3}

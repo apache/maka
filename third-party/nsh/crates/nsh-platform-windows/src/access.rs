@@ -824,6 +824,11 @@ pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
     if let Some(field) = crate::text_input::focused(surface) {
         return Some(field);
     }
+    // A focusable custom view with the keyboard focus is the focused
+    // element too, in its own window.
+    if let Some(view) = crate::keyboard::focused_any(surface) {
+        return Some(view);
+    }
     let id = FOCUS.with_borrow(|f| f.get(&surface.key()).copied())?;
     let view = surface.view(id)?;
     match exposed(&view) {

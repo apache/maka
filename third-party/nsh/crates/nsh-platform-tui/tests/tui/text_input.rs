@@ -137,7 +137,8 @@ fn readline_moves_kills_yanks_and_transposes_through_the_core_editor() {
 
 #[test]
 fn paste_is_one_edit_and_selection_uses_utf16_while_cells_use_display_width() {
-    let (mut view, mut terminal, rx) = field("maxLength={7}");
+    // `maxLength` counts characters: 界, 🙂, e, its accent, a and b.
+    let (mut view, mut terminal, rx) = field("maxLength={6}");
     view.handle(Input::Paste("界🙂e\u{301}abc".into()));
     draw_until(&mut view, &mut terminal, &rx, "changes:1 sel:7-7");
     terminal.backend_mut().assert_cursor_position((7, 0));

@@ -44,6 +44,8 @@
 //! a drawing names them and kept per canvas (their frames make bitmaps per
 //! device).
 
+mod offscreen;
+
 use std::{cell::RefCell, f64::consts::TAU, rc::Rc, sync::Arc};
 
 use nsh_core::{
@@ -56,6 +58,7 @@ use nsh_core::{
     },
     geometry::{Percentage, Radians, point, size},
 };
+pub(crate) use offscreen::render as render_offscreen;
 use rustc_hash::FxHashMap;
 use windows::{
     Win32::Graphics::{
@@ -110,7 +113,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
     gfx::{self, Gfx},
-    image::Frame,
+    image::CanvasBitmap,
     render::{DrawCx, color_f, rect_f},
     surface::Surface,
     view::{NshView, ViewState},
@@ -140,7 +143,7 @@ pub(crate) struct CanvasState {
     args: Vec<Option<AnimationValue>>,
     /// The images the drawing names, by URI: `None` while loading (or
     /// when they failed to load).
-    images: FxHashMap<Arc<str>, Option<Arc<Frame>>>,
+    images: FxHashMap<Arc<str>, Option<CanvasBitmap>>,
     /// What was recorded (made while drawing, which only sees the state).
     cache: RefCell<Cache>,
     /// Where the operations reading changed slots paint ([`DamageScan`]):
@@ -254,10 +257,12 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
         c.stale();
     }
     let id = view.id();
+    // An SVG is rasterized for the screen it shows on.
+    let scale = surface.scale();
     for uri in load {
         let weak = Rc::downgrade(surface);
         let key = uri.clone();
-        crate::image::load_bitmap(surface, &uri, move |result| {
+        crate::image::load_bitmap(surface, &uri, scale, move |result| {
             let frame = match result {
                 Ok(frame) => frame,
                 Err(e) => {
@@ -968,7 +973,7 @@ fn record(
     ops: &[CanvasOp],
     from: usize,
     args: &[Option<AnimationValue>],
-    images: &FxHashMap<Arc<str>, Option<Arc<Frame>>>,
+    images: &FxHashMap<Arc<str>, Option<CanvasBitmap>>,
     text: &mut TextCache,
 ) -> windows::core::Result<ID2D1CommandList> {
     // The pool leaves the thread-local while recording, which never
@@ -1199,7 +1204,7 @@ struct Replay<'a> {
     /// The main list being recorded.
     main: Option<ID2D1CommandList>,
     args: &'a [Option<AnimationValue>],
-    images: &'a FxHashMap<Arc<str>, Option<Arc<Frame>>>,
+    images: &'a FxHashMap<Arc<str>, Option<CanvasBitmap>>,
     text: &'a mut TextCache,
     state: State,
     /// Saved states and how many clips each had.
@@ -1375,7 +1380,7 @@ impl<'a> Replay<'a> {
             } => {
                 let source =
                     source.map(|s| [s.origin.x.0, s.origin.y.0, s.size.width.0, s.size.height.0]);
-                self.image(&image.uri, source, dest)?
+                self.image(&image.uri, image.density(), source, dest)?
             }
         }
         Ok(())
@@ -2323,14 +2328,18 @@ impl<'a> Replay<'a> {
     // --- Images ---
 
     /// The bitmap of the image `uri`, once loaded.
-    fn bitmap(&self, uri: &str) -> Option<ID2D1Bitmap1> {
-        let frame = self.images.get(uri)?.as_ref()?;
-        frame.bitmap(&self.pool.dcs[0])
+    /// The bitmap of image `uri`, and its pixels per unit of the image's
+    /// own size ([`CanvasBitmap::scale`]).
+    fn bitmap(&self, uri: &str) -> Option<(ID2D1Bitmap1, f64)> {
+        let image = self.images.get(uri)?.as_ref()?;
+        let bitmap = image.frame.bitmap(&self.pool.dcs[0])?;
+        Some((bitmap, f64::from(image.scale)))
     }
 
     fn image(
         &mut self,
         uri: &str,
+        density: f32,
         source: Option<[f32; 4]>,
         dest: &[Num; 4],
     ) -> windows::core::Result<()> {
@@ -2342,24 +2351,24 @@ impl<'a> Replay<'a> {
         if self.paints_nothing(None) {
             return Ok(());
         }
-        let Some(bitmap) = self.bitmap(uri) else {
+        let Some((bitmap, scale)) = self.bitmap(uri) else {
             return Ok(());
         };
         // SAFETY: a COM call on a live bitmap.
         let size = unsafe { bitmap.GetPixelSize() };
-        let (iw, ih) = (size.width as f64, size.height as f64);
+        // The source rectangle and the default size are in the image's own
+        // units: an SVG drawn sharp has `scale` pixels to each.
+        let (iw, ih) = (size.width as f64 / scale, size.height as f64 / scale);
         let [sx, sy, sw, sh] = source.map_or([0.0, 0.0, iw, ih], |s| s.map(f64::from));
         if sw == 0.0 || sh == 0.0 {
             return Ok(());
         }
         let [dx, dy, dw, dh] = dest.map(|v| self.n(v));
-        // Missing sizes are the source's.
-        let dw = if dw.is_nan() { sw } else { dw };
-        let dh = if dh.is_nan() { sh } else { dh };
+        let [dw, dh] = dest_size([dw, dh], [sw, sh], density);
         if dw == 0.0 || dh == 0.0 {
             return Ok(());
         }
-        let src = normalized(sx, sy, sw, sh);
+        let src = normalized(sx * scale, sy * scale, sw * scale, sh * scale);
         let dst = normalized(dx, dy, dw, dh);
         let (alpha, composite) = (self.state.alpha as f32, self.state.composite);
         self.emit(true, composite, alpha, &|r, alpha| {
@@ -2379,6 +2388,17 @@ impl<'a> Replay<'a> {
             Ok(())
         })
     }
+}
+
+/// `drawImage`'s destination size: the given one, or where it is missing
+/// (NaN) the source's pixels over the file name's density (`@3x`, as an
+/// `Image`'s), never the screen's scale.
+fn dest_size([dw, dh]: [f64; 2], [sw, sh]: [f64; 2], density: f32) -> [f64; 2] {
+    let density = f64::from(density);
+    [
+        if dw.is_nan() { sw / density } else { dw },
+        if dh.is_nan() { sh / density } else { dh },
+    ]
 }
 
 /// A rectangle with its size made positive.
@@ -3537,6 +3557,15 @@ mod tests {
             CanvasOp::Stroke(None),
         ];
         assert!(recorded(&gfx, &ops, &args).iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn an_image_without_a_size_is_its_pixels_over_its_file_density() {
+        let nan = f64::NAN;
+        assert_eq!(dest_size([nan, nan], [60.0, 30.0], 1.0), [60.0, 30.0]);
+        assert_eq!(dest_size([nan, nan], [60.0, 30.0], 3.0), [20.0, 10.0]);
+        assert_eq!(dest_size([nan, 7.0], [60.0, 30.0], 2.0), [30.0, 7.0]);
+        assert_eq!(dest_size([5.0, 7.0], [60.0, 30.0], 3.0), [5.0, 7.0]);
     }
 
     /// An image at zero global alpha is skipped on the alpha alone; at a

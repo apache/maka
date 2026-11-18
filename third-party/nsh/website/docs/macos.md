@@ -91,6 +91,14 @@ Linux backend's shape with macOS's frame phases `tick`, `drain` and `canvas`; mi
 `nsh test --fps -v` shows and `examples/gallery/tools/perf.py` reads. Measure release builds; the monitor costs nothing
 while it is off.
 
+A click on the panel collapses it to a pill with the frame rate alone, green, amber or red as the frames' 95th percentile
+main-thread time is within half of one refresh, within it, or over it (the bars' colors); another click expands it.
+VoiceOver reads it as a button with that value and presses it the same way. The panel takes the clicks on it and no
+others: the rest of the app gets the mouse as it does without it. The app sets how it shows with `setFpsMode`
+(`"expanded"`, `"collapsed"`, or `"hidden"`, which shows nothing while it still measures and logs; Rust:
+`set_fps_mode(FpsMode::Collapsed)`, `AppView::set_fps_mode` when embedding), now and whenever it shows later;
+`NSH_FPS=collapsed` or `NSH_FPS=hidden` start it so.
+
 ## Packaging
 
 ```sh
@@ -172,6 +180,9 @@ function App() {
 mount(App);
 ```
 
+A menu bar app often offers to open at login: when the user turns that on, `Application.setLaunchAtLogin(true)` registers the app
+bundle as a login item ([Opening at login](../modules/nsh-desktop.md#opening-at-login)).
+
 An app embedded with `AppView` takes part in the system's UI as its host app does (the host's `LSUIElement`, or
 `NSApplication.setActivationPolicy`).
 
@@ -244,9 +255,18 @@ An embedded `AppView` does not change the window it is put in: make your own `NS
 `backgroundColor` for the same look.
 
 
+`AppOptions::handoff` gives the address the app sets with [`UrlScheme.setUrl`](../modules/nsh.md#handoff) to the system,
+so Handoff continues it on the user's other devices. An address of the app's own scheme needs `<bundle id>.url` in the
+Info.plist's `NSUserActivityTypes`. `run_app` turns it on when the bundle declares that type (`nsh.json`
+`"handoff": true`).
+
 `AppOptions::notifications` hands the process's [notifications](../modules/nsh.md#notifications) to the app the view runs:
 its banners, presses and badge. It is off by default, so an embedded app's notifications are `unavailable` and your
 app's stay yours; `run_app` sets it.
+
+`AppOptions::login_item` gives the app `run_app` runs its [login item](../modules/nsh-desktop.md#opening-at-login): the
+app bundle's (`SMAppService.mainApp`). It is off by default and read by `run_app` alone, so an embedded app
+never launches at login; the runner of the apps `nsh package` builds sets it.
 
 `AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
 [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's
@@ -273,13 +293,19 @@ The environment is a desktop's: the safe area and the keyboard height are 0, `id
 [Device and environment](./device-and-environment.md).
 
 Input is a desktop's: the mouse, the trackpad (scrolling with momentum, pinch and rotation) and the keyboard.
+Trackpad tap-to-click briefly shows the app’s `active:` feedback even when the press and release arrive together; press callbacks run at release. Reduced motion keeps immediate visual release.
+A zoomable scroll view zooms with a trackpad pinch or Control + wheel around the pointer, and scrolls both ways while
+zoomed.
 Selectable text is selected by dragging, double- and triple-clicking, and copied with Cmd+C. Escape, Option+Left,
 Cmd+[ and the mouse's back button close the newest dialog or go back in a stack (Escape in a focused field or web page
 only leaves it; a page gets these keys first, and keeps those it uses); a `Dialog` is a layer over the whole window
 that shows the app's popup and backdrop. Pages show their `header` at the top. A click anywhere in an `Input`, its padding too, puts the caret at the nearest
-point. `AlertDialog` shows an `NSAlert` sheet on the window: up to two alert actions in a row (the cancel
-action leftmost, the last regular one the default for Return), more actions and an action sheet's actions stacked in
-their order with the cancel action last and no default; Escape chooses the cancel action.
+point. `AlertDialog` shows an `NSAlert`: a sheet of the window the user is in, and, while that window is out of sight
+(a tray app's hidden main window, the app hidden, the window minimized or off every screen), an alert of its own in
+front of every window, which takes the app's input until it is answered while the app goes on running. Up to two alert
+actions show in a row
+(the cancel action leftmost, the last regular one the default for Return), more actions and an action sheet's actions
+stacked in their order with the cancel action last and no default; Escape chooses the cancel action.
 
 ### Table accessibility
 
@@ -308,13 +334,16 @@ press action and their row role, and labels and text children remain available t
 The app's own shortcuts ([`keymap`](../modules/nsh.md#keymap)) come before these, except activation keys addressed to a focused pressable view, Quit, Hide,
 Minimize and Full Screen, which cannot be bound.
 
+While an input method is composing, its input keeps the keys before app shortcuts are matched, including
+`when: "always"` bindings. This also covers hosted native inputs implementing `NSTextInputClient`.
+Shortcuts resume once the composition ends.
+
 Shortcuts work with any keyboard layout (on a Cyrillic or Greek one, Cmd+C is the key that types C on a US layout).
 A return that commits an input method's composition (Chinese, Japanese, ...) never submits. `onKeyPress` reports
 what React Native reports: the typed text, `"Enter"`, `"Backspace"`, and `"Escape"`.
 
 Not supported, or different:
 
-- **Zooming scroll views** (`zoomTo`, the zoom props).
 - **`brightness()`** above 1 is not drawn. **`mixBlendMode`** and **backdrops** are drawn by Core Animation:
   `mixBlendMode` as the view layer's compositing filter, `macos={{ backdrop: { material, blending, state } }}` as an
   `NSVisualEffectView` below the view (any AppKit material and state, whether or not a `backdropFilter` is set), and

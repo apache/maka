@@ -40,7 +40,9 @@
 //!   background while the surface's window is not shown (the root
 //!   unmapped, the window minimized, or suspended: on another workspace or
 //!   covered, where the compositor says so), active while one of the
-//!   app's windows has the focus, inactive otherwise;
+//!   app's windows has the focus, inactive otherwise; background too from
+//!   the moment the session may end (signing out, shutting down:
+//!   [`crate::session`]);
 //! - the wake count (`wakeCount()`): one more for every surface when
 //!   systemd's `logind` reports the end of a sleep
 //!   (`org.freedesktop.login1.Manager`'s `PrepareForSleep` with `false`,
@@ -62,7 +64,7 @@
 //! theme's), as the root view has none of its own.
 //!
 //! The status bar has no desktop equivalent. (`AccessibilityFocus`, which
-//! moves keyboard focus when the view can take it, is the mounter's.)
+//! moves the screen reader's focus, is the mounter's: `access::focus`.)
 //!
 //! The clipboard is the display's (`GdkClipboard`, the "CLIPBOARD"
 //! selection): `Clipboard.writeText` sets its text, reads are answered as
@@ -196,6 +198,9 @@ struct System {
 
 thread_local! {
     static SYSTEM: RefCell<System> = RefCell::default();
+    /// The dialogs shown and not answered yet: what [`close_dialog`] takes
+    /// back.
+    static DIALOGS: RefCell<Vec<Rc<DialogAnswer>>> = const { RefCell::new(Vec::new()) };
     static OS_VERSION: (u16, u16) = std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map_or((0, 0), |s| parse_version(&s));
     static LOCALE: Locale = user_locale(|name| std::env::var(name).ok(), || {
@@ -326,7 +331,7 @@ fn appearance() -> Appearance {
 }
 
 /// This thread's surfaces.
-fn surfaces() -> Vec<Rc<Surface>> {
+pub(crate) fn surfaces() -> Vec<Rc<Surface>> {
     SYSTEM.with(|s| {
         let mut s = s.borrow_mut();
         s.surfaces.retain(|w| w.strong_count() > 0);
@@ -351,10 +356,11 @@ fn woke() {
     }
 }
 
-/// A surface's window was focused, minimized, suspended, shown or hidden:
-/// tells every surface, as whether the app is the active one depends on
-/// all of its windows.
-fn lifecycle_changed() {
+/// A surface's window was focused, minimized, suspended, shown or hidden,
+/// or the session may end ([`crate::session`]): tells every surface, as
+/// whether the app is the active one depends on all of its windows.
+pub(crate) fn lifecycle_changed() {
+    crate::session::focus_changed(app_focused());
     for surface in surfaces() {
         let mut env: Environment = surface.environment.get();
         env.lifecycle = lifecycle(&surface);
@@ -371,14 +377,23 @@ fn lifecycle(surface: &Surface) -> Lifecycle {
             .native()
             .and_then(|n| toplevel_state(&n))
             .is_none_or(|s| !s.intersects(hidden));
-    let focused = || {
-        gtk::Window::list_toplevels().iter().any(|w| {
-            w.downcast_ref::<gtk::Native>()
-                .and_then(toplevel_state)
-                .is_some_and(|s| s.contains(gdk::ToplevelState::FOCUSED))
-        })
-    };
-    if !shown {
+    lifecycle_of(shown, crate::session::ending(), app_focused)
+}
+
+/// Whether one of the app's windows has the focus.
+pub(crate) fn app_focused() -> bool {
+    gtk::Window::list_toplevels().iter().any(|w| {
+        w.downcast_ref::<gtk::Native>()
+            .and_then(toplevel_state)
+            .is_some_and(|s| s.contains(gdk::ToplevelState::FOCUSED))
+    })
+}
+
+/// The app's state with the surface's window `shown` (mapped, not
+/// minimized or suspended), the session `ending` ([`crate::session`]) and
+/// whether one of the app's windows is `focused`.
+fn lifecycle_of(shown: bool, ending: bool, focused: impl FnOnce() -> bool) -> Lifecycle {
+    if !shown || ending {
         Lifecycle::Background
     } else if focused() {
         Lifecycle::Active
@@ -773,6 +788,7 @@ fn screen_reader(proxy: &gio::DBusProxy) {
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
         Command::Dialog(dialog) => show_dialog(surface, dialog),
+        Command::CloseDialog(dialog) => close_dialog(surface, *dialog),
         // In the window the user is in: a screen reader reads that one.
         Command::Announce(text) => crate::access::announce(&crate::window::key_root(surface), text),
         Command::PerfMonitor(true) => surface.enable_fps(),
@@ -783,6 +799,14 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
                 display.clipboard().set_text(text);
             }
         }
+        Command::SetClipboardItem(item) => match &item.html {
+            Some(html) => set_clipboard_html(&item.text, html),
+            None => {
+                if let Some(display) = gdk::Display::default() {
+                    display.clipboard().set_text(&item.text);
+                }
+            }
+        },
         Command::ReadClipboard { id, has_only } => read_clipboard(surface, *id, *has_only),
         Command::SetClipboardImage(uri) => set_clipboard_image(uri),
         Command::ReadClipboardImage { id, has_only } => {
@@ -797,13 +821,29 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::FileRequest { id, request } => {
             crate::file_requests::request(surface, *id, request)
         }
+        Command::RenderCanvas {
+            id,
+            drawing,
+            width,
+            height,
+            scale,
+            format,
+        } => crate::canvas::render_offscreen(
+            surface,
+            *id,
+            drawing.clone(),
+            (*width, *height),
+            *scale,
+            *format,
+        ),
         Command::Audio(command) => surface.control(|c| {
             let base = surface.asset_base.borrow().clone();
             crate::audio::command(&surface.audio, c, command, base.as_ref())
         }),
         Command::Notification(command) => surface.control(|c| {
             let root = surface.root.upcast_ref::<gtk::Widget>();
-            crate::notifications::command(c, root, command);
+            let base = surface.asset_base.borrow().clone();
+            crate::notifications::command(c, root, command, base.as_ref());
         }),
         Command::Back => crate::navigation::default_back(surface),
         Command::Tokens(tokens) => set_menu_tokens(tokens),
@@ -819,7 +859,10 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::StatusBar(_)
         | Command::SetStatusBar(_)
         | Command::LayoutAnimation(_)
-        | Command::CancelPress => {}
+        | Command::CancelPress
+        // The app's address: this platform keeps none.
+        | Command::SetAppUrl(_)
+        | Command::PushAppUrl(_) => {}
         other => log::debug!("linux: command {other:?} is not supported"),
     }
 }
@@ -988,6 +1031,27 @@ impl DialogAnswer {
         if self.answered.replace(true) {
             return;
         }
+        self.take_down();
+        let Some(surface) = self.surface.upgrade() else {
+            return;
+        };
+        surface.event(
+            ROOT_ID,
+            EventKind::Dialog,
+            EventPayload::Map(vec![
+                ("id", PayloadValue::Number(self.id as f64)),
+                ("index", PayloadValue::Number(index as f64)),
+            ]),
+        );
+    }
+
+    /// Takes the dialog off the window.
+    fn take_down(&self) {
+        DIALOGS.with(|dialogs| {
+            if let Ok(mut dialogs) = dialogs.try_borrow_mut() {
+                dialogs.retain(|d| !std::ptr::eq(&**d, self));
+            }
+        });
         // The focus goes back where it was (as desktop dialogs do), not to
         // whatever GTK picks once the focused button goes.
         match self.previous_focus.upgrade() {
@@ -1005,17 +1069,23 @@ impl DialogAnswer {
             }
         }
         remove_overlay(&self.backdrop);
-        let Some(surface) = self.surface.upgrade() else {
-            return;
-        };
-        surface.event(
-            ROOT_ID,
-            EventKind::Dialog,
-            EventPayload::Map(vec![
-                ("id", PayloadValue::Number(self.id as f64)),
-                ("index", PayloadValue::Number(index as f64)),
-            ]),
-        );
+    }
+}
+
+/// Takes back the dialog [`show_dialog`] showed as `id`
+/// (`Command::CloseDialog`), reporting nothing: the core answered it.
+fn close_dialog(surface: &Rc<Surface>, id: u32) {
+    let shown = DIALOGS.with(|dialogs| {
+        let mut dialogs = dialogs.borrow_mut();
+        let at = dialogs
+            .iter()
+            .position(|d| d.id == id && std::ptr::eq(d.surface.as_ptr(), Rc::as_ptr(surface)))?;
+        Some(dialogs.remove(at))
+    });
+    if let Some(shown) = shown
+        && !shown.answered.replace(true)
+    {
+        shown.take_down();
     }
 }
 
@@ -1090,6 +1160,7 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
         answered: Cell::new(false),
         previous_focus,
     });
+    DIALOGS.with(|dialogs| dialogs.borrow_mut().push(answer.clone()));
     // `AlertDialog` always brings the app's actions (it rejects none): no
     // label of NSH's own.
     let buttons = &dialog.buttons[..];
@@ -1393,6 +1464,22 @@ fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
     });
 }
 
+/// `Clipboard.write`: `text` and `html` offered together, the HTML as
+/// `text/html` and the text in GDK's text formats.
+fn set_clipboard_html(text: &str, html: &str) {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    let providers = [
+        gdk::ContentProvider::for_bytes("text/html", &glib::Bytes::from(html.as_bytes())),
+        gdk::ContentProvider::for_value(&glib::Value::from(text)),
+    ];
+    let provider = gdk::ContentProvider::new_union(&providers);
+    if let Err(err) = display.clipboard().set_content(Some(&provider)) {
+        log::warn!("Clipboard.write: {err}");
+    }
+}
+
 /// `Clipboard.writeImage`: the image of a `data:` URI as a GDK texture,
 /// which GDK offers in the formats it encodes (PNG, TIFF, ...).
 fn set_clipboard_image(uri: &str) {
@@ -1639,6 +1726,15 @@ pub(crate) fn simulate_system_scheme(dark: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ending_session_puts_the_app_in_the_background() {
+        assert_eq!(lifecycle_of(true, false, || true), Lifecycle::Active);
+        assert_eq!(lifecycle_of(true, false, || false), Lifecycle::Inactive);
+        assert_eq!(lifecycle_of(false, false, || true), Lifecycle::Background);
+        assert_eq!(lifecycle_of(true, true, || true), Lifecycle::Background);
+        assert_eq!(lifecycle_of(true, true, || false), Lifecycle::Background);
+    }
 
     #[test]
     fn activation_query_fails_closed_during_overlay_mutation() {

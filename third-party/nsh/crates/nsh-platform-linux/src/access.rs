@@ -371,6 +371,130 @@ pub(crate) fn text_changed(view: &NshView) {
     }
 }
 
+/// Moves the screen reader's focus to `view` (`setAccessibilityFocus`).
+/// An input, or a view that has the keyboard focus or may take it now,
+/// takes the keyboard focus, which GTK reports to assistive technologies.
+/// Any other one (a text, a heading, a view around an input) leaves the
+/// keyboard focus where it is (GTK's `grab_focus` would hand it to a
+/// focusable view inside): from GTK 4.18 on it is reported focused to
+/// assistive technologies alone, AT-SPI's `focused` state and event, as
+/// VoiceOver's focus moves on macOS, until the keyboard focus moves
+/// ([`clear_reader_focus`]) or another view gets the screen reader's
+/// focus; before 4.18, which has no way to say so, it is read out.
+pub(crate) fn focus(surface: &Surface, view: &NshView) {
+    clear_reader_focus(surface);
+    if view.kind() == ViewKind::Input {
+        crate::text_input::focus(view);
+        return;
+    }
+    if view.is_focusable() && view.grab_focus() {
+        return;
+    }
+    let Some(changed) = platform_state_changed() else {
+        let text = reading(view);
+        if !text.is_empty() {
+            announce(view, &text);
+        }
+        return;
+    };
+    view.set_reader_focus(true);
+    surface.reader_focus.borrow().set(Some(view));
+    changed(view, gtk::AccessiblePlatformState::Focusable);
+    changed(view, gtk::AccessiblePlatformState::Focused);
+}
+
+/// Takes the screen reader's focus off the view [`focus`] gave it to: the
+/// keyboard focus moved, which assistive technologies follow.
+pub(crate) fn clear_reader_focus(surface: &Surface) {
+    let view = surface.reader_focus.borrow().upgrade();
+    surface.reader_focus.borrow().set(None);
+    if let Some(view) = view
+        && view.set_reader_focus(false)
+        && let Some(changed) = platform_state_changed()
+    {
+        changed(&view, gtk::AccessiblePlatformState::Focused);
+        changed(&view, gtk::AccessiblePlatformState::Focusable);
+    }
+}
+
+/// Tells assistive technologies that a platform state of a view changed
+/// (`gtk_accessible_update_platform_state`), where the GTK the app runs on
+/// has it: GTK 4.18 and later. NSH builds against GTK 4.14, so the
+/// function is looked up in the process.
+fn platform_state_changed() -> Option<fn(&NshView, gtk::AccessiblePlatformState)> {
+    use std::{cell::OnceCell, ffi::c_void};
+
+    type Update =
+        unsafe extern "C" fn(*mut gtk::ffi::GtkAccessible, gtk::ffi::GtkAccessiblePlatformState);
+
+    #[link(name = "dl")]
+    unsafe extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
+    }
+
+    thread_local! {
+        static UPDATE: OnceCell<Option<Update>> = const { OnceCell::new() };
+    }
+
+    fn update() -> Option<Update> {
+        UPDATE.with(|u| {
+            *u.get_or_init(|| {
+                // SAFETY: a lookup in the libraries the process has loaded
+                // (a null handle is glibc's `RTLD_DEFAULT`); the symbol is
+                // GTK's function of that signature where it exists.
+                unsafe {
+                    let p = dlsym(
+                        std::ptr::null_mut(),
+                        c"gtk_accessible_update_platform_state".as_ptr(),
+                    );
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Update>(p))
+                }
+            })
+        })
+    }
+
+    fn changed(view: &NshView, state: gtk::AccessiblePlatformState) {
+        use gtk::glib::translate::{IntoGlib, ToGlibPtr};
+        if let Some(update) = update() {
+            // SAFETY: GTK's function, given a live accessible and a state
+            // of its enum.
+            unsafe {
+                update(
+                    view.upcast_ref::<gtk::Accessible>().to_glib_none().0,
+                    state.into_glib(),
+                )
+            };
+        }
+    }
+
+    update().map(|_| changed as fn(&NshView, gtk::AccessiblePlatformState))
+}
+
+/// What a screen reader reads of `view`: its label (a text's text), else
+/// the labels of the views inside it, in order.
+pub(crate) fn reading(view: &NshView) -> String {
+    let label = match view.state().access.spec.as_deref() {
+        Some(spec) if spec.hidden => return String::new(),
+        Some(spec) => spec.label.clone(),
+        None => None,
+    };
+    if let Some(label) = label {
+        return label;
+    }
+    let mut parts = Vec::new();
+    let mut child = view.first_child();
+    while let Some(c) = child {
+        if let Some(v) = c.downcast_ref::<NshView>() {
+            let text = reading(v);
+            if !text.is_empty() {
+                parts.push(text);
+            }
+        }
+        child = c.next_sibling();
+    }
+    parts.join(" ")
+}
+
 /// Has assistive technologies read `text` (`announce`).
 pub(crate) fn announce(widget: &impl IsA<gtk::Accessible>, text: &str) {
     widget.announce(text, gtk::AccessibleAnnouncementPriority::Medium);
@@ -1098,6 +1222,7 @@ mod tests {
                 }],
                 cancelable: false,
                 sheet,
+                input: None,
             })),
         );
     }
@@ -1438,6 +1563,99 @@ mod tests {
             assert!(keyboard_activate(button));
             flush(surface);
             assert_eq!(*events.lock().unwrap(), expected_press());
+        });
+    }
+
+    /// `setAccessibilityFocus` on a heading while a button has the
+    /// keyboard focus: the keyboard focus stays on the button. Where GTK
+    /// can say so (4.18 on), the screen reader's focus moves to the heading
+    /// (AT-SPI's `focusable` and `focused` states, as GTK reads them),
+    /// another heading takes it over and the keyboard focus moving takes it
+    /// back; before, the heading is read out (`reading`).
+    #[test]
+    fn accessibility_focus_on_a_heading_moves_only_the_screen_readers() {
+        use gtk::AccessiblePlatformState::{Focusable, Focused};
+
+        fn has(view: &NshView, state: gtk::AccessiblePlatformState) -> bool {
+            use gtk::glib::translate::{IntoGlib, ToGlibPtr};
+            // SAFETY: GTK's getter, given a live accessible.
+            unsafe {
+                gtk::ffi::gtk_accessible_get_platform_state(
+                    view.upcast_ref::<gtk::Accessible>().to_glib_none().0,
+                    state.into_glib(),
+                ) != 0
+            }
+        }
+
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            let mut press = EventMask::default();
+            press.set(EventKind::Press, true);
+            for (id, label, events) in [
+                (2, Some("Send"), press),
+                (4, Some("Inbox"), EventMask::default()),
+                (6, Some("Archive"), EventMask::default()),
+            ] {
+                let mut props = nsh_core::ViewProps::default();
+                props.accessibility.label = label.map(Arc::from);
+                crate::gtk_test::apply(
+                    &surface,
+                    &[
+                        MountItem::Create {
+                            id,
+                            kind: ViewKind::View,
+                        },
+                        MountItem::ViewProps {
+                            id,
+                            props: Box::new(props),
+                        },
+                        MountItem::Events { id, events },
+                        MountItem::Frame {
+                            id,
+                            frame: crate::gtk_test::frame(0.0, id as f32 * 20.0, 100.0, 20.0),
+                        },
+                        MountItem::Insert {
+                            parent: nsh_core::ROOT_ID,
+                            child: id,
+                            before: None,
+                        },
+                    ],
+                );
+            }
+            let _window = TestWindow(crate::gtk_test::show(&surface));
+            let (button, first, second) = (
+                crate::gtk_test::view(&surface, 2),
+                crate::gtk_test::view(&surface, 4),
+                crate::gtk_test::view(&surface, 6),
+            );
+            let command = |id, command| {
+                crate::gtk_test::apply(&surface, &[MountItem::Command { id, command }]);
+            };
+            assert!(crate::gtk_test::wait_until(
+                || button.is_mapped() && second.is_mapped()
+            ));
+            command(2, nsh_core::Command::Focus);
+            assert!(button.is_focus(), "the button takes the keyboard focus");
+            assert!(!has(&first, Focused) && !has(&first, Focusable));
+            assert_eq!(reading(&first), "Inbox");
+            // A view without a label of its own reads the ones inside it.
+            assert_eq!(reading(&surface.root), "Send Inbox Archive");
+
+            let reported = super::platform_state_changed().is_some();
+            command(4, nsh_core::Command::AccessibilityFocus);
+            assert!(button.is_focus(), "the keyboard focus stays on the button");
+            assert_eq!(has(&first, Focused), reported);
+            assert_eq!(has(&first, Focusable), reported);
+
+            command(6, nsh_core::Command::AccessibilityFocus);
+            assert!(button.is_focus());
+            assert!(!has(&first, Focused) && !has(&first, Focusable));
+            assert_eq!(has(&second, Focused), reported);
+
+            // The keyboard focus moves: the screen reader follows it again.
+            command(2, nsh_core::Command::Blur);
+            assert!(crate::gtk_test::wait_until(|| !button.is_focus()));
+            assert!(!has(&second, Focused));
         });
     }
 
@@ -2057,11 +2275,21 @@ mod tests {
                         .is_some()
                 );
                 click(editor.compute_point(&surface.root, &center).unwrap());
-                assert!(
-                    events.lock().unwrap().is_empty(),
-                    "the hosted editor does not dispatch Press: {:?}",
-                    *events.lock().unwrap()
+                // The input hears its own press, and GTK still edits.
+                let editor_press = events.lock().unwrap().clone();
+                assert_eq!(
+                    editor_press
+                        .iter()
+                        .map(|(kind, _)| *kind)
+                        .collect::<Vec<_>>(),
+                    [EventKind::PressDown, EventKind::PressUp, EventKind::Press],
+                    "the input hears its press"
                 );
+                assert!(matches!(
+                    editor_press.last(),
+                    Some((_, EventPayload::Press(press))) if press.clicks == 1
+                ));
+                events.lock().unwrap().clear();
                 assert!(crate::synth::focused_text(&window).is_some());
                 crate::synth::type_text(&window, "native");
                 let editable = editor.downcast::<gtk::Editable>().unwrap();

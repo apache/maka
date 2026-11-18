@@ -17,7 +17,9 @@
 //!   longer message takes several entries, split between its lines where it
 //!   can be; a NUL in it is written `\0`.
 //! - What is logged is the runners' rule: warnings, errors and the app's `js`
-//!   lines, everything from info up in development.
+//!   lines, everything from info up in development; under another logger
+//!   that filters ([`logger`], the macOS runner's `nsh_engine::logging`),
+//!   every line it passes on.
 //! - Lines also go to stderr wherever it goes but `/dev/null`: always when
 //!   run by `nsh run`, and otherwise to a terminal, a file or a pipe
 //!   (`2> app.log`, `open --stderr`, launchd's `StandardErrorPath`) unless a
@@ -66,6 +68,9 @@ pub struct Options {
     pub development: bool,
     /// What starts each line on stderr: `"[nsh] "` in a host app's output.
     pub stderr_prefix: &'static str,
+    /// The caller filters the lines ([`logger`] under another logger, as
+    /// `nsh_engine::logging`'s output): every line it is given is logged.
+    pub filtered: bool,
 }
 
 /// Makes the unified log the process's logger, up to info, unless the
@@ -73,18 +78,26 @@ pub struct Options {
 /// Returns whether it did. Any thread may call it, any number of times; the
 /// first call's options hold.
 pub fn install(options: Options) -> bool {
-    static LOGGER: OnceLock<Logger> = OnceLock::new();
-    let logger = LOGGER.get_or_init(|| Logger::new(options));
-    if log::set_logger(logger).is_err() {
+    if log::set_logger(logger(options)).is_err() {
         return false;
     }
     log::set_max_level(LevelFilter::Info);
     true
 }
 
+/// The unified log as a `log` logger, not installed: for a logger that
+/// passes its lines on ([`Options::filtered`]). Made on the first call of
+/// this or [`install`], whose options hold.
+pub fn logger(options: Options) -> &'static dyn Log {
+    static LOGGER: OnceLock<Logger> = OnceLock::new();
+    LOGGER.get_or_init(|| Logger::new(options))
+}
+
 struct Logger {
     /// Every line from info up ([`Options::development`]).
     everything: bool,
+    /// Every line it is given ([`Options::filtered`]).
+    filtered: bool,
     /// Lines go to stderr too.
     stderr: bool,
     stderr_prefix: &'static str,
@@ -96,6 +109,7 @@ impl Logger {
     fn new(options: Options) -> Logger {
         Logger {
             everything: options.development,
+            filtered: options.filtered,
             stderr: stderr_too(
                 options.development,
                 goes_somewhere(libc::STDERR_FILENO),
@@ -111,7 +125,10 @@ impl Logger {
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= Level::Warn || metadata.target() == "js" || self.everything
+        self.filtered
+            || metadata.level() <= Level::Warn
+            || metadata.target() == "js"
+            || self.everything
     }
 
     fn log(&self, record: &Record<'_>) {
@@ -351,6 +368,7 @@ mod tests {
     fn logger(everything: bool) -> Logger {
         Logger {
             everything,
+            filtered: false,
             stderr: false,
             stderr_prefix: "",
             subsystem: c_string(subsystem()),
@@ -382,6 +400,12 @@ mod tests {
         assert!(release.enabled(&line(Level::Info, "js")));
         assert!(!release.enabled(&line(Level::Info, "nsh_engine::updates")));
         assert!(logger(true).enabled(&line(Level::Info, "nsh_engine::updates")));
+        // Under another logger, which already chose its lines.
+        let filtered = Logger {
+            filtered: true,
+            ..logger(false)
+        };
+        assert!(filtered.enabled(&line(Level::Debug, "nsh_engine::updates")));
     }
 
     #[test]

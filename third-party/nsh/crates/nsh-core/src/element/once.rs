@@ -38,6 +38,14 @@ impl<E> std::fmt::Debug for Scope<E> {
     }
 }
 
+impl<E> Scope<E> {
+    /// The node hosting the component.
+    #[doc(hidden)]
+    pub fn __host(&self) -> NodeId {
+        self.host
+    }
+}
+
 impl<E: Event> Scope<E> {
     /// Sends `event` to the app (its `on<Event>` handler), or to the
     /// component whose view has this one.

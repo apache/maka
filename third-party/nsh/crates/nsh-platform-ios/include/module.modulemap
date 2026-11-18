@@ -9,5 +9,6 @@ module NativeShellC {
     link framework "CoreGraphics"
     link framework "CoreText"
     link framework "ImageIO"
+    link framework "AuthenticationServices"
     link "iconv"
 }

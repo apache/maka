@@ -398,7 +398,7 @@ Transform utilities compose like CSS: `translate-*`, `rotate-*` and `scale-*` se
 | `transition-none` | no transition |
 | `duration-<ms>`, `duration-[<time>]` | `transitionDuration`: `duration-300`, `duration-[0.4s]` |
 | `delay-<ms>`, `delay-[<time>]` | `transitionDelay` |
-| `ease-linear`, `ease-in`, `ease-out`, `ease-in-out`, `ease-initial`, `ease-[cubic-bezier(...)]` | `transitionTimingFunction` |
+| `ease-linear`, `ease-in`, `ease-out`, `ease-in-out`, `ease-initial`, `ease-[cubic-bezier(...)]`, `ease-spring-[stiffness,damping]` / `ease-spring-[stiffness,damping,mass]` (NSH's: a spring that times itself) | `transitionTimingFunction` |
 | `animate-spin`, `animate-ping`, `animate-pulse`, `animate-bounce` | a native keyframe animation, repeated forever |
 | `animate-none` | stops it |
 

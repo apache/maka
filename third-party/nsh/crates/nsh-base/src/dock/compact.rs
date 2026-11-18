@@ -42,7 +42,7 @@ use super::{
     state::DockPlacement,
     tab_group::{panel_slot, shown_of, tab, tab_value},
 };
-use crate::popup::SheetMotion;
+use crate::popup::{SheetMotion, bottom_panel_max_height, keyboard_lift};
 
 /// The compact presentation of area `a`.
 pub(crate) fn compact_view(a: AreaCx) -> AnyElement {
@@ -203,10 +203,23 @@ fn drawer(a: AreaCx, placement: DockPlacement) -> AnyElement {
                 .on_press(close);
             let panel = overlay()
                 .flex_col()
-                .style_with(move |s| match side {
-                    Placement::Left => s.top_0().bottom_0().left_0().w(size()),
-                    Placement::Right => s.top_0().bottom_0().right_0().w(size()),
-                    _ => s.left_0().right_0().bottom_0().h(size()),
+                // Above the keyboard, as a sheet. The bottom sheet the
+                // keyboard lifts stays below the status bar, however tall
+                // its dock; otherwise its height is the dock's size.
+                .style_with(move |s| {
+                    let lift = keyboard_lift();
+                    let above = Length::from(lift);
+                    match side {
+                        Placement::Left => s.top_0().bottom(above).left_0().w(size()),
+                        Placement::Right => s.top_0().bottom(above).right_0().w(size()),
+                        _ if lift > Points::ZERO => s
+                            .left_0()
+                            .right_0()
+                            .bottom(above)
+                            .h(size())
+                            .max_h(bottom_panel_max_height()),
+                        _ => s.left_0().right_0().bottom_0().h(size()),
+                    }
                 })
                 .app_class(if bottom {
                     a.props.sheet_class

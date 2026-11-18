@@ -39,6 +39,8 @@ mount(App);
 
 省略 `schema` 时编辑器使用起步 schema（`starterSchema()`）；省略 `plugins` 时它得到起步套件（`starterKit()`：起步的输入规则和键位绑定、基础键位绑定和历史）。空的 `plugins` 数组创建一个完全没有插件的编辑器。
 
+`onCompositionChange({ composing })` 在此视图开始输入法组合输入时报告 `true`，结束时报告 `false`，取消也会报告结束。组合中的文本更新保持当前状态。回调执行时，会话的 `composing` 值和已提交文本已经更新，应用可以在组合输入期间保留编辑器视图，在结束时释放它。开始或取消组合输入可以保持文档及其修订号不变；`onChange` 报告文档修改。
+
 ## 样式
 
 编辑器以应用的外观绘制文档：`classes` 和 `styles` 设置它的各个部件（`root`、`content`、`caret`、`selection`、`placeholder`、`composition`、`selectedNode`、`listMarker`、触摸选区的手柄 `selectionHandle`、`selectionHandleStart`、`selectionHandleEnd`，以及表格的 `selectedCell`、`tableGrip`、`tableResizeHandle`、`tableDropIndicator`），按类型设置节点（`nodes: { heading: "text-2xl font-bold", "heading[level=2]": "text-xl" }`），以及设置标记（`marks: { bold: "font-bold" }`）。节点规格把 `extra.listMarker` 设为 `"bullet"` 或 `"ordered"` 的列表（starter schema 的列表）中，每一项都在 `listMarker` 部件中显示标记：按层级显示 `•`、`◦`、`▪`，或从列表的 `start` 开始编号，放在列表项之前、列表的缩进中（如浏览器缩进 `ul`，在列表上设置 `pl-6`）。
@@ -64,6 +66,8 @@ mount(App);
 <RichEditor editor={editor} class="max-h-40 px-3 py-2" />
 ```
 
+`onContentSizeChange={({ contentSize }) => …}` 与 `Input` 的同名事件一样，在已排版文档的尺寸变化时报告，每帧最多一次。`contentSize` 是完整内容流的尺寸，单位为点，包含视口外的块，不含 `content` 部件的内边距，且独立于固定的视口高度。滚动不会触发该事件，滚动偏移请用 `onScroll`。
+
 ### 触摸选区
 
 在 iOS 和 Android 上，编辑器像平台自己的文本视图一样选择文本。长按选中手指下的词，之后移动手指按整词扩展选区；在空白处长按则放置光标。双击选中一个词，三击选中整段。触摸产生的选区两端各有一个手柄（`selectionHandle`，主题 `primary` 色的圆点），手指拖动手柄即可移动那一端。手指抬起时，系统编辑菜单在选区上方打开，提供剪切、拷贝、粘贴和全选；点按选区会再次打开它，点按光标则打开粘贴和全选。菜单只提供适用的操作：全部选中后不再提供全选，只读编辑器只提供拷贝和全选。每个操作都是编辑器的事务，因此工具栏的 `isActive` 跟随选区，`toggleMark` 作用于它，撤销可以撤回剪切或粘贴。点按、键盘、输入法和鼠标的选择方式不变。
@@ -85,6 +89,36 @@ const inLink = () => (revision(), editor.isActive("link"));
 ```
 
 链接菜单用 `chain([extendMarkRange("link"), command("setLink", { href })])` 编辑光标所在的链接，用同样的 `extendMarkRange` 之后的 `command("unsetLink")` 移除它。
+
+`contentLayer` 是应用自己铺在文档上的一层，位于滚动的内容框之内：它里面的内容与文字在同一帧一起移动。它的子元素按内容框的点来摆放，`editor.nodeRect(pos)`（从 `pos` 开始的块的框）和 `editor.coordsAtPos(pos)` 用的就是这套坐标：块边距里的手柄、节点旁的标记。这一层本身不接收按压，它的子元素接收。
+
+```tsx
+const box = editor.nodeRect(blockStart);
+
+<RichEditor
+  editor={editor}
+  contentLayer={box ? <Handle style={{ position: "absolute", left: box.x - 28, top: box.y }} /> : undefined}
+/>
+```
+
+### 复制和粘贴
+
+复制或剪切时，选区以两种形式放到剪贴板上，和 ProseMirror 一样：纯文本（启用 `markdown` 扩展的 `copyAsMarkdown` 时为
+Markdown），以及按 schema 的 `renderHTML` 写出的 HTML，邮件、文档和其他编辑器粘贴时会保留格式。HTML 上标记了复制的切片
+（`data-pm-slice`），所以粘贴回 `RichEditor` 时得到同样的节点：提及等行内节点保留，列表项的一部分仍是列表项的一部分，空格
+也保留。其他来源的 HTML 按 schema 的解析规则读取。Rust 插件可以用 `transform_copied` 修改复制的内容。
+
+### 粘贴和拖入的文件
+
+文件交给应用，由应用决定它们变成什么（图片节点、附件、指向上传副本的链接）；编辑器不为它们插入任何内容，选区保持不变，应用在选区处插入自己生成的内容。粘贴图片或在文件管理器中复制的文件时调用 `onPasteFiles`，参数为 `{ files, uris }`：`files` 是带字节的图片，`uris` 是被复制文件的 `file:` URL。在桌面平台上，从其他应用拖到编辑器上的文件调用它的 `onFileDrop`，参数为 `{ uris, mimeTypes }`，与[视图的文件拖放](./view.md#桌面文件拖放)相同；`onFileDragEnter` / `onFileDragLeave` 跟随拖动，可用于显示「松开以添加附件」之类的提示。没有 `onFileDrop` 时，拖入的文件交给外层监听的视图。
+
+```tsx
+<RichEditor
+  editor={editor}
+  onPasteFiles={({ files }) => attach(files)}
+  onFileDrop={({ uris, mimeTypes }) => attachFiles(uris, mimeTypes)}
+/>
+```
 
 ## Schema
 
@@ -142,6 +176,7 @@ const canIndent = editor.can(sinkListItem("listItem"));
 | `isEmpty`、`undoDepth`、`redoDepth`、`composing` | 界面显示的编辑器信息 |
 | `setContent(content, format?)` | 替换文档，作为一次可撤销的修改 |
 | `insertContent(content, format?)` | 在选区处插入内容 |
+| `pasteHTML(html)`、`pasteText(text)` | 像粘贴一样把 HTML 或纯文本放到选区处；返回是否粘贴了内容 |
 | `getJSON()`、`getHTML()`、`getMarkdown()`、`getText()`、`textBetween(from?, to?, separator?)` | 某种格式的文档 |
 | `dispatch(tr)` | 应用以 JSON 给出的事务（其步骤基于当前文档） |
 | `on(event, listener)` | 每次发生 `event` 后，在 JS 的下一轮以它的数据调用 `listener`：`revision`（`{ revision }`，每次修改之后，无论来自何处）、`update`、`selectionUpdate`、`transaction`、`focus`、`blur`、`delete`。返回一个停止监听的函数；在组件渲染期间添加的监听器随组件一起停止 |
@@ -199,6 +234,34 @@ const editor = createRichEditor({ extensions: [StarterKit, Signature.configure({
 
 `node` 或 `mark`（`defineSchema` 的写法）使它成为节点或标记扩展；`addGlobalAttributes` 为其他类型添加属性；`addProseMirrorPlugins` 返回插件，包括 `RichEditorPlugin`；`addPasteRules` 返回作用于粘贴文本的 `textRule` 与 `markRule` 规则。内置类的 `extend({...})` 替换所给的部分：`Underline.extend({ addKeyboardShortcuts: () => ({ "Mod-Alt-u": toggleMark("underline") }) })`。
 
+### 节点视图
+
+`addNodeView` 返回一个组件，由它渲染该扩展节点类型的每个节点：正文里的股票标签、段落之间的卡片、@ 提及、嵌入内容。节点类型必须是原子节点（`atom: true` 或叶子节点）：光标把它当作一个字符或一个块跳过，Backspace 删除它。有内容的节点会被拒绝。
+
+```tsx
+import { RichEditor, StarterKit, createRichEditor, defineExtension, type RichNodeViewProps } from "nsh/base";
+
+function StockTag(props: RichNodeViewProps) {
+  return (
+    <View class={props.selected ? "rounded border border-primary px-1" : "rounded border border-transparent px-1"}>
+      <Text>{`$${props.node.attrs.symbol}`}</Text>
+    </View>
+  );
+}
+
+const Stock = defineExtension({
+  name: "stock",
+  node: { group: "inline", inline: true, atom: true, attrs: { symbol: { default: "AAPL" } } },
+  addNodeView: () => StockTag,
+});
+
+const editor = createRichEditor({ extensions: [StarterKit, Stock] });
+```
+
+组件对每个节点只运行一次。它的 props 跟随节点：在 JSX 或 effect 中读取时，节点的属性或选中状态变化，`node`（`{ type, attrs, textContent }`）与 `selected` 就地更新；在节点前后输入不会调用组件。`editor` 是节点所在的编辑器，`extension` 是 `{ name, options }`。`getPos()` 返回节点当前的起始位置（节点删除后为 `null`）；`updateAttributes(attrs)` 设置部分属性，`deleteNode()` 删除节点，两者都是经由编辑器（及其 `dispatchTransaction`）的一次可撤销修改。
+
+按在视图自身的区域上会选中它的节点，并让编辑器获得焦点，行内视图和块级视图都是如此（ProseMirror 点击原子节点也会选中它）；按住 Shift 时改为扩展选区，按住 Mod 时与在文字上按下的效果相同。视图里的控件（`Button`、`Link`）照常处理自己的按下，选区保持不变。
+
 应用的 crate 通过其 UI 集注册用 Rust 编写的扩展，JS 按名称取用：
 
 ```rust
@@ -253,26 +316,63 @@ editor.setDecorations("suggestions", [{ from: 5, to: 9, kind: "inline", attrs: {
 - `editor.setDecorations(key, decorations)`：视图绘制在文档之上、不改变文档的行内属性、节点属性和小部件。它们随每次修改移动，直到再次设置。
 - `filterTransaction(hook)` 和 `appendTransaction(hook)` 在应用自己的调用（`run`、`dispatch`、`setContent`……）中看到这些调用产生的事务：`filterTransaction` 可以丢弃一个事务，`appendTransaction` 可以返回一个与之一起应用的事务。`on("revision", …)` 收到每次修改，包括输入。
 
+#### 粘贴
+
+插件可以用 ProseMirror 的 `transformPasted` 和 `handlePaste` 参与粘贴：
+
+```tsx
+const paste = new RichEditorPlugin("paste")
+  .transformPasted((slice) => slice)
+  // Word 的列表项、Google Docs 的加粗、单独粘贴的视频链接：由应用自己读取剪贴板。
+  .handlePaste((slice, clipboard) => {
+    if (!isVideoLink(clipboard.text)) return false;
+    editor.run(insertContent({ type: "video", attrs: { src: clipboard.text } }));
+    return true;
+  });
+```
+
+- `transformPasted(slice)` 在内容插入前修改它，各插件依次运行。内容是 `RichSliceJSON`（`{ content, openStart, openEnd }`），优先按 schema 的规则从剪贴板的 HTML 解析，没有 HTML 时从纯文本解析。
+- `handlePaste(slice, clipboard)` 返回 `true` 表示应用已经处理了这次粘贴，编辑器不再插入内容。`clipboard` 是 `{ text, html }`，即剪贴板里的内容。应用如果要按自己的方式读取 Word 或 Google Docs 的 HTML、Markdown 或链接，就自己插入结果（`editor.run(insertContent(...))`）并返回 `true`。
+
+应用自己清洗剪贴板里的 HTML（Word 的列表、Google Docs 的外壳、转成 HTML 的 Markdown）时，用 `editor.pasteHTML(html)`
+把结果接着粘贴进去并返回 `true`；纯文本用 `editor.pasteText(text)`。它们就是 ProseMirror 的 `pasteHTML` 和 `pasteText`：
+内容按粘贴的方式读取，即按 schema 的规则解析并适配选区，所以标了 `isolating` 的节点（带图注的图片）会完整保留，而
+`insertContent(html, "html")` 会把它打开；编辑器自己的粘贴步骤（链接、字数限制、粘贴规则）照常生效。插件的 `transformPasted`
+和 `handlePaste` 不会再被调用。返回值表示是否粘贴了内容。
+
+```tsx
+const paste = new RichEditorPlugin("paste").handlePaste((_slice, clipboard) => {
+  const docs = /^<b id="docs-internal-guid-[^"]*">([\s\S]*)<\/b>$/.exec(clipboard.html);
+  return docs ? editor.pasteHTML(docs[1]) : false;
+});
+```
+
+粘贴是唯一会等待 JS 的输入：插件一旦有粘贴钩子，粘贴就会在钩子都给出结果之后（晚一个 JS 轮次）才插入。多次粘贴按发生的顺序插入。钩子运行期间文档或选区发生变化的粘贴，会按编辑器当时的状态重新执行。打字和按键从不等待。要插入需要更长时间的内容（例如上传），就让 `handlePaste` 返回 `true`，由应用在内容准备好时再插入。
+
 ## 链接、字数统计与建议
 
 三个插件提供 Tiptap 的 Link、CharacterCount 和 Suggestion 行为，全部原生运行：
 
 ```tsx
-import { RichEditor, characterCount, createRichEditor, insertMention, link, starterKit, starterSchema, suggestion, withMention } from "nsh/base";
+import { RichEditor, characterCount, createRichEditor, insertMention, link, setSuggestionOpen, starterKit, starterSchema, suggestion, withMention } from "nsh/base";
 
 const editor = createRichEditor({
   schema: withMention(starterSchema()),
   plugins: [
+    suggestion({ key: "mention", char: "@", decorationClass: "text-primary", captureKeys: ["ArrowUp", "ArrowDown", "Enter"] }),
     starterKit(),
     link({ defaultProtocol: "https" }),
     characterCount({ limit: 280 }),
-    suggestion({ key: "mention", char: "@", decorationClass: "text-primary", captureKeys: ["ArrowUp", "ArrowDown", "Enter"] }),
   ],
 });
 
 editor.on("transaction", () => {
   const s = editor.suggestion("mention");
-  if (s?.active) showPeople(s.query, editor.coordsAtPos(s.range.from), s.lastKey);
+  if (s?.active) {
+    const people = peopleMatching(s.query);
+    editor.run(setSuggestionOpen(people.length > 0, "mention"));
+    showPeople(people, editor.coordsAtPos(s.range.from), s.lastKey);
+  }
   setCount(`${editor.characters()} / ${editor.characterLimit}`);
 });
 
@@ -282,7 +382,7 @@ editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
 
 - `link(options?)`：在 URL 后输入空格或 Enter 时，URL 变为链接，粘贴文本中的 URL 也一样（`autolink`）；在选区上粘贴 URL 会给选区加上链接（`linkOnPaste`）；按住 Mod 点按链接，或在编辑器只读时点按，会通过应用的 URL 处理打开它（`openOnClick`）；`enableClickSelection` 点按时选中整个链接。带协议和不带协议的 URL（`nsh.dev`、`https://nsh.dev/docs`、电子邮件地址）都能识别，不带协议的主机名使用 `defaultProtocol`（`http`）。链接接受 `http`、`https`、`ftp`、`ftps`、`mailto`、`tel`、`callto`、`sms`、`cid`、`xmpp` 以及 `protocols` 中的协议，因此 `setLink({ href })`、`toggleLink(attrs?)` 和自动链接会把脚本（`javascript:`）和 data URL 挡在外面。`unsetLink()` 移除选区所在的链接。在桌面平台和桌面形态的 Web 上，指针停在带链接的文字上时，会在指针下方显示链接的 `title` 和目的地，与 [TextView 的链接](./text-view.md)相同；在链接里按压和输入照常进行。由应用的标记视图渲染的文字，显示应用元素自己的内容。
 - `characterCount(options?)`：`editor.characters(mode?)` 统计文本的字符（`"textSize"`，与 JS 的 `length` 一样按 UTF-16 单元）或文档的位置数（`"nodeSize"`）；`editor.words()` 统计词数（Unicode 词边界）。设置 `limit` 后，会超出上限的修改被拒绝，粘贴的内容被截到放得下的长度；超出上限的初始文档会被截短（`autoTrim`）。`setCharacterLimit(limit)` 修改上限，`editor.characterLimit` 读取上限。
-- `suggestion(options?)`：跟踪光标前输入的触发字符（`char`，默认 `@`）。`allowSpaces` 让查询可以包含空格，`allowedPrefixes` 列出触发字符前可以出现的字符（默认一个空格；`anyPrefix` 接受任何字符），`startOfLine` 要求触发字符位于行首（`/` 命令菜单）。`editor.suggestion(key)` 给出 `{ active, range, query, text, lastKey, keyCount }`；活动范围带有应用的 `decorationClass`（查询为空时还有 `decorationEmptyClass`）。建议活动期间，`captureKeys` 中的按键归应用的列表：编辑器接收它们并把最后一个记录在状态中；Escape 关闭建议（`exitSuggestion(key)` 也可以）。`replaceSuggestion(content, key?)` 用文本或 JSON 内容替换触发字符和查询。
+- `suggestion(options?)`：跟踪光标前输入的触发字符（`char`，默认 `@`）。`allowSpaces` 让查询可以包含空格，`allowedPrefixes` 列出触发字符前可以出现的字符（默认一个空格；`anyPrefix` 接受任何字符），`startOfLine` 要求触发字符位于行首（`/` 命令菜单）。`editor.suggestion(key)` 给出 `{ active, range, query, text, lastKey, keyCount, open }`；活动范围带有应用的 `decorationClass`（查询为空时还有 `decorationEmptyClass`）。建议活动期间，`captureKeys` 中的按键归应用的列表：编辑器接收它们并把最后一个记录在状态中；Escape 关闭建议（`exitSuggestion(key)` 也可以）。`setSuggestionOpen(open, key?)` 告诉建议当前查询下列表是否显示（即状态中的 `open`）：关闭时，`captureKeys` 中的按键交给编辑器继续处理，没有匹配时 Enter 照常发送或换行，Escape 仍然关闭建议。它只对设置时的查询有效，查询每次变化都要重新设置；在此之前列表视为打开，按键归列表。异步加载条目的列表（例如远程搜索联系人）要等确定列表为空后再关闭，结果还在加载时不要关闭，否则 Enter 会在结果到达之前就生效。在 `plugins` 中，建议要放在 `starterKit()` 和应用自己的按键之前，按键才会先到达它。`replaceSuggestion(content, key?)` 用文本或 JSON 内容替换触发字符和查询。
 - `withMention(schema, { name?, char? })` 添加 Tiptap 的提及节点：带 `id`、`label` 和触发字符的行内原子节点，在文本中写作 `@label`，在 HTML 中写作 `<span data-type="mention">`。`insertMention(range, id, label?)` 用一个提及和一个空格替换建议的范围。
 
 弹出层属于应用：它读取建议的状态，放在 `coordsAtPos(range.from)` 处，并以自己的方式绘制条目。

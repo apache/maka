@@ -9,6 +9,7 @@ use crate::{
     geometry::{Bounds, Point, Points, point, rect},
     mount::MountItem,
     ops::{Command, NodeId, RevealOptions, ScrollAlignment},
+    props::EdgeInsets,
     text::TextEngine,
 };
 
@@ -87,6 +88,16 @@ impl ListScrollPosition {
 /// (rounding).
 const OVERFLOW_EPSILON: f32 = 0.5;
 
+/// How a pointer meets a node ([`Core::pointer_hit`]).
+struct PointerHit {
+    /// The node itself is hit.
+    own: bool,
+    /// Its children are looked into.
+    children: bool,
+    /// The point in its content (its scroll offset and zoom undone).
+    inner: Point<Points>,
+}
+
 fn valid(r: &Bounds<Points>) -> bool {
     !(r.origin.x.0.is_nan()
         || r.origin.y.0.is_nan()
@@ -116,6 +127,24 @@ impl<M: TextEngine> Core<M> {
         p: Point<Points>,
         top: bool,
     ) -> Option<(NodeId, Point<Points>)> {
+        let hit = self.pointer_hit(key, p, top)?;
+        if hit.children {
+            for child in self.hit_children(key) {
+                let origin = self.nodes[child as usize].frame.origin;
+                let at = point(hit.inner.x - origin.x, hit.inner.y - origin.y);
+                if let Some(hit) = self.press_target_in(child, at, false) {
+                    return Some(hit);
+                }
+            }
+        }
+        let node = &self.nodes[key as usize];
+        (hit.own && node.mounted_events().contains(crate::EventKind::Press)).then_some((node.id, p))
+    }
+
+    /// How a pointer at `p` (`key`'s coordinates) meets `key`: `None` when
+    /// neither it nor anything in it can be hit there. `top`: `key`'s own
+    /// `pointerEvents` do not count.
+    fn pointer_hit(&self, key: Key, p: Point<Points>, top: bool) -> Option<PointerHit> {
         use crate::props::PointerEvents;
         let node = &self.nodes[key as usize];
         if node.layout.is_none()
@@ -140,37 +169,180 @@ impl<M: TextEngine> Core<M> {
         if !inside && (clips || pointer == PointerEvents::BoxOnly) {
             return None;
         }
-        if pointer != PointerEvents::BoxOnly {
-            let inner = match node.scroll.as_deref() {
-                Some(scroll) => point(
-                    Points((p.x.0 + scroll.offset.0) / scroll.zoom),
-                    Points((p.y.0 + scroll.offset.1) / scroll.zoom),
-                ),
-                None => p,
-            };
-            // Topmost first: the last of the highest `zIndex`.
-            let mut children: Vec<Key> = node
-                .children
-                .iter()
-                .copied()
-                .filter(|&c| {
-                    let child = &self.nodes[c as usize];
-                    !child.inline && !child.is_overlay()
+        let inner = match node.scroll.as_deref() {
+            Some(scroll) => point(
+                Points((p.x.0 + scroll.offset.0) / scroll.zoom),
+                Points((p.y.0 + scroll.offset.1) / scroll.zoom),
+            ),
+            None => p,
+        };
+        Some(PointerHit {
+            own: inside && pointer != PointerEvents::BoxNone,
+            children: pointer != PointerEvents::BoxOnly,
+            inner,
+        })
+    }
+
+    /// The children of `key` a pointer can hit, topmost first: the last of
+    /// the highest `zIndex`.
+    fn hit_children(&self, key: Key) -> Vec<Key> {
+        let mut children: Vec<Key> = self.nodes[key as usize]
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| {
+                let child = &self.nodes[c as usize];
+                !child.inline && !child.is_overlay()
+            })
+            .collect();
+        children.sort_by_key(|&c| self.nodes[c as usize].z_index);
+        children.reverse();
+        children
+    }
+
+    /// The views a pointer at `p` (`key`'s coordinates) is over in `key`,
+    /// innermost first, each with the point in it, as a platform picks
+    /// them: the innermost, topmost view hit and the views around it.
+    fn hover_path_in(
+        &self,
+        key: Key,
+        p: Point<Points>,
+        top: bool,
+        path: &mut Vec<(Key, Point<Points>)>,
+    ) -> bool {
+        let Some(hit) = self.pointer_hit(key, p, top) else {
+            return false;
+        };
+        let inner = hit.children
+            && self.hit_children(key).into_iter().any(|child| {
+                let origin = self.nodes[child as usize].frame.origin;
+                let at = point(hit.inner.x - origin.x, hit.inner.y - origin.y);
+                self.hover_path_in(child, at, false, path)
+            });
+        if inner || hit.own {
+            path.push((key, p));
+        }
+        inner || hit.own
+    }
+
+    /// Passes the pointers components passed on into their elements
+    /// ([`crate::element::ElementRef::hover_at`]) with the last layout:
+    /// the views that track hovers or hear the mouse under each are
+    /// hovered, those it left hear so from the inside out, then those it
+    /// came over from the outside in, then `onMouseMove` of the hovered
+    /// ones, inside out.
+    pub(super) fn pass_hovers(&mut self) {
+        use crate::{EventKind, element::JsEvent};
+        for (id, mouse) in std::mem::take(&mut self.components.hovers) {
+            let mut path = Vec::new();
+            if let Some(mouse) = mouse
+                && let Some(origin) = self.measure(id).map(|m| m.page)
+                && let Ok(key) = self.key(id)
+            {
+                let at = point(
+                    mouse.page_position.x - origin.x,
+                    mouse.page_position.y - origin.y,
+                );
+                self.hover_path_in(key, at, true, &mut path);
+            }
+            let hovered: Vec<(Key, Point<Points>)> = path
+                .into_iter()
+                .filter(|&(k, _)| {
+                    let n = &self.nodes[k as usize];
+                    crate::input::hoverable(n.tracked, n.mounted_events())
                 })
                 .collect();
-            children.sort_by_key(|&c| self.nodes[c as usize].z_index);
-            for &child in children.iter().rev() {
-                let origin = self.nodes[child as usize].frame.origin;
-                let at = point(inner.x - origin.x, inner.y - origin.y);
-                if let Some(hit) = self.press_target_in(child, at, false) {
-                    return Some(hit);
+            let ids: Vec<NodeId> = hovered
+                .iter()
+                .map(|&(k, _)| self.nodes[k as usize].id)
+                .collect();
+            let old = match ids.is_empty() {
+                true => self.passed_hovers.remove(&id),
+                false => self.passed_hovers.insert(id, ids.clone()),
+            }
+            .unwrap_or_default();
+            let event = |position: Point<Points>| {
+                EventPayload::Mouse(crate::MouseEvent {
+                    position,
+                    ..mouse.unwrap_or_default()
+                })
+            };
+            let (left, entered) = crate::input::hover_changes(&old, &ids);
+            let (left, entered): (Vec<NodeId>, Vec<NodeId>) =
+                (left.copied().collect(), entered.copied().collect());
+            for node in left {
+                let Ok(key) = self.key(node) else { continue };
+                if !std::mem::take(&mut self.nodes[key as usize].passed_hover) {
+                    continue;
+                }
+                self.states_changed(key);
+                if self.nodes[key as usize]
+                    .mounted_events()
+                    .contains(EventKind::MouseLeave)
+                {
+                    let position = match (mouse, self.measure(node)) {
+                        (Some(m), Some(at)) => {
+                            point(m.page_position.x - at.page.x, m.page_position.y - at.page.y)
+                        }
+                        _ => Point::default(),
+                    };
+                    self.events
+                        .push(JsEvent::Event(node, EventKind::MouseLeave, event(position)));
+                }
+            }
+            for node in entered {
+                let Some(&(key, position)) = hovered
+                    .iter()
+                    .find(|&&(k, _)| self.nodes[k as usize].id == node)
+                else {
+                    continue;
+                };
+                self.nodes[key as usize].passed_hover = true;
+                self.states_changed(key);
+                if self.nodes[key as usize]
+                    .mounted_events()
+                    .contains(EventKind::MouseEnter)
+                {
+                    self.events
+                        .push(JsEvent::Event(node, EventKind::MouseEnter, event(position)));
+                }
+            }
+            for &(key, position) in &hovered {
+                let node = &self.nodes[key as usize];
+                if node.mounted_events().contains(EventKind::MouseMove) {
+                    self.events.push(JsEvent::Event(
+                        node.id,
+                        EventKind::MouseMove,
+                        event(position),
+                    ));
                 }
             }
         }
-        (inside
-            && pointer != PointerEvents::BoxNone
-            && node.mounted_events().contains(crate::EventKind::Press))
-        .then_some((node.id, p))
+    }
+
+    /// The text of node `id` and the nodes inside it, in tree order
+    /// ([`crate::element::ElementRef::text_content`]): what `display:
+    /// none` hides is left out; empty when it is not in the tree.
+    pub(super) fn text_content(&self, id: NodeId) -> String {
+        let mut text = String::new();
+        let Ok(key) = self.key(id) else {
+            return text;
+        };
+        let mut stack = vec![key];
+        while let Some(k) = stack.pop() {
+            let node = &self.nodes[k as usize];
+            if node.layout.is_some_and(|l| self.layout.displays_none(l)) {
+                continue;
+            }
+            if node.kind == Kind::RawText {
+                text.push_str(&node.text);
+            }
+            if let Some(run) = self.folded_text(k) {
+                text.push_str(run);
+            }
+            stack.extend(node.children.iter().rev().copied());
+        }
+        text
     }
 
     /// Where view `id` is, from the last layout; `None` when it is not in
@@ -222,6 +394,30 @@ impl<M: TextEngine> Core<M> {
             frame: node.frame,
             page: point(Points(x), Points(y)),
         })
+    }
+
+    /// Inline attachments get their positions from their text's final layout.
+    /// A reveal must make a culled text first, as other commands make their view,
+    /// so its attachment can be measured before reveal expands into scrolls.
+    pub(super) fn prepare_reveals(&mut self) {
+        for index in 0..self.commands.len() {
+            let (id, command) = &self.commands[index];
+            if !matches!(command, Command::Reveal(_)) {
+                continue;
+            }
+            let Ok(mut key) = self.key(*id) else {
+                continue;
+            };
+            while key != NO_KEY {
+                if let Some(block) = self.attachment_block(key) {
+                    if !self.nodes[block as usize].created {
+                        self.uncull(block);
+                    }
+                    break;
+                }
+                key = self.nodes[key as usize].parent;
+            }
+        }
     }
 
     /// The `ScrollTo` commands that bring view `id` into view, as
@@ -455,11 +651,14 @@ impl<M: TextEngine> Core<M> {
 
     /// Updates the area `key`'s descendants cover outside its bounds (its
     /// children's frames and areas are current), and mounts it when it
-    /// changed. Clipping views have none: what is outside is not drawn.
-    pub(super) fn update_overflow(&mut self, key: Key) {
+    /// changed; whether it did. The area takes in the descendants' hit
+    /// slop, so a touch there reaches them through every view around.
+    /// Clipping views have none: what is outside is not drawn, and takes
+    /// no touches.
+    pub(super) fn update_overflow(&mut self, key: Key) -> bool {
         let node = &self.nodes[key as usize];
         if !node.created || key == self.root {
-            return;
+            return false;
         }
         let clips = node.view_style.overflow_hidden
             || matches!(node.kind, Kind::Scroll | Kind::List | Kind::Stack);
@@ -474,11 +673,18 @@ impl<M: TextEngine> Core<M> {
                     continue;
                 }
                 let f = c.frame;
-                if f.size.width.0 > 0.0 && f.size.height.0 > 0.0 {
-                    x0 = x0.min(f.origin.x.0);
-                    y0 = y0.min(f.origin.y.0);
-                    x1 = x1.max(f.origin.x.0 + f.size.width.0);
-                    y1 = y1.max(f.origin.y.0 + f.size.height.0);
+                let slop = c
+                    .props
+                    .as_ref()
+                    .map_or(EdgeInsets::default(), |p| p.hit_slop);
+                let (sx0, sy0) = (f.origin.x.0 - slop.left.0, f.origin.y.0 - slop.top.0);
+                let sx1 = f.origin.x.0 + f.size.width.0 + slop.right.0;
+                let sy1 = f.origin.y.0 + f.size.height.0 + slop.bottom.0;
+                if sx1 > sx0 && sy1 > sy0 {
+                    x0 = x0.min(sx0);
+                    y0 = y0.min(sy0);
+                    x1 = x1.max(sx1);
+                    y1 = y1.max(sy1);
                 }
                 if let Some(e) = c.overflow {
                     x0 = x0.min(f.origin.x.0 + e.origin.x.0);
@@ -494,10 +700,31 @@ impl<M: TextEngine> Core<M> {
             out.then_some(rect(x0, y0, x1 - x0, y1 - y0))
         };
         let node = &mut self.nodes[key as usize];
-        if node.overflow != extent {
-            node.overflow = extent;
-            let id = node.id;
-            self.mount.push(MountItem::Overflow { id, extent });
+        if node.overflow == extent {
+            return false;
         }
+        node.overflow = extent;
+        let id = node.id;
+        self.mount.push(MountItem::Overflow { id, extent });
+        true
+    }
+
+    /// Works out again the areas of the views around those whose hit slop
+    /// changed, after the round's layout: up from each, while an area
+    /// changes.
+    pub(super) fn update_slop_overflow(&mut self) {
+        let mut moved = std::mem::take(&mut self.slop_moved);
+        for &key in &moved {
+            if !self.nodes.contains(key as usize) || !self.nodes[key as usize].created {
+                continue;
+            }
+            let mut parent = self.nodes[key as usize].parent;
+            while parent != NO_KEY && self.update_overflow(parent) {
+                parent = self.nodes[parent as usize].parent;
+            }
+        }
+        // The buffer, for the next round.
+        moved.clear();
+        self.slop_moved = moved;
     }
 }

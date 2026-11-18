@@ -1,6 +1,6 @@
 ---
 title: Sheet
-description: Sheet 组件：位于屏幕一侧边缘、覆盖在背景层之上的面板，点击背景层、Escape 和返回键会关闭它，样式由应用决定。
+description: Sheet 组件：位于屏幕一侧边缘、覆盖在背景层之上的面板，点击背景层、Escape 和返回键会关闭它，可停靠在多个高度，样式由应用决定。
 group: base
 demo: el-sheet
 ---
@@ -80,7 +80,75 @@ function Filters() {
 面板按内容高度布局，适合矮菜单；业务通过 `popupStyle` 或子元素高度约束较长内容，并自行绘制拖动条。
 iOS 中，内部竖向 `Scroll` 或 `List` 先消费滚动，到顶部后把同一次手势剩余的下拉位移交给面板。
 Android、桌面和 Web 使用已有的原生 pan 支持拖动条及滚动区域外的内容拖动，内部滚动沿用各平台的手势仲裁。
+面板开始跟手时结束编辑：其中获得焦点的输入框失焦，软键盘收起；只滚动内部列表不会收起键盘。
 将 `closeOnSwipe` 改为 false 后面板保持原位，内容和滚动位置保留。其他 `side` 保持现有行为。
+
+<a id="detents"></a>
+
+## 停靠高度（detents）
+
+底部面板可以停在多个高度，就像地图或播放器的面板：设置 `detents`，可以是 `"medium"`（约半个屏幕）、
+`"large"`（状态栏以下的整个屏幕）、以点为单位的 `{ height }`，或 large 高度的一个比例 `{ fraction }`。
+面板的高度等于最大的停靠高度，停在较小的高度时位置更低，只露出上面一部分。拖动时面板跟随手指在各高度之间移动；
+松手后弹簧动画把它送到最近的停靠高度，快速甩动时则继续到甩动方向上的下一个。拖到最小高度以下时，
+`closeOnSwipe` 与没有停靠高度时一样关闭面板；没有 `closeOnSwipe` 则回弹。iOS 中，内部滚动到顶部后把下拉交给面板，
+因此最大高度下的列表先滚动，再把面板拉下来。在桌面平台和 Web 上，鼠标拖动同样有效。
+
+没有 `detent` 时，面板自己记住停靠高度，从 `defaultDetent`（默认是最小的）开始。设置 `detent` 后由应用控制：
+在 `onDetentChange({ detent })` 中更新它，每次用户把面板移到另一个高度都会报告；应用保持原值时面板会回到原来的高度。
+`detents` 可以在面板打开时改变：原来没有停靠高度的面板设置了它，或者全部去掉，都会立即生效，面板会重新创建其中的内容；
+`side` 在底部与其他方向之间切换时也是如此。
+
+`grabber` 在面板顶部、内容之前显示一个拖动条。和 sheet 的其他部分一样，它没有自己的外观：用 `grabberClass` /
+`grabberStyle` 设置样式，用 `grabberAccessibilityLabel` 命名。读屏软件可以调节它来切换停靠高度，按下它会移到下一个更大的高度
+（最大之后回到最小）。减少动态效果开启时，面板在停靠高度之间直接到位。
+
+`footer` 显示在面板底部、内容之后，例如输入条或面板的操作按钮。有停靠高度时，它始终贴在面板可见部分的底部：
+停在任何一个高度、拖动或弹簧动画在高度之间移动面板时都一样，随面板在原生侧移动；拖到最小高度以下时随面板一起移动。
+最小的停靠高度要放得下底栏。用 `footerClass` / `footerStyle` 设置样式。
+
+```tsx
+const detent = signal<SheetDetent>("medium");
+
+<Sheet
+  open={open()}
+  onOpenChange={(e) => open.set(e.open)}
+  detents={["medium", "large"]}
+  detent={detent()}
+  onDetentChange={(e) => detent.set(e.detent)}
+  closeOnSwipe
+  grabber
+  grabberClass="h-1.5 w-9 self-center rounded-full bg-zinc-300"
+  grabberAccessibilityLabel="调整高度"
+  popupClass="rounded-t-2xl bg-white pt-2"
+  backdropClass="bg-black/40"
+  footer={<Input placeholder="添加评论" />}
+  footerClass="border-t border-zinc-200 px-4 py-2"
+>
+  <Scroll class="flex-1">{/* … */}</Scroll>
+</Sheet>
+```
+
+软键盘会像抬起其他底部面板一样抬起带停靠高度的面板，最多到状态栏下方。键盘弹出期间，面板停在最大的停靠高度，
+这样底栏或内容里正在输入的文字看得见；键盘收起后回到原来的停靠高度。升高本身不改变应用读到的 `detent`，
+这期间拖动条的读屏值和按下仍按这个 `detent` 计算。
+
+<a id="the-software-keyboard"></a>
+
+## 软键盘
+
+软键盘弹起时，贴着屏幕底边的面板（底部 sheet、左右两侧的抽屉）改为贴在键盘上沿，并随键盘的弹起和收起按键盘自己的曲线移动。
+面板底部照常按安全区留白（`pb-[env(safe-area-inset-bottom)]`，Rust 用 `.pb_safe_area()`），与没有键盘时一样：
+这段留白此时落在键盘后面，面板内容正好停在键盘上方，即安全区与键盘取较大者。被键盘抬起时，底部 sheet 内容再高也不会越过状态栏。
+`popupStyle` 中的 `maxHeight` 会取代这一上限，因此更矮的上限要自行扣除键盘超出安全区的高度（`keyboardFrame().height - safeArea().bottom`），
+例如 `windowSize().height - safeArea().top - Math.max(0, keyboardFrame().height - safeArea().bottom) - 24`。
+手机上以 sheet 呈现的菜单、选择器和日期选择器也是如此，它们的 `popupStyle` 或 `popupClass` 中的 `maxHeight` 同样取代其上限。
+
+<a id="screen-readers-and-keyboard-focus"></a>
+
+## 读屏与键盘焦点
+
+与 [Dialog](./dialog.md) 一样，Sheet 在每个平台上都是模态对话框。读屏软件把它当作对话框，用 `accessibilityLabel`（填 sheet 的标题）为它命名，它显示期间读屏只在它里面移动。在桌面平台和 Web 上，它打开时键盘焦点离开下面的内容，Tab 在面板里的各个焦点停靠点之间循环，关闭时焦点回到原来的位置。要一打开就让面板里的某个控件获得焦点，在 `onOpen` 中聚焦它。
 
 <a id="native-sheets"></a>
 
@@ -100,8 +168,17 @@ Sheet 由 NSH 在应用的窗口中绘制，样式由应用决定。要使用平
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape 和 Android 返回键会关闭它。 |
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | 按下背景层会关闭它。 |
 | `closeOnSwipe` | `.close_on_swipe(..)` | `boolean` | `false` | 底部面板跟随下拉，并在松手达到阈值时请求关闭。 |
+| `detents` | `.detents(..)` | `SheetDetent[]` | `[]` | 底部面板的停靠高度：`"medium"`、`"large"`、`{ height }`、`{ fraction }`。 |
+| `detent` | `.detent(..)` | `SheetDetent` | 无 | 当前停靠高度，由应用控制。 |
+| `defaultDetent` | `.default_detent(..)` | `SheetDetent` | 最小的 | 没有 `detent` 时，初始的停靠高度。 |
+| `grabber` | `.grabber(..)` | `boolean` | `false` | 在面板顶部显示拖动条。 |
+| `grabberClass`、`grabberStyle` | `grabber_class`、`grabber_style` | `string`、`StyleProp<ViewStyle>` | 无 | 拖动条的外观。 |
+| `grabberAccessibilityLabel` | `.grabber_accessibility_label(..)` | `string` | 无 | 读屏软件对拖动条的称呼。 |
+| `footer` | `.footer(..)` | `JSX.Element` | 无 | 显示在面板底部的内容；有停靠高度时显示在可见部分的底部。 |
+| `footerClass`、`footerStyle` | `footer_class`、`footer_style` | `string`、`StyleProp<ViewStyle>` | 无 | 底栏的外观。 |
 | `popupClass`、`popupStyle` | `popup_class`、`popup_style` | `string`、`StyleProp<ViewStyle>` | 无 | 面板的外观。 |
 | `backdropClass`、`backdropStyle` | `backdrop_class`、`backdrop_style` | `string`、`StyleProp<ViewStyle>` | 无 | 背景层的外观，比如半透明的颜色。 |
+| `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 读屏软件对这个对话框的称呼：sheet 的标题。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容。 |
 
 <a id="events"></a>
@@ -114,6 +191,7 @@ Sheet 由 NSH 在应用的窗口中绘制，样式由应用决定。要使用平
 | `onOpen` | `.on_open(\|\| ..)` | 它已进入：完全显示出来。 |
 | `onClose` | `.on_close(\|\| ..)` | 它已离开：完全消失。应用关闭它时也会触发。 |
 | `onCancel` | `.on_cancel(\|\| ..)` | 用户尝试关闭它（Escape 或返回键、按下背景层、已启用的下拉关闭），无论它是否关闭。 |
+| `onDetentChange` | `.on_detent_change(\|detent\| ..)` | 用户把它移到了另一个停靠高度（拖动或拖动条）。 |
 
 在 Web 上，嵌入时设置 `dialogs: "viewport"` 可让面板和遮罩覆盖宿主页面，同源 iframe 也会采用这个范围。
 跨域 iframe 由宿主页接入 [`hostPlayerFrame`](../docs/web.md)。
