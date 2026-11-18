@@ -162,7 +162,6 @@ export function MessageRow({
   openSession,
   senders,
   userScroll,
-  onExpand,
   ownerKey,
   toolMaxHeight,
   toolProgress,
@@ -186,7 +185,6 @@ export function MessageRow({
   openSession?(sessionId: string): void;
   senders?: MessageSenders;
   userScroll(): void;
-  onExpand?(key: string): void;
   ownerKey?: () => string;
   toolMaxHeight: () => number;
   toolProgress?(id: string): ToolActivity['phase'] | null;
@@ -257,7 +255,6 @@ export function MessageRow({
         const setExpanded = (action: MessageRowToggle) => {
           if (!ownsRow(action)) return;
           expanded.set(action.value);
-          if (action.value) onExpand?.(action.key);
         };
         // On the desktop the replies between tool calls carry no actions, so
         // only the final reply (or one already showing its source) has a row.
@@ -664,7 +661,11 @@ export function MessageRow({
                       previewTerminal={previewTerminal}
                       senders={senders}
                       userScroll={userScroll}
-                      expand={setExpanded}
+                      expand={(action) => {
+                        if (!ownsRow(action)) return;
+                        setExpanded(action);
+                        if (action.value) onToolReading?.(action.key);
+                      }}
                       showOriginal={setSourceMode}
                       inspect={inspectTool}
                     />
