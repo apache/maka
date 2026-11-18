@@ -746,7 +746,15 @@ function SourceEditorView(props: {
 
   return (
     <View ref={bindShortcuts} style={{ flex: 1, minHeight: 0, gap: 6 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          flexWrap: 'wrap',
+          flexShrink: 0,
+        }}
+      >
         <Icon name="file" size={14} color={C.muted} />
         <Text
           tooltip={textTooltip(() => model.target.title)}
@@ -762,7 +770,15 @@ function SourceEditorView(props: {
         </Text>
       </View>
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 4,
+          flexWrap: 'wrap',
+          flexShrink: 0,
+        }}
+      >
         <If when={props.navigation !== undefined}>
           <Button
             accessibilityLabel={tr('Go to definition')}
@@ -1112,6 +1128,7 @@ function SourceEditorView(props: {
       <ContextMenu
         offset={4}
         margin={8}
+        style={{ flex: 1, minHeight: 0 }}
         popupStyle={{ ...floatingStyle(), minWidth: 188 }}
         trigger={
           <View

@@ -4898,34 +4898,45 @@ export function Conversation(props: ConversationProps) {
           <View
             style={
               inspectorSideBySide()
-                ? { height: '100%', flexShrink: 0, minHeight: 0 }
+                ? { width: 284, flexShrink: 0, minHeight: 0 }
                 : [
                     { position: 'absolute', top: 0, bottom: 0, right: 0 },
                     { pointerEvents: 'box-none' },
                   ]
             }
           >
-            <SessionInspector
-              sessionId={sessionId}
-              workspacePath={workspace() || undefined}
-              floating={!inspectorSideBySide()}
-              activeWorktree={props.activeWorktree}
-              selectWorktree={props.selectWorktree}
-              sources={props.sources}
-              childSessions={() => props.childSessions?.() ?? []}
-              openChanges={
-                props.openChangesWithWorktree ??
-                (props.changes ? () => props.changes!() : undefined)
+            <View
+              style={
+                inspectorSideBySide()
+                  ? [
+                      { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+                      { pointerEvents: 'box-none' },
+                    ]
+                  : [{ flex: 1, minHeight: 0 }, { pointerEvents: 'box-none' }]
               }
-              openFiles={props.files}
-              openLaunchpad={props.openLaunchpad}
-              openPullRequest={props.openPullRequest}
-              openChildSession={(childId) =>
-                props.openSessionBeside
-                  ? props.openSessionBeside(childId)
-                  : props.openSessionHere?.(childId)
-              }
-            />
+            >
+              <SessionInspector
+                sessionId={sessionId}
+                workspacePath={workspace() || undefined}
+                floating={!inspectorSideBySide()}
+                activeWorktree={props.activeWorktree}
+                selectWorktree={props.selectWorktree}
+                sources={props.sources}
+                childSessions={() => props.childSessions?.() ?? []}
+                openChanges={
+                  props.openChangesWithWorktree ??
+                  (props.changes ? () => props.changes!() : undefined)
+                }
+                openFiles={props.files}
+                openLaunchpad={props.openLaunchpad}
+                openPullRequest={props.openPullRequest}
+                openChildSession={(childId) =>
+                  props.openSessionBeside
+                    ? props.openSessionBeside(childId)
+                    : props.openSessionHere?.(childId)
+                }
+              />
+            </View>
           </View>
         </If>
       </View>

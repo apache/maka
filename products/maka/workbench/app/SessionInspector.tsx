@@ -46,6 +46,7 @@ import {
   quietHoverStyle,
   textTooltip,
 } from './ui';
+import { compactHomePath, WorktreePicker } from './WorktreePicker';
 
 function countPatchLines(patch: string): { added: number; deleted: number } {
   let added = 0;
@@ -86,8 +87,11 @@ export function SessionInspector(props: {
   const diffStats = signal<{ files: number; added: number; deleted: number } | null>(null);
   const pulls = signal<GitHubPullSummary[]>([]);
   const githubRepo = signal<GitHubRepoRef | null>(null);
-  const worktreeMenuOpen = signal(false);
   const repoMenuOpen = signal(false);
+  const subagentsExpanded = signal(false);
+  const scrollY = signal(0);
+  const viewportHeight = signal(0);
+  const contentHeight = signal(0);
   let alive = true;
   let loadSeq = 0;
   cleanup(() => {
@@ -193,9 +197,29 @@ export function SessionInspector(props: {
     if (mainWt) return mainWt.name;
     return basenameLabel(effectivePath()) || tr('Files');
   };
-  const children = () => props.childSessions();
+  const children = () => {
+    const raw = props.childSessions();
+    return [...raw].sort((a, b) => {
+      const aRun = a.activity !== 'idle' ? 0 : 1;
+      const bRun = b.activity !== 'idle' ? 0 : 1;
+      return aRun - bRun;
+    });
+  };
+  const visibleChildren = () => (subagentsExpanded() ? children() : children().slice(0, 6));
   const runningChildren = () => children().filter((item) => item.activity !== 'idle').length;
   const openSources = () => props.sources?.() ?? [];
+
+  const showScrollbar = () => viewportHeight() > 48 && contentHeight() > viewportHeight() + 2;
+  const thumbMetrics = () => {
+    const vh = viewportHeight();
+    const ch = contentHeight();
+    const track = Math.max(16, vh - 12);
+    const height = Math.max(24, Math.round((vh / Math.max(1, ch)) * track));
+    const maxScroll = Math.max(1, ch - vh);
+    const ratio = Math.max(0, Math.min(1, scrollY() / maxScroll));
+    const top = 6 + Math.round(ratio * Math.max(0, track - height));
+    return { top, height };
+  };
 
   const sectionTitleStyle = {
     fontSize: 12,
@@ -210,8 +234,11 @@ export function SessionInspector(props: {
   return (
     <View
       accessibilityLabel={tr('Session details')}
+      onLayout={({ bounds }) => viewportHeight.set(bounds.size.height)}
       style={{
+        position: 'relative',
         width: 272,
+        maxHeight: '100%',
         flexShrink: 1,
         minHeight: 0,
         marginTop: props.floating ? 4 : 8,
@@ -229,8 +256,14 @@ export function SessionInspector(props: {
         overflow: 'hidden',
       }}
     >
-      <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
-        <View style={{ paddingVertical: 4 }}>
+      <Scroll
+        onScroll={({ offset }) => scrollY.set(offset.y)}
+        style={{ flexShrink: 1, minHeight: 0 }}
+      >
+        <View
+          onLayout={({ bounds }) => contentHeight.set(bounds.size.height)}
+          style={{ paddingVertical: 4 }}
+        >
           {/* 1. Worktree reference & switcher */}
           <If when={Boolean(effectivePath())}>
             <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 8 }}>
@@ -255,111 +288,51 @@ export function SessionInspector(props: {
                   <Icon name="refresh" size={12} color={C.muted} />
                 </Button>
               </View>
-              <Text
-                tooltip={textTooltip(() => effectivePath())}
-                style={[
-                  { fontSize: 12, lineHeight: 16, color: C.text },
-                  { numberOfLines: 2, userSelect: 'text' },
-                ]}
+              <If
+                when={worktrees().length > 1 && props.selectWorktree !== undefined}
+                else={
+                  <View style={{ gap: 4, minWidth: 0 }}>
+                    <Text
+                      tooltip={textTooltip(() => effectivePath())}
+                      style={[
+                        { fontSize: 12, lineHeight: 16, color: C.text, minWidth: 0 },
+                        { numberOfLines: 1, userSelect: 'text' },
+                      ]}
+                    >
+                      {compactHomePath(effectivePath())}
+                    </Text>
+                    <Text
+                      style={[
+                        { fontSize: 12, lineHeight: 16, color: C.muted, minWidth: 0 },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {currentWorktreeEntry()?.isMain === false
+                        ? tr('Linked checkout')
+                        : tr('Main checkout')}
+                      {revisions()?.headBranch ? ` · ${revisions()!.headBranch}` : ''}
+                    </Text>
+                  </View>
+                }
               >
-                {effectivePath()}
-              </Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted, flex: 1 }}>
-                  {currentWorktreeEntry()?.isMain === false
-                    ? tr('Linked checkout')
-                    : tr('Main checkout')}
-                  {revisions()?.headBranch ? ` · ${revisions()!.headBranch}` : ''}
+                <WorktreePicker
+                  variant="card"
+                  align="end"
+                  worktrees={worktrees}
+                  activeWorktree={selectedWorktree}
+                  activeBranch={() => revisions()?.headBranch}
+                  onSelect={(path) => props.selectWorktree?.(path)}
+                />
+                <Text
+                  tooltip={textTooltip(() => effectivePath())}
+                  style={[
+                    { fontSize: 12, lineHeight: 16, color: C.muted, minWidth: 0 },
+                    { numberOfLines: 1, userSelect: 'text' },
+                  ]}
+                >
+                  {compactHomePath(effectivePath())}
                 </Text>
-                <If when={worktrees().length > 1 && props.selectWorktree !== undefined}>
-                  <Popover
-                    open={worktreeMenuOpen()}
-                    onOpenChange={({ open }) => worktreeMenuOpen.set(open)}
-                    placement="bottom"
-                    align="end"
-                    offset={4}
-                    margin={8}
-                    popupStyle={{ ...floatingStyle(), width: 264 }}
-                    trigger={
-                      <Button
-                        accessibilityLabel={tr('Switch worktree')}
-                        style={{
-                          minHeight: 24,
-                          height: 24,
-                          paddingHorizontal: 8,
-                          borderRadius: 8,
-                          backgroundColor: C.raised,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
-                        hoverStyle={{ backgroundColor: C.cardRaised }}
-                        focusStyle={quietFocusStyle()}
-                      >
-                        <Icon name="gitBranch" size={12} color={C.secondary} />
-                        <Text
-                          style={[
-                            { fontSize: 12, lineHeight: 16, color: C.secondary, maxWidth: 96 },
-                            { numberOfLines: 1 },
-                          ]}
-                        >
-                          {currentWorktreeEntry()?.name ?? tr('Switch worktree')}
-                        </Text>
-                        <Icon name="down" size={12} color={C.muted} />
-                      </Button>
-                    }
-                  >
-                    <View style={{ gap: 2 }}>
-                      <Each of={worktrees()} key={(wt) => wt.path}>
-                        {(wt) => {
-                          const isSelected = () =>
-                            selectedWorktree() ? wt().path === selectedWorktree() : wt().isCurrent;
-                          return (
-                            <Button
-                              accessibilityLabel={wt().name}
-                              onPress={() => {
-                                worktreeMenuOpen.set(false);
-                                props.selectWorktree?.(wt().isCurrent ? null : wt().path);
-                              }}
-                              style={menuRowStyle()}
-                              hoverStyle={menuRowHoverStyle()}
-                              focusStyle={quietFocusStyle()}
-                            >
-                              <Icon
-                                name="gitBranch"
-                                size={14}
-                                color={isSelected() ? C.accent : C.muted}
-                              />
-                              <View style={{ flex: 1, minWidth: 0 }}>
-                                <Text
-                                  style={[
-                                    { ...captionTextStyle, color: C.text, fontWeight: '500' },
-                                    { numberOfLines: 1 },
-                                  ]}
-                                >
-                                  {wt().name}
-                                  {wt().branch ? ` · ${wt().branch}` : ''}
-                                </Text>
-                                <Text
-                                  style={[
-                                    { fontSize: 12, lineHeight: 16, color: C.muted },
-                                    { numberOfLines: 1 },
-                                  ]}
-                                >
-                                  {wt().path}
-                                </Text>
-                              </View>
-                              <If when={isSelected()}>
-                                <Icon name="check" size={14} color={C.accent} />
-                              </If>
-                            </Button>
-                          );
-                        }}
-                      </Each>
-                    </View>
-                  </Popover>
-                </If>
-              </View>
+              </If>
             </View>
             {divider()}
           </If>
@@ -567,6 +540,28 @@ export function SessionInspector(props: {
               }}
             >
               <Text style={{ ...sectionTitleStyle, flex: 1 }}>{tr('Subagents')}</Text>
+              <If when={children().length > 6 && subagentsExpanded()}>
+                <Button
+                  accessibilityLabel={tr('Show fewer project conversations')}
+                  onPress={() => subagentsExpanded.set(false)}
+                  style={{
+                    minHeight: 20,
+                    height: 20,
+                    paddingHorizontal: 6,
+                    borderRadius: 4,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 2,
+                  }}
+                  hoverStyle={{ backgroundColor: C.cardRaised }}
+                  focusStyle={quietFocusStyle()}
+                >
+                  <Text style={{ fontSize: 11, lineHeight: 16, color: C.muted }}>
+                    {tr('Show fewer project conversations')}
+                  </Text>
+                  <Icon name="up" size={11} color={C.muted} />
+                </Button>
+              </If>
               <If when={children().length > 0}>
                 <Text
                   style={{
@@ -589,7 +584,7 @@ export function SessionInspector(props: {
                 </Text>
               }
             >
-              <Each of={children()} key={(child) => child.id}>
+              <Each of={visibleChildren()} key={(child) => child.id}>
                 {(child) => (
                   <Button
                     accessibilityLabel={child().title || tr('Untitled conversation')}
@@ -624,6 +619,31 @@ export function SessionInspector(props: {
                   </Button>
                 )}
               </Each>
+              <If when={children().length > 6 && !subagentsExpanded()}>
+                <Button
+                  accessibilityLabel={tr('Show all ({count})', { count: children().length })}
+                  onPress={() => subagentsExpanded.set(true)}
+                  style={{
+                    minHeight: 28,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    marginHorizontal: -8,
+                    borderRadius: 8,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                  hoverStyle={{ backgroundColor: C.cardRaised }}
+                  focusStyle={quietFocusStyle()}
+                >
+                  <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
+                    {subagentsExpanded()
+                      ? tr('Show fewer project conversations')
+                      : tr('Show all ({count})', { count: children().length })}
+                  </Text>
+                  <Icon name={subagentsExpanded() ? 'up' : 'down'} size={12} color={C.muted} />
+                </Button>
+              </If>
             </If>
           </View>
 
@@ -738,6 +758,22 @@ export function SessionInspector(props: {
           </View>
         </View>
       </Scroll>
+      <If when={showScrollbar()}>
+        <View
+          style={[
+            {
+              position: 'absolute',
+              right: 2,
+              top: thumbMetrics().top,
+              width: 3,
+              height: thumbMetrics().height,
+              borderRadius: 2,
+              backgroundColor: `${C.muted}75`,
+            },
+            { pointerEvents: 'none' },
+          ]}
+        />
+      </If>
     </View>
   );
 }

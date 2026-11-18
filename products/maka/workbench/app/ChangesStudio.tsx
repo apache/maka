@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, Scroll, signal, Text, untracked, View } from 'nsh';
+import { cleanup, computed, effect, Scroll, signal, Text, untracked, View, windowSize } from 'nsh';
 import {
   Button,
   DiffView,
@@ -74,6 +74,7 @@ import {
   type ReviewStore,
 } from './reviewState';
 import { errorText, renderText } from './text';
+import { WorktreePicker } from './WorktreePicker';
 import {
   bodyTextStyle,
   C,
@@ -1273,11 +1274,25 @@ export function ChangesStudio(props: {
   const sourceTabLabel = (tab: StudioSourceTab) =>
     tab === 'working' ? tr('Uncommitted') : tab === 'branch' ? tr('Branch') : tr('Commits');
 
+  const commitSearch = signal('');
+
   const filteredBranches = computed(() => {
     const branches = revisions()?.branches ?? [];
     const q = branchSearch().trim().toLowerCase();
     if (!q) return branches;
     return branches.filter((b) => b.name.toLowerCase().includes(q));
+  });
+
+  const filteredCommits = computed(() => {
+    const commits = revisions()?.commits ?? [];
+    const q = commitSearch().trim().toLowerCase();
+    if (!q) return commits;
+    return commits.filter(
+      (c) =>
+        c.oid.toLowerCase().includes(q) ||
+        c.summary.toLowerCase().includes(q) ||
+        c.author.toLowerCase().includes(q),
+    );
   });
 
   const selectFileRow = (row: FileRowItem, index: number) => {
@@ -1308,6 +1323,7 @@ export function ChangesStudio(props: {
       <View
         style={{
           minHeight: 36,
+          flexShrink: 0,
           paddingHorizontal: 12,
           paddingVertical: 4,
           borderBottomWidth: 1,
@@ -1352,6 +1368,7 @@ export function ChangesStudio(props: {
               align="start"
               offset={4}
               margin={8}
+              style={{ flexShrink: 0 }}
               popupStyle={{ ...floatingStyle(), width: 168 }}
               trigger={
                 <Button
@@ -1412,7 +1429,7 @@ export function ChangesStudio(props: {
             </Popover>
 
             <If when={totalStats().added > 0 || totalStats().deleted > 0}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: C.success, fontWeight: '500' }}>
                   {`+${totalStats().added}`}
                 </Text>
@@ -1424,117 +1441,47 @@ export function ChangesStudio(props: {
 
             {/* Context Pill: Worktree Switcher (working) / Base Branch (branch) / Commit (commit) */}
             <If when={sourceTab() === 'working' && worktrees().length > 1}>
-              <Popover
-                open={contextMenuOpen()}
-                onOpenChange={({ open }) => contextMenuOpen.set(open)}
-                placement="bottom"
+              <WorktreePicker
+                variant="pill"
                 align="start"
-                offset={4}
-                margin={8}
-                popupStyle={{ ...floatingStyle(), width: 280 }}
-                trigger={
-                  <Button
-                    accessibilityLabel={tr('Switch worktree')}
-                    style={{
-                      height: 28,
-                      paddingHorizontal: 8,
-                      borderRadius: 8,
-                      backgroundColor: C.card,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 4,
-                      flexShrink: 1,
-                      minWidth: 0,
-                    }}
-                    hoverStyle={{ backgroundColor: C.cardRaised }}
-                    focusStyle={quietFocusStyle()}
-                  >
-                    <Icon name="gitBranch" size={13} color={C.secondary} />
-                    <Text
-                      style={[
-                        { ...captionTextStyle, color: C.secondary, flexShrink: 1, minWidth: 0 },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {currentWorktree()?.name ?? tr('Switch worktree')}
-                      {currentWorktree()?.branch ? ` · ${currentWorktree()!.branch}` : ''}
-                    </Text>
-                    <Icon name="down" size={12} color={C.muted} />
-                  </Button>
-                }
-              >
-                <View style={{ gap: 2 }}>
-                  <Each of={worktrees()} key={(wt) => wt.path}>
-                    {(wt) => {
-                      const isSel = () =>
-                        activeWorktree() ? wt().path === activeWorktree() : wt().isCurrent;
-                      return (
-                        <Button
-                          accessibilityLabel={wt().name}
-                          onPress={() => {
-                            contextMenuOpen.set(false);
-                            props.reviewStore.setActiveWorktree(
-                              props.sessionId,
-                              wt().isCurrent ? null : wt().path,
-                            );
-                          }}
-                          style={menuRowStyle()}
-                          hoverStyle={menuRowHoverStyle()}
-                          focusStyle={quietFocusStyle()}
-                        >
-                          <Icon name="gitBranch" size={14} color={isSel() ? C.accent : C.muted} />
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text
-                              style={[
-                                { ...captionTextStyle, color: C.text, fontWeight: '500' },
-                                { numberOfLines: 1 },
-                              ]}
-                            >
-                              {wt().name}
-                              {wt().branch ? ` · ${wt().branch}` : ''}
-                            </Text>
-                            <Text
-                              style={[
-                                { fontSize: 12, lineHeight: 16, color: C.muted },
-                                { numberOfLines: 1 },
-                              ]}
-                            >
-                              {wt().path}
-                            </Text>
-                          </View>
-                          <If when={isSel()}>
-                            <Icon name="check" size={14} color={C.accent} />
-                          </If>
-                        </Button>
-                      );
-                    }}
-                  </Each>
-                </View>
-              </Popover>
+                worktrees={worktrees}
+                activeWorktree={activeWorktree}
+                activeBranch={() => revisions()?.headBranch}
+                onSelect={(path) => props.reviewStore.setActiveWorktree(props.sessionId, path)}
+              />
             </If>
 
             <If when={sourceTab() === 'branch'}>
               <Popover
                 open={contextMenuOpen()}
-                onOpenChange={({ open }) => contextMenuOpen.set(open)}
+                onOpenChange={({ open }) => {
+                  contextMenuOpen.set(open);
+                  if (!open) branchSearch.set('');
+                }}
                 placement="bottom"
                 align="start"
                 offset={4}
                 margin={8}
-                popupStyle={{ ...floatingStyle(), width: 260 }}
+                style={{ minWidth: 0, flexShrink: 1 }}
+                popupStyle={{
+                  ...floatingStyle(),
+                  width: 280,
+                  maxHeight: Math.min(360, Math.max(180, windowSize().height - 32)),
+                }}
                 trigger={
                   <Button
                     accessibilityLabel={tr('Select base branch')}
                     style={{
+                      maxWidth: '100%',
+                      minWidth: 0,
                       height: 28,
                       paddingHorizontal: 8,
                       borderRadius: 8,
                       backgroundColor: C.card,
                       flexDirection: 'row',
                       alignItems: 'center',
+                      justifyContent: 'flex-start',
                       gap: 4,
-                      flexShrink: 1,
-                      minWidth: 0,
                     }}
                     hoverStyle={{ backgroundColor: C.cardRaised }}
                     focusStyle={quietFocusStyle()}
@@ -1552,56 +1499,79 @@ export function ChangesStudio(props: {
                   </Button>
                 }
               >
-                <View style={{ gap: 4 }}>
-                  <Input
-                    value={branchSearch()}
-                    onChange={({ value }) => branchSearch.set(value)}
-                    placeholder={tr('Filter branches…')}
-                    accessibilityLabel={tr('Filter branches…')}
-                    style={{
-                      ...captionTextStyle,
-                      height: 28,
-                      paddingHorizontal: 8,
-                      borderRadius: 8,
-                      backgroundColor: C.background,
-                      color: C.text,
-                    }}
-                  />
-                  <Scroll style={{ maxHeight: 240 }}>
-                    <View style={{ gap: 2 }}>
-                      <Each of={filteredBranches()} key={(b) => b.name}>
-                        {(b) => (
-                          <Button
-                            accessibilityLabel={b().name}
-                            onPress={() => {
-                              contextMenuOpen.set(false);
-                              selectedBaseBranch.set(b().name);
-                            }}
-                            style={menuRowStyle()}
-                            hoverStyle={menuRowHoverStyle()}
-                            focusStyle={quietFocusStyle()}
-                          >
-                            <Icon
-                              name="gitBranch"
-                              size={14}
-                              color={selectedBaseBranch() === b().name ? C.accent : C.muted}
-                            />
-                            <Text
-                              style={[
-                                { ...captionTextStyle, color: C.text, flex: 1 },
-                                { numberOfLines: 1 },
-                              ]}
+                <View style={{ minHeight: 0, flexShrink: 1 }}>
+                  <View style={{ ...menuRowStyle(), gap: 8, flexShrink: 0 }}>
+                    <Icon name="search" size={14} color={C.muted} />
+                    <Input
+                      autoFocus
+                      value={branchSearch()}
+                      onChange={({ value }) => branchSearch.set(value)}
+                      placeholder={tr('Filter branches…')}
+                      accessibilityLabel={tr('Filter branches…')}
+                      style={{
+                        ...captionTextStyle,
+                        flex: 1,
+                        minWidth: 0,
+                        color: C.text,
+                        placeholderColor: C.muted,
+                      }}
+                    />
+                  </View>
+                  <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+                  <If
+                    when={filteredBranches().length > 0}
+                    else={
+                      <View
+                        style={{ paddingHorizontal: 12, paddingVertical: 12, alignItems: 'center' }}
+                      >
+                        <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
+                          {tr('No matching branches')}
+                        </Text>
+                      </View>
+                    }
+                  >
+                    <Scroll
+                      style={{
+                        maxHeight: Math.min(280, Math.max(120, windowSize().height - 108)),
+                        minHeight: 0,
+                        flexShrink: 1,
+                      }}
+                    >
+                      <View style={{ gap: 2, paddingVertical: 2 }}>
+                        <Each of={filteredBranches()} key={(b) => b.name}>
+                          {(b) => (
+                            <Button
+                              accessibilityLabel={b().name}
+                              onPress={() => {
+                                contextMenuOpen.set(false);
+                                selectedBaseBranch.set(b().name);
+                              }}
+                              style={menuRowStyle()}
+                              hoverStyle={menuRowHoverStyle()}
+                              focusStyle={quietFocusStyle()}
                             >
-                              {b().name}
-                            </Text>
-                            <If when={selectedBaseBranch() === b().name}>
-                              <Icon name="check" size={14} color={C.accent} />
-                            </If>
-                          </Button>
-                        )}
-                      </Each>
-                    </View>
-                  </Scroll>
+                              <Icon
+                                name="gitBranch"
+                                size={14}
+                                color={selectedBaseBranch() === b().name ? C.accent : C.muted}
+                              />
+                              <Text
+                                style={[
+                                  { ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 },
+                                  { numberOfLines: 1 },
+                                ]}
+                              >
+                                {b().name}
+                              </Text>
+                              <If when={selectedBaseBranch() === b().name}>
+                                <Icon name="check" size={14} color={C.accent} />
+                              </If>
+                            </Button>
+                          )}
+                        </Each>
+                      </View>
+                    </Scroll>
+                  </If>
                 </View>
               </Popover>
             </If>
@@ -1609,25 +1579,34 @@ export function ChangesStudio(props: {
             <If when={sourceTab() === 'commit'}>
               <Popover
                 open={contextMenuOpen()}
-                onOpenChange={({ open }) => contextMenuOpen.set(open)}
+                onOpenChange={({ open }) => {
+                  contextMenuOpen.set(open);
+                  if (!open) commitSearch.set('');
+                }}
                 placement="bottom"
                 align="start"
                 offset={4}
                 margin={8}
-                popupStyle={{ ...floatingStyle(), width: 320 }}
+                style={{ minWidth: 0, flexShrink: 1 }}
+                popupStyle={{
+                  ...floatingStyle(),
+                  width: 340,
+                  maxHeight: Math.min(380, Math.max(180, windowSize().height - 32)),
+                }}
                 trigger={
                   <Button
                     accessibilityLabel={tr('Select commit')}
                     style={{
+                      maxWidth: '100%',
+                      minWidth: 0,
                       height: 28,
                       paddingHorizontal: 8,
                       borderRadius: 8,
                       backgroundColor: C.card,
                       flexDirection: 'row',
                       alignItems: 'center',
+                      justifyContent: 'flex-start',
                       gap: 4,
-                      flexShrink: 1,
-                      minWidth: 0,
                     }}
                     hoverStyle={{ backgroundColor: C.cardRaised }}
                     focusStyle={quietFocusStyle()}
@@ -1647,38 +1626,83 @@ export function ChangesStudio(props: {
                   </Button>
                 }
               >
-                <Scroll style={{ maxHeight: 280 }}>
-                  <View style={{ gap: 2 }}>
-                    <Each of={revisions()?.commits ?? []} key={(c) => c.oid}>
-                      {(c) => (
-                        <Button
-                          accessibilityLabel={c().summary || c().oid.slice(0, 7)}
-                          onPress={() => {
-                            contextMenuOpen.set(false);
-                            selectedCommitOid.set(c().oid);
-                          }}
-                          style={menuRowStyle()}
-                          hoverStyle={menuRowHoverStyle()}
-                          focusStyle={quietFocusStyle()}
-                        >
-                          <Text
-                            style={{ ...codeTextStyle, fontSize: 12, color: C.muted, width: 56 }}
-                          >
-                            {c().oid.slice(0, 7)}
-                          </Text>
-                          <Text
-                            style={[
-                              { ...captionTextStyle, color: C.text, flex: 1 },
-                              { numberOfLines: 1 },
-                            ]}
-                          >
-                            {c().summary || tr('(no commit message)')}
-                          </Text>
-                        </Button>
-                      )}
-                    </Each>
+                <View style={{ minHeight: 0, flexShrink: 1 }}>
+                  <View style={{ ...menuRowStyle(), gap: 8, flexShrink: 0 }}>
+                    <Icon name="search" size={14} color={C.muted} />
+                    <Input
+                      autoFocus
+                      value={commitSearch()}
+                      onChange={({ value }) => commitSearch.set(value)}
+                      placeholder={tr('Filter commits…')}
+                      accessibilityLabel={tr('Filter commits…')}
+                      style={{
+                        ...captionTextStyle,
+                        flex: 1,
+                        minWidth: 0,
+                        color: C.text,
+                        placeholderColor: C.muted,
+                      }}
+                    />
                   </View>
-                </Scroll>
+                  <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+                  <If
+                    when={filteredCommits().length > 0}
+                    else={
+                      <View
+                        style={{ paddingHorizontal: 12, paddingVertical: 12, alignItems: 'center' }}
+                      >
+                        <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
+                          {tr('No matching commits')}
+                        </Text>
+                      </View>
+                    }
+                  >
+                    <Scroll
+                      style={{
+                        maxHeight: Math.min(280, Math.max(120, windowSize().height - 108)),
+                        minHeight: 0,
+                        flexShrink: 1,
+                      }}
+                    >
+                      <View style={{ gap: 2, paddingVertical: 2 }}>
+                        <Each of={filteredCommits()} key={(c) => c.oid}>
+                          {(c) => (
+                            <Button
+                              accessibilityLabel={c().summary || c().oid.slice(0, 7)}
+                              onPress={() => {
+                                contextMenuOpen.set(false);
+                                selectedCommitOid.set(c().oid);
+                              }}
+                              style={menuRowStyle()}
+                              hoverStyle={menuRowHoverStyle()}
+                              focusStyle={quietFocusStyle()}
+                            >
+                              <Text
+                                style={{
+                                  ...codeTextStyle,
+                                  fontSize: 12,
+                                  color: C.muted,
+                                  width: 56,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {c().oid.slice(0, 7)}
+                              </Text>
+                              <Text
+                                style={[
+                                  { ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 },
+                                  { numberOfLines: 1 },
+                                ]}
+                              >
+                                {c().summary || tr('(no commit message)')}
+                              </Text>
+                            </Button>
+                          )}
+                        </Each>
+                      </View>
+                    </Scroll>
+                  </If>
+                </View>
               </Popover>
             </If>
           </View>
@@ -2185,8 +2209,10 @@ export function ChangesStudio(props: {
           <View
             style={{
               width: 240,
+              height: '100%',
               flexShrink: 0,
               minHeight: 0,
+              overflow: 'hidden',
               borderLeftWidth: 1,
               borderLeftColor: C.line,
               backgroundColor: C.panel,

@@ -138,9 +138,26 @@ impl Owner {
                         },
                     )
                     .await?;
+                let session_ws = owner
+                    .session(&input.session_id)
+                    .await?
+                    .configuration
+                    .workspace;
+                let session_canonical = workspace::open_workspace_observation(
+                    &owner.workspace_roots,
+                    &session_ws,
+                    &owner.managed_worktrees,
+                )
+                .await
+                .ok()
+                .map(|(resolved_path, _, _)| resolved_path);
                 if let Some(ref mut r) = rev {
                     let mut allowed = Vec::with_capacity(r.worktrees.len());
-                    for wt in r.worktrees.drain(..) {
+                    for mut wt in r.worktrees.drain(..) {
+                        if let Some(ref sr) = session_canonical {
+                            wt.is_current = std::fs::canonicalize(&wt.path).ok().as_deref()
+                                == Some(sr.as_path());
+                        }
                         if wt.is_current {
                             allowed.push(wt);
                             continue;
