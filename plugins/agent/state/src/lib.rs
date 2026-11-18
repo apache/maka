@@ -257,6 +257,11 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "missing external tool returns",
         sql: include_str!("../migrations/0047_missing_external_returns.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 48,
+        description: "permission grant sources",
+        sql: include_str!("../migrations/0048_permission_grant_sources.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -282,6 +287,7 @@ mod migration_tests {
                             && m.description != "memory version evidence"
                             && m.description != "memory write resolution"
                             && m.description != "missing external tool returns"
+                            && m.description != "permission grant sources"
                     })
                     .copied()
                     .collect();

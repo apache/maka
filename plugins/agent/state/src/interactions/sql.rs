@@ -482,7 +482,7 @@ fn fold_answer(
     let session = &record.execution.session_id;
     match (&record.request, record.outcome.as_ref()) {
         (
-            InteractionRequest::Permissions { basis, .. },
+            InteractionRequest::Permissions { basis, request, .. },
             Some(InteractionOutcome::PermissionsDecision {
                 decision: PermissionDecision::Allow { permissions, scope },
                 ..
@@ -497,7 +497,7 @@ fn fold_answer(
                 PermissionScope::Session => "session",
             };
             c.execute(
-                "INSERT INTO agent_interaction_grants VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO agent_interaction_grants VALUES(?,?,?,?,?,?,?,?,?)",
                 params![
                     record.request_id,
                     session,
@@ -506,7 +506,8 @@ fn fold_answer(
                     scope,
                     binding.map(|b| b.approval.to_string()),
                     binding.map(|b| encode(&b.target)).transpose()?,
-                    encode(permissions)?
+                    encode(permissions)?,
+                    source_name(request.source)
                 ],
             )?;
         }
@@ -607,11 +608,27 @@ fn unconsumed(
         },
     }
 }
+fn source_name(source: PermissionSource) -> &'static str {
+    match source {
+        PermissionSource::Processes => "processes",
+        PermissionSource::Web => "web",
+        PermissionSource::Files => "files",
+    }
+}
+fn source_value(source: &str) -> Result<PermissionSource, StoreError> {
+    match source {
+        "processes" => Ok(PermissionSource::Processes),
+        "web" => Ok(PermissionSource::Web),
+        "files" => Ok(PermissionSource::Files),
+        _ => Err(invalid("unknown permission source")),
+    }
+}
 pub(super) fn grants(
     c: &Connection,
     execution: &ExecutionIdentity,
     target: Option<&AuthorizationObligation>,
     expected: PermissionBasis,
+    requester: PermissionSource,
 ) -> Result<Vec<PermissionGrant>, StoreError> {
     id(&execution.session_id)?;
     expected.validate().map_err(invalid)?;
@@ -629,10 +646,11 @@ pub(super) fn grants(
         String,
         String,
         Option<String>,
+        String,
     );
-    let rows: Vec<GrantRow> = c.prepare_cached("SELECT request,permissions,approval,scope,run,target FROM agent_interaction_grants WHERE session=?1 AND basis=?2 AND (scope='session' OR (run=?3 AND (scope='run' OR (scope='once' AND target=?4)))) ORDER BY request")?.query_map(params![execution.session_id,encode(&expected)?,execution.run_id.to_string(),target.map(encode).transpose()?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?.collect::<Result<_,_>>()?;
+    let rows: Vec<GrantRow> = c.prepare_cached("SELECT request,permissions,approval,scope,run,target,source FROM agent_interaction_grants WHERE session=?1 AND basis=?2 AND (scope='session' OR (run=?3 AND (scope='run' OR (scope='once' AND target=?4)))) ORDER BY request")?.query_map(params![execution.session_id,encode(&expected)?,execution.run_id.to_string(),target.map(encode).transpose()?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?.collect::<Result<_,_>>()?;
     let mut grants = Vec::with_capacity(rows.len());
-    for (request, permissions, approval, scope, original_run, original_target) in rows {
+    for (request, permissions, approval, scope, original_run, original_target, source) in rows {
         let scope = match scope.as_str() {
             "once" => PermissionScope::Once,
             "run" => PermissionScope::Run,
@@ -679,10 +697,15 @@ pub(super) fn grants(
         if scope == PermissionScope::Once && !once_available {
             continue;
         }
+        let Some(permissions) =
+            source_value(&source)?.share(requester, serde_json::from_str(&permissions)?)
+        else {
+            continue;
+        };
         grants.push(PermissionGrant {
             approval_id,
             request_id: request,
-            permissions: serde_json::from_str(&permissions)?,
+            permissions,
             scope,
         });
     }

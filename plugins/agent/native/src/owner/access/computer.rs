@@ -24,7 +24,7 @@ use maka_agent_authority::computer::{
 };
 use maka_agent_facts::{
     artifact::Artifact,
-    interaction::{ComputerAppActivity, SessionGrant, SystemPermissionGrant},
+    interaction::{ComputerAppActivity, PermissionSource, SessionGrant, SystemPermissionGrant},
 };
 use maka_agent_state::{
     artifacts::{ArtifactStore, SessionArtifactWrite, SessionScope},
@@ -285,6 +285,7 @@ impl Access for BoundCall {
         &'a self,
         target: &'a AuthorizationObligation,
         basis: &'a PermissionBasis,
+        source: PermissionSource,
     ) -> BoxFuture<'a, Result<Vec<PermissionGrant>, ToolError>> {
         Box::pin(async move {
             if target != &self.target {
@@ -292,7 +293,7 @@ impl Access for BoundCall {
                     "Permission target differs from actual native call".into(),
                 ));
             }
-            self.access.permission_grants(target, basis).await
+            self.access.permission_grants(target, basis, source).await
         })
     }
 }
