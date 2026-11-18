@@ -37,6 +37,7 @@ impl Owner {
         Ok(ComputerApps {
             entries: activities
                 .into_iter()
+                .filter(|v| v.authorized)
                 .map(|v| ComputerAppActivityState {
                     activity: v.subject.activity,
                     stopped: v.stopped,

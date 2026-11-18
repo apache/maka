@@ -105,4 +105,5 @@ export const goalMessages = {
     '請為此對話啟用目標工具，再開始目標。',
   ],
   'Close Goal': ['Close Goal', '关闭目标面板', '關閉目標面板'],
+  'Dismiss Goal': ['Dismiss Goal', '关闭目标状态', '關閉目標狀態'],
 } as const;

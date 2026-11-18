@@ -28,6 +28,7 @@ import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
 import { C, inputTextStyle, inputBorderRadius } from './ui';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { SettingsButton } from './SettingsPage';
+import { AppliedPresetDialog } from './AppliedPresetDetails';
 import { SessionTree } from './SessionTree';
 import { SessionCompactionPrompt } from './SessionCompactionPrompt';
 
@@ -148,6 +149,13 @@ export function SessionActions(props: {
             props.close();
             props.openSession?.(id);
           }}
+        />
+      </If>
+      <If when={page() === 'preset' && !!session().appliedPreset}>
+        <AppliedPresetDialog
+          preset={session().appliedPreset!}
+          backend={session().backend}
+          close={() => back('preset')}
         />
       </If>
       <If when={page() === 'compaction_prompt'}>

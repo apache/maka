@@ -131,6 +131,7 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
                     | "updatePreset"
                     | "deletePreset"
                     | "changeMemory"
+                    | "reconcileMemories"
                     | "saveGitHubToken"
                     | "deleteGitHubToken"
             ))
@@ -1096,6 +1097,31 @@ impl Client {
         }
     }
 
+    /// Restore a confirmed unsent message and its verified attachments into the
+    /// persisted draft and dismiss the pending send in a single journal transaction.
+    pub async fn restore_send(
+        &self,
+        original: Uuid,
+        endpoint: &str,
+        session: &str,
+        editor: &str,
+        expected: Option<u64>,
+    ) -> Result<Draft> {
+        let key = self.draft_key(endpoint, session, editor).await?;
+        let previous = self.operation(original).await?;
+        if previous.draft.as_ref().map(|draft| &draft.key) != Some(&key)
+            || previous.method != "send"
+            || (!journal::retryable_send(&previous)
+                && self.send_delivery(original).await? != SendDelivery::Cancelled)
+        {
+            return Err("original send must be confirmed unsent before restoring".into());
+        }
+        self.0
+            .journal
+            .restore_send(&self.0.source, &key, original, expected)
+            .await
+    }
+
     /// Dismiss presentation without cancelling or changing the original outcome.
     pub async fn dismiss_send(&self, id: Uuid) -> Result<()> {
         let operation = self.operation(id).await?;
@@ -1930,6 +1956,7 @@ mod preset_settings_tests {
             "updatePreset",
             "deletePreset",
             "changeMemory",
+            "reconcileMemories",
         ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("client.sqlite");

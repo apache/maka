@@ -41,6 +41,24 @@ mod startup;
 mod windows;
 
 fn main() -> std::process::ExitCode {
+    #[cfg(unix)]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(maka_agent_native::FRONT_HELPER))
+    {
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .and_then(|rt| {
+                let result = rt.block_on(maka_agent_native::serve_front());
+                rt.shutdown_background();
+                result
+            });
+        if let Err(error) = result {
+            eprintln!("agy ACP owner: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+        return std::process::ExitCode::SUCCESS;
+    }
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(maka_process::isolated::HELPER))
     {

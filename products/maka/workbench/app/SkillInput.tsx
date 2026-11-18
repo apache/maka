@@ -21,6 +21,7 @@ import { ComposerInput, type ComposerInputRef, type ComposerInputState } from 'm
 import { cleanup, effect, keymap, signal, untracked, View } from 'nsh';
 import type { CaretEvent, StyleProp, TextStyle } from 'nsh';
 import type { ComposerEditor, EditorKeyOptions } from './ComposerEditor';
+import type { ComposerPaste } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { lucide } from './lucide';
 import { C, bodyTextStyle } from './ui';
 
@@ -41,7 +42,7 @@ type Props = {
   onCaretMove?(event: CaretEvent): void;
   onSubmit?(event: { text: string }): void;
   onOpenSessionReference?(event: { sessionId: string }): void;
-  onPaste?(event: { text: string; uris: string[]; files: unknown[] }): void;
+  onPaste?(event: ComposerPaste): void;
   onFocus?(): void;
   onBlur?(): void;
   onEscape?(): void;
@@ -218,9 +219,7 @@ export function SkillInput(props: Props) {
         onCompositionChange={({ composing }) => composition.set(composing)}
         onSubmit={props.onSubmit}
         onKey={key}
-        onPasteFiles={(event) =>
-          props.onPaste?.({ text: '', uris: event.uris, files: event.files })
-        }
+        onPasteFiles={props.onPaste}
         onFocus={props.onFocus}
         onBlur={props.onBlur}
       />

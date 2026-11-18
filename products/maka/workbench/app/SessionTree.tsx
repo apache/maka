@@ -70,6 +70,8 @@ function actionTarget(session: TreeSession): SessionActionTarget {
     archived: session.archived,
     pinned: session.pinned,
     workspace: { path: session.workspace.path },
+    appliedPreset: session.appliedPreset ?? null,
+    backend: session.backend ?? null,
   };
 }
 

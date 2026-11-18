@@ -56,7 +56,7 @@ import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
-import { createComposerPaste } from './composerPaste';
+import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
 import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
@@ -501,9 +501,29 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       {props.request}
       <View style={{ flexShrink: 0 }}>
         <If when={props.session()?.error()}>
-          <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-            {props.session()?.error()}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={[{ color: C.danger, flex: 1 }, { userSelect: 'text' }]}>
+              {props.session()?.error()}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Dismiss error')}
+              tooltip={textTooltip(() => tr('Dismiss error'))}
+              onPress={() => props.session()?.dismissError()}
+              style={{
+                ...controlStyle,
+                width: 32,
+                height: 32,
+                paddingHorizontal: 8,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 16,
+              }}
+              hoverStyle={{ backgroundColor: C.surface }}
+              focusStyle={{ backgroundColor: C.raised }}
+            >
+              <Icon name="close" color={C.muted} />
+            </Button>
+          </View>
         </If>
         <If when={props.session()?.notice()}>
           <Text
@@ -586,6 +606,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   })
                 : null;
               if (local && paste) {
+                paste.bindClipboard();
                 const drop = (event: { uris: string[] }) => paste.drop(local, event);
                 pendingDrop = drop;
                 cleanup(() => {
@@ -666,12 +687,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           value={path()}
                           onChange={({ value }) => path.set(value)}
                           onSubmit={() => {
-                            if (path().trim()) local?.selectFiles([path().trim()]);
+                            if (path().trim())
+                              local?.intake({ kind: 'files', paths: [path().trim()] });
                           }}
                         />
                         <Button
                           onPress={() => {
-                            if (path().trim()) local?.selectFiles([path().trim()]);
+                            if (path().trim())
+                              local?.intake({ kind: 'files', paths: [path().trim()] });
                           }}
                           style={controlStyle}
                         >

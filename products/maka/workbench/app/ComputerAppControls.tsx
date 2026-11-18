@@ -44,10 +44,9 @@ export function createComputerAppControls(access: ComposerComputerAccess, height
   cleanup(() => {
     alive = false;
   });
+  const activeEntries = () => access.snapshot().entries.filter((entry) => !entry.stopped);
   const current = (operationId: string) =>
-    access
-      .snapshot()
-      .entries.find((entry) => entry.activity.operationId === operationId && !entry.stopped);
+    activeEntries().find((entry) => entry.activity.operationId === operationId);
   const stop = async (operationId: string) => {
     if (!alive || !current(operationId)) return;
     failure.set(null);
@@ -59,14 +58,13 @@ export function createComputerAppControls(access: ComposerComputerAccess, height
     }
   };
   return {
-    shown: () => access.snapshot().entries.length > 0,
-    summary: () => String(access.snapshot().entries.filter((entry) => !entry.stopped).length),
+    shown: () => activeEntries().length > 0,
+    summary: () => String(activeEntries().length),
     preview: () =>
       failure() && current(failure()!.operationId)
         ? renderText(failure()!.message)
-        : access
-            .snapshot()
-            .entries.map((entry) => entry.activity.display.name)
+        : activeEntries()
+            .map((entry) => entry.activity.display.name)
             .join(', '),
     problem: () => !!failure() && !!current(failure()!.operationId),
     content: () => (

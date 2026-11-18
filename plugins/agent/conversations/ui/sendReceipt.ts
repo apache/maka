@@ -95,3 +95,30 @@ export function shouldHideAcceptedQueuedStatus(options: {
     (options.followups.has(options.messageId) || options.inTranscript(options.messageId))
   );
 }
+
+/**
+ * Combines local edits typed while `restoreSend` was in flight with the
+ * original unsent message's content, without re-appending the pre-restore draft
+ * already folded into `restoreSend`'s persisted return value.
+ */
+export function mergeRestoredIntoHeldDraft<File extends { id: string }>(
+  typed: { text: string; attachments: File[]; settledUploads: string[] },
+  restoredSource: { text: string; attachments: File[] },
+): { text: string; attachments: File[]; settledUploads: string[] } {
+  const seen = new Set(typed.attachments.map((file) => file.id));
+  const attachments = [
+    ...typed.attachments,
+    ...restoredSource.attachments.filter((file) => !seen.has(file.id)),
+  ];
+  const text =
+    restoredSource.text === ''
+      ? typed.text
+      : typed.text.trim() === '' || typed.text === restoredSource.text
+        ? restoredSource.text
+        : `${typed.text}\n\n${restoredSource.text}`;
+  return {
+    text,
+    attachments,
+    settledUploads: typed.settledUploads,
+  };
+}

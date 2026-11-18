@@ -371,7 +371,7 @@ impl Service {
                 // Do not cancel this actual read: its blocking worker must finish
                 // before this request can close its own resource fence.
                 let cleanup = match isolated::cleanup_evidence(&descriptor).await.map_err(diagnostic)? {
-                    Some(CleanupEvidence::NeverLaunched { .. } | CleanupEvidence::GroupClosed { .. }) => OperationCleanup::Confirmed,
+                    Some(CleanupEvidence::NeverLaunched { .. } | CleanupEvidence::TaskClosed { .. }) => OperationCleanup::Confirmed,
                     None => OperationCleanup::Unconfirmed,
                 };
                 if context.scope().cancellation.is_cancelled() { return Ok(HandlerValue::Json(Value::Null)); }

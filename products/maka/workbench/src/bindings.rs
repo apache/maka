@@ -275,7 +275,6 @@ pub fn ui_registry() -> Registry {
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
-    registry.class::<uploads::StagedClipboard>();
     registry.class::<ui_services::UiScope>();
     registry
 }
@@ -465,33 +464,14 @@ impl ApplicationHost {
         .await
     }
 
-    /// Snapshot files selected for a conversation that has not yet been sent.
-    pub async fn stage_files(
+    /// Capture attachment input before a session exists.
+    pub async fn stage_intake(
         this: Instance<Self>,
-        files: Vec<String>,
-    ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
+        input: uploads::IntakeInput,
+    ) -> Result<uploads::StagedIntake, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        Ok(uploads::stage_files(owner, files, false).await?.files())
-    }
-    /// Interpret a path drop before a session exists, preserving directory paths as text.
-    pub async fn stage_dropped_files(
-        this: Instance<Self>,
-        files: Vec<String>,
-    ) -> Result<Instance<uploads::StagedClipboard>, String> {
-        let owner = this.with(|host| host.owner.clone());
-        drop(this);
-        Ok(Instance::new(
-            uploads::stage_files(owner, files, true).await?,
-        ))
-    }
-    /// Capture an explicit clipboard paste before a session exists.
-    pub async fn stage_clipboard(
-        this: Instance<Self>,
-    ) -> Result<Instance<uploads::StagedClipboard>, String> {
-        let owner = this.with(|host| host.owner.clone());
-        drop(this);
-        Ok(Instance::new(uploads::stage_clipboard(owner).await?))
+        uploads::stage_intake(owner, input).await
     }
     pub fn asset_uri(&self, uri: String) -> Result<String, String> {
         self.client.asset_uri(uri)
@@ -1249,9 +1229,9 @@ impl ScopedHost {
         .await
     }
 
-    /// Admit files selected by this editor's native paste or drop gesture.
-    pub fn begin_file_drop(&self, uris: Vec<String>) -> Instance<uploads::UploadIntake> {
-        Instance::new(uploads::UploadIntake::files(self.scope.clone(), uris))
+    /// Admit attachment input under this editor's session owner.
+    pub fn begin_intake(&self, input: uploads::IntakeInput) -> Instance<uploads::UploadIntake> {
+        Instance::new(uploads::UploadIntake::begin(self.scope.clone(), input))
     }
 
     /// Upload a file that was selected before the session was created.
@@ -1263,11 +1243,6 @@ impl ScopedHost {
             self.scope.clone(),
             file,
         )?))
-    }
-
-    /// Read native clipboard content only for the user's explicit paste action.
-    pub fn begin_clipboard_paste(&self) -> Instance<uploads::UploadIntake> {
-        Instance::new(uploads::UploadIntake::clipboard(self.scope.clone()))
     }
 
     /// Observe original upload receipts, including work admitted by an older view.
@@ -1401,6 +1376,32 @@ impl ScopedHost {
             let client = scope.client.local(&scope.owner).await?;
             scope.owned_operation(&client, id).await?;
             serde_json::to_value(client.send_delivery(id).await?).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Restore a confirmed unsent message and its verified attachments into the
+    /// persisted draft and dismiss the pending send in one journal transaction.
+    pub async fn restore_send(
+        this: Instance<Self>,
+        operation_id: String,
+        expected_revision: u64,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let original = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, original).await?;
+            let draft = client
+                .restore_send(
+                    original,
+                    AGENT,
+                    &scope.session,
+                    EDITOR,
+                    (expected_revision != 0).then_some(expected_revision),
+                )
+                .await?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
         })
         .await
     }

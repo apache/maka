@@ -348,6 +348,7 @@ impl Owner {
                 &self.store,
                 auxiliary::Admission::Operation {
                     reference: Box::new(operation),
+                    attempt: None,
                     scope: Box::new(dispatch),
                     execution: auxiliary::Execution::Work {
                         custody: preparation_store

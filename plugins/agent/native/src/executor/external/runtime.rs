@@ -257,7 +257,7 @@ pub(super) enum Resolution<'a> {
     UnsupportedBatch,
 }
 pub(super) struct ResolvedCommand<'a> {
-    executable: PathBuf,
+    pub(super) executable: PathBuf,
     configuration: &'a NativeCommand,
 }
 impl<'a> Resolution<'a> {
@@ -385,7 +385,7 @@ async fn foreground_codex(
 )]
 pub(super) async fn execute(
     runtime: NativeRuntime,
-    config: &NativeCommand,
+    external: &External,
     cwd: &str,
     request: Value,
     journal: &mut journal::ProtocolSession,
@@ -401,7 +401,7 @@ pub(super) async fn execute(
     let work = async {
         let result = execute_observed(
             runtime,
-            config,
+            external,
             cwd,
             request,
             journal,
@@ -424,7 +424,7 @@ pub(super) async fn execute(
 )]
 async fn execute_observed(
     runtime: NativeRuntime,
-    config: &NativeCommand,
+    external: &External,
     cwd: &str,
     request: Value,
     journal: &mut journal::ProtocolSession,
@@ -438,6 +438,7 @@ async fn execute_observed(
     if observation.retired.is_cancelled() {
         return Err(Error::ObservationRetired);
     }
+    let config = &external.commands[&runtime];
     let retained = bridge.clone();
     let running = &mut *journal;
     let result = match runtime {
@@ -456,7 +457,15 @@ async fn execute_observed(
             .await
         }
         NativeRuntime::Antigravity => {
+            #[cfg(not(unix))]
+            {
+                Err(Error::Invalid(
+                    "Native session ownership is unavailable on this platform".into(),
+                ))
+            }
+            #[cfg(unix)]
             agy_acp::execute(
+                &external.agy_fronts,
                 config,
                 cwd,
                 &request,
@@ -501,8 +510,8 @@ pub(super) enum Transport {
 }
 enum Wire {
     Lines {
-        input: maka_process::pipe::Input,
-        reader: BufReader<maka_process::pipe::Output>,
+        input: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        reader: BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
         buffer: Vec<u8>,
     },
     WebSocket(
@@ -519,8 +528,8 @@ impl Wire {
     ) -> Result<Self, Error> {
         match transport {
             Transport::JsonLines => Ok(Self::Lines {
-                input,
-                reader: BufReader::new(output),
+                input: Box::new(input),
+                reader: BufReader::new(Box::new(output)),
                 buffer: Vec::new(),
             }),
             Transport::WebSocket => {
@@ -687,6 +696,35 @@ pub(super) struct Pipe {
     exit_deadline: Option<tokio::time::Instant>,
 }
 impl Pipe {
+    #[cfg(unix)]
+    pub(super) fn session(
+        socket: tokio::net::UnixStream,
+        observation: Observation,
+        stop: CancellationToken,
+        failed: CancellationToken,
+    ) -> Self {
+        let (read, write) = socket.into_split();
+        Self {
+            wire: Wire::Lines {
+                input: Box::new(write),
+                reader: BufReader::new(Box::new(read)),
+                buffer: Vec::new(),
+            },
+            next_id: 0,
+            line_bytes: 0,
+            parsing: None,
+            encoding: None,
+            events: Default::default(),
+            cancellation: stop.clone(),
+            retired: observation.retired.clone(),
+            stop,
+            observation: Some(observation),
+            exited: CancellationToken::new(),
+            failed,
+            watch_failed: CancellationToken::new(),
+            exit_deadline: None,
+        }
+    }
     pub fn turn_started(&self) {
         if let Some(observation) = &self.observation {
             observation

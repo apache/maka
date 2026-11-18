@@ -27,6 +27,9 @@ use maka_event_log::{
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
+mod matching;
+pub mod resolution;
+
 fn revision_value(value: i64) -> Result<MemoryRevision, StoreError> {
     Ok(MemoryRevision(
         u64::try_from(value).map_err(|_| invalid("negative memory revision"))?,
@@ -93,17 +96,30 @@ pub struct Page {
 impl Query for Page {
     type Output = Vec<MemoryRecord>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        self.page(c, false)
+    }
+}
+pub struct PendingPage(pub Page);
+impl Query for PendingPage {
+    type Output = Vec<MemoryRecord>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        self.0.page(c, true)
+    }
+}
+impl Page {
+    fn page(self, c: &Connection, pending: bool) -> Result<Vec<MemoryRecord>, StoreError> {
         self.scope.validate(c)?;
         if !(1..=101).contains(&self.limit) {
             return Err(invalid("memory page limit"));
         }
-        let mut statement=c.prepare("SELECT m.id,m.revision,m.mode,v.body,m.created_at,m.modified_at,v.metadata,m.assertion FROM agent_memories m JOIN agent_memory_versions v ON v.namespace=m.namespace AND v.scope=m.scope AND v.id=m.id AND v.revision=m.assertion WHERE m.namespace=?1 AND m.scope=?2 AND m.state='active' AND m.id>?3 ORDER BY m.id LIMIT ?4")?;
+        let mut statement=c.prepare("SELECT m.id,m.revision,m.mode,v.body,m.created_at,m.modified_at,v.metadata,m.assertion FROM agent_memories m JOIN agent_memory_versions v ON v.namespace=m.namespace AND v.scope=m.scope AND v.id=m.id AND v.revision=m.assertion WHERE m.namespace=?1 AND m.scope=?2 AND m.state=?5 AND m.id>?3 ORDER BY m.id LIMIT ?4")?;
         let rows = statement.query_map(
             params![
                 self.scope.namespace,
                 self.scope.location,
                 self.after.map(|id| id.0.to_string()).unwrap_or_default(),
-                self.limit
+                self.limit,
+                if pending { "unresolved" } else { "active" }
             ],
             |r| {
                 Ok((
@@ -125,7 +141,11 @@ impl Query for Page {
                 id: MemoryId(uuid::Uuid::parse_str(&id).map_err(|e| invalid(e.to_string()))?),
                 revision: revision_value(revision)?,
                 mode: serde_json::from_value(serde_json::Value::String(mode))?,
-                state: MemoryState::Active,
+                state: if pending {
+                    MemoryState::Unresolved
+                } else {
+                    MemoryState::Active
+                },
                 body,
                 metadata: serde_json::from_str(&metadata)?,
                 created_at,
@@ -136,7 +156,7 @@ impl Query for Page {
     }
 }
 // Only the native user-management service constructs this statement. It is not a model tool.
-pub struct UserChange {
+pub(crate) struct UserChange {
     pub source_scope: Option<Scope>,
     pub scope: Scope,
     pub edit: MemoryEdit,
@@ -150,7 +170,9 @@ impl Statement for UserChange {
         let result = self.apply(c)?;
         let changed = matches!(
             result,
-            MemoryResult::Saved { .. } | MemoryResult::Deleted { .. }
+            MemoryResult::Saved { .. }
+                | MemoryResult::Deleted { .. }
+                | MemoryResult::EvidenceAdded { .. }
         );
         Ok(Prepared {
             value: result,
@@ -225,6 +247,12 @@ impl UserChange {
         if metadata.is_some_and(|m| matches!(m.temporal, MemoryTemporal::Interval { start, end: Some(end) } if end <= start)) {
             return Err(invalid("memory validity must be a nonempty interval"));
         }
+        if let MemoryEdit::Create { body, metadata } = &self.edit
+            && let Some(result) =
+                matching::create(c, &self.scope, body, metadata, self.operation, self.at)?
+        {
+            return Ok(result);
+        }
         let key = id.0.to_string();
         let current=c.query_row("SELECT revision,assertion,state,mode FROM agent_memories WHERE namespace=?1 AND scope=?2 AND id=?3",params![self.scope.namespace,self.scope.location,key],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?;
         let mut corrects = None;
@@ -274,8 +302,7 @@ impl UserChange {
                 operation_id: self.operation,
                 observed_at: self.at,
             };
-            let normalized = body.replace("\r\n", "\n");
-            let digest = hex::encode(Sha256::digest(normalized.trim().as_bytes()));
+            let digest = matching::digest(body);
             c.execute("INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,corrects,digest,disposition,metadata) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'current',?9)",params![self.scope.namespace,self.scope.location,key,revision,body,serde_json::to_string(&source)?,corrects,digest,serde_json::to_string(metadata.ok_or_else(|| invalid("missing assertion metadata"))?)?])?;
         }
         if body.is_some() {
@@ -312,7 +339,7 @@ impl Query for History {
         if !(1..=101).contains(&self.limit) {
             return Err(invalid("memory history limit"));
         }
-        let mut statement=c.prepare("SELECT v.revision,v.body,v.source,v.corrects,v.metadata,v.generation FROM agent_memory_versions v JOIN agent_memories m ON m.namespace=v.namespace AND m.scope=v.scope AND m.id=v.id WHERE v.namespace=?1 AND v.scope=?2 AND v.id=?3 AND m.state='active' AND v.disposition<>'suppressed' AND v.revision>?4 ORDER BY v.revision LIMIT ?5")?;
+        let mut statement=c.prepare("SELECT v.revision,v.body,v.source,v.corrects,v.metadata,v.method FROM agent_memory_versions v JOIN agent_memories m ON m.namespace=v.namespace AND m.scope=v.scope AND m.id=v.id WHERE v.namespace=?1 AND v.scope=?2 AND v.id=?3 AND m.state<>'suppressed' AND v.disposition<>'suppressed' AND v.revision>?4 ORDER BY v.revision LIMIT ?5")?;
         let rows = statement.query_map(
             params![
                 self.scope.namespace,
@@ -429,7 +456,7 @@ impl Query for Evidence {
         if !(1..=101).contains(&self.limit) {
             return Err(invalid("memory evidence limit"));
         }
-        let mut statement = c.prepare("SELECT e.sequence,e.source FROM agent_memory_evidence e JOIN agent_memories m ON m.namespace=e.namespace AND m.scope=e.scope AND m.id=e.id JOIN agent_memory_versions v ON v.namespace=e.namespace AND v.scope=e.scope AND v.id=e.id AND v.revision=e.assertion WHERE e.namespace=? AND e.scope=? AND e.id=? AND e.assertion=? AND e.sequence>? AND m.state='active' AND v.disposition<>'suppressed' ORDER BY e.sequence LIMIT ?")?;
+        let mut statement = c.prepare("SELECT e.sequence,e.source FROM agent_memory_evidence e JOIN agent_memories m ON m.namespace=e.namespace AND m.scope=e.scope AND m.id=e.id JOIN agent_memory_versions v ON v.namespace=e.namespace AND v.scope=e.scope AND v.id=e.id AND v.revision=e.assertion WHERE e.namespace=? AND e.scope=? AND e.id=? AND e.assertion=? AND e.sequence>? AND m.state<>'suppressed' AND v.disposition<>'suppressed' ORDER BY e.sequence LIMIT ?")?;
         let rows = statement.query_map(
             params![
                 self.scope.namespace,
@@ -523,6 +550,8 @@ mod tests {
         c.execute_batch(include_str!("../migrations/0044_memory_metadata.sql"))
             .unwrap();
         c.execute_batch(include_str!("../migrations/0045_memory_evidence.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../migrations/0046_memory_resolution.sql"))
             .unwrap();
         c
     }
@@ -634,6 +663,213 @@ mod tests {
         );
     }
     #[test]
+    fn exact_create_reuses_assertion_and_preserves_priority() {
+        let c = setup();
+        let scope = || scope("host/agent", "personal");
+        let create = |body: &str| MemoryEdit::Create {
+            body: body.into(),
+            metadata: MemoryMetadata::default(),
+        };
+        let MemoryResult::Saved { id, .. } =
+            change(&c, scope(), create("Prefer Chinese\r\nfor discussions"))
+        else {
+            panic!()
+        };
+        change(
+            &c,
+            scope(),
+            MemoryEdit::SetAlways {
+                id: id.clone(),
+                expected_revision: MemoryRevision(1),
+                always: true,
+            },
+        );
+        let before = record(&c, &scope(), &id).unwrap().unwrap();
+        let result = change(&c, scope(), create("  Prefer Chinese\nfor discussions  "));
+        let MemoryResult::EvidenceAdded {
+            id: matched,
+            revision,
+        } = result
+        else {
+            panic!()
+        };
+        assert_eq!(matched, id);
+        assert_eq!(revision, MemoryRevision(3));
+        let after = record(&c, &scope(), &id).unwrap().unwrap();
+        assert_eq!(after.mode, MemoryMode::UserAlways);
+        assert_eq!(after.body, before.body);
+        assert_eq!(after.assertion, before.assertion);
+        assert_eq!(after.modified_at, before.modified_at);
+        assert_eq!(
+            Evidence {
+                scope: scope(),
+                id,
+                assertion: MemoryRevision(1),
+                after: None,
+                limit: 100
+            }
+            .execute(&c)
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(
+            Page {
+                scope: scope(),
+                after: None,
+                limit: 100
+            }
+            .execute(&c)
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn exact_matching_respects_scope_metadata_negation_and_case() {
+        let c = setup();
+        for (location, body, metadata) in [
+            ("personal", "Use Postgres", MemoryMetadata::default()),
+            ("project", "Use Postgres", MemoryMetadata::default()),
+            ("personal", "Do not use Postgres", MemoryMetadata::default()),
+            ("personal", "Use postgres", MemoryMetadata::default()),
+            (
+                "personal",
+                "Use Postgres",
+                MemoryMetadata {
+                    temporal: MemoryTemporal::Interval {
+                        start: 10,
+                        end: Some(20),
+                    },
+                    ..Default::default()
+                },
+            ),
+        ] {
+            assert!(matches!(
+                change(
+                    &c,
+                    scope("host/agent", location),
+                    MemoryEdit::Create {
+                        body: body.into(),
+                        metadata
+                    }
+                ),
+                MemoryResult::Saved { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn deleted_and_corrected_assertions_block_new_ids_until_explicit_restore() {
+        let c = setup();
+        let scope = || scope("host/agent", "personal");
+        let create = |body: &str| MemoryEdit::Create {
+            body: body.into(),
+            metadata: MemoryMetadata::default(),
+        };
+        let MemoryResult::Saved { id, .. } = change(&c, scope(), create("Use Chinese")) else {
+            panic!()
+        };
+        change(
+            &c,
+            scope(),
+            MemoryEdit::Correct {
+                id: id.clone(),
+                expected_revision: MemoryRevision(1),
+                body: "Use English".into(),
+                metadata: MemoryMetadata::default(),
+            },
+        );
+        assert!(matches!(
+            change(&c, scope(), create("Use Chinese")),
+            MemoryResult::Suppressed
+        ));
+        change(
+            &c,
+            scope(),
+            MemoryEdit::Delete {
+                id: id.clone(),
+                expected_revision: MemoryRevision(2),
+            },
+        );
+        assert!(matches!(
+            change(&c, scope(), create("Use English")),
+            MemoryResult::Suppressed
+        ));
+        assert!(matches!(
+            change(&c, scope(), create("Use Chinese")),
+            MemoryResult::Suppressed
+        ));
+        assert!(
+            Page {
+                scope: scope(),
+                after: None,
+                limit: 10
+            }
+            .execute(&c)
+            .unwrap()
+            .is_empty()
+        );
+        change(
+            &c,
+            scope(),
+            MemoryEdit::Restore {
+                id: id.clone(),
+                expected_revision: MemoryRevision(3),
+                body: "Use English".into(),
+                metadata: MemoryMetadata::default(),
+            },
+        );
+        assert!(matches!(
+            change(&c, scope(), create("Use English")),
+            MemoryResult::EvidenceAdded { .. }
+        ));
+        assert!(matches!(
+            change(&c, scope(), create("Use Chinese")),
+            MemoryResult::Suppressed
+        ));
+    }
+
+    #[test]
+    fn explicit_duplicate_confirms_auto_fact_and_replay_does_not_add_evidence() {
+        let c = setup();
+        let scope = || scope("host/agent", "personal");
+        let edit = || MemoryEdit::Create {
+            body: "Use Chinese".into(),
+            metadata: MemoryMetadata::default(),
+        };
+        let MemoryResult::Saved { id, .. } = change(&c, scope(), edit()) else {
+            panic!()
+        };
+        c.execute("UPDATE agent_memories SET mode='auto_recall'", [])
+            .unwrap();
+        let operation = uuid::Uuid::new_v4();
+        for _ in 0..2 {
+            let result = UserChange {
+                source_scope: None,
+                scope: scope(),
+                edit: edit(),
+                operation,
+                at: 50,
+            }
+            .execute(&c)
+            .unwrap()
+            .value;
+            assert!(matches!(
+                result,
+                MemoryResult::EvidenceAdded {
+                    revision: MemoryRevision(2),
+                    ..
+                }
+            ));
+        }
+        let record = record(&c, &scope(), &id).unwrap().unwrap();
+        assert_eq!(record.mode, MemoryMode::UserRecall);
+        assert_eq!(record.modified_at, 1);
+    }
+
+    #[test]
     fn existing_memory_versions_gain_metadata_and_evidence_without_body_changes() {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(include_str!("../migrations/0043_memory.sql"))
@@ -648,6 +884,8 @@ mod tests {
         c.execute_batch(include_str!("../migrations/0044_memory_metadata.sql"))
             .unwrap();
         c.execute_batch(include_str!("../migrations/0045_memory_evidence.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../migrations/0046_memory_resolution.sql"))
             .unwrap();
         let current = record(&c, &scope("host/agent", "personal"), &id)
             .unwrap()

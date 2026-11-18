@@ -49,9 +49,11 @@ import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk
 import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
+import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type {
   AgentCompletionTarget,
   AgentInteractionResult,
+  AgentSession,
   AgentWorkspaceAccess,
   SettingsAssistantPreferences,
   SettingsPreferencesUpdated,
@@ -127,6 +129,7 @@ import {
 } from '../../../../products/maka/workbench/app/RecentWorkspaces';
 import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
 import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
+import { AppliedPresetDialog } from '../../../../products/maka/workbench/app/AppliedPresetDetails';
 import { GoalDialog } from '../../../../products/maka/workbench/app/GoalDialog';
 import { CompactDialog } from '../../../../products/maka/workbench/app/CompactDialog';
 import type {
@@ -183,6 +186,11 @@ type OverlayTarget = {
       goal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal;
     }
   | { kind: 'compact'; owner: ConversationHandle; prompt?: string }
+  | {
+      kind: 'preset';
+      preset: NonNullable<AgentSession['appliedPreset']>;
+      backend?: AgentSession['backend'];
+    }
 );
 type Overlay = OverlayTarget & { instance: number };
 function unavailableSession(reason: unknown): boolean {
@@ -1028,37 +1036,40 @@ export function createConversationUi(
     prefills.delete(sessionId);
     submission.set({ kind: 'preparing', attempt });
   };
-  const stagePending = (
-    read: () => Promise<{ files: StagedFile[]; text?: string | null }>,
-    onText?: (text: string) => void,
-  ) => {
+  const stagePending = (input: ComposerIntake, onText?: (text: string) => void) => {
     const workspace = pendingWorkspace();
     if (!workspace || pendingFileBusy() || pendingSending()) return;
-    const intake = read()
-      .then(async ({ files, text }) => {
+    const intake = host
+      .stageIntake(input)
+      .then((staged) => {
         if (!alive || pendingWorkspace() !== workspace) {
-          for (const file of files) file.dispose();
+          if (staged.kind === 'files') {
+            for (const file of staged.files) file.dispose();
+          }
           return;
         }
-        updatePending({
-          files: [
-            ...pendingFiles(),
-            ...files.map((file) => {
-              const metadata = file.metadata() as {
-                name: string;
-                bytes: number;
-              };
-              return {
-                id: file.id,
-                name: metadata.name,
-                bytes: metadata.bytes,
-                imageUri: file.imageUri(),
-                file,
-              };
-            }),
-          ],
-        });
-        if (text) onText?.(text);
+        if (staged.kind === 'text') {
+          if (staged.text) onText?.(staged.text);
+        } else {
+          updatePending({
+            files: [
+              ...pendingFiles(),
+              ...staged.files.map((file) => {
+                const metadata = file.metadata() as {
+                  name: string;
+                  bytes: number;
+                };
+                return {
+                  id: file.id,
+                  name: metadata.name,
+                  bytes: metadata.bytes,
+                  imageUri: file.imageUri(),
+                  file,
+                };
+              }),
+            ],
+          });
+        }
         pendingPicker.set(false);
         if (selected() === null && overlay() === null && (shell()?.visible() ?? false))
           focusComposer();
@@ -1124,31 +1135,8 @@ export function createConversationUi(
         });
         removed.file.dispose();
       },
-      selectFiles(files: string[]) {
-        if (owns() && files.length)
-          stagePending(async () => ({ files: await host.stageFiles(files) }));
-      },
-      dropFiles(files: string[], onText: (text: string) => void) {
-        if (owns() && files.length)
-          stagePending(async () => {
-            const selection = await host.stageDroppedFiles(files);
-            try {
-              return { files: selection.files(), text: selection.text };
-            } finally {
-              selection.dispose();
-            }
-          }, onText);
-      },
-      pasteClipboard(onText: (text: string) => void) {
-        if (owns())
-          stagePending(async () => {
-            const selection = await host.stageClipboard();
-            try {
-              return { files: selection.files(), text: selection.text };
-            } finally {
-              selection.dispose();
-            }
-          }, onText);
+      intake(input: ComposerIntake, onText?: (text: string) => void) {
+        if (owns()) stagePending(input, onText);
       },
       reportError: report,
       submit(text: string, expected?: string) {
@@ -2780,6 +2768,9 @@ export function createConversationUi(
                       ? (target) => resources.openPullRequest({ sessionId: id(), ...target })
                       : undefined
                   }
+                  openPreset={(preset, backend) =>
+                    open({ kind: 'preset', sessionId: id(), preset, backend })
+                  }
                   filesOpener={(node) => resources.attachOpener(id(), node)}
                   previewImage={previewImage}
                   previewTerminal={(ref, restoreFocus) => previewTerminal(id(), ref, restoreFocus)}
@@ -2974,6 +2965,14 @@ export function createConversationUi(
                     <GoalDialog
                       goal={current.goal}
                       objective={current.objective}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  );
+                if (current.kind === 'preset')
+                  return (
+                    <AppliedPresetDialog
+                      preset={current.preset}
+                      backend={current.backend}
                       close={() => closeOverlay(current.instance)}
                     />
                   );
@@ -3204,6 +3203,7 @@ function projectComposerSession(
     prediction: owner.prediction,
     sends: owner.sends,
     retrySend: owner.retrySend,
+    editSend: owner.editSend,
     checkSend: owner.checkSend,
     dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
@@ -3256,6 +3256,7 @@ function projectComposerSession(
     workspace: owner.workspace,
     empty: owner.empty,
     error: owner.error,
+    dismissError: owner.dismissError,
     notice: owner.notice,
     recovering: owner.recovering,
     connected: owner.connected,

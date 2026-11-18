@@ -24,7 +24,6 @@ import {
   inputAction,
   platform,
   signal,
-  Scroll,
   Text,
   View,
   windowSize,
@@ -36,7 +35,6 @@ import { createComputerAppControls } from './ComputerAppControls';
 import { createMessagesDock } from './MessagesDock';
 import { createGoalContent, goalStatusLabel } from './GoalDialog';
 import { LoadingIndicator } from './Loading';
-import { AppliedPresetDetails } from './AppliedPresetDetails';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
@@ -48,7 +46,6 @@ const composerCorner = 24;
 export function ComposerDetails(props: {
   session: Pick<
     ComposerSession,
-    | 'permissions'
     | 'sessionId'
     | 'checklist'
     | 'computerAccess'
@@ -57,6 +54,7 @@ export function ComposerDetails(props: {
     | 'goal'
     | 'sends'
     | 'retrySend'
+    | 'editSend'
     | 'checkSend'
     | 'dismissSend'
   >;
@@ -66,77 +64,122 @@ export function ComposerDetails(props: {
   const goal = () => session.goal?.view()?.current;
   const renderGoal = session.goal ? createGoalContent({ goal: session.goal }) : null;
   const todo = createChecklist(session.checklist, height, session.sessionId);
-  const preset = () => session.permissions.snapshot()?.appliedPreset;
+  const computer = createComputerAppControls(session.computerAccess, height);
+  const messages = createMessagesDock(session, height);
+
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+
+  const dismissGoal = () => {
+    if (alive) void session.goal?.change('dismiss');
+  };
+  const hideTodo = () => {
+    if (alive && todo.shown()) todo.hide();
+  };
+
   const panels = {
-    preset: {
-      shown: () => !!preset(),
-      summary: () => preset()?.name ?? '',
-      preview: () => preset()?.instruction ?? '',
-      problem: () => false,
-      content: () => (
-        <Scroll style={{ maxHeight: height(), padding: 16 }}>
-          <AppliedPresetDetails
-            preset={preset()!}
-            backend={session.permissions.snapshot()?.backend}
-          />
-        </Scroll>
-      ),
-    },
     goal: {
-      shown: () => !!goal(),
+      shown: () => !!goal() && !goal()!.dismissed,
+      mark: () => (
+        <If
+          when={goal()?.status === 'active' || !!goal()?.pending}
+          else={
+            <Icon
+              name={
+                goal()?.status === 'achieved'
+                  ? 'statusSuccess'
+                  : goal()?.status === 'cancelled'
+                    ? 'statusStopped'
+                    : 'goal'
+              }
+              color={
+                !!session.goal?.error() ||
+                goal()?.status === 'blocked' ||
+                goal()?.status === 'budget_limited'
+                  ? C.warning
+                  : goal()?.status === 'achieved'
+                    ? C.success
+                    : C.secondary
+              }
+            />
+          }
+        >
+          <LoadingIndicator color={C.secondary} />
+        </If>
+      ),
       summary: () => tr(goalStatusLabel(goal()!.status)),
       preview: () => goal()!.objective,
       problem: () =>
         !!session.goal?.error() ||
         goal()?.status === 'blocked' ||
         goal()?.status === 'budget_limited',
+      dismiss: () => {
+        const current = goal();
+        return current &&
+          !current.pending &&
+          (current.status === 'achieved' || current.status === 'cancelled')
+          ? dismissGoal
+          : null;
+      },
+      dismissLabel: () => tr('Dismiss Goal'),
       content: () => (
         <View style={{ minHeight: 0, flexShrink: 1, padding: 16 }}>{renderGoal!()}</View>
       ),
     },
-    todo,
-    computer: createComputerAppControls(session.computerAccess, height),
-    messages: createMessagesDock(session, height),
+    todo: {
+      ...todo,
+      dismiss: () => (todo.shown() ? hideTodo : null),
+      dismissLabel: () => tr('Hide todo'),
+    },
+    computer: {
+      ...computer,
+      mark: () => <Icon name="shield" color={computer.problem() ? C.warning : C.secondary} />,
+      dismiss: () => null as (() => void) | null,
+      dismissLabel: () => '',
+    },
+    messages: {
+      ...messages,
+      mark: () => (
+        <If
+          when={session.sends().some((item) => item.busy)}
+          else={<Icon name="queue" color={messages.problem() ? C.warning : C.secondary} />}
+        >
+          <LoadingIndicator color={C.secondary} />
+        </If>
+      ),
+    },
   };
   type Panel = keyof typeof panels;
-  type OtherPanel = Exclude<Panel, 'todo'>;
-  const keys: Panel[] = ['preset', 'goal', 'todo', 'computer', 'messages'];
+  const keys: Panel[] = ['goal', 'todo', 'computer', 'messages'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
-  const labels = {
-    preset: () => tr('Applied subagent'),
+  const labels: Record<Panel, () => string> = {
     goal: () => tr('Goal'),
     todo: () => tr('Todo'),
     computer: () => tr('Computer access'),
     messages: () => tr('Messages'),
   };
-  const icons: Record<OtherPanel, 'statusPending' | 'shield' | 'queue'> = {
-    preset: 'statusPending',
-    goal: 'statusPending',
-    computer: 'shield',
-    messages: 'queue',
-  };
-  const accessibilityLabels = {
-    preset: () => tr('Applied subagent'),
+  const accessibilityLabels: Record<Panel, () => string> = {
     goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
     messages: () => tr('Messages'),
   };
-  let alive = true;
-  cleanup(() => {
-    alive = false;
-  });
+
   const toggle = (key: Panel) => {
     if (alive && panels[key].shown()) selected.set(selected() === key ? null : key);
   };
-  const hideTodo = () => {
-    if (alive && todo.shown()) todo.hide();
+  const dismiss = (key: Panel) => {
+    if (!alive) return;
+    panels[key].dismiss()?.();
   };
   effect(() => {
     const current = selected();
     if (current !== null && !panels[current].shown()) selected.set(null);
   });
+
   // The list opens above the row on the desktop, so the row stays under the
   // pointer and the chevron points the way the list opens.
   const chevron = (key: Panel) => (
@@ -144,22 +187,6 @@ export function ComposerDetails(props: {
       name={selected() === key ? 'down' : platform.idiom === 'terminal' ? 'right' : 'up'}
       color={C.muted}
     />
-  );
-  const otherMark = (key: OtherPanel) => (
-    <If
-      when={
-        (key === 'goal' && goal()?.status === 'active') ||
-        (key === 'messages' && session.sends().some((item) => item.busy))
-      }
-      else={
-        <Icon
-          name={key === 'goal' && goal()?.status === 'achieved' ? 'statusSuccess' : icons[key]}
-          color={panels[key].problem() ? C.warning : C.secondary}
-        />
-      }
-    >
-      <LoadingIndicator color={C.secondary} />
-    </If>
   );
   const summary = (key: Panel) => (
     <If when={!!panels[key].summary()}>
@@ -187,11 +214,11 @@ export function ComposerDetails(props: {
       {panels[key].preview()}
     </Text>
   );
-  const hideButton = () => (
+  const dismissButton = (key: Panel) => (
     <Button
-      accessibilityLabel={tr('Hide todo')}
-      tooltip={textTooltip(() => tr('Hide todo'))}
-      onPress={inputAction(hideTodo, null)}
+      accessibilityLabel={panels[key].dismissLabel()}
+      tooltip={textTooltip(panels[key].dismissLabel)}
+      onPress={inputAction(dismiss, key)}
       style={{
         ...controlStyle,
         paddingHorizontal: 8,
@@ -204,11 +231,12 @@ export function ComposerDetails(props: {
       <Icon name="close" color={C.muted} />
     </Button>
   );
-  // Keep Todo, its active step, and its Hide button inside one cohesive unit so
-  // sibling panels (Messages, Computer access) never separate Todo from its text
-  // or leave an ambiguous corner close button above another open panel.
-  const todoItem = () => {
+
+  // Keep each tab, its inline preview, and its optional dismiss button inside
+  // one cohesive unit so sibling tabs never separate a tab from its close action.
+  const panelItem = (key: Panel) => {
     const single = () => available().length === 1;
+    const hasDismiss = () => panels[key].dismiss() !== null;
     if (platform.idiom === 'terminal') {
       return (
         <View
@@ -217,60 +245,63 @@ export function ComposerDetails(props: {
             flexDirection: 'row',
             alignItems: 'center',
             borderRadius: controlStyle.borderRadius,
-            backgroundColor: !single() && selected() === 'todo' ? C.cardRaised : 'transparent',
+            backgroundColor: !single() && selected() === key ? C.cardRaised : 'transparent',
           }}
         >
           <Button
-            accessibilityLabel={accessibilityLabels.todo()}
-            tooltip={textTooltip(panels.todo.preview)}
-            selected={selected() === 'todo'}
-            onPress={inputAction(toggle, 'todo')}
+            accessibilityLabel={accessibilityLabels[key]()}
+            tooltip={textTooltip(panels[key].preview)}
+            selected={selected() === key}
+            onPress={inputAction(toggle, key)}
             style={{
               ...controlStyle,
               flexDirection: 'row',
               gap: 8,
               alignItems: 'center',
               flexShrink: 0,
-              backgroundColor: single() && selected() === 'todo' ? C.cardRaised : 'transparent',
+              backgroundColor: single() && selected() === key ? C.cardRaised : 'transparent',
             }}
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={{ backgroundColor: C.line }}
           >
-            {todo.mark()}
-            <Text style={{ ...captionTextStyle, color: C.text }}>{labels.todo()}</Text>
-            {summary('todo')}
-            {chevron('todo')}
+            {panels[key].mark()}
+            <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
+            {summary(key)}
+            {chevron(key)}
           </Button>
           <If when={single()}>
             <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' }}>
-              <If when={selected() === null}>{preview('todo')}</If>
+              <If when={selected() === null}>{preview(key)}</If>
             </View>
           </If>
-          {hideButton()}
+          <If when={hasDismiss()}>{dismissButton(key)}</If>
         </View>
       );
     }
+    const stretch = () => key === 'todo' || single();
     return (
       <View
         style={{
-          flex: 1,
-          minWidth: single() ? 0 : 200,
+          ...(key === 'todo'
+            ? { flex: 1, minWidth: single() ? 0 : 200 }
+            : single()
+              ? { flex: 1, minWidth: 0 }
+              : { flexShrink: 0 }),
           flexDirection: 'row',
           alignItems: 'center',
-          gap: single() ? 4 : 0,
+          gap: single() && hasDismiss() ? 4 : 0,
           borderRadius: controlStyle.borderRadius,
-          backgroundColor: !single() && selected() === 'todo' ? C.cardRaised : 'transparent',
+          backgroundColor: !single() && selected() === key ? C.cardRaised : 'transparent',
         }}
       >
         <Button
-          accessibilityLabel={accessibilityLabels.todo()}
-          tooltip={textTooltip(panels.todo.preview)}
-          selected={selected() === 'todo'}
-          onPress={inputAction(toggle, 'todo')}
+          accessibilityLabel={accessibilityLabels[key]()}
+          tooltip={textTooltip(panels[key].preview)}
+          selected={selected() === key}
+          onPress={inputAction(toggle, key)}
           style={{
             ...controlStyle,
-            flex: 1,
-            minWidth: 0,
+            ...(stretch() ? { flex: 1, minWidth: 0 } : { flexShrink: 0 }),
             flexDirection: 'row',
             gap: 8,
             alignItems: 'center',
@@ -279,46 +310,26 @@ export function ComposerDetails(props: {
           hoverStyle={{ backgroundColor: C.cardRaised }}
           focusStyle={{ backgroundColor: C.line }}
         >
-          {todo.mark()}
-          {preview('todo')}
-          {summary('todo')}
-          {chevron('todo')}
+          {panels[key].mark()}
+          {key === 'todo' ? (
+            <>
+              {preview('todo')}
+              {summary('todo')}
+            </>
+          ) : (
+            <>
+              <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
+              {summary(key)}
+              {single() ? preview(key) : null}
+            </>
+          )}
+          {chevron(key)}
         </Button>
-        {hideButton()}
+        <If when={hasDismiss()}>{dismissButton(key)}</If>
       </View>
     );
   };
-  const otherItem = (key: OtherPanel) => {
-    const singleDesktop = () => available().length === 1 && platform.idiom !== 'terminal';
-    const singleTerminal = () => available().length === 1 && platform.idiom === 'terminal';
-    return (
-      <>
-        <Button
-          accessibilityLabel={accessibilityLabels[key]()}
-          tooltip={textTooltip(panels[key].preview)}
-          selected={selected() === key}
-          onPress={inputAction(toggle, key)}
-          style={{
-            ...controlStyle,
-            flexDirection: 'row',
-            gap: 8,
-            alignItems: 'center',
-            ...(singleDesktop() ? { flex: 1, minWidth: 0 } : { flexShrink: 0 }),
-            backgroundColor: !singleDesktop() && selected() === key ? C.cardRaised : 'transparent',
-          }}
-          hoverStyle={{ backgroundColor: C.cardRaised }}
-          focusStyle={{ backgroundColor: C.line }}
-        >
-          {otherMark(key)}
-          <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
-          {summary(key)}
-          {singleDesktop() ? preview(key) : null}
-          {chevron(key)}
-        </Button>
-        <If when={singleTerminal() && selected() === null}>{preview(key)}</If>
-      </>
-    );
-  };
+
   const row = () => (
     <View
       style={{
@@ -331,10 +342,7 @@ export function ComposerDetails(props: {
       }}
     >
       <Each of={available()} key={(key) => key}>
-        {(key) => {
-          const current = key();
-          return current === 'todo' ? todoItem() : otherItem(current);
-        }}
+        {(key) => panelItem(key())}
       </Each>
     </View>
   );
