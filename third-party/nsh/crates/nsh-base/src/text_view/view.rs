@@ -2066,7 +2066,10 @@ impl Cx {
                         }),
                     Part::TableScroll,
                 )
-                .child(view().flex_col().items_start().children(lines)),
+                .child(
+                    self.part(view().flex_col().items_start(), Part::TableGrid)
+                        .children(lines),
+                ),
             )
             .into_element()
     }
@@ -2287,15 +2290,15 @@ impl Cx {
             .map(|r| r.render(format!("table:{key}"), table.clone()));
         // As wide as the view, never narrower than the floors: past them,
         // the scroll view moves it.
-        let grid = view()
+        let frame = view()
             .grid()
             .grid_template_columns(SharedString::from(tracks))
             .w_full()
             .min_w(rems(floors.iter().sum()))
             .border_t_1()
             .border_l_1()
-            .border_color(move || theme().border)
-            .children(grid);
+            .border_color(move || theme().border);
+        let grid = self.part(frame, Part::TableGrid).children(grid);
         let table = view()
             .flex_col()
             .text_size(px(TABLE_SIZE))

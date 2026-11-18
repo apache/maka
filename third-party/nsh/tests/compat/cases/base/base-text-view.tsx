@@ -5,7 +5,8 @@
 // of each kind shown by `renderCustom`, the other render functions
 // (`renderCodeBlock`, `renderCodeBlockAction`, `renderTableActions`,
 // `renderMath`, `renderImage`), parts styled by `classes` and `styles`
-// (the root's text styles passing to every part), code blocks without
+// (the root's text styles passing to every part; a table's grid,
+// `tableGrid`, takes its frame), code blocks without
 // their scroll indicator (`codeBlockScrollbar`), tables without
 // theirs (`tableScrollbar`),
 // code blocks' actions (`codeBlockActions`, the built-in copy and one of
@@ -79,6 +80,7 @@ function App() {
         codeBlockScrollbar={false}
         tableScrollbar={false}
         classes={{ root: "text-[#0000ff]" }}
+        styles={{ tableGrid: { backgroundColor: "#00ff00" } }}
         onLinkPress={({ url, modifiers }) => link.set(`${url} (Command: ${modifiers.platform})`)}
         codeBlockActions={[{ id: "copy", label: "Copy code" }, { id: "run", label: "Run code" }]}
         renderCodeBlockAction={(action) => <Text>{`Action ${action.id}`}</Text>}

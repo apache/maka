@@ -43,7 +43,9 @@ colored with the theme's tokens; the app restyles each part over it.
   wrapping) down to a floor per column when the view is narrower, and below the floors the table scrolls horizontally
   (`tableScroll`; `tableScrollbar` hides its indicator, as `codeBlockScrollbar` a code block's). The cells are one CSS grid, so columns line up across rows: each column is a `minmax(<floor>,
   auto)` track (the spare width is shared out as CSS shares it among `auto` tracks), and the grid is `w-full` with
-  the floors' sum as its `min-width`, so past the floors it is wider than the scroll view. Taffy has no
+  the floors' sum as its `min-width`, so past the floors it is wider than the scroll view. The grid is the part
+  `tableGrid`: it draws the table's top and left lines, each cell its right and bottom ones, so no line is drawn
+  twice and an app's frame goes on the grid. Taffy has no
   `display: contents` and text has no min-content (longest word) measure, so the floor is computed in the component
   (`column_floor`): about half the column's widest line, estimated from the cells' text (wide characters an em, the
   rest about half), clamped to 10–30 rem, or the whole line plus 2 rem for padding when that is narrower. A row is a

@@ -255,6 +255,7 @@ Some nodes are several parts, which apply in order: a level 2 heading is `headin
 | `mathBlock` | `MathBlock` | Formula blocks, typeset and centered when there is no `renderMath`. |
 | `table` | `Table` | Tables: `renderTableActions`' content, then the scroll view of the cells. |
 | `tableScroll` | `TableScroll` | The horizontal scroll view of a table's cells: columns fit their content when there is room, wrap down to a floor when the view is narrower, and past that the table scrolls. |
+| `tableGrid` | `TableGrid` | The grid of a table's cells, in `tableScroll`. It draws the table's top and left lines, each cell its right and bottom ones; a frame of the app's own (on every side, rounded) goes here. |
 | `tableRow` | `TableRow` | Every row of a table: a view behind its cells, for backgrounds and borders (text styles go on `tableCell`). |
 | `tableHead` | `TableHead` | The header row, after `tableRow`. |
 | `tableCell` | `TableCell` | Every cell. |
