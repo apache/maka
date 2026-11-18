@@ -19,7 +19,10 @@
 
 import { createTrajectoryRequests } from './trajectoryRequests';
 import {
+  appendDraftQuote,
+  DRAFT_QUOTE_LIMIT,
   mergeRestoredIntoHeldDraft,
+  restoredDraftQuotes,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
@@ -1552,6 +1555,7 @@ export function Conversation(props: ConversationProps) {
   // revision being sent. Edits made meanwhile show at once and are saved after.
   let holding = false;
   let heldDraft: ComposerDraftEdit | null = null;
+  let restoringQuotes: readonly QuoteRef[] = [];
   const autoSend = signal<{ text: string; first?: boolean } | null>(null);
   const attachments = createAttachmentDraft({
     sessionId,
@@ -3014,7 +3018,7 @@ export function Conversation(props: ConversationProps) {
       return tr(
         'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
       );
-    if (!draftReady()) return tr('Loading the saved draft…');
+    if (!draftReady() || restoringSends().size > 0) return tr('Loading the saved draft…');
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
@@ -3290,7 +3294,7 @@ export function Conversation(props: ConversationProps) {
       sending() ||
       activeSends().has(id) ||
       checkingSends().has(id) ||
-      restoringSends().has(id)
+      restoringSends().size > 0
     )
       return;
     const applyAtomicRestore = async (
@@ -3301,14 +3305,17 @@ export function Conversation(props: ConversationProps) {
         sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
         return false;
       }
-      await flushDraft();
-      if (!alive || savingFailed()) {
-        if (alive)
-          sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
-        return false;
-      }
+      if (restoredDraftQuotes(quotes(), sourceDraft.quotes).length > DRAFT_QUOTE_LIMIT)
+        throw new UiError('Too many quotes');
+      restoringQuotes = sourceDraft.quotes ?? [];
       holding = true;
       try {
+        await flushDraft();
+        if (!alive || savingFailed()) {
+          if (alive)
+            sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
+          return false;
+        }
         const restored = await restoreSend(client, targetId, draftRevision);
         if (!alive) return false;
         draftRevision = restored.revision;
@@ -3325,6 +3332,7 @@ export function Conversation(props: ConversationProps) {
         }
         return true;
       } finally {
+        restoringQuotes = [];
         releaseHeld();
       }
     };
@@ -3374,7 +3382,7 @@ export function Conversation(props: ConversationProps) {
           },
           frozen.edit,
         );
-        if (merged.quotes.length > 16) throw new UiError('Too many quotes');
+        if (merged.quotes.length > DRAFT_QUOTE_LIMIT) throw new UiError('Too many quotes');
         holding = false;
         heldDraft = null;
         attachments.restore(merged.attachments);
@@ -4500,12 +4508,8 @@ export function Conversation(props: ConversationProps) {
               <BotReply
                 quote={(message, text) => {
                   if (!draftReady() || savingFailed() || !text.trim()) return;
-                  if (quotes().length >= 16) {
-                    notice.set(tr('Too many quotes'));
-                    return;
-                  }
-                  quotes.set([
-                    ...quotes(),
+                  const next = appendDraftQuote(
+                    quotes(),
                     quoteBotMessage(
                       message,
                       sessionId,
@@ -4513,7 +4517,13 @@ export function Conversation(props: ConversationProps) {
                       text,
                       Date.now(),
                     ),
-                  ]);
+                    restoringQuotes,
+                  );
+                  if (!next) {
+                    notice.set(tr('Too many quotes'));
+                    return;
+                  }
+                  quotes.set(next);
                   changeDraft(draft());
                   props.focusComposer();
                 }}
