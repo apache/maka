@@ -52,29 +52,6 @@ mount(() => {
     tasks: detail ? [{ ...detail.task, revision: detail.revision, approved: detail.approved }] : [],
     nextCursor: null,
   });
-  let exclusions = {
-    revision: null as number | null,
-    entries: [] as { kind: string; suffix: string }[],
-  };
-  const preview = (tools: any) => {
-    const options = [
-      { name: 'Read', group: 'read_files', available: true },
-      { name: 'Shell', group: 'run_commands', available: !exclusions.entries.length },
-    ];
-    return {
-      kind: 'discovery_tools',
-      options,
-      names: options
-        .filter(
-          (tool) =>
-            tool.available &&
-            (tool.group === 'read_files'
-              ? (tools?.custom?.readFiles ?? true)
-              : tools === 'session' || tools?.custom?.runCommands),
-        )
-        .map((tool) => tool.name),
-    };
-  };
   const host = {
     async query(_endpoint: string, method: string, input: any) {
       if (method === 'observe') return { session };
@@ -83,9 +60,11 @@ mount(() => {
           kind: 'ready',
           choice: { label: 'DeepSeek', connectionName: 'sample-command-code' },
         };
-      if (input.kind === 'preview_discovery') return preview(input.effect.workerTools);
-      if (input.kind === 'discovery_exclusions')
-        return { kind: 'discovery_exclusions', exclusions };
+      if (input.kind === 'preview_discovery')
+        return {
+          kind: 'discovery_tools',
+          names: input.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'],
+        };
       if (input.kind === 'get') {
         if (failDetailOnce) {
           failDetailOnce = false;
@@ -123,15 +102,11 @@ mount(() => {
       };
     },
   } as unknown as Host;
-  const control = async (method: string, input: any) => {
-    if (method === 'changeDiscoveryExclusions') {
-      if (input.revision !== exclusions.revision) return { kind: 'conflict' };
-      exclusions = { revision: (exclusions.revision ?? 0) + 1, entries: input.entries };
-      return { kind: 'committed', exclusions };
-    }
+  const control = async (_method: string, input: any) => {
     calls.set(input.kind);
     if (input.kind === 'create' || input.kind === 'approve') {
-      const { names } = preview(input.input.task.effect.workerTools);
+      const names =
+        input.input.task.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'];
       if (JSON.stringify(input.input.approvedTools) !== JSON.stringify(names))
         return { kind: 'rejected', reason: 'Expected the displayed tool list' };
       if (input.input.task.effect.target.boundaryRevision !== session.boundaryRevision)

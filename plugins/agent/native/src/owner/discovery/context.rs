@@ -52,9 +52,6 @@ impl Owner {
         job: &Job,
         previous: Option<&Run>,
     ) -> Result<String, String> {
-        if !job.tools.profile.allows(DiscoveryToolGroup::ReadHistory) {
-            return Ok(String::new());
-        }
         let last_investigation = self.scheduler.opening_reference(job, previous).await?;
         let mut recent = Vec::new();
         if job

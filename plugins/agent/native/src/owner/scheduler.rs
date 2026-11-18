@@ -314,18 +314,10 @@ impl Owner {
                     floor,
                 )
                 .await?;
-            let (tools, options) = self
-                .discovery_tool_preview(&basis, &target, worker_tools)
+            let tools = self
+                .discovery_tool_grant(&basis, &target, worker_tools)
                 .await?;
-            return Ok(Schedules::DiscoveryTools {
-                names: tools.names,
-                options,
-            });
-        }
-        if let ScheduleRead::DiscoveryExclusions { .. } = input {
-            return Ok(Schedules::DiscoveryExclusions {
-                exclusions: scheduler.discovery_exclusions().await?,
-            });
+            return Ok(Schedules::DiscoveryTools { names: tools.names });
         }
         let _gate = scheduler.gate.lock().await;
         let catalog = scheduler.load().await?;
@@ -337,7 +329,7 @@ impl Owner {
             _ => None,
         };
         match input {
-            ScheduleRead::PreviewDiscovery { .. } | ScheduleRead::DiscoveryExclusions { .. } => {
+            ScheduleRead::PreviewDiscovery { .. } => {
                 unreachable!("handled before acquiring the schedule lock")
             }
             ScheduleRead::List {
@@ -507,7 +499,7 @@ impl Owner {
                     Some(expected) if expected != tools.names.as_slice() => {
                         return Err("scheduler_discovery_tools_changed".into());
                     }
-                    None if tools.profile != DiscoveryWorkerTools::ReadOnly => {
+                    None if tools.profile == DiscoveryWorkerTools::Session => {
                         return Err("scheduler_discovery_tools_confirmation_required".into());
                     }
                     _ => {}

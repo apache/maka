@@ -2642,25 +2642,6 @@ export interface ServiceMethods {
       input: Runtime.AgentList;
       output: Runtime.AgentSessionPage;
     };
-    changeDiscoveryExclusions: {
-      mode: 'mutation';
-      input: {
-        sessionId: string;
-        revision?: number | null;
-        entries: Runtime.DiscoveryExclusion[];
-      };
-      output:
-        | {
-            kind: 'committed';
-            exclusions: Runtime.DiscoveryExclusions;
-          }
-        | {
-            kind: 'conflict';
-          }
-        | {
-            kind: 'investigation_running';
-          };
-    };
     changeGoal: {
       mode: 'mutation';
       input: Runtime.AgentGoalChange;

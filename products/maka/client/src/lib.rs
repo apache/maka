@@ -72,7 +72,6 @@ const CONTROL_METHODS: &[&str] = &[
     "openBot",
     "changeGoal",
     "schedule",
-    "changeDiscoveryExclusions",
     "githubSubmitReview",
     "githubReplyComment",
     "githubCommentPullRequest",

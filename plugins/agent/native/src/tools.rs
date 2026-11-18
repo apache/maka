@@ -65,7 +65,6 @@ use uuid::Uuid;
 pub(crate) struct SelectedTool {
     selection: ServiceTool,
     binding: String,
-    pub(crate) discovery_group: crate::contract::DiscoveryToolGroup,
 }
 
 /// The tool selected by the Agent's configuration, resolved through its current
@@ -483,35 +482,9 @@ fn catalog_inner(
             } else {
                 (Projection::Direct, input_schema)
             };
-            let discovery_group = {
-                use crate::contract::DiscoveryToolGroup::*;
-                if contract == &file_contract {
-                    match selection.method.as_str() {
-                        "read" => ReadFiles,
-                        "write" | "edit" | "applyPatch" => ModifyFiles,
-                        _ => Extensions,
-                    }
-                } else if contract == &process_contract {
-                    RunCommands
-                } else if contract == &web_contract
-                    && matches!(selection.method.as_str(), "fetch" | "search")
-                {
-                    Network
-                } else if contract == &computer_contract {
-                    Desktop
-                } else if contract == &agent_contract {
-                    match selection.method.as_str() {
-                        "list" | "sessionList" | "sessionRead" => ReadHistory,
-                        _ => ManageSessions,
-                    }
-                } else {
-                    Extensions
-                }
-            };
             let selected = SelectedTool {
                 selection: selection.clone(),
                 binding: binding.execution_basis().into(),
-                discovery_group,
             };
             let handler = if let Some(run) = &run {
                 let presentation = selection.presentation.clone().or_else(|| {
@@ -1146,7 +1119,6 @@ mod tests {
             selection: serde_json::from_value(selection).unwrap(),
             binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"
                 .into(),
-            discovery_group: crate::contract::DiscoveryToolGroup::Extensions,
         };
         assert!(stored.matches_service("ModelList", std::slice::from_ref(&live)));
 

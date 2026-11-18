@@ -46,18 +46,6 @@ struct BoundCall {
     host_original: std::sync::OnceLock<RecoveryRef>,
 }
 impl RunAccess {
-    fn check_discovery_history(&self) -> Result<(), ToolError> {
-        if let Some(allowed) = &self.spec.allowed_tools
-            && allowed.iter().any(|name| name == discovery::COMPLETE)
-            && !allowed.iter().any(|name| name == discovery::MEMORY)
-        {
-            return Err(ToolError::Failed(
-                "Discovery history access is disabled for this plan".into(),
-            ));
-        }
-        Ok(())
-    }
-
     pub(crate) async fn native_call(
         self: &Arc<Self>,
         call: ToolCallContext,
@@ -420,7 +408,6 @@ impl NativeCallAccess for BoundCall {
         context: &'a Context,
     ) -> BoxFuture<'a, Result<(), ToolError>> {
         Box::pin(async move {
-            self.access.check_discovery_history()?;
             self.current().await?;
             let owner = self.access.owner().map_err(ToolError::Failed)?;
             owner
@@ -439,7 +426,6 @@ impl NativeCallAccess for BoundCall {
         context: &'a Context,
     ) -> BoxFuture<'a, Result<(String, Option<u64>), ToolError>> {
         Box::pin(async move {
-            self.access.check_discovery_history()?;
             self.current().await?;
             let owner = self.access.owner().map_err(ToolError::Failed)?;
             owner

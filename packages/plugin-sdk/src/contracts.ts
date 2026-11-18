@@ -1547,189 +1547,6 @@ export const contracts: {
           },
           resources: {},
         },
-        changeDiscoveryExclusions: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'ChangeDiscoveryExclusions',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-              revision: {
-                type: ['integer', 'null'],
-                format: 'uint64',
-                minimum: 0,
-              },
-              entries: {
-                type: 'array',
-                items: {
-                  $ref: '#/$defs/DiscoveryExclusion',
-                },
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId', 'entries'],
-            $defs: {
-              DiscoveryExclusion: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'directory',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'file',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'suffix',
-                      },
-                      suffix: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'suffix'],
-                  },
-                ],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'DiscoveryExclusionsResult',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
-                  exclusions: {
-                    $ref: '#/$defs/DiscoveryExclusions',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'exclusions'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'conflict',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'investigation_running',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-            ],
-            $defs: {
-              DiscoveryExclusions: {
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  entries: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/DiscoveryExclusion',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['entries'],
-              },
-              DiscoveryExclusion: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'directory',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'file',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'suffix',
-                      },
-                      suffix: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'suffix'],
-                  },
-                ],
-              },
-            },
-          },
-          resources: {},
-        },
         changeGoal: {
           mode: 'mutation',
           input: {
@@ -38365,62 +38182,8 @@ export const contracts: {
                 type: 'string',
               },
               DiscoveryWorkerTools: {
-                oneOf: [
-                  {
-                    type: 'string',
-                    enum: ['read_only', 'session'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      custom: {
-                        $ref: '#/$defs/DiscoveryToolGroups',
-                      },
-                    },
-                    required: ['custom'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              DiscoveryToolGroups: {
-                type: 'object',
-                properties: {
-                  readFiles: {
-                    type: 'boolean',
-                  },
-                  readHistory: {
-                    type: 'boolean',
-                  },
-                  modifyFiles: {
-                    type: 'boolean',
-                  },
-                  runCommands: {
-                    type: 'boolean',
-                  },
-                  network: {
-                    type: 'boolean',
-                  },
-                  manageSessions: {
-                    type: 'boolean',
-                  },
-                  extensions: {
-                    type: 'boolean',
-                  },
-                  desktop: {
-                    type: 'boolean',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'readFiles',
-                  'readHistory',
-                  'modifyFiles',
-                  'runCommands',
-                  'network',
-                  'manageSessions',
-                  'extensions',
-                  'desktop',
-                ],
+                type: 'string',
+                enum: ['read_only', 'session'],
               },
               Misfire: {
                 type: 'string',
@@ -38507,20 +38270,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['kind', 'effect'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'discovery_exclusions',
-                  },
-                  sessionId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'sessionId'],
               },
               {
                 type: 'object',
@@ -38869,62 +38618,8 @@ export const contracts: {
                 type: 'string',
               },
               DiscoveryWorkerTools: {
-                oneOf: [
-                  {
-                    type: 'string',
-                    enum: ['read_only', 'session'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      custom: {
-                        $ref: '#/$defs/DiscoveryToolGroups',
-                      },
-                    },
-                    required: ['custom'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              DiscoveryToolGroups: {
-                type: 'object',
-                properties: {
-                  readFiles: {
-                    type: 'boolean',
-                  },
-                  readHistory: {
-                    type: 'boolean',
-                  },
-                  modifyFiles: {
-                    type: 'boolean',
-                  },
-                  runCommands: {
-                    type: 'boolean',
-                  },
-                  network: {
-                    type: 'boolean',
-                  },
-                  manageSessions: {
-                    type: 'boolean',
-                  },
-                  extensions: {
-                    type: 'boolean',
-                  },
-                  desktop: {
-                    type: 'boolean',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'readFiles',
-                  'readHistory',
-                  'modifyFiles',
-                  'runCommands',
-                  'network',
-                  'manageSessions',
-                  'extensions',
-                  'desktop',
-                ],
+                type: 'string',
+                enum: ['read_only', 'session'],
               },
             },
           },
@@ -38945,29 +38640,9 @@ export const contracts: {
                       type: 'string',
                     },
                   },
-                  options: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/DiscoveryToolOption',
-                    },
-                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'names', 'options'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'discovery_exclusions',
-                  },
-                  exclusions: {
-                    $ref: '#/$defs/DiscoveryExclusions',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'exclusions'],
+                required: ['kind', 'names'],
               },
               {
                 type: 'object',
@@ -39033,98 +38708,6 @@ export const contracts: {
               },
             ],
             $defs: {
-              DiscoveryToolOption: {
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  group: {
-                    $ref: '#/$defs/DiscoveryToolGroup',
-                  },
-                  available: {
-                    type: 'boolean',
-                  },
-                },
-                required: ['name', 'group', 'available'],
-              },
-              DiscoveryToolGroup: {
-                type: 'string',
-                enum: [
-                  'read_files',
-                  'read_history',
-                  'modify_files',
-                  'run_commands',
-                  'network',
-                  'manage_sessions',
-                  'extensions',
-                  'desktop',
-                ],
-              },
-              DiscoveryExclusions: {
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  entries: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/DiscoveryExclusion',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['entries'],
-              },
-              DiscoveryExclusion: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'directory',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'file',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'suffix',
-                      },
-                      suffix: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'suffix'],
-                  },
-                ],
-              },
               AgentScheduledSummary: {
                 type: 'object',
                 properties: {
@@ -39727,62 +39310,8 @@ export const contracts: {
                 type: 'string',
               },
               DiscoveryWorkerTools: {
-                oneOf: [
-                  {
-                    type: 'string',
-                    enum: ['read_only', 'session'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      custom: {
-                        $ref: '#/$defs/DiscoveryToolGroups',
-                      },
-                    },
-                    required: ['custom'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              DiscoveryToolGroups: {
-                type: 'object',
-                properties: {
-                  readFiles: {
-                    type: 'boolean',
-                  },
-                  readHistory: {
-                    type: 'boolean',
-                  },
-                  modifyFiles: {
-                    type: 'boolean',
-                  },
-                  runCommands: {
-                    type: 'boolean',
-                  },
-                  network: {
-                    type: 'boolean',
-                  },
-                  manageSessions: {
-                    type: 'boolean',
-                  },
-                  extensions: {
-                    type: 'boolean',
-                  },
-                  desktop: {
-                    type: 'boolean',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'readFiles',
-                  'readHistory',
-                  'modifyFiles',
-                  'runCommands',
-                  'network',
-                  'manageSessions',
-                  'extensions',
-                  'desktop',
-                ],
+                type: 'string',
+                enum: ['read_only', 'session'],
               },
               Creator: {
                 oneOf: [
@@ -53138,20 +52667,6 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
-                    const: 'discovery_exclusions',
-                  },
-                  sessionId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'sessionId'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
                     const: 'discovery',
                   },
                   sessionId: {
@@ -53494,62 +53009,8 @@ export const contracts: {
                 type: 'string',
               },
               DiscoveryWorkerTools: {
-                oneOf: [
-                  {
-                    type: 'string',
-                    enum: ['read_only', 'session'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      custom: {
-                        $ref: '#/$defs/DiscoveryToolGroups',
-                      },
-                    },
-                    required: ['custom'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              DiscoveryToolGroups: {
-                type: 'object',
-                properties: {
-                  readFiles: {
-                    type: 'boolean',
-                  },
-                  readHistory: {
-                    type: 'boolean',
-                  },
-                  modifyFiles: {
-                    type: 'boolean',
-                  },
-                  runCommands: {
-                    type: 'boolean',
-                  },
-                  network: {
-                    type: 'boolean',
-                  },
-                  manageSessions: {
-                    type: 'boolean',
-                  },
-                  extensions: {
-                    type: 'boolean',
-                  },
-                  desktop: {
-                    type: 'boolean',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'readFiles',
-                  'readHistory',
-                  'modifyFiles',
-                  'runCommands',
-                  'network',
-                  'manageSessions',
-                  'extensions',
-                  'desktop',
-                ],
+                type: 'string',
+                enum: ['read_only', 'session'],
               },
             },
           },
@@ -53570,29 +53031,9 @@ export const contracts: {
                       type: 'string',
                     },
                   },
-                  options: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/DiscoveryToolOption',
-                    },
-                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'names', 'options'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'discovery_exclusions',
-                  },
-                  exclusions: {
-                    $ref: '#/$defs/DiscoveryExclusions',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'exclusions'],
+                required: ['kind', 'names'],
               },
               {
                 type: 'object',
@@ -53658,98 +53099,6 @@ export const contracts: {
               },
             ],
             $defs: {
-              DiscoveryToolOption: {
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  group: {
-                    $ref: '#/$defs/DiscoveryToolGroup',
-                  },
-                  available: {
-                    type: 'boolean',
-                  },
-                },
-                required: ['name', 'group', 'available'],
-              },
-              DiscoveryToolGroup: {
-                type: 'string',
-                enum: [
-                  'read_files',
-                  'read_history',
-                  'modify_files',
-                  'run_commands',
-                  'network',
-                  'manage_sessions',
-                  'extensions',
-                  'desktop',
-                ],
-              },
-              DiscoveryExclusions: {
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: ['integer', 'null'],
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  entries: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/DiscoveryExclusion',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['entries'],
-              },
-              DiscoveryExclusion: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'directory',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'file',
-                      },
-                      path: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'suffix',
-                      },
-                      suffix: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'suffix'],
-                  },
-                ],
-              },
               AgentScheduledSummary: {
                 type: 'object',
                 properties: {
@@ -54352,62 +53701,8 @@ export const contracts: {
                 type: 'string',
               },
               DiscoveryWorkerTools: {
-                oneOf: [
-                  {
-                    type: 'string',
-                    enum: ['read_only', 'session'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      custom: {
-                        $ref: '#/$defs/DiscoveryToolGroups',
-                      },
-                    },
-                    required: ['custom'],
-                    additionalProperties: false,
-                  },
-                ],
-              },
-              DiscoveryToolGroups: {
-                type: 'object',
-                properties: {
-                  readFiles: {
-                    type: 'boolean',
-                  },
-                  readHistory: {
-                    type: 'boolean',
-                  },
-                  modifyFiles: {
-                    type: 'boolean',
-                  },
-                  runCommands: {
-                    type: 'boolean',
-                  },
-                  network: {
-                    type: 'boolean',
-                  },
-                  manageSessions: {
-                    type: 'boolean',
-                  },
-                  extensions: {
-                    type: 'boolean',
-                  },
-                  desktop: {
-                    type: 'boolean',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'readFiles',
-                  'readHistory',
-                  'modifyFiles',
-                  'runCommands',
-                  'network',
-                  'manageSessions',
-                  'extensions',
-                  'desktop',
-                ],
+                type: 'string',
+                enum: ['read_only', 'session'],
               },
               Creator: {
                 oneOf: [

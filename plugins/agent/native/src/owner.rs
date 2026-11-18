@@ -136,7 +136,6 @@ struct CapturedRun {
     allowed_tools: Option<Vec<String>>,
     background: Option<ScheduledTarget>,
     background_sandbox_ceiling: Option<maka_sandbox::Sandbox>,
-    discovery_restriction: Option<maka_sandbox::Sandbox>,
     internal_tools: Arc<Vec<maka_agent_facts::tools::ToolDefinition>>,
     internal_bindings: Arc<BTreeMap<String, Option<String>>>,
     behavior: Option<SystemPrompt>,

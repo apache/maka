@@ -2134,10 +2134,6 @@ pub fn contract() -> Contract {
                     method::<ScheduleChange, ScheduleResult>(MethodMode::Mutation),
                 ),
                 (
-                    "changeDiscoveryExclusions".into(),
-                    method::<ChangeDiscoveryExclusions, DiscoveryExclusionsResult>(MethodMode::Mutation),
-                ),
-                (
                     "list".into(),
                     method::<List, SessionPage>(MethodMode::Query),
                 ),

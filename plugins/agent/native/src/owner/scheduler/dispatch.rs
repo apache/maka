@@ -74,15 +74,11 @@ impl CapturedRun {
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
                 || session.configuration.permissions
-                    != discovery_profile.map_or_else(
-                        || boundary.permissions.clone(),
-                        |profile| {
-                            super::super::discovery::access::worker_permissions(
-                                profile,
-                                &boundary.permissions,
-                            )
-                        },
-                    )
+                    != if discovery_profile == Some(DiscoveryWorkerTools::ReadOnly) {
+                        super::super::discovery::permissions()
+                    } else {
+                        boundary.permissions.clone()
+                    }
                 || session.configuration.binding != boundary.binding
                 || session.configuration.boundary_revision
                     != if session.id == boundary.session_id {
@@ -192,9 +188,8 @@ impl Owner {
             .await?;
         let discovery_tools = match &plan.task.effect {
             ScheduledEffect::Discovery { worker_tools, .. } => Some(
-                self.discovery_tool_preview(&basis, target, *worker_tools)
-                    .await?
-                    .0,
+                self.discovery_tool_grant(&basis, target, *worker_tools)
+                    .await?,
             ),
             _ => None,
         };

@@ -96,8 +96,7 @@ impl Rule {
 }
 
 /// Longest path wins; at the same path exact wins over subtree, then deny wins
-/// over write over read. Deny globs address absolute paths or a suffix across all
-/// roots. Path rules cannot reopen a glob denial.
+/// over write over read. Deny globs are absolute and cannot be reopened by paths.
 /// Matching directories deny their descendants.
 /// Host file operations match at access time. Linux and Windows subprocesses
 /// snapshot existing glob matches during preparation; macOS enforces them live.
@@ -124,13 +123,9 @@ impl Policy {
         }
         let mut builder = GlobSetBuilder::new();
         for pattern in &self.deny_globs {
-            // Windows has no single absolute prefix for every drive or share.
-            let all_drives_suffix = cfg!(windows)
-                && pattern.strip_prefix("**/*.").is_some_and(|suffix| {
-                    !suffix.is_empty() && !suffix.contains(['/', '\\', '\0'])
-                });
-            if !all_drives_suffix {
-                validate_path(Path::new(pattern))?;
+            validate_path(Path::new(pattern))?;
+            if pattern.contains('\0') || !Path::new(pattern).is_absolute() {
+                return Err(Error::Invalid("deny glob must be an absolute path".into()));
             }
             builder.add(compile_glob(pattern)?);
         }

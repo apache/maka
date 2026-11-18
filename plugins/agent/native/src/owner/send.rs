@@ -215,18 +215,9 @@ impl Owner {
         let mcp_floor = self
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
-        let discovery_profile = self.scheduler.investigation_profile(id);
-        let exclusions = if discovery_profile.is_some() {
-            self.scheduler.discovery_exclusions().await?.entries
-        } else {
-            Vec::new()
-        };
-        let base_discovery_catalog = discovery_profile
-            .is_some_and(|profile| discovery::access::uses_base_catalog(profile, &exclusions));
-        let load_instruction_files = discovery_profile.is_none_or(|profile| {
-            exclusions.is_empty() && profile.allows(DiscoveryToolGroup::ReadFiles)
-        });
-        let selected_catalog = if base_discovery_catalog || (external && !host_bridge) {
+        let read_only_discovery =
+            self.scheduler.investigation_profile(id) == Some(DiscoveryWorkerTools::ReadOnly);
+        let selected_catalog = if read_only_discovery || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -240,7 +231,7 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = if base_discovery_catalog {
+        let selected_catalog = if read_only_discovery {
             selected_catalog
         } else {
             self.mcp_projects.with_client(id, selected_catalog)?
@@ -256,7 +247,6 @@ impl Owner {
                 &snapshot,
                 language,
                 session.configuration.applied_preset.as_ref(),
-                load_instruction_files,
             )
             .await?,
             &snapshot,
@@ -276,12 +266,11 @@ impl Owner {
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
             tool_discovery: (!external || host_bridge)
-                && !base_discovery_catalog
+                && !read_only_discovery
                 && self.settings.tool_discovery,
             allowed_tools,
             background: None,
             background_sandbox_ceiling: None,
-            discovery_restriction: None,
             internal_tools: if external && !host_bridge {
                 Arc::default()
             } else {

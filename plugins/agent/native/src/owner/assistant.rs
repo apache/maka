@@ -86,7 +86,6 @@ impl Owner {
         workspace: Option<&Workspace>,
         snapshot: &RuntimePolicySnapshot,
         language: Language,
-        load_instruction_files: bool,
     ) -> Result<Option<SystemPrompt>, String> {
         if self.settings.assistant.is_none() {
             return Ok(None);
@@ -94,8 +93,7 @@ impl Owner {
         let preferences = maka_agent_ports::preferences::Snapshot {
             revision: snapshot.revision,
             personalization: snapshot.policy.personalization.clone(),
-            workspace_instructions: snapshot.policy.workspace_instructions.enabled
-                && load_instruction_files,
+            workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         };
         let (global_instruction, instructions) = if preferences.workspace_instructions {
             let project = match workspace {
@@ -166,10 +164,9 @@ impl Owner {
         snapshot: &RuntimePolicySnapshot,
         language: Language,
         preset: Option<&maka_agent_api::preset::AppliedPreset>,
-        load_instruction_files: bool,
     ) -> Result<Option<SystemPrompt>, String> {
         let mut prompt = self
-            .capture_base_behavior(workspace, snapshot, language, load_instruction_files)
+            .capture_base_behavior(workspace, snapshot, language)
             .await?;
         if let Some(preset) = preset.filter(|p| !p.instruction.is_empty()) {
             let prompt = prompt.get_or_insert_with(|| {

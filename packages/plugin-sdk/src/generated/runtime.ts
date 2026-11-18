@@ -2477,10 +2477,6 @@ export type AgentScheduleRead =
       taskId?: string | null;
     }
   | {
-      kind: 'discovery_exclusions';
-      sessionId: string;
-    }
-  | {
       kind: 'discovery';
       sessionId: string;
       cursor?: string | null;
@@ -2525,20 +2521,11 @@ export type AgentScheduledEffect =
       workerTools: DiscoveryWorkerTools;
     };
 export type AutomationDelivery = 'steering' | 'followup';
-export type DiscoveryWorkerTools =
-  | ('read_only' | 'session')
-  | {
-      custom: DiscoveryToolGroups;
-    };
+export type DiscoveryWorkerTools = 'read_only' | 'session';
 export type AgentSchedules =
   | {
       kind: 'discovery_tools';
       names: string[];
-      options: DiscoveryToolOption[];
-    }
-  | {
-      kind: 'discovery_exclusions';
-      exclusions: DiscoveryExclusions;
     }
   | {
       kind: 'page';
@@ -2553,28 +2540,6 @@ export type AgentSchedules =
   | {
       kind: 'changed';
       revision: number;
-    };
-export type DiscoveryToolGroup =
-  | 'read_files'
-  | 'read_history'
-  | 'modify_files'
-  | 'run_commands'
-  | 'network'
-  | 'manage_sessions'
-  | 'extensions'
-  | 'desktop';
-export type DiscoveryExclusion =
-  | {
-      kind: 'directory';
-      path: string;
-    }
-  | {
-      kind: 'file';
-      path: string;
-    }
-  | {
-      kind: 'suffix';
-      suffix: string;
     };
 export type Status = 'active' | 'paused' | 'completed' | 'expired';
 export type AgentInvestigationPhase = 'investigating' | 'delivering' | 'stopping';
@@ -7392,26 +7357,6 @@ export interface AgentRecapGenerate {
   sessionId: string;
   model: ModelSelection;
 }
-export interface DiscoveryToolGroups {
-  readFiles: boolean;
-  readHistory: boolean;
-  modifyFiles: boolean;
-  runCommands: boolean;
-  network: boolean;
-  manageSessions: boolean;
-  extensions: boolean;
-  desktop: boolean;
-}
-export interface DiscoveryToolOption {
-  name: string;
-  group: DiscoveryToolGroup;
-  available: boolean;
-  [k: string]: unknown | undefined;
-}
-export interface DiscoveryExclusions {
-  revision?: number | null;
-  entries: DiscoveryExclusion[];
-}
 export interface AgentScheduledSummary {
   id: string;
   revision: number;
@@ -8066,8 +8011,7 @@ export interface WorkspaceProcessConfiguration {
 }
 /**
  * Longest path wins; at the same path exact wins over subtree, then deny wins
- * over write over read. Deny globs address absolute paths or a suffix across all
- * roots. Path rules cannot reopen a glob denial.
+ * over write over read. Deny globs are absolute and cannot be reopened by paths.
  * Matching directories deny their descendants.
  * Host file operations match at access time. Linux and Windows subprocesses
  * snapshot existing glob matches during preparation; macOS enforces them live.
