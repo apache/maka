@@ -53,7 +53,6 @@ import {
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
-  richTooltipStyle,
   secondaryTextStyle,
   tooltipStyle,
   tooltipTextStyle,
@@ -1521,7 +1520,7 @@ function renderTooltip(ctx: SpecElementRenderContext): JSX.Element {
     <View
       focusable
       tooltip={
-        <Tooltip style={tipText().length > 48 ? richTooltipStyle() : tooltipStyle()}>
+        <Tooltip style={tooltipStyle()}>
           <Text style={tooltipTextStyle()}>{tipText()}</Text>
         </Tooltip>
       }
