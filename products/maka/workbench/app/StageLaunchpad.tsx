@@ -41,6 +41,7 @@ import {
   quietFocusStyle,
   textTooltip,
 } from './ui';
+import { orderWorktrees } from './WorktreePicker';
 import type { WorkspaceFileTarget } from './workspaceFileState';
 
 export function StageLaunchpad(props: {
@@ -159,6 +160,19 @@ export function StageLaunchpad(props: {
       .slice(0, 5);
   });
 
+  const matchingWorktrees = computed(() => {
+    const q = query().trim().toLowerCase();
+    if (!q) return [];
+    return orderWorktrees(revisions()?.worktrees ?? [])
+      .filter(
+        (w) =>
+          w.name.toLowerCase().includes(q) ||
+          (w.branch?.toLowerCase().includes(q) ?? false) ||
+          w.path.toLowerCase().includes(q),
+      )
+      .slice(0, 5);
+  });
+
   const submitSearch = () => {
     const prNum = parsedPrNumber();
     if (prNum !== null && prNum > 0) {
@@ -177,6 +191,11 @@ export function StageLaunchpad(props: {
         number: firstPr.number,
         title: firstPr.title,
       });
+      return;
+    }
+    const firstWt = matchingWorktrees()[0];
+    if (firstWt) {
+      props.openChanges(firstWt.isCurrent ? null : firstWt.path);
       return;
     }
     const firstFile = fileResults()[0];
@@ -308,7 +327,10 @@ export function StageLaunchpad(props: {
           <If
             when={
               query().trim().length > 0 &&
-              (parsedPrNumber() !== null || matchingPulls().length > 0 || fileResults().length > 0)
+              (parsedPrNumber() !== null ||
+                matchingPulls().length > 0 ||
+                matchingWorktrees().length > 0 ||
+                fileResults().length > 0)
             }
           >
             <View
@@ -391,6 +413,46 @@ export function StageLaunchpad(props: {
                     <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
                       {`#${pr().number}`}
                     </Text>
+                  </Button>
+                )}
+              </Each>
+
+              <Each of={matchingWorktrees()} key={(w) => `wt-q:${w.path}`}>
+                {(w) => (
+                  <Button
+                    accessibilityLabel={w().name}
+                    tooltip={textTooltip(() => w().path)}
+                    onPress={() => props.openChanges(w().isCurrent ? null : w().path)}
+                    style={{
+                      minHeight: 32,
+                      paddingHorizontal: 8,
+                      borderRadius: 8,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                    hoverStyle={{ backgroundColor: C.cardRaised }}
+                    focusStyle={quietFocusStyle()}
+                  >
+                    <Icon name="gitBranch" size={14} color={C.secondary} />
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: C.text, fontWeight: '500' },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {w().name}
+                    </Text>
+                    <If when={Boolean(w().branch)}>
+                      <Text
+                        style={[
+                          { fontSize: 12, lineHeight: 16, color: C.muted, flex: 1, minWidth: 0 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {w().branch!}
+                      </Text>
+                    </If>
                   </Button>
                 )}
               </Each>
@@ -540,7 +602,7 @@ export function StageLaunchpad(props: {
               </Each>
 
               <If when={worktrees().length > 1}>
-                <Each of={worktrees()} key={(wt) => `wt:${wt.path}`}>
+                <Each of={orderWorktrees(worktrees()).slice(0, 4)} key={(wt) => `wt:${wt.path}`}>
                   {(wt) => (
                     <Button
                       accessibilityLabel={wt().name}
@@ -561,15 +623,28 @@ export function StageLaunchpad(props: {
                       activeStyle={quietActiveStyle()}
                       focusStyle={quietFocusStyle()}
                     >
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View
+                        style={{
+                          width: '100%',
+                          minWidth: 0,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                        }}
+                      >
                         <Icon name="gitBranch" size={14} color={C.secondary} />
-                        <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
+                        <Text
+                          style={[
+                            { fontSize: 12, lineHeight: 16, color: C.muted, flex: 1, minWidth: 0 },
+                            { numberOfLines: 1 },
+                          ]}
+                        >
                           {wt().branch || tr('Worktree reference')}
                         </Text>
                       </View>
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.text, fontWeight: '500' },
+                          { ...captionTextStyle, color: C.text, fontWeight: '500', width: '100%' },
                           { numberOfLines: 1 },
                         ]}
                       >

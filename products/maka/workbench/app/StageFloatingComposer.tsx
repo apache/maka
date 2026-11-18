@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { signal, Text, View, type JSX } from 'nsh';
+import { signal, Text, View, windowSize, type JSX } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Icon } from './Icon';
@@ -190,7 +190,9 @@ export function StageFloatingComposer(props: {
       <If when={expanded() && !minimized()}>
         <View
           style={{
-            maxHeight: 280,
+            maxHeight: Math.min(280, Math.max(120, windowSize().height - 168)),
+            minHeight: 0,
+            flexShrink: 1,
             borderTopWidth: 1,
             borderTopColor: C.line,
             paddingHorizontal: 8,

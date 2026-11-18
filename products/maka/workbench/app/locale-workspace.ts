@@ -1048,4 +1048,13 @@ export const workspaceMessages = {
   'Clear review notes': ['Clear review notes', '清空批注', '清空批註'],
   'Unified diff': ['Unified diff', '单栏对比', '單欄比對'],
   'Side-by-side diff': ['Side-by-side diff', '双栏并排对比', '雙欄並排比對'],
+  'Filter worktrees…': ['Filter worktrees…', '搜索工作树或分支…', '搜尋工作樹或分支…'],
+  'No matching worktrees': ['No matching worktrees', '无匹配的工作树', '無符合的工作樹'],
+  'Filter commits…': ['Filter commits…', '搜索提交记录…', '搜尋提交紀錄…'],
+  'No matching commits': ['No matching commits', '无匹配的提交', '無符合的提交'],
+  'No matching branches': ['No matching branches', '无匹配的分支', '無符合的分支'],
+  'Detached HEAD': ['Detached HEAD', '游离 HEAD', '分離 HEAD'],
+  'Current checkout': ['Current', '当前', '目前'],
+  'Main worktree': ['Main', '主树', '主樹'],
+  'Show all ({count})': ['Show all ({count})', '展开全部（{count}）', '展開全部（{count}）'],
 } as const satisfies Catalog;
