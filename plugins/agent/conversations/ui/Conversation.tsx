@@ -54,6 +54,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
   batch,
+  Canvas,
   cleanup,
   computed,
   effect,
@@ -4210,6 +4211,9 @@ export function Conversation(props: ConversationProps) {
   });
 
   const historyWidth = signal(0);
+  // Whether the history list has content scrolled out above or below it.
+  const historyAbove = signal(false);
+  const historyBelow = signal(false);
   const hasRailRoom = () => historyWidth() >= 400;
   const railShown = () =>
     ready() &&
@@ -4217,7 +4221,8 @@ export function Conversation(props: ConversationProps) {
       ? navigationItems().length > 1
       : navigationItems().length >= 4 && hasRailRoom());
   // The desktop rail's width, kept on both sides so the reading column stays centered.
-  const railInset = () => (platform.idiom !== 'terminal' && hasRailRoom() ? railWidth() + 8 : 0);
+  // Only while the rail shows: until then the column lines up with the composer's.
+  const railInset = () => (platform.idiom !== 'terminal' && railShown() ? railWidth() + 8 : 0);
   const rail = () => (
     <TurnNavigation
       items={navigationItems}
@@ -4915,6 +4920,8 @@ export function Conversation(props: ConversationProps) {
                 const scrolled = historyScrollInput !== 'idle';
                 historyOffset = offset;
                 historyMaxOffset = end;
+                historyAbove.set(offset > 1);
+                historyBelow.set(distance > 1);
                 if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
                 if (scrolled && movement < 0) {
                   deferOlderUntilScroll = false;
@@ -4966,6 +4973,12 @@ export function Conversation(props: ConversationProps) {
             >
               {entryRow}
             </List>
+            <If when={platform.idiom !== 'terminal' && historyAbove()}>
+              <HistoryEdgeFade inset={railInset} />
+            </If>
+            <If when={platform.idiom !== 'terminal' && historyBelow()}>
+              <HistoryEdgeFade inset={railInset} bottom />
+            </If>
             <If when={railShown()}>
               <View
                 style={[
@@ -5108,6 +5121,34 @@ export function Conversation(props: ConversationProps) {
     </View>
   );
 }
+const historyEdgeFadeHeight = 16;
+
+/** Softens where the history list is cut off by the header or the composer. */
+function HistoryEdgeFade(props: { inset: () => number; bottom?: boolean }) {
+  return (
+    <Canvas
+      accessibilityElementsHidden
+      style={{
+        position: 'absolute',
+        left: props.inset(),
+        right: props.inset(),
+        top: props.bottom ? undefined : 0,
+        bottom: props.bottom ? 0 : undefined,
+        height: historyEdgeFadeHeight,
+        pointerEvents: 'none',
+      }}
+      draw={(cx, size) => {
+        const fade = cx.createLinearGradient(0, 0, 0, size.height);
+        const clear = `${C.panel}00`;
+        fade.addColorStop(0, props.bottom ? clear : C.panel);
+        fade.addColorStop(1, props.bottom ? C.panel : clear);
+        cx.fillStyle = fade;
+        cx.fillRect(0, 0, size.width, size.height);
+      }}
+    />
+  );
+}
+
 function metricText(value: any): string {
   if (!value) return '';
   const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));

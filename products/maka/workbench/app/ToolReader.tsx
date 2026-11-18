@@ -572,7 +572,10 @@ function Sections(props: { items: ToolSection[] }) {
                         ? C.warning
                         : section().tone === 'added'
                           ? C.success
-                          : C.text,
+                          : // Code reads a step under the reply, as a process's output does.
+                            section().style === 'code' && desktop
+                            ? C.secondary
+                            : C.text,
                 },
                 { userSelect: 'text' },
               ]}
