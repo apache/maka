@@ -372,13 +372,6 @@ impl RunAccess {
             return Err(ToolError::Failed("Run workspace binding changed".into()));
         }
         // Access mode is current configuration; actual effects enforce the Scope's sandbox floor.
-        if owner
-            .bot
-            .configured_tool_ceiling(&self.execution.session_id, &current)
-            .is_none()
-        {
-            current.tools = None;
-        }
         current.tools = intersect_tools(current.tools, self.spec.allowed_tools.clone());
         // These controls are granted by the registered Bot's identity.
         if let Some(tools) = &mut current.tools

@@ -659,6 +659,7 @@ impl Owner {
                 RunError::ReconciliationRequired(_) => "reconciliation_required",
                 RunError::InvalidInput(_) => "invalid_input",
                 RunError::ModelUnavailable => "model_unavailable",
+                RunError::AuthenticationRequired => "authentication_required",
                 RunError::IsolationUnavailable(_) => "isolation_unavailable",
                 RunError::CompactionFailed(_) | RunError::CompactionMismatch => "compaction_failed",
                 RunError::Cancelled => "cancelled",

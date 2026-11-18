@@ -149,6 +149,15 @@ impl Fixture {
         tools: Option<&str>,
     ) -> String {
         let effect = self.effect(tools.unwrap_or("read_only")).await;
+        self.create_effect(title, direction, schedule, effect).await
+    }
+    async fn create_effect(
+        &self,
+        title: &str,
+        direction: &str,
+        schedule: Value,
+        effect: Value,
+    ) -> String {
         let catalog = self.preview(&effect, None).await;
         let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":direction,"schedule":schedule,"effect":effect,"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest","approvedTools":catalog}})).await;
         assert_eq!(result["kind"], "committed", "{result}");
@@ -247,25 +256,6 @@ impl Fixture {
     async fn close(&mut self) {
         let errors = self.rig.finish().await;
         assert!(errors.is_empty(), "{errors:?}");
-    }
-    async fn use_legacy_bot_registration(&self) {
-        use maka_plugin_core::storage::{Data, Mutation, Namespace, Store};
-
-        let owner = self.owner();
-        let storage = maka_host_runtime::storage::Storage::new(
-            owner.store.clone(),
-            owner.prefix.clone(),
-            Namespace::new("maka.bot", maka_plugin_core::scope::Scope::Profile).unwrap(),
-        );
-        let registration = storage.read("bot".into()).await.unwrap().unwrap();
-        storage
-            .batch(vec![Mutation {
-                key: "bot".into(),
-                expected_revision: Some(registration.revision),
-                data: Data::Present(json!({"sessionId":self.bot})),
-            }])
-            .await
-            .unwrap();
     }
     async fn change_source(&mut self, update: fn(&mut StoredSessionConfiguration)) {
         self.close().await;
@@ -406,9 +396,6 @@ async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
 async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    f.use_legacy_bot_registration().await;
-    f.change_source(|config| config.tools = Some(vec!["ScheduledTask".into()]))
-        .await;
     let task = f.create("Notification receipt").await;
     f.change(&task, "trigger_now").await;
     let (mut socket, request) = next(&listener).await;
@@ -564,7 +551,7 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     f.close().await;
 }
 
-fn assert_model_requires_approval(detail: &Value, message: &str) {
+fn assert_requires_reapproval(detail: &Value, message: &str) {
     assert_eq!(detail["task"]["status"], "paused", "{detail}");
     assert_eq!(detail["approved"], false, "{detail}");
     assert!(detail["task"]["nextFireAt"].is_null(), "{detail}");
@@ -574,6 +561,227 @@ fn assert_model_requires_approval(detail: &Value, message: &str) {
     );
     assert_eq!(detail["task"]["runs"][0]["outcome"], "blocked", "{detail}");
     assert_eq!(detail["task"]["runs"][0]["message"], message, "{detail}");
+}
+
+async fn check_removed_credential(at_delivery: bool) {
+    use maka_agent_facts::{
+        configuration::{
+            ConnectionCredentialKind, ConnectionCredentialTarget, CredentialLocator,
+            CredentialMutationResult, CredentialVaultQueryResult, DeleteCredentialInput,
+        },
+        oauth::{LoginStart, Target},
+        provider::{AuthenticationInput, Credential},
+    };
+    use maka_config::oauth::enrollment::{LoginCompletion, LoginPreparation};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let healthy = f.create("Healthy plan with a separate connection").await;
+    let owner = f.owner();
+    let store = &owner.configuration;
+    let client = f.rig.client.as_ref().unwrap();
+    let catalog = call(client, "settings", "connections", json!({"kind":"start"}))
+        .await
+        .unwrap();
+    let created = call(client, "settings", "create", json!({
+        "expectedCatalogRevision": catalog["revision"],
+        "connection": {"slug":"keyed-discovery", "name":"Synthetic keyed connection",
+            "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"new-api"},
+            "configuration":{"baseUrl":f.boot.base_url}, "enabled":true,"enabledModelIds":["llama3.2"],
+            "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+    })).await.unwrap();
+    assert_eq!(created["kind"], "committed", "{created}");
+    let id = created["connection"]["connectionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let target =
+        |row: maka_agent_facts::configuration::ConnectionCatalogEntry| ConnectionCredentialTarget {
+            connection_id: row.connection_id,
+            revision: row.revision,
+            slug: row.slug,
+            provider: row.provider,
+            configuration: row.configuration,
+        };
+    let row = store
+        .catalog()
+        .await
+        .unwrap()
+        .connections
+        .into_iter()
+        .find(|row| row.connection_id == id)
+        .unwrap();
+    let original = target(row);
+    let login = LoginStart {
+        attempt_id: "discovery-test-login".into(),
+        expected_credential: None,
+        target: Target::Existing {
+            expected: original.clone(),
+            configuration: original.configuration,
+        },
+        authentication: AuthenticationInput {
+            method: "api-key".into(),
+            input: json!({"apiKey":"synthetic-fixture-token"}),
+        },
+    };
+    let LoginPreparation::Ready(ticket) = store.prepare_oauth_login(login).await.unwrap() else {
+        panic!("Cannot enroll fixture connection")
+    };
+    assert!(ticket.claim().await.unwrap());
+    assert!(matches!(
+        ticket
+            .complete(
+                Credential {
+                    secret: "synthetic-fixture-token".into(),
+                    refresh_at: None
+                },
+                1
+            )
+            .await
+            .unwrap(),
+        LoginCompletion::Committed(_)
+    ));
+
+    let mut effect = f.effect("session").await;
+    effect["model"]["connectionId"] = json!(id);
+    let task = f.create_effect("Plan whose authorization will become unavailable","Check a synthetic fixture",
+        json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}), effect).await;
+    let mut worker = if at_delivery {
+        f.change(&task, "trigger_now").await;
+        Some(next(&listener).await.0)
+    } else {
+        None
+    };
+    let row = store
+        .catalog()
+        .await
+        .unwrap()
+        .connections
+        .into_iter()
+        .find(|row| row.connection_id == id)
+        .unwrap();
+    let locator = CredentialLocator::Connection {
+        connection_id: id.clone(),
+        kind: ConnectionCredentialKind::Provider,
+    };
+    let CredentialVaultQueryResult::Status { status } =
+        store.credential_status(locator).await.unwrap()
+    else {
+        panic!("Key missing from test setup")
+    };
+    assert!(matches!(
+        store
+            .delete_credential(DeleteCredentialInput {
+                expected: status.basis().unwrap(),
+                expected_connection: Some(target(row))
+            })
+            .await
+            .unwrap(),
+        CredentialMutationResult::Committed { .. }
+    ));
+    if let Some(socket) = &mut worker {
+        tool(
+            socket,
+            "DiscoveryComplete",
+            json!({"kind":"report","text":"Synthetic finding"}),
+        )
+        .await;
+    } else {
+        f.change(&task, "trigger_now").await;
+    }
+    let blocked = f.settled(&task, 1).await;
+    assert_requires_reapproval(&blocked, "agent_authentication_required");
+    assert_eq!(blocked["task"]["runs"][0]["runId"].is_string(), at_delivery);
+    assert!(blocked["pendingFire"].is_null());
+    assert_eq!(f.outbox().await, json!([]));
+    f.change(&healthy, "trigger_now").await;
+    let (mut control, _) = next(&listener).await;
+    tool(
+        &mut control,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Control ran"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&healthy, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_releases_the_slot_when_required_credentials_are_removed() {
+    check_removed_credential(false).await;
+    check_removed_credential(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_releases_the_slot_when_its_workspace_disappears() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let workspace = f.rig.directory.path().join("workspace");
+    let moved = f.rig.directory.path().join("moved-workspace");
+    for reporting in [false, true] {
+        let task = f.create("Check the approved workspace").await;
+        if reporting {
+            f.change(&task, "trigger_now").await;
+            let (mut worker, _) = next(&listener).await;
+            std::fs::rename(&workspace, &moved).unwrap();
+            tool(
+                &mut worker,
+                "DiscoveryComplete",
+                json!({"kind":"report","text":"Workspace finding"}),
+            )
+            .await;
+        } else {
+            std::fs::rename(&workspace, &moved).unwrap();
+            f.change(&task, "trigger_now").await;
+        }
+        let blocked = f.settled(&task, 1).await;
+        assert_requires_reapproval(&blocked, "agent_workspace_unavailable");
+        assert_eq!(blocked["task"]["runs"][0]["runId"].is_string(), reporting);
+        assert!(blocked["pendingFire"].is_null());
+        assert_eq!(f.outbox().await, json!([]));
+        std::fs::rename(&moved, &workspace).unwrap();
+    }
+    let healthy = f.create("Independent plan").await;
+    f.change(&healthy, "trigger_now").await;
+    let (mut control, _) = next(&listener).await;
+    tool(
+        &mut control,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Control ran"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&healthy, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_rejects_script_edits_even_when_the_existing_grant_matches() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Time-based investigation").await;
+    let detail = f.detail(&task).await;
+    let effect = detail["task"]["effect"].clone();
+    let names = f.preview(&effect, Some(&task)).await;
+    let result = f.query("schedule", json!({
+        "kind":"update", "taskId":task, "revision":detail["revision"],
+        "input":{"task":{"title":"Script check","intentBody":"Check only on a match","schedule":{
+            "kind":"script","source":"console.log(false)","everySeconds":60,"startAt":maka_agent_authority::now()+1000
+        },"effect":effect,"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest","approvedTools":names}
+    })).await;
+    assert_eq!(
+        result["reason"], "discovery_requires_time_schedule",
+        "{result}"
+    );
+    let unchanged = f.detail(&task).await;
+    assert_eq!(unchanged["revision"], detail["revision"]);
+    assert_eq!(unchanged["task"]["schedule"], detail["task"]["schedule"]);
+    f.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -586,7 +794,7 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     f.change(&stale, "trigger_now").await;
 
     let blocked = f.settled(&stale, 1).await;
-    assert_model_requires_approval(&blocked, "background_model_route_changed");
+    assert_requires_reapproval(&blocked, "background_model_route_changed");
     assert!(blocked["task"]["runs"][0]["runId"].is_null(), "{blocked}");
 
     let reporting = f.create("Route changes while investigating").await;
@@ -600,7 +808,7 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     )
     .await;
     let blocked = f.settled(&reporting, 1).await;
-    assert_model_requires_approval(&blocked, "background_model_route_changed");
+    assert_requires_reapproval(&blocked, "background_model_route_changed");
     assert!(blocked["task"]["runs"][0]["runId"].is_string(), "{blocked}");
     assert_eq!(f.outbox().await, json!([]));
 
@@ -634,7 +842,7 @@ async fn discovery_invalidates_unavailable_models_before_worker_and_report_admis
     .await;
     f.change(&waiting, "trigger_now").await;
     let blocked = f.settled(&waiting, 1).await;
-    assert_model_requires_approval(&blocked, "background_model_unavailable");
+    assert_requires_reapproval(&blocked, "background_model_unavailable");
     assert!(blocked["task"]["runs"][0]["runId"].is_null(), "{blocked}");
 
     f.update_model_connection(ConnectionCatalogEntryUpdate {
@@ -656,7 +864,7 @@ async fn discovery_invalidates_unavailable_models_before_worker_and_report_admis
     )
     .await;
     let blocked = f.settled(&reporting, 1).await;
-    assert_model_requires_approval(&blocked, "background_model_unavailable");
+    assert_requires_reapproval(&blocked, "background_model_unavailable");
     assert!(blocked["task"]["runs"][0]["runId"].is_string(), "{blocked}");
     assert_eq!(f.outbox().await, json!([]));
 
@@ -783,29 +991,29 @@ async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_preserves_the_inherited_tool_ceiling_of_a_legacy_bot() {
+async fn discovery_previews_and_enforces_the_bot_tool_ceiling() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    f.use_legacy_bot_registration().await;
-    f.change_source(|config| {
-        config.parent_session_id = Some("legacy-caller".into());
-        config.tools = Some(vec!["ScheduledTask".into()]);
-    })
-    .await;
+    f.change_source(|config| config.tools = Some(vec!["ScheduledTask".into()]))
+        .await;
 
     let names = f.preview(&f.effect("session").await, None).await;
-    assert!(
-        !names.as_array().unwrap().iter().any(|name| name == "Read"),
-        "{names}"
-    );
-
-    let task = f.create("Investigation under the inherited ceiling").await;
+    assert_eq!(names, json!(["DiscoveryComplete", "ScheduledTask"]));
+    let task = f.create("Investigation under the explicit ceiling").await;
     f.change(&task, "trigger_now").await;
     let (mut worker, request) = next(&listener).await;
-    let tools = request["tools"].as_array().unwrap();
+    let mut actual: Vec<_> = request["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    actual.sort_unstable();
+    assert_eq!(json!(actual), names);
     assert!(
-        !tools.iter().any(|tool| tool["function"]["name"] == "Read"),
-        "{tools:?}"
+        !request["messages"]
+            .to_string()
+            .contains("Use DiscoveryMemory to read")
     );
     tool(
         &mut worker,
@@ -851,7 +1059,10 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
     f.change_source(|config| config.tools = Some(vec!["Read".into()]))
         .await;
     let effect = f.effect("session").await;
-    assert_eq!(f.preview(&effect, None).await, json!(["Read"]));
+    assert_eq!(
+        f.preview(&effect, None).await,
+        json!(["DiscoveryComplete", "Read"])
+    );
     let task = f.create("Approved tool ceiling").await;
 
     // Ordinary Session gains Write again. The existing plan keeps its approved Read.
@@ -934,8 +1145,8 @@ async fn discovery_memory_search_paginates_and_matches_record_text() {
     let (mut socket, _) = next(&listener).await;
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     let record = page["records"][0]["id"].clone();
-    for index in 0..38 {
-        let text = if index == 37 {
+    for index in 0..70 {
+        let text = if index == 69 {
             "Migration observation: He said \"stop\"\nCheck the next line".into()
         } else if index < 4 {
             format!("Migration observation {index}")
@@ -965,36 +1176,21 @@ async fn discovery_memory_search_paginates_and_matches_record_text() {
         json!({"action":"list","query":"migration"}),
     )
     .await;
-    assert_eq!(sequences(&first), [39]);
-    assert_eq!(first["next_before"], 8);
+    assert_eq!(sequences(&first), [71, 5, 4, 3]);
+    assert_eq!(first["next_before"], 3);
     let (mut socket, second) = memory(
         &listener,
         &mut socket,
         json!({"action":"list","query":"migration","before":first["next_before"]}),
     )
     .await;
-    assert_eq!(sequences(&second), [5, 4, 3, 2]);
-    let (mut socket, third) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"list","query":"migration","before":second["next_before"]}),
-    )
-    .await;
-    assert_eq!(sequences(&third), [1]);
-    assert_eq!(third["next_before"], Value::Null);
+    assert_eq!(sequences(&second), [2, 1]);
+    assert_eq!(second["next_before"], Value::Null);
 
     let (mut socket, page) = memory(
         &listener,
         &mut socket,
         json!({"action":"list","query":"original-search-marker"}),
-    )
-    .await;
-    assert!(sequences(&page).is_empty());
-    assert_eq!(page["next_before"], 8);
-    let (mut socket, page) = memory(
-        &listener,
-        &mut socket,
-        json!({"action":"list","query":"original-search-marker","before":page["next_before"]}),
     )
     .await;
     assert_eq!(sequences(&page), [1]);
@@ -1006,7 +1202,7 @@ async fn discovery_memory_search_paginates_and_matches_record_text() {
         json!({"action":"list","query":"He said \"stop\"\nCheck"}),
     )
     .await;
-    assert_eq!(sequences(&page), [39]);
+    assert_eq!(sequences(&page), [71]);
     let (mut socket, page) = memory(
         &listener,
         &mut socket,

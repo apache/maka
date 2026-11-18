@@ -98,30 +98,6 @@ impl ReturnRoute {
         }
     }
 }
-pub(super) enum NotificationPreparationError {
-    ModelUnavailable,
-    RouteChanged,
-    Other(String),
-}
-
-impl From<String> for NotificationPreparationError {
-    fn from(error: String) -> Self {
-        Self::Other(error)
-    }
-}
-
-impl From<NotificationPreparationError> for String {
-    fn from(error: NotificationPreparationError) -> Self {
-        match error {
-            NotificationPreparationError::ModelUnavailable => {
-                send::CaptureError::ModelUnavailable.into()
-            }
-            NotificationPreparationError::RouteChanged => "notification_route_changed".into(),
-            NotificationPreparationError::Other(error) => error,
-        }
-    }
-}
-
 impl Owner {
     pub(crate) fn background<F, Fut>(&self, task: F)
     where
@@ -250,7 +226,7 @@ impl Owner {
         origin: MessageOrigin,
         placement: QueuePlacement,
         boundary: Option<&ScheduledTarget>,
-    ) -> Result<Option<PreparedRequest>, NotificationPreparationError> {
+    ) -> Result<Option<PreparedRequest>, send::CaptureError> {
         if let Some(original) = self
             .durable
             .queue()
@@ -288,27 +264,14 @@ impl Owner {
             )
             .await;
         let cleanup = native.finish().await;
-        let mut basis = match (capture, cleanup) {
-            (Ok(basis), Ok(())) => basis,
-            (Err(send::CaptureError::ModelUnavailable), Ok(())) => {
-                return Err(NotificationPreparationError::ModelUnavailable);
-            }
-            (Err(error), Ok(())) => return Err(String::from(error).into()),
-            (result, Err(cleanup)) => {
-                return Err(format!(
-                    "{}; background preparation cleanup: {cleanup}",
-                    result.err().map(String::from).unwrap_or_default()
-                )
-                .into());
-            }
-        };
+        let mut basis = send::finish_capture(capture, cleanup)?;
         if let Some(model) = &route.model {
             let current = basis
                 .model
                 .as_ref()
                 .ok_or_else(|| "notification_model_unavailable".to_owned())?;
             if !model.same_execution_route(current) {
-                return Err(NotificationPreparationError::RouteChanged);
+                return Err(send::CaptureError::RouteChanged);
             }
             basis.model = Some(model.clone());
         }

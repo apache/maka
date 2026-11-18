@@ -171,9 +171,6 @@ impl Owner {
             if !self.settings.bot || !self.bot.is(&target.session_id) {
                 return Err("discovery_requires_bot".into());
             }
-            if matches!(plan.task.schedule, TaskSchedule::Script { .. }) {
-                return Err("discovery_requires_time_schedule".into());
-            }
         }
         let basis = self
             .approve_background(
@@ -271,16 +268,7 @@ impl Owner {
             .capture_current_run(id, Some(backend), String::new(), native.scope())
             .await;
         let cleanup = native.finish().await;
-        let mut basis = match (captured, cleanup) {
-            (Ok(basis), Ok(())) => basis,
-            (Err(error), Ok(())) => return Err(error.into()),
-            (result, Err(cleanup)) => {
-                return Err(format!(
-                    "{}; background preparation cleanup: {cleanup}",
-                    result.err().map(String::from).unwrap_or_default()
-                ));
-            }
-        };
+        let mut basis = crate::owner::send::finish_capture(captured, cleanup)?;
         let current = self.mutable_session(id).await?;
         if current.archived || current.configuration != session.configuration {
             return Err("scheduler_authorization_changed".into());
@@ -502,7 +490,10 @@ impl Owner {
                     Some(followup) => !self.scheduler.followup_is_current(followup).await?,
                     None => false,
                 };
-                if source_changed || followup_changed {
+                if source_changed
+                    || followup_changed
+                    || matches!(plan.task.schedule, TaskSchedule::Script { .. })
+                {
                     require_discovery_approval(&mut plan, at);
                 }
             }
@@ -530,6 +521,8 @@ impl Owner {
                             run.message.as_str(),
                             super::super::discovery::MODEL_ROUTE_CHANGED
                                 | super::super::discovery::APPROVED_MODEL_UNAVAILABLE
+                                | "agent_authentication_required"
+                                | "agent_workspace_unavailable"
                         )
                     {
                         require_discovery_approval(&mut plan, run.at);

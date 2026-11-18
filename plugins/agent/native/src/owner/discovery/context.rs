@@ -51,12 +51,15 @@ impl Owner {
         &self,
         job: &Job,
         previous: Option<&Run>,
+        tools: &[String],
     ) -> Result<String, String> {
-        let last_investigation = self.scheduler.opening_reference(job, previous).await?;
+        let last_investigation = if tools.iter().any(|name| name == MEMORY) {
+            self.scheduler.opening_reference(job, previous).await?
+        } else {
+            None
+        };
         let mut recent = Vec::new();
-        if job
-            .tools
-            .names
+        if tools
             .iter()
             .any(|name| name == "SessionRead" || self.discovery_reads.contains(name))
         {
@@ -104,13 +107,13 @@ impl Owner {
             .collect();
         let guidance = match job.approval.language {
             Language::ZhCn => {
-                "调查开场引用。可用 DiscoveryMemory 和已获准的会话历史工具按需读取。近期会话仅提供调查入口，可以继续查找其他相关资料。"
+                "调查开场引用。可用已获准的工具按需读取。近期会话仅提供调查入口，可以继续查找其他相关资料。"
             }
             Language::ZhTw => {
-                "調查開場引用。可用 DiscoveryMemory 和已獲准的對話歷史工具按需讀取。近期對話僅提供調查入口，可以繼續尋找其他相關資料。"
+                "調查開場引用。可用已獲准的工具按需讀取。近期對話僅提供調查入口，可以繼續尋找其他相關資料。"
             }
             _ => {
-                "Discovery opening references. Use DiscoveryMemory and authorized conversation history as needed. Recent conversations are starting points. Continue exploring other relevant material."
+                "Discovery opening references. Read them as needed with the authorized tools. Recent conversations are starting points. Continue exploring other relevant material."
             }
         };
         Ok(format!(

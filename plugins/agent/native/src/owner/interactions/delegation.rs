@@ -329,7 +329,7 @@ impl Owner {
                     decision: Decision::Allow,
                 },
             ) => {
-                let held = self.admitted_tools(&execution.session_id, parent);
+                let held = self.admitted_tools(&execution.session_id, &parent.tools);
                 Ok(held.as_ref().is_none_or(|names| names.contains(tool_name))
                     && self
                         .tool_basis

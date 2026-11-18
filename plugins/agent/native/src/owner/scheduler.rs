@@ -467,6 +467,9 @@ impl Owner {
             _ => None,
         };
         let is_discovery = matches!(plan.task.effect, ScheduledEffect::Discovery { .. });
+        if is_discovery && matches!(plan.task.schedule, TaskSchedule::Script { .. }) {
+            return Err("discovery_requires_time_schedule".into());
+        }
         let retain = is_discovery
             && !matches!(change, ScheduleChange::Approve { input: Some(_), .. })
             && saved.is_some_and(|saved| saved.plan.task.effect == plan.task.effect)

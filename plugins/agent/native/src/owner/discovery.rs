@@ -18,7 +18,8 @@
  */
 
 //! Discovery owns a scheduler fire; the durable Agent queue owns its execution.
-use super::notifications::{BackgroundApproval, NotificationPreparationError};
+use super::notifications::BackgroundApproval;
+use super::send::CaptureError;
 use super::*;
 use maka_agent_facts::{
     durable::{Fact, Terminal, UnixMillis},
@@ -135,7 +136,19 @@ pub(super) fn permissions() -> WorkspacePermissions {
     }
 }
 
-fn investigation_prompt(language: Language, direction: &str) -> String {
+impl CaptureError {
+    fn discovery_block(self) -> Result<&'static str, String> {
+        match self {
+            Self::ModelUnavailable => Ok(APPROVED_MODEL_UNAVAILABLE),
+            Self::RouteChanged => Ok(MODEL_ROUTE_CHANGED),
+            Self::AuthenticationRequired => Ok("agent_authentication_required"),
+            Self::WorkspaceUnavailable => Ok("agent_workspace_unavailable"),
+            Self::Other(error) => Err(error),
+        }
+    }
+}
+
+fn investigation_prompt(language: Language, direction: &str, memory_allowed: bool) -> String {
     let direction = direction.trim();
     let (focused, broad, memory, history, finish) = match language {
         Language::ZhCn => (
@@ -165,7 +178,9 @@ fn investigation_prompt(language: Language, direction: &str) -> String {
     } else {
         format!("{focused}\n{direction}")
     };
-    prompt.push_str(&format!("\n\n{memory}"));
+    if memory_allowed {
+        prompt.push_str(&format!("\n\n{memory}"));
+    }
     prompt.push_str(&format!("\n{history}"));
     prompt.push_str(&format!("\n\n{finish}"));
     prompt
@@ -491,38 +506,40 @@ impl Owner {
                 editing,
             )
             .names();
-        names.retain(|name| {
-            let recall = RECALL_TOOLS.contains(&name.as_str());
-            (!recall || self.settings.recall)
-                && (profile == DiscoveryWorkerTools::Session
-                    || recall
-                    || self.read_only_discovery_tool(name))
-        });
-        names.sort_unstable();
+        if profile == DiscoveryWorkerTools::ReadOnly {
+            names.retain(|name| self.read_only_discovery_tool(name));
+        }
+        if catalog.contains(MEMORY) {
+            names.push(MEMORY.into());
+        }
+        let names = self.discovery_worker_tools(&names, source.configuration.tools.as_deref());
         Ok(scheduler::DiscoveryToolGrant { profile, names })
     }
 
     pub(super) fn read_only_discovery_tool(&self, name: &str) -> bool {
         self.discovery_reads.iter().any(|tool| tool == name)
             || RECALL_TOOLS.contains(&name)
-            || matches!(name, "SessionList" | "SessionRead")
+            || matches!(name, "SessionList" | "SessionRead" | MEMORY | COMPLETE)
     }
 
     fn discovery_worker_tools(
         &self,
-        granted: &scheduler::DiscoveryToolGrant,
+        names: &[String],
         configured: Option<&[String]>,
     ) -> Vec<String> {
-        granted
-            .names
+        let mut allowed: Vec<_> = names
             .iter()
             .filter(|name| {
-                (self.settings.recall || !RECALL_TOOLS.contains(&name.as_str()))
+                name.as_str() != COMPLETE
+                    && (self.settings.recall || !RECALL_TOOLS.contains(&name.as_str()))
                     && configured.is_none_or(|configured| configured.contains(name))
             })
             .cloned()
-            .chain(VISIBLE_TOOLS.iter().map(|name| (*name).into()))
-            .collect()
+            .collect();
+        // Every worker needs the return tool. Reading shared memory requires an approved grant.
+        allowed.push(COMPLETE.into());
+        allowed.sort_unstable();
+        allowed
     }
 
     async fn discovery_authorized(&self, job: &Job) -> Result<(), String> {
@@ -634,12 +651,6 @@ impl Owner {
             };
             let request = hex::encode(Sha256::digest(fire.id.as_bytes()));
             let worker = format!("{}{}", self.prefix, &request[..32]);
-            let mut prompt = investigation_prompt(approval.language, fire.intent.body());
-            prompt.push_str(&context::environment(
-                approval.language,
-                &approval.target.workspace.path,
-                timezone,
-            ));
             Job {
                 fire_id: fire.id.clone(),
                 task_id: fire.task_id.clone(),
@@ -648,7 +659,7 @@ impl Owner {
                 request,
                 approval: approval.clone(),
                 tools: tools.clone(),
-                input: prompt.into(),
+                input: String::new().into(),
                 execution: None,
                 phase: Phase::Investigating { result: None },
                 checkpoint: None,
@@ -663,9 +674,14 @@ impl Owner {
                     Some(scheduler::Approval::Discovery { .. })
                 )
             {
-                job.input
-                    .text
-                    .push_str(&self.discovery_opening(&job, previous).await?);
+                let source = self.session(&job.bot).await?;
+                let allowed = self.discovery_worker_tools(
+                    &job.tools.names,
+                    source.configuration.tools.as_deref(),
+                );
+                job.input = self
+                    .discovery_input(&job, fire, previous, timezone, &allowed)
+                    .await?;
             }
             revision = Some(
                 self.scheduler
@@ -744,132 +760,21 @@ impl Owner {
                         .await
                         .map(Some);
                 }
-                let source = self.session(&job.bot).await?;
-                let allowed_tools =
-                    self.discovery_worker_tools(&job.tools, source.configuration.tools.as_deref());
-                if self
-                    .store
-                    .get_session::<StoredSessionConfiguration>(&job.worker)
+                if let Err(error) = self
+                    .enqueue_discovery_worker(&job, fire, previous, timezone)
                     .await
-                    .map_err(reason)?
-                    .is_none()
                 {
-                    self.store
-                        .create_session(
-                            &job.worker,
-                            &job.request,
-                            &StoredSessionConfiguration {
-                                incognito: source.configuration.incognito,
-                                parent_session_id: Some(job.bot.clone()),
-                                backend: Some(BackendPreference::Model {
-                                    connection_id: job.approval.model.connection_id.clone(),
-                                    model_id: job.approval.model.model_id.clone(),
-                                    thinking_level: job.approval.thinking_level,
-                                }),
-                                compaction_prompt: None,
-                                applied_preset: None,
-                                collaboration_mode: CollaborationMode::Agent,
-                                tools: Some(allowed_tools.clone()),
-                                title: fire.title.clone(),
-                                title_is_manual: true,
-                                pinned: false,
-                                labels: vec![],
-                                workspace: source
-                                    .workspace_binding
-                                    .as_ref()
-                                    .ok_or("discovery_workspace_unavailable")?
-                                    .reference(),
-                                permissions: if job.tools.profile == DiscoveryWorkerTools::Session {
-                                    job.approval.target.permissions.clone()
-                                } else {
-                                    permissions()
-                                },
-                                boundary_revision: 0,
-                            },
-                            fire.scheduled_at as u64,
-                        )
-                        .await
-                        .map_err(reason)?;
-                }
-                let native = self
-                    .services
-                    .request(
-                        maka_capabilities::call::Identity::Native,
-                        self.stop.child_token(),
-                    )
-                    .map_err(reason)?;
-                let captured = self
-                    .capture_current_run(
-                        &job.worker,
-                        Some(BackendPreference::Model {
-                            connection_id: job.approval.model.connection_id.clone(),
-                            model_id: job.approval.model.model_id.clone(),
-                            thinking_level: job.approval.thinking_level,
-                        }),
-                        job.request.clone(),
-                        native.scope(),
-                    )
-                    .await;
-                let cleanup = native.finish().await;
-                let mut basis = match captured {
-                    Err(send::CaptureError::ModelUnavailable) if cleanup.is_ok() => {
-                        return self
-                            .settle_discovery(
-                                fire,
-                                revision,
-                                &job,
-                                Outcome::Blocked,
-                                APPROVED_MODEL_UNAVAILABLE,
-                            )
-                            .await
-                            .map(Some);
-                    }
-                    result => result.map_err(String::from)?,
-                };
-                cleanup?;
-                if !job.approval.accepted_model.same_execution_route(
-                    basis.model.as_ref().ok_or("discovery_model_unavailable")?,
-                ) {
                     return self
                         .settle_discovery(
                             fire,
                             revision,
                             &job,
                             Outcome::Blocked,
-                            MODEL_ROUTE_CHANGED,
+                            error.discovery_block()?,
                         )
                         .await
                         .map(Some);
                 }
-                basis.model = Some(job.approval.accepted_model.clone());
-                basis.allowed_tools = Some(allowed_tools);
-                basis.background = Some(job.approval.target.clone());
-                basis.background_sandbox_ceiling = job.approval.sandbox_ceiling.clone();
-                basis.background_kind = BackgroundKind::Schedule {
-                    task_id: job.task_id.clone(),
-                };
-                let source = RootSourceMessage {
-                    message: DeliveredMessage {
-                        message_id: message,
-                        origin: None,
-                        submitted_content_digest: job.input.content_digest().map_err(reason)?,
-                        content: job.input.clone(),
-                    },
-                    unprepared_content: job.input.clone(),
-                    submitted_placement: Placement::CurrentTurn,
-                    disposition: MessageDisposition::TurnStarted,
-                    submitted_intent: None,
-                };
-                self.enqueue_background(
-                    &job.worker,
-                    source,
-                    &basis,
-                    &job.request,
-                    Default::default(),
-                    maka_agent_state::queue::Placement::Followup,
-                    false,
-                )
-                .await?;
                 return Ok(None);
             }
             MessageResolution::Pending => {
@@ -984,6 +889,151 @@ impl Owner {
                 .map(Some),
         }
     }
+    async fn discovery_input(
+        &self,
+        job: &Job,
+        fire: &Fire<ScheduledEffect, scheduler::Approval>,
+        previous: Option<&Run>,
+        timezone: &str,
+        allowed_tools: &[String],
+    ) -> Result<MessageInput, String> {
+        let mut prompt = investigation_prompt(
+            job.approval.language,
+            fire.intent.body(),
+            allowed_tools.iter().any(|name| name == MEMORY),
+        );
+        prompt.push_str(&context::environment(
+            job.approval.language,
+            &job.approval.target.workspace.path,
+            timezone,
+        ));
+        prompt.push_str(&self.discovery_opening(job, previous, allowed_tools).await?);
+        Ok(prompt.into())
+    }
+
+    async fn enqueue_discovery_worker(
+        &self,
+        job: &Job,
+        fire: &Fire<ScheduledEffect, scheduler::Approval>,
+        previous: Option<&Run>,
+        timezone: &str,
+    ) -> Result<(), CaptureError> {
+        let source = self.session(&job.bot).await?;
+        let allowed_tools =
+            self.discovery_worker_tools(&job.tools.names, source.configuration.tools.as_deref());
+        if self
+            .store
+            .get_session::<StoredSessionConfiguration>(&job.worker)
+            .await
+            .map_err(reason)?
+            .is_none()
+        {
+            self.store
+                .create_session(
+                    &job.worker,
+                    &job.request,
+                    &StoredSessionConfiguration {
+                        incognito: source.configuration.incognito,
+                        parent_session_id: Some(job.bot.clone()),
+                        backend: Some(BackendPreference::Model {
+                            connection_id: job.approval.model.connection_id.clone(),
+                            model_id: job.approval.model.model_id.clone(),
+                            thinking_level: job.approval.thinking_level,
+                        }),
+                        compaction_prompt: None,
+                        applied_preset: None,
+                        collaboration_mode: CollaborationMode::Agent,
+                        tools: Some(allowed_tools.clone()),
+                        title: fire.title.clone(),
+                        title_is_manual: true,
+                        pinned: false,
+                        labels: vec![],
+                        workspace: source
+                            .workspace_binding
+                            .as_ref()
+                            .ok_or(CaptureError::WorkspaceUnavailable)?
+                            .reference(),
+                        permissions: if job.tools.profile == DiscoveryWorkerTools::Session {
+                            job.approval.target.permissions.clone()
+                        } else {
+                            permissions()
+                        },
+                        boundary_revision: 0,
+                    },
+                    fire.scheduled_at as u64,
+                )
+                .await
+                .map_err(reason)?;
+        }
+        let native = self
+            .services
+            .request(
+                maka_capabilities::call::Identity::Native,
+                self.stop.child_token(),
+            )
+            .map_err(reason)?;
+        let captured = self
+            .capture_current_run(
+                &job.worker,
+                Some(BackendPreference::Model {
+                    connection_id: job.approval.model.connection_id.clone(),
+                    model_id: job.approval.model.model_id.clone(),
+                    thinking_level: job.approval.thinking_level,
+                }),
+                job.request.clone(),
+                native.scope(),
+            )
+            .await;
+        let cleanup = native.finish().await;
+        let mut basis = send::finish_capture(captured, cleanup)?;
+        if !job
+            .approval
+            .accepted_model
+            .same_execution_route(basis.model.as_ref().ok_or(CaptureError::ModelUnavailable)?)
+        {
+            return Err(CaptureError::RouteChanged);
+        }
+        // Reuse the frozen opening only while its sources remain authorized. Older
+        // grants omitted protocol tools; rebuild their opening from the durable fire.
+        let input = if allowed_tools == job.tools.names
+            && allowed_tools.iter().any(|name| name == MEMORY)
+        {
+            job.input.clone()
+        } else {
+            self.discovery_input(job, fire, previous, timezone, &allowed_tools)
+                .await?
+        };
+        basis.model = Some(job.approval.accepted_model.clone());
+        basis.allowed_tools = Some(allowed_tools);
+        basis.background = Some(job.approval.target.clone());
+        basis.background_sandbox_ceiling = job.approval.sandbox_ceiling.clone();
+        basis.background_kind = BackgroundKind::Schedule {
+            task_id: job.task_id.clone(),
+        };
+        let source = RootSourceMessage {
+            message: DeliveredMessage {
+                message_id: format!("m_{}", job.request),
+                origin: None,
+                submitted_content_digest: input.content_digest().map_err(reason)?,
+                content: input.clone(),
+            },
+            unprepared_content: input,
+            submitted_placement: Placement::CurrentTurn,
+            disposition: MessageDisposition::TurnStarted,
+            submitted_intent: None,
+        };
+        self.enqueue_background(
+            &job.worker,
+            source,
+            &basis,
+            &job.request,
+            Default::default(),
+            maka_agent_state::queue::Placement::Followup,
+            false,
+        )
+        .await?;
+        Ok(())
+    }
     async fn deliver_discovery_report(
         &self,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
@@ -1026,11 +1076,7 @@ impl Owner {
             Ok(Some(notification)) => notification,
             Ok(None) => return Ok(None),
             Err(error) => {
-                let message = match error {
-                    NotificationPreparationError::RouteChanged => MODEL_ROUTE_CHANGED,
-                    NotificationPreparationError::ModelUnavailable => APPROVED_MODEL_UNAVAILABLE,
-                    NotificationPreparationError::Other(error) => return Err(error),
-                };
+                let message = error.discovery_block()?;
                 return self
                     .settle_discovery(fire, revision, job, Outcome::Blocked, message)
                     .await

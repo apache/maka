@@ -179,7 +179,7 @@ impl Owner {
                     .observed(Some(&session.configuration.workspace))
                     .await?;
                 let catalog = self.mcp_projects.with_client(session_id, catalog)?;
-                let allowed_tools = self.admitted_tools(session_id, &session.configuration);
+                let allowed_tools = self.admitted_tools(session_id, &session.configuration.tools);
                 let tools = self
                     .select_catalog_tools(
                         &catalog.tools,

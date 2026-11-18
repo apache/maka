@@ -1297,6 +1297,7 @@ impl Engine {
                         | RunError::InvalidInput(_)
                         | RunError::Json(_)
                         | RunError::ModelUnavailable
+                        | RunError::AuthenticationRequired
                         | RunError::Preparation(_)
                         | RunError::Store(
                             StoreError::InvalidTransition(_) | StoreError::Json(_),

@@ -114,24 +114,46 @@ impl Statement for PreparedAgentSend {
 #[derive(Debug)]
 pub(super) enum CaptureError {
     ModelUnavailable,
+    AuthenticationRequired,
+    WorkspaceUnavailable,
+    RouteChanged,
     Other(String),
 }
 impl From<String> for CaptureError {
     fn from(error: String) -> Self {
-        Self::Other(error)
+        match error.as_str() {
+            "agent_workspace_unavailable" => Self::WorkspaceUnavailable,
+            _ => Self::Other(error),
+        }
     }
 }
 impl From<&str> for CaptureError {
     fn from(error: &str) -> Self {
-        Self::Other(error.into())
+        Self::from(error.to_owned())
     }
 }
 impl From<CaptureError> for String {
     fn from(error: CaptureError) -> Self {
         match error {
             CaptureError::ModelUnavailable => "agent_model_unavailable".into(),
+            CaptureError::AuthenticationRequired => "agent_authentication_required".into(),
+            CaptureError::WorkspaceUnavailable => "agent_workspace_unavailable".into(),
+            CaptureError::RouteChanged => "notification_route_changed".into(),
             CaptureError::Other(error) => error,
         }
+    }
+}
+
+pub(super) fn finish_capture(
+    capture: Result<CapturedRun, CaptureError>,
+    cleanup: Result<(), String>,
+) -> Result<CapturedRun, CaptureError> {
+    match cleanup {
+        Ok(()) => capture,
+        Err(cleanup) => Err(CaptureError::Other(format!(
+            "{}; background preparation cleanup: {cleanup}",
+            capture.err().map(String::from).unwrap_or_default()
+        ))),
     }
 }
 
@@ -187,6 +209,7 @@ impl Owner {
                 .await
                 .map_err(|error| match error {
                     RunError::ModelUnavailable => CaptureError::ModelUnavailable,
+                    RunError::AuthenticationRequired => CaptureError::AuthenticationRequired,
                     error => CaptureError::Other(public_error(error)),
                 })?;
                 (Some(source.accepted), None)
@@ -239,7 +262,7 @@ impl Owner {
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
-        let allowed_tools = self.admitted_tools(id, &session.configuration);
+        let allowed_tools = self.admitted_tools(id, &session.configuration.tools);
         let behavior = self.bot_behavior(
             id,
             self.capture_behavior(
@@ -474,7 +497,7 @@ impl Owner {
                     skills: None,
                 }));
             }
-            Err(CaptureError::Other(error)) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         if let (Some(view), SendDelivery::Steer) = (&active, delivery)
             && interrupt.is_none()

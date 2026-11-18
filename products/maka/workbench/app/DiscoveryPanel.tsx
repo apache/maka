@@ -243,6 +243,20 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
     }
   };
+  const selectDefault = async () => {
+    const visible = visibleTasks();
+    const first = visible.find((plan) => plan.approved && plan.status === 'active') ?? visible[0];
+    if (first) return select(first.id);
+    generation++;
+    formGeneration++;
+    selected.set(null);
+    detail.set(null);
+    editing.set(false);
+    editingPlan.set(null);
+    deleting.set(false);
+    error.set('');
+    if (!tasks().length) await edit(true);
+  };
   const watch = async () => {
     if (watching()) return;
     watching.set(true);
@@ -276,11 +290,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           if (id && rows.some((row) => row.id === id)) {
             await readDetail(id);
           } else if (!editing() && !busy()) {
-            const plans = visibleTasks();
-            const first =
-              plans.find((plan) => plan.approved && plan.status === 'active') ?? plans[0];
-            if (first) await select(first.id);
-            else await edit(true);
+            await selectDefault();
           } else if (id) {
             generation++;
             detail.set(null);
@@ -325,6 +335,9 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             'scheduler_authorization_changed',
             'background_model_route_changed',
             'scheduler_user_approval_required',
+            'agent_model_unavailable',
+            'agent_authentication_required',
+            'agent_workspace_unavailable',
           ].includes(result.reason)
         ) {
           busy.set(false);
@@ -347,11 +360,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     } finally {
       if (alive) busy.set(false);
     }
-    if (deleted && alive) {
-      const next = visibleTasks()[0];
-      if (next) await select(next.id);
-      else await edit(true);
-    }
+    if (deleted && alive) await selectDefault();
   };
   const save = async () => {
     const captured = basis(),
@@ -461,10 +470,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   const worker = () => detail()?.investigation?.sessionId ?? last()?.sessionId;
   const cancel = () => {
     if (busy()) return;
-    const plans = visibleTasks();
-    const plan = plans.find((task) => task.id === selected()) ?? plans[0];
-    if (editing() && plan) void select(plan.id);
-    else props.close();
+    if (editing() && tasks().length) {
+      if (selected() && tasks().some((task) => task.id === selected())) void select(selected()!);
+      else void selectDefault();
+    } else props.close();
   };
   const toggleFollowups = async () => {
     showFollowups.set(!showFollowups());
@@ -472,14 +481,9 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       !showFollowups() &&
       tasks().some((task) => task.id === selected() && task.backgroundFollowup)
     ) {
-      const first = tasks().find((task) => !task.backgroundFollowup);
-      if (first) await select(first.id);
-      else {
-        selected.set(null);
-        detail.set(null);
-        await edit(true);
-      }
+      selected.set(null);
     }
+    if (!selected()) await selectDefault();
   };
   const action = (label: MessageKey, onPress: () => void, disabled = false) => (
     <SettingsButton
@@ -596,16 +600,14 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
               <Text style={{ ...captionTextStyle, color: C.secondary, flexShrink: 1 }}>
                 {tr('Discovery model')}: {modelLabel()}
               </Text>
-              <If when={editing()}>
-                {action('Change discovery model', () => {
-                  props.close();
-                  props.chooseModel();
-                })}
-              </If>
             </View>
           </View>
         </If>
         <If when={editing()}>
+          {action('Change discovery model', () => {
+            props.close();
+            props.chooseModel();
+          })}
           <If
             when={!editingPlan() || editingPlan()!.task.schedule.kind === 'interval'}
             else={

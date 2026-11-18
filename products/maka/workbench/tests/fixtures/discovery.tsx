@@ -35,6 +35,7 @@ mount(() => {
   let detail: any = null,
     revision = 0;
   let failDetailOnce = false;
+  let disabledModel = false;
   const opened = signal('none');
   const calls = signal('none');
   let publish = () => {};
@@ -136,6 +137,8 @@ mount(() => {
         },
       };
     } else {
+      if (input.kind === 'resume' && disabledModel)
+        return { kind: 'rejected', reason: 'agent_model_unavailable' };
       if (input.revision !== detail.revision) return { kind: 'conflict' };
       revision++;
       detail = { ...detail, revision };
@@ -178,6 +181,22 @@ mount(() => {
     publish();
     return { kind: 'committed', taskId: 'discovery' };
   };
+  keymap.bind(
+    'mod+shift+m',
+    () => {
+      disabledModel = !disabledModel;
+    },
+    { when: 'always' },
+  );
+  keymap.bind(
+    'mod+shift+b',
+    () => {
+      detail.task.backgroundFollowup = true;
+      detail.revision = ++revision;
+      publish();
+    },
+    { when: 'always' },
+  );
   // A concurrent client changes the plan while this dialog is editing it.
   keymap.bind(
     'mod+u',
@@ -232,7 +251,7 @@ mount(() => {
         host={host}
         sessionId="bot"
         control={control}
-        selection={async () => ({ model, thinkingLevel: null })}
+        selection={async () => (disabledModel ? null : { model, thinkingLevel: null })}
         openWorker={opened.set}
         chooseModel={() => opened.set('models')}
       />

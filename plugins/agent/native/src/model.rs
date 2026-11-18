@@ -430,7 +430,14 @@ impl Source {
                     &row.connection_id,
                     &row.provider.name,
                 );
-                RunError::InvalidInput("agent_authentication_unavailable".into())
+                if matches!(
+                    error,
+                    maka_agent_ports::provider::Error::AuthenticationRequired
+                ) {
+                    RunError::AuthenticationRequired
+                } else {
+                    RunError::InvalidInput("agent_authentication_unavailable".into())
+                }
             })?;
         let auth = match credentials {
             maka_agent_ports::model::Credentials::ApiKey(key) => ProviderAuth::ApiKey(key),
