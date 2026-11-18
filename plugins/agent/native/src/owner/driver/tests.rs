@@ -6164,11 +6164,19 @@ async fn queued_admission_wakes_when_goal_or_session_lock_releases() -> TestResu
             drop(other);
             drop(ordered);
             drop(goal);
-            tokio::time::timeout(Duration::from_secs(5), wake).await?;
-            // No durable write or extra wake notification occurs after releasing the lock.
-            let admitted = owner
-                .queue_admission(&session, true)
-                .map_err(|_| "released admission remained blocked")?;
+            // Background goal reconciliation can take its queued turn on goals.gate
+            // as our guard drops; follow the returned wake chain as queue.rs does.
+            let admitted = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    wake.await;
+                    match owner.queue_admission(&session, true) {
+                        Ok(admitted) => return admitted,
+                        Err(next) => wake = next,
+                    }
+                }
+            })
+            .await
+            .map_err(|_| "released admission remained blocked")?;
             drop(admitted);
         }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
