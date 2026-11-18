@@ -28,27 +28,71 @@ pub(super) struct Header {
     chunks: Arc<[Bytes]>,
     length: usize,
     usage: Option<Usage>,
+    forced_tool_choice: Option<ForcedToolChoice>,
 }
 #[derive(Clone)]
 struct Usage {
     field: Range<usize>,
     last: Range<usize>,
 }
+#[derive(Clone)]
+struct ForcedToolChoice {
+    field: Range<usize>,
+    replacement: &'static [u8],
+}
+enum TrackedMember {
+    Other,
+    Usage,
+    ToolChoice,
+}
+fn forced_replacement(fields: &Value) -> Option<&'static [u8]> {
+    match fields.get("tool_choice")? {
+        Value::String(choice) if choice == "required" => Some(b"\"tool_choice\":\"auto\""),
+        Value::Object(map) if map.get("type").and_then(Value::as_str) == Some("any") => {
+            match map.get("disable_parallel_tool_use") {
+                Some(Value::Bool(true)) => {
+                    Some(b"\"tool_choice\":{\"type\":\"auto\",\"disable_parallel_tool_use\":true}")
+                }
+                Some(Value::Bool(false)) => {
+                    Some(b"\"tool_choice\":{\"type\":\"auto\",\"disable_parallel_tool_use\":false}")
+                }
+                _ => Some(b"\"tool_choice\":{\"type\":\"auto\"}"),
+            }
+        }
+        _ => None,
+    }
+}
+fn shift_range(range: &Range<usize>, after: usize, delta: isize) -> Range<usize> {
+    if range.start >= after {
+        ((range.start as isize + delta) as usize)..((range.end as isize + delta) as usize)
+    } else {
+        range.clone()
+    }
+}
 impl Header {
     pub async fn freeze(fields: Value) -> Self {
+        let replacement = forced_replacement(&fields);
         let mut encoder = JsonChunks::new(fields);
-        let (mut current, mut selected, mut last) = (None, None, 0..0);
+        let (mut current, mut selected, mut selected_tool_choice, mut last) =
+            (None, None, None, 0..0);
         let mut chunks = Vec::new();
         let mut length = 0;
         while let Some(chunk) = encoder.next_with_member_boundaries(|boundary| match boundary {
             MemberBoundary::Start { key, offset } => {
-                current = Some((key == "stream_options", offset))
+                let kind = match key {
+                    "stream_options" => TrackedMember::Usage,
+                    "tool_choice" => TrackedMember::ToolChoice,
+                    _ => TrackedMember::Other,
+                };
+                current = Some((kind, offset));
             }
             MemberBoundary::End { offset } => {
-                let (usage, start) = current.take().expect("started header member");
+                let (kind, start) = current.take().expect("started header member");
                 last = start..offset;
-                if usage {
-                    selected = Some(last.clone());
+                match kind {
+                    TrackedMember::Usage => selected = Some(last.clone()),
+                    TrackedMember::ToolChoice => selected_tool_choice = Some(last.clone()),
+                    TrackedMember::Other => {}
                 }
             }
         }) {
@@ -60,10 +104,16 @@ impl Header {
             chunks: chunks.into(),
             length,
             usage: selected.map(|field| Usage { field, last }),
+            forced_tool_choice: replacement
+                .zip(selected_tool_choice)
+                .map(|(replacement, field)| ForcedToolChoice { field, replacement }),
         }
     }
     pub fn has_stream_options(&self) -> bool {
         self.usage.is_some()
+    }
+    pub fn has_forced_tool_choice(&self) -> bool {
+        self.forced_tool_choice.is_some()
     }
     pub fn open(&self, key: ArrayKey) -> Prefix {
         Prefix {
@@ -116,10 +166,67 @@ impl Header {
                 }
             }
         }
+        let forced_tool_choice = self.forced_tool_choice.as_ref().map(|forced| {
+            let field = if usage.field == usage.last || forced.field.end <= usage.field.start {
+                forced.field.clone()
+            } else if forced.field == usage.last {
+                usage.field.start..(usage.field.start + forced.field.len())
+            } else {
+                let delta = usage.last.len() as isize - usage.field.len() as isize;
+                shift_range(&forced.field, usage.field.end, delta)
+            };
+            ForcedToolChoice {
+                field,
+                replacement: forced.replacement,
+            }
+        });
         Self {
             chunks: chunks.into(),
             length,
             usage: None,
+            forced_tool_choice,
+        }
+    }
+    pub async fn without_forced_tool_choice(&self) -> Self {
+        let Some(forced) = &self.forced_tool_choice else {
+            return self.clone();
+        };
+        let mut chunks = Vec::new();
+        let mut length = 0;
+        for (index, range) in [0..forced.field.start, forced.field.end..self.length]
+            .into_iter()
+            .enumerate()
+        {
+            if index == 1 {
+                chunks.push(Bytes::from_static(forced.replacement));
+                length += forced.replacement.len();
+            }
+            let mut offset = 0;
+            for chunk in self.chunks.iter() {
+                let end = offset + chunk.len();
+                let start = range.start.max(offset);
+                let stop = range.end.min(end);
+                if start < stop {
+                    chunks.push(chunk.slice(start - offset..stop - offset));
+                    length += stop - start;
+                }
+                offset = end;
+                tokio::task::yield_now().await;
+                if offset >= range.end {
+                    break;
+                }
+            }
+        }
+        let delta = forced.replacement.len() as isize - forced.field.len() as isize;
+        let usage = self.usage.as_ref().map(|usage| Usage {
+            field: shift_range(&usage.field, forced.field.end, delta),
+            last: shift_range(&usage.last, forced.field.end, delta),
+        });
+        Self {
+            chunks: chunks.into(),
+            length,
+            usage,
+            forced_tool_choice: None,
         }
     }
 }

@@ -55,6 +55,11 @@ pub struct RequestComposition {
     pub dynamic_context: Vec<String>,
     pub tool_catalog_digest: String,
     pub tools: Vec<Arc<ToolDefinition>>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::request::ToolChoiceMode::is_auto"
+    )]
+    pub tool_choice: crate::model::request::ToolChoiceMode,
     pub provider_options: Option<Value>,
     pub max_output_tokens: Option<u64>,
     pub sources: Vec<SourceRevision>,
@@ -63,6 +68,11 @@ impl RequestComposition {
     pub fn freeze(self) -> Result<FrozenComposition, &'static str> {
         if !crate::archive::valid_projection_digest(&self.tool_catalog_digest) {
             return Err("invalid tool catalog digest");
+        }
+        if self.tool_choice == crate::model::request::ToolChoiceMode::Required
+            && self.tools.is_empty()
+        {
+            return Err("required tool choice requires tools");
         }
         let mut names = BTreeSet::new();
         for tool in &self.tools {
@@ -156,6 +166,7 @@ mod tests {
                 dynamic_context: vec!["frozen context".into()],
                 tool_catalog_digest: content_digest(b"[]"),
                 tools: vec![],
+                tool_choice: Default::default(),
                 provider_options: Some(serde_json::json!({"temperature": 0.25})),
                 max_output_tokens: Some(4096),
                 sources: vec![],
@@ -191,5 +202,41 @@ mod tests {
         };
         assert_eq!(event_id, "original-request");
         assert_eq!(actual, digest);
+    }
+
+    #[test]
+    fn required_tool_choice_requires_non_empty_tools_and_preserves_auto_wire_compatibility() {
+        let auto = RequestComposition {
+            system_prompt: None,
+            dynamic_context: vec![],
+            tool_catalog_digest: content_digest(b"[]"),
+            tools: vec![],
+            tool_choice: crate::model::request::ToolChoiceMode::Auto,
+            provider_options: None,
+            max_output_tokens: None,
+            sources: vec![],
+        };
+        let auto_json = serde_json::to_value(&auto).unwrap();
+        assert!(auto_json.get("toolChoice").is_none());
+
+        let mut required = auto;
+        required.tool_choice = crate::model::request::ToolChoiceMode::Required;
+        assert_eq!(
+            required.clone().freeze().unwrap_err(),
+            "required tool choice requires tools"
+        );
+
+        let sleep = Arc::new(ToolDefinition {
+            name: "sleep".into(),
+            description: "End Bot turn".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            provider: None,
+            freeform: None,
+            output_schema: None,
+        });
+        required.tools = vec![sleep];
+        let frozen = required.freeze().unwrap();
+        let encoded = serde_json::to_value(frozen.value()).unwrap();
+        assert_eq!(encoded["toolChoice"], "required");
     }
 }

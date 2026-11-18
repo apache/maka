@@ -162,8 +162,16 @@ async fn run(
     let mut url = reqwest::Url::parse(&request.provider.base_url)
         .map_err(|_| ModelError::Adapter("invalid Responses endpoint".into()))?;
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
+    let forced_choice_key =
+        transport.forced_tool_choice_key(url.as_str(), &request.provider.model, network.identity());
+    let mut retried_tool_choice = transport.omits_forced_tool_choice(forced_choice_key);
+    if retried_tool_choice {
+        body.downgrade_forced_tool_choice();
+    }
     let headers = headers(&request)?;
-    let mut decoder = Decoder::new(plaintext, &request.tools).operation(request.operation);
+    let tools = request.tools.clone();
+    let operation = request.operation;
+    let mut decoder = Decoder::new(plaintext, &tools).operation(operation);
     // DeepSeek's Responses endpoint streams over HTTP.
     let lane = lane.filter(|_| {
         !(plaintext.is_some() && crate::is_deepseek_endpoint(&request.provider.base_url))
@@ -181,7 +189,12 @@ async fn run(
     }
     drop(request);
     if let Some(lane) = lane {
-        let exchange = Exchange::new(lane, cancellation.clone(), network.clone(), transport);
+        let exchange = Exchange::new(
+            lane,
+            cancellation.clone(),
+            network.clone(),
+            transport.clone(),
+        );
         match wait(
             idle_timeout,
             &decoder,
@@ -222,42 +235,80 @@ async fn run(
             }
         }
     }
-    let response = request_http(
-        network.as_ref(),
-        http::Request {
-            method: maka_plugin_core::http::Method::Post,
-            url: url.to_string(),
-            headers: headers.into_iter().collect(),
-            body: body.http(source),
-        },
-        &cancellation,
-        idle_timeout,
-        &decoder,
-    )
-    .await?;
-    let retry_at = super::super::retry::at(&response.head);
-    let result = read_response(
-        &response,
-        &mut decoder,
-        &sender,
-        idle_timeout,
-        &cancellation,
-        retry_at,
-        quota_scope,
-    )
-    .await
-    .map_err(|error| match error {
-        ModelError::Provider(failure) => ModelError::Provider(failure.with_retry_at(retry_at)),
-        error => error,
-    });
-    // A provider may finish before it consumes the complete upload. All exits,
-    // including terminal SSE, rejection, timeout and cancellation, settle the
-    // response's upload lease before this adapter returns.
-    response.body.close().await.map_err(|error| match error {
-        http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-        other => ModelError::Adapter(other.to_string()),
-    })?;
-    result
+    let replay_frozen = source.as_ref().map(|source| source.frozen.clone());
+    let mut initial_source = source;
+    loop {
+        let request_body = match initial_source.take() {
+            Some(source) => body.clone().http(Some(source)),
+            None => match &replay_frozen {
+                Some(frozen) => {
+                    let materialized = frozen.open(cancellation.clone()).await?;
+                    body.clone().with_prompt(materialized.prompt).http(Some(
+                        maka_agent_ports::model::RequestSource {
+                            frozen: frozen.clone(),
+                            cleanup: materialized.cleanup,
+                        },
+                    ))
+                }
+                None => body.clone().http(None),
+            },
+        };
+        let response = request_http(
+            network.as_ref(),
+            http::Request {
+                method: maka_plugin_core::http::Method::Post,
+                url: url.to_string(),
+                headers: headers.clone().into_iter().collect(),
+                body: request_body,
+            },
+            &cancellation,
+            idle_timeout,
+            &decoder,
+        )
+        .await?;
+        let retry_at = super::super::retry::at(&response.head);
+        let result = read_response(
+            &response,
+            &mut decoder,
+            &sender,
+            idle_timeout,
+            &cancellation,
+            retry_at,
+            quota_scope,
+        )
+        .await
+        .map_err(|error| match error {
+            ModelError::Provider(failure) => ModelError::Provider(failure.with_retry_at(retry_at)),
+            error => error,
+        });
+        // A provider may finish before it consumes the complete upload. All exits,
+        // including terminal SSE, rejection, timeout and cancellation, settle the
+        // response's upload lease before this adapter returns.
+        response.body.close().await.map_err(|error| match error {
+            http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
+            other => ModelError::Adapter(other.to_string()),
+        })?;
+        if !retried_tool_choice
+            && body.has_forced_tool_choice()
+            && matches!(
+                &result,
+                Err(ModelError::Http {
+                    status: 400,
+                    message: Some(message),
+                }) if {
+                    let lower = message.to_ascii_lowercase();
+                    lower.contains("tool_choice") || lower.contains("tool choice")
+                }
+            )
+        {
+            transport.omit_forced_tool_choice(forced_choice_key);
+            body.downgrade_forced_tool_choice();
+            retried_tool_choice = true;
+            decoder = Decoder::new(plaintext, &tools).operation(operation);
+            continue;
+        }
+        return result;
+    }
 }
 async fn read_response(
     response: &http::Response,

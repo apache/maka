@@ -635,8 +635,11 @@ impl Engine {
                     complete_at_budget,
                 )
             };
-            if matches!(action, Action::Terminate(Terminal::Completed))
-                && !reconcile::budget_exhausted(&view)
+            if matches!(
+                action,
+                Action::Terminate(Terminal::Completed)
+                    | Action::Prepare(Preparation::RequiredToolFallback { .. })
+            ) && !reconcile::budget_exhausted(&view)
                 && !model_level.as_ref().is_some_and(|(_, _, level)| {
                     matches!(
                         level.input,

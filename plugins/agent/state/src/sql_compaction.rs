@@ -68,6 +68,7 @@ pub(super) fn validate_proactive_request(
         || summary.accounting.purpose != ModelPurpose::Summary
         || summary.compaction_recovery.is_some()
         || summary.summary_repair_of.is_some()
+        || summary.required_tool_fallback_of.is_some()
         || !summary.steering.is_empty()
         || !summary.composition.tools.is_empty()
         || !matches!(view.spec.origin, RunOrigin::Local)

@@ -25,6 +25,7 @@ pub enum ToolChoice {
     #[default]
     Auto,
     None,
+    Required,
 }
 
 pub struct Request<'a> {
@@ -347,9 +348,48 @@ impl Request<'_> {
                 json!(match self.tool_choice {
                     ToolChoice::Auto => "auto",
                     ToolChoice::None => "none",
+                    ToolChoice::Required => "required",
                 }),
             );
         }
         Ok(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn required_tool_choice_encodes_only_when_tools_are_present() {
+        let empty = Request {
+            model: "gpt-5",
+            input: &[],
+            tools: &[],
+            tool_choice: ToolChoice::Required,
+            options: &Value::Null,
+            max_output_tokens: None,
+            reasoning: ReasoningMode::Encrypted,
+        }
+        .encode()
+        .unwrap();
+        assert!(empty.get("tool_choice").is_none());
+
+        let with_tools = Request {
+            model: "gpt-5",
+            input: &[],
+            tools: &[Tool::Function {
+                name: "sleep".into(),
+                description: "End turn".into(),
+                parameters: json!({"type":"object"}),
+            }],
+            tool_choice: ToolChoice::Required,
+            options: &Value::Null,
+            max_output_tokens: None,
+            reasoning: ReasoningMode::Encrypted,
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(with_tools["tool_choice"], json!("required"));
     }
 }

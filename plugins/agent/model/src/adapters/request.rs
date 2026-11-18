@@ -118,6 +118,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
         let choice = (!tools.is_empty()).then_some(match request.tool_choice {
             ToolChoiceMode::Auto => anthropic::ToolChoice::Auto,
             ToolChoiceMode::None => anthropic::ToolChoice::None,
+            ToolChoiceMode::Required => anthropic::ToolChoice::Required,
         });
         let options = anthropic::request::options::ProviderOptions::parse(
             request.provider_options.get("anthropic"),
@@ -201,6 +202,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
         let tool_choice = (!tools.is_empty()).then_some(match request.tool_choice {
             ToolChoiceMode::Auto => chat_completions::request::ToolChoice::Auto,
             ToolChoiceMode::None => chat_completions::request::ToolChoice::None,
+            ToolChoiceMode::Required => chat_completions::request::ToolChoice::Required,
         });
         let prepared = chat_completions::request::prepare_fields(
             chat_completions::request::Request {

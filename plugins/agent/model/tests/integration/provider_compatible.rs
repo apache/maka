@@ -601,3 +601,83 @@ async fn explicit_usage_opt_out_is_respected_on_the_first_request() {
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forced_tool_choice_downgrades_once_on_400_and_is_scoped_by_model_and_endpoint() {
+    let anthropic_ok = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"k3.1-pro\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":8,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+    );
+    let sleep_tool = Arc::new(maka_agent_facts::tools::ToolDefinition {
+        name: "sleep".into(),
+        description: "End Bot turn".into(),
+        input_schema: json!({"type":"object","properties":{}}),
+        provider: None,
+        freeform: None,
+        output_schema: None,
+    });
+    let anthropic_request = |url: &str, model: &str| {
+        let mut req = request(url);
+        req.provider.kind = ProviderKind::Anthropic;
+        req.provider.model = model.into();
+        req.tools = vec![sleep_tool.clone()];
+        req.tool_choice = maka_model::ToolChoiceMode::Required;
+        req
+    };
+    let collect_req = |executor: &ModelExecutor, req: ModelRequest| {
+        let executor = executor.clone();
+        async move {
+            let mut stream = executor
+                .stream(req, CancellationToken::new())
+                .await
+                .unwrap();
+            let mut builder = StepBuilder::default();
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(event) => builder.push(event.event).unwrap(),
+                    Err(error) => {
+                        stream.cancel_and_wait().await.unwrap();
+                        return Err(error.to_string());
+                    }
+                }
+            }
+            stream.cancel_and_wait().await.unwrap();
+            Ok(builder.finish().unwrap())
+        }
+    };
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/coding/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for (expected_type, status, payload) in [
+                (
+                    "any",
+                    400,
+                    "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Thinking may not be enabled when tool_choice forces tool use.\"}}",
+                ),
+                ("auto", 200, anthropic_ok),
+                ("auto", 200, anthropic_ok),
+                ("any", 400, "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"invalid max_tokens\"}}"),
+                ("any", 200, anthropic_ok),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let wire = body(&mut socket).await;
+                assert_eq!(wire["tool_choice"]["type"], expected_type, "{wire}");
+                response(&mut socket, status, payload).await;
+            }
+        });
+        let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+        assert!(collect_req(&executor, anthropic_request(&url, "k3.1-pro")).await.is_ok());
+        assert!(collect_req(&executor.clone(), anthropic_request(&url, "k3.1-pro")).await.is_ok());
+        assert!(collect_req(&executor, anthropic_request(&url, "other-model")).await.is_err());
+        assert!(collect_req(&executor, anthropic_request(&url, "other-model")).await.is_ok());
+        server.await.unwrap();
+    })
+    .await
+    .unwrap();
+}

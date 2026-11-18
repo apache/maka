@@ -352,6 +352,7 @@ impl Request<'_> {
             tool_choice: match self.tool_choice {
                 ToolChoiceMode::Auto => wire::request::ToolChoice::Auto,
                 ToolChoiceMode::None => wire::request::ToolChoice::None,
+                ToolChoiceMode::Required => wire::request::ToolChoice::Required,
             },
             options: self.options,
             max_output_tokens: self.max_output_tokens,

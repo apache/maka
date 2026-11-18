@@ -458,6 +458,23 @@ impl NativeDriver {
         })
     }
 
+    pub(super) fn main_tool_choice(
+        &self,
+        definitions: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+        catalog: &maka_tools::ToolCatalog,
+    ) -> maka_agent_facts::model::request::ToolChoiceMode {
+        if self.access.is_bot()
+            && definitions
+                .iter()
+                .any(|tool| tool.name == super::bot::SLEEP)
+            && catalog.contains(super::bot::SEND_USER)
+        {
+            maka_agent_facts::model::request::ToolChoiceMode::Required
+        } else {
+            maka_agent_facts::model::request::ToolChoiceMode::Auto
+        }
+    }
+
     pub(super) fn install_step_tools(
         &self,
         step: StepId,

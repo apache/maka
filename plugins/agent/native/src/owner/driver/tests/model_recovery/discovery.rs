@@ -382,6 +382,10 @@ async fn memory(
 }
 async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
     finish_text(socket, "Investigation received.").await;
+    // Bot main turns require a tool call. A plain-text reply earns one bounded
+    // fallback reminder; answer it with `sleep` so the Turn settles.
+    let (mut socket, _) = next(listener).await;
+    tool(&mut socket, "sleep", json!({})).await;
     tokio::time::timeout(Duration::from_secs(45), f.quiescent(&f.bot))
         .await
         .expect("Bot Run did not settle before Host teardown");

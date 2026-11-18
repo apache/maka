@@ -68,6 +68,9 @@ pub enum Preparation {
     ToolContinuation {
         attempt: ModelAttemptId,
     },
+    RequiredToolFallback {
+        attempt: ModelAttemptId,
+    },
 }
 #[derive(Clone, Debug)]
 pub struct CompactionAdoption {

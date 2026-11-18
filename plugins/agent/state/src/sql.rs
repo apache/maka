@@ -848,32 +848,118 @@ fn validate_request_lineage(
     view: &RunView,
     incoming: &RequestSpec,
 ) -> Result<Option<StepId>, StoreError> {
-    use maka_agent_facts::context::ModelPurpose;
+    use maka_agent_facts::{context::ModelPurpose, model::request::ToolChoiceMode};
     crate::store::fallback::validate_codex_fallback(c, view, incoming)?;
+    type PreviousRow = (
+        u32,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let previous = view.current_step.map(|step| {
-        let (schema, original, purpose, recovery): (u32, String, String, Option<String>) = c.query_row(
-            "SELECT json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),json_extract(CAST(b.payload AS TEXT),'$.step'),json_extract(CAST(b.payload AS TEXT),'$.accounting.purpose'),json_extract(CAST(b.payload AS TEXT),'$.compactionRecovery') FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",
-            params![view.run.to_string(), step.to_string()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+        let (schema, original, purpose, recovery, required_fallback, tool_choice): PreviousRow = c.query_row(
+            "SELECT json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),json_extract(CAST(b.payload AS TEXT),'$.step'),json_extract(CAST(b.payload AS TEXT),'$.accounting.purpose'),json_extract(CAST(b.payload AS TEXT),'$.compactionRecovery'),json_extract(CAST(b.payload AS TEXT),'$.requiredToolFallbackOf'),json_extract(CAST(b.payload AS TEXT),'$.composition.toolChoice') FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",
+            params![view.run.to_string(), step.to_string()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
         )?;
         version(schema)?;
         if identity::<StepId>(original)? != step { return Err(invalid("current request belongs to another Step")); }
         let purpose: ModelPurpose = identity(purpose)?;
         let recovery: Option<ModelAttemptId> = recovery.map(identity).transpose()?;
-        Ok::<_,StoreError>((step, purpose, recovery))
+        let required_fallback: Option<ModelAttemptId> = required_fallback.map(identity).transpose()?;
+        let tool_choice: ToolChoiceMode = match tool_choice {
+            Some(value) => identity(value)?,
+            None => ToolChoiceMode::Auto,
+        };
+        Ok::<_,StoreError>((step, purpose, recovery, required_fallback, tool_choice))
     }).transpose()?;
-    let fallback = if previous.is_some_and(|(_, purpose, _)| purpose == ModelPurpose::Summary)
+    let fallback = if previous.is_some_and(|(_, purpose, _, _, _)| purpose == ModelPurpose::Summary)
         && incoming.accounting.purpose == ModelPurpose::Main
     {
         crate::store::fallback::validate_resume(c, view, incoming)?
     } else {
         None
     };
-    let previous_recovery = previous.and_then(|(_, _, source)| source);
+    if incoming.accounting.purpose != ModelPurpose::Main
+        && incoming.required_tool_fallback_of.is_some()
+    {
+        return Err(invalid(
+            "non-Main request cannot carry required tool fallback lineage",
+        ));
+    }
+    if incoming.accounting.purpose == ModelPurpose::Main {
+        match previous {
+            None if incoming.required_tool_fallback_of.is_some() => {
+                return Err(invalid(
+                    "initial Main request cannot carry required tool fallback lineage",
+                ));
+            }
+            Some((prev_step, ModelPurpose::Main, _, prev_fallback, prev_choice)) => {
+                match (prev_fallback, incoming.required_tool_fallback_of) {
+                    (Some(source), current) if current != Some(source) => {
+                        return Err(invalid(
+                            "required tool fallback lineage cannot be replaced or cleared",
+                        ));
+                    }
+                    (None, Some(source)) => {
+                        let original = view
+                            .current_attempt
+                            .filter(|attempt| *attempt == source)
+                            .and_then(|attempt| view.attempts.get(&attempt))
+                            .ok_or_else(|| {
+                                invalid("required tool fallback has no current original attempt")
+                            })?;
+                        let closed = original.closed.as_ref().ok_or_else(|| {
+                            invalid("required tool fallback requires a closed original attempt")
+                        })?;
+                        let protocol: maka_agent_facts::context::ModelClosureProtocol =
+                            serde_json::from_value(closed.protocol.clone())?;
+                        let has_local_tools = view
+                            .tools
+                            .values()
+                            .any(|tool| tool.key.attempt == source && !tool.call.provider_executed);
+                        if original.step != prev_step
+                            || prev_choice != ToolChoiceMode::Required
+                            || closed.outcome != maka_agent_facts::accounting::Outcome::Success
+                            || closed.diagnostic.is_some()
+                            || protocol.finish_reason
+                                != maka_agent_facts::model::ModelFinishReason::Stop
+                            || has_local_tools
+                        {
+                            return Err(invalid(
+                                "required tool fallback requires a plain-text Stop closure on a Required Main step",
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some((_, ModelPurpose::Summary, _, _, _)) => {
+                let prior_main_fallback: Option<Option<String>> = c
+                    .query_row(
+                        "SELECT json_extract(CAST(b.payload AS TEXT),'$.requiredToolFallbackOf') FROM agent_session_history h INDEXED BY agent_session_history_prepared JOIN agent_request_specs r ON r.run=h.run AND r.step=h.step JOIN contents b ON b.id=r.content_id WHERE h.run=? AND h.kind='step_prepared' AND json_extract(CAST(b.payload AS TEXT),'$.accounting.purpose')='main' ORDER BY h.sequence DESC LIMIT 1",
+                        params![view.run.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let expected: Option<ModelAttemptId> =
+                    prior_main_fallback.flatten().map(identity).transpose()?;
+                if incoming.required_tool_fallback_of != expected {
+                    return Err(invalid(
+                        "Main continuation after Summary changed required tool fallback lineage",
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    let previous_recovery = previous.and_then(|(_, _, source, _, _)| source);
     match (previous_recovery, incoming.compaction_recovery) {
         (Some(_), None)
             if incoming.accounting.purpose == ModelPurpose::Summary
                 && incoming.summary_repair_of.is_none()
-                && previous.is_some_and(|(_, purpose, _)| purpose == ModelPurpose::Main)
+                && previous.is_some_and(|(_, purpose, _, _, _)| purpose == ModelPurpose::Main)
                 && crate::store::fallback::rearm_in_snapshot(
                     c,
                     view,
@@ -883,7 +969,7 @@ fn validate_request_lineage(
             if source != previous_source
                 && incoming.accounting.purpose == ModelPurpose::Summary
                 && incoming.summary_repair_of.is_none()
-                && previous.is_some_and(|(_, purpose, _)| purpose == ModelPurpose::Main)
+                && previous.is_some_and(|(_, purpose, _, _, _)| purpose == ModelPurpose::Main)
                 && view.current_attempt == Some(source)
                 && crate::store::fallback::rearm_in_snapshot(
                     c,
@@ -901,11 +987,13 @@ fn validate_request_lineage(
                 .filter(|attempt| *attempt == source)
                 .and_then(|attempt| view.attempts.get(&attempt))
                 .ok_or_else(|| invalid("compaction recovery has no current original attempt"))?;
-            let resumed_summary = previous == Some((original.step, ModelPurpose::Summary, None))
-                && incoming.accounting.purpose == ModelPurpose::Main;
+            let resumed_summary = previous.is_some_and(|(step, purpose, recovery, _, _)| {
+                step == original.step && purpose == ModelPurpose::Summary && recovery.is_none()
+            }) && incoming.accounting.purpose == ModelPurpose::Main;
             if !resumed_summary
-                && (previous != Some((original.step, ModelPurpose::Main, None))
-                    || incoming.accounting.purpose != ModelPurpose::Summary
+                && (!previous.is_some_and(|(step, purpose, recovery, _, _)| {
+                    step == original.step && purpose == ModelPurpose::Main && recovery.is_none()
+                }) || incoming.accounting.purpose != ModelPurpose::Summary
                     || original.semantic
                     || original.has_tools
                     || !matches!(

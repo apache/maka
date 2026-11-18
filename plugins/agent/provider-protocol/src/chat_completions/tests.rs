@@ -162,3 +162,31 @@ fn complete_chat_annotations_anchor_visible_content_after_reasoning() {
     ] if url=="https://example.org/" && title=="Example")
     );
 }
+
+#[test]
+fn required_tool_choice_encodes_wire_literal_when_tools_present() {
+    use crate::chat_completions::request::{
+        Config, Format, Request, Sampling, Tool, ToolChoice, prepare_fields,
+    };
+    let prepared = prepare_fields(
+        Request {
+            model: "fixture".into(),
+            messages: &[],
+            tools: vec![Tool::Function {
+                name: "sleep".into(),
+                description: Some("End turn".into()),
+                schema: json!({"type":"object"}),
+                strict: None,
+            }],
+            tool_choice: Some(ToolChoice::Required),
+            sampling: Sampling::default(),
+            format: Format::default(),
+            reasoning: None,
+            extensions: None,
+            streaming: true,
+        },
+        &Config::default(),
+    )
+    .unwrap();
+    assert_eq!(prepared.body["tool_choice"], json!("required"));
+}

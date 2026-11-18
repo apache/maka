@@ -300,8 +300,8 @@ impl DriverModel {
             let directory=original.recipes().ok_or_else(||unsupported("pending-main-directory"))?;
             let mut provenance:Value=reader.decode(view.run,&request.provenance).await?;
             let context = current_context(&mut provenance, &model, frozen.operation)?;
-            let settings=PromptSettings{operation:frozen.operation,codex:context.as_ref().and_then(|context|context.codex.as_ref()),language:frozen.language,provider:&model.provider,options:request.composition.provider_options.as_ref().ok_or_else(||unsupported("frozen-main-options"))?,context_window:context.as_ref().and_then(|context|context.model_context_window),tool_choice:frozen.tool_choice};
             let definitions:Vec<_>=bound.definitions.into_iter().map(Arc::new).collect();
+            let settings=PromptSettings{operation:frozen.operation,codex:context.as_ref().and_then(|context|context.codex.as_ref()),language:frozen.language,provider:&model.provider,options:request.composition.provider_options.as_ref().ok_or_else(||unsupported("frozen-main-options"))?,context_window:context.as_ref().and_then(|context|context.model_context_window),tool_choice:driver.main_tool_choice(&definitions,&bound.catalog)};
             let mut builder=preparation::PromptBuilder::new(self.preparation_io()?,self.resources.clone(),&self.cancellation).await?;
             let built=async{
                 if frozen.instructions.is_none(){
@@ -324,6 +324,7 @@ impl DriverModel {
                 let evidence=self.cleanup.clone();
                 self.workers.spawn(async move{if let Err(error)=cleanup.await{evidence.observe(&error);}});
                 frozen.prompt=prompt;frozen.prompt_chunks=layout_chunks.iter().map(|chunk| chunk.reference().clone()).collect();frozen.layout=layout;frozen.covered_prefix=None;
+                frozen.tool_choice=prepared.request.tool_choice;
                 frozen.instructions=prepared.request.prompt.instructions().map(str::to_owned);
                 frozen.normalization=prepared.request.prompt.normalization().cloned();frozen.wire=FrozenWire::capture(&prepared.request.prompt)?;
                 let body=ContentBlob::json(&frozen)?;
@@ -341,7 +342,7 @@ impl DriverModel {
                         request.compaction_recovery.or(summary_request.compaction_recovery).unwrap_or(summary),
                     );
                 }
-                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.tool_catalog_digest=maka_agent_engine::digest(&definitions)?;request.composition.tools=definitions;request.composition.max_output_tokens=prepared.request.max_output_tokens;
+                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.tool_catalog_digest=maka_agent_engine::digest(&definitions)?;request.composition.tools=definitions;request.composition.tool_choice=prepared.request.tool_choice;request.composition.max_output_tokens=prepared.request.max_output_tokens;
                 let mut contents=vec![body,recovery,projection,provenance];
                 contents.extend(layout_chunks);
                 Ok(contents)
