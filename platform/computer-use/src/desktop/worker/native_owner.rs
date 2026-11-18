@@ -23,8 +23,8 @@
 mod presentation;
 
 use super::{
-    Connection, EXIT_TIMEOUT, Failure, Hello, PROTOCOL, ParentFrame, Process, Request, WorkerFrame,
-    read_sync, write,
+    Connection, EXIT_TIMEOUT, Failure, Hello, NativePresentStep, PROTOCOL, ParentFrame, Process,
+    Request, WorkerFrame, read_sync, write,
 };
 use crate::{InvocationContext, desktop::NativeEpochId};
 use cua_driver_sdk::{
@@ -182,19 +182,6 @@ pub(crate) struct NativeReply {
     pub source: NativePresentationSource,
     pub result: NativeResult,
     pub audio: Option<NativeAudioCompletion>,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum NativePresentStep {
-    ReadFrame,
-    SetFrame {
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    },
-    Raise,
 }
 
 #[derive(Serialize, Deserialize)]

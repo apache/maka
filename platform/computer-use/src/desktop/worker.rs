@@ -74,6 +74,24 @@ struct Hello {
     audio_enabled: bool,
 }
 
+#[cfg(any(test, all(target_os = "windows", feature = "native-desktop")))]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum NativePresentStep {
+    ReadFrame,
+    SetFrame {
+        #[serde(deserialize_with = "crate::protocol::deserialize_numbers")]
+        x: f64,
+        #[serde(deserialize_with = "crate::protocol::deserialize_numbers")]
+        y: f64,
+        #[serde(deserialize_with = "crate::protocol::deserialize_numbers")]
+        width: f64,
+        #[serde(deserialize_with = "crate::protocol::deserialize_numbers")]
+        height: f64,
+    },
+    Raise,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
@@ -95,6 +113,7 @@ pub(crate) enum Request {
         epoch: String,
         session: String,
         target: crate::preview::PreviewTarget,
+        #[serde(deserialize_with = "crate::protocol::deserialize_numbers")]
         area: crate::preview::PresentationArea,
     },
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
@@ -102,7 +121,7 @@ pub(crate) enum Request {
         key: native_owner::NativeKey,
         generation: String,
         binding: crate::ComputerAppBinding,
-        step: native_owner::NativePresentStep,
+        step: NativePresentStep,
     },
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
     NativeInvoke {
@@ -757,4 +776,71 @@ fn read_sync<T: DeserializeOwned>(input: &mut impl io::Read) -> io::Result<T> {
     let mut bytes = vec![0; length(u32::from_be_bytes(header))?];
     input.read_exact(&mut bytes)?;
     serde_json::from_slice(&bytes).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_placement_round_trips_fractional_coordinates() {
+        let step = NativePresentStep::SetFrame {
+            x: -23.5,
+            y: 18.25,
+            width: 640.5,
+            height: 480.0,
+        };
+        let encoded = encode(&step).unwrap();
+        let decoded: NativePresentStep = serde_json::from_slice(&encoded[4..]).unwrap();
+        let NativePresentStep::SetFrame {
+            x,
+            y,
+            width,
+            height,
+        } = decoded
+        else {
+            panic!("expected the window placement step");
+        };
+        assert_eq!((x, y, width, height), (-23.5, 18.25, 640.5, 480.0));
+    }
+
+    #[test]
+    fn bridge_presentation_round_trips_fractional_area() {
+        use crate::preview::{PresentationArea, PreviewKind, PreviewTarget};
+
+        let request = ParentFrame::Request {
+            id: 1,
+            request: Box::new(Request::PreviewPresent {
+                owner: "owner".into(),
+                epoch: "epoch".into(),
+                session: "session".into(),
+                target: PreviewTarget {
+                    id: "target".into(),
+                    epoch: "epoch".into(),
+                    binding_id: "binding".into(),
+                    revision: 2,
+                    kind: PreviewKind::App,
+                    label: "Window".into(),
+                },
+                area: PresentationArea {
+                    x: -23.5,
+                    y: 18.25,
+                    width: 640.5,
+                    height: 480.0,
+                },
+            }),
+        };
+        let encoded = encode(&request).unwrap();
+        let decoded: ParentFrame = serde_json::from_slice(&encoded[4..]).unwrap();
+        let ParentFrame::Request { id: 1, request } = decoded else {
+            panic!("expected the parent request frame");
+        };
+        let Request::PreviewPresent { area, .. } = *request else {
+            panic!("expected the bridged presentation request");
+        };
+        assert_eq!(
+            (area.x, area.y, area.width, area.height),
+            (-23.5, 18.25, 640.5, 480.0),
+        );
+    }
 }
