@@ -58,7 +58,7 @@ import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGau
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { DraftQuotes } from './DraftQuotes';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
-import { createComposerPaste } from './composerPaste';
+import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
 import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
@@ -615,6 +615,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   })
                 : null;
               if (local && paste) {
+                paste.bindClipboard();
                 const drop = (event: { uris: string[] }) => paste.drop(local, event);
                 pendingDrop = drop;
                 cleanup(() => {
@@ -696,12 +697,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           value={path()}
                           onChange={({ value }) => path.set(value)}
                           onSubmit={() => {
-                            if (path().trim()) local?.selectFiles([path().trim()]);
+                            if (path().trim())
+                              local?.intake({ kind: 'files', paths: [path().trim()] });
                           }}
                         />
                         <Button
                           onPress={() => {
-                            if (path().trim()) local?.selectFiles([path().trim()]);
+                            if (path().trim())
+                              local?.intake({ kind: 'files', paths: [path().trim()] });
                           }}
                           style={controlStyle}
                         >

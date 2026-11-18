@@ -253,9 +253,21 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     let room = room["id"].as_str().unwrap();
     focus_room(&desktop).await;
     desktop.type_text("The patch is ready.").await;
+    let bytes = STANDARD.decode(PNG).unwrap();
+    desktop.paste_image(&bytes).await;
+    desktop.control("Remove attachment image.png").await;
     desktop.press("Send message").await;
     let first = room_messages(&desktop, room, 1).await.remove(0);
     assert_eq!(first["content"]["text"], "The patch is ready.");
+    assert_eq!(
+        first["content"]["attachments"],
+        json!([{
+            "name": "image.png",
+            "mimeType": "image/png",
+            "bytes": bytes.len(),
+            "kind": "image",
+        }])
+    );
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
     desktop.artifact("room-default-profile");
     desktop.press("Settings").await;

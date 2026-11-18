@@ -27,7 +27,7 @@ build = "build.rs"
 [dependencies]
 base64 = "0.23.1"
 clipboard-rs = { version = "0.3.5", features = ["wayland"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 open = "5.4.5"
 percent-encoding = "2.3.2"
 url = "2.5.8"

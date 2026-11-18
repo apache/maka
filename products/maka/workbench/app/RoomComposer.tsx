@@ -38,6 +38,7 @@ import {
 } from './host';
 import { createAttachmentDraft } from './attachmentDraft';
 import { projectComposerAttachments } from './composerSession';
+import { createComposerPaste } from './composerPaste';
 import { DraftAttachments } from './Attachments';
 import type { ImagePreview } from './ImageThumbnail';
 import { SkillInput } from './SkillInput';
@@ -98,6 +99,20 @@ export function RoomComposer(props: {
     focus: () => editor()?.focus(),
   });
   const projection = projectComposerAttachments(attachments, host);
+  const pasteOwner = {
+    sessionId: props.sessionId,
+    draft: text,
+    editable: () => ready() && !busy() && pending() === null,
+    attachments: projection,
+  };
+  const paste = createComposerPaste({
+    owner: () => pasteOwner,
+    active: () => true,
+    editor,
+    selection,
+    composing: () => editor()?.composing() ?? false,
+    dismiss: () => choosing.set(false),
+  });
   const snapshot = () => ({
     text: text(),
     mentions: [...mentions()],
@@ -481,18 +496,10 @@ export function RoomComposer(props: {
             else void send();
           }}
           onEscape={() => choosing.set(false)}
-          onPaste={(event) =>
-            projection.dropFiles(event.uris, (value) => {
-              text.set(text() + value);
-              changed();
-            })
-          }
-          onFileDrop={(event) =>
-            projection.dropFiles(event.uris, (value) => {
-              text.set(text() + value);
-              changed();
-            })
-          }
+          onPaste={(event) => paste.paste(pasteOwner, event)}
+          onFileDrop={(event) => paste.drop(pasteOwner, event)}
+          onFocus={() => paste.focus(pasteOwner)}
+          onBlur={() => paste.blur(pasteOwner)}
         />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Button

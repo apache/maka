@@ -355,6 +355,15 @@ impl Desktop {
         assert!(self.platform.paste(nsh_core::PasteEvent::new(text)));
     }
 
+    async fn paste_image(&self, bytes: &[u8]) {
+        self.target_after(None).await;
+        self.platform
+            .set_clipboard_text("UNRELATED_SYSTEM_CLIPBOARD");
+        let mut event = nsh_core::PasteEvent::default();
+        event.files = vec![nsh_core::PastedFile::image(bytes.to_vec())];
+        assert!(self.platform.paste(event));
+    }
+
     async fn type_text(&self, text: &str) {
         self.target_after(None).await;
         self.key("a", true);
@@ -2748,9 +2757,9 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             .await;
     }
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
-    let (path, _) = image_file(&fixture);
-    desktop.attach(&path).await;
-    let name = path.file_name().unwrap().to_str().unwrap();
+    let bytes = STANDARD.decode(PNG).unwrap();
+    let name = "image.png";
+    desktop.paste_image(&bytes).await;
     let remove = desktop.control(&format!("Remove attachment {name}")).await;
     // Below the remove button, inside the thumbnail it sits 36 points into.
     let sample = Bounds::new(
