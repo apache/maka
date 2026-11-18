@@ -19,6 +19,7 @@
 
 import { createTrajectoryRequests } from './trajectoryRequests';
 import {
+  mergeRestoredIntoHeldDraft,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
@@ -3269,15 +3270,20 @@ export function Conversation(props: ConversationProps) {
       restoringSends().has(id)
     )
       return;
-    const applyAtomicRestore = async (targetId: string) => {
+    const applyAtomicRestore = async (
+      targetId: string,
+      sourceDraft: { text: string; attachments: DraftAttachment[] },
+    ) => {
       if (savingFailed()) {
-        const stored = await loadDraft(client);
-        if (!alive) return false;
-        draftRevision = stored.revision;
-        savingFailed.set(false);
+        sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
+        return false;
       }
       await flushDraft();
-      if (!alive || savingFailed()) return false;
+      if (!alive || savingFailed()) {
+        if (alive)
+          sendError(targetId, new UiError('The draft could not be saved; it has not been sent.'));
+        return false;
+      }
       holding = true;
       try {
         const restored = await restoreSend(client, targetId, draftRevision);
@@ -3287,25 +3293,10 @@ export function Conversation(props: ConversationProps) {
           attachments.restore(restored.attachments);
           draft.set(restored.text);
         } else {
-          const typed = heldDraft;
-          const seen = new Set(restored.attachments.map((file) => file.id));
-          const mergedFiles = [
-            ...restored.attachments,
-            ...typed.attachments.filter((file) => !seen.has(file.id)),
-          ];
-          const nextText =
-            restored.text === ''
-              ? typed.text
-              : typed.text.trim() === ''
-                ? restored.text
-                : `${typed.text}\n\n${restored.text}`;
-          attachments.restore(mergedFiles);
-          draft.set(nextText);
-          heldDraft = {
-            text: nextText,
-            attachments: mergedFiles,
-            settledUploads: typed.settledUploads,
-          };
+          const merged = mergeRestoredIntoHeldDraft(heldDraft, sourceDraft);
+          attachments.restore(merged.attachments);
+          draft.set(merged.text);
+          heldDraft = merged;
         }
         return true;
       } finally {
@@ -3319,17 +3310,20 @@ export function Conversation(props: ConversationProps) {
       const frozen = freezing.frozen;
       restoringSends.set(new Set(restoringSends()).add(id));
       try {
-        let reservedId: string | undefined;
+        let reservedOriginal: SendOperation | undefined;
         if (frozen.revision !== undefined) {
           const originals = await refreshSends();
           if (!alive) return;
-          reservedId = originals.find((item) => item.draft?.revision === frozen.revision)?.id;
+          reservedOriginal = originals.find((item) => item.draft?.revision === frozen.revision);
         }
-        if (reservedId !== undefined) {
-          savingFailed.set(false);
+        if (reservedOriginal !== undefined) {
+          if (savingFailed()) {
+            sendError(id, new UiError('The draft could not be saved; it has not been sent.'));
+            return;
+          }
           releaseHeld();
           freezeState.set({ kind: 'idle' });
-          if (await applyAtomicRestore(reservedId)) {
+          if (await applyAtomicRestore(reservedOriginal.id, reservedOriginal.correlation.draft)) {
             await refreshSends();
             if (alive) props.focusComposer();
           }
@@ -3338,7 +3332,9 @@ export function Conversation(props: ConversationProps) {
         if (savingFailed()) {
           const stored = await loadDraft(client);
           if (!alive) return;
-          draftRevision = stored.revision;
+          if (stored.revision !== draftRevision) {
+            throw new UiError('The draft could not be saved; it has not been sent.');
+          }
           savingFailed.set(false);
         }
         const existingText = draft();
@@ -3386,7 +3382,7 @@ export function Conversation(props: ConversationProps) {
     if (!original || !retryable(original)) return;
     restoringSends.set(new Set(restoringSends()).add(id));
     try {
-      if (await applyAtomicRestore(id)) {
+      if (await applyAtomicRestore(id, original.correlation.draft)) {
         await refreshSends();
         if (alive) props.focusComposer();
       }
