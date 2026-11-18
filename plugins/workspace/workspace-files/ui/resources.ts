@@ -183,7 +183,6 @@ export function createResources(
       for (const tab of tabs()) {
         if (tab.kind === 'file' && drafts.includes(tab)) {
           tab.model.suspend();
-          tab.model.confirmClose(null);
         } else dispose(tab);
       }
       if (session() && drafts.length) parked.set(session()!, drafts);
@@ -491,14 +490,17 @@ export function createResources(
     return null;
   };
 
-  const closeTab = (target: { sessionId: string; instance: number }) => {
+  const closeTab = async (target: { sessionId: string; instance: number }) => {
     if (!admits(target.sessionId)) return;
     const tab = tabs().find((tab) => tab.instance === target.instance);
     if (!tab) return;
     if (tab.kind === 'file' && (tab.model.dirty() || tab.model.saving())) {
-      active.set(tab.instance);
-      tab.model.confirmClose(() => closeTab(target));
-      return;
+      const saved = await tab.model.save();
+      if (!tabs().includes(tab)) return;
+      if (!saved || tab.model.dirty()) {
+        active.set(tab.instance);
+        return;
+      }
     }
     if (imageViewer()?.tab === tab) imageViewer.set(null);
     dispose(tab);

@@ -172,7 +172,10 @@ pub(crate) fn MarkdownFileEditor(
         .flex_1()
         .tab_navigation(true)
         .on_focus(move || set_focus(true))
-        .on_blur(move || blur(false))
+        .on_blur(move || {
+            blur(false);
+            cx.emit(MarkdownFileEditorEvent::Save);
+        })
         .accessibility_label(move || Some(props.accessibility_label.get().into()))
         .styles(move || props.styles.get())
         .on_change(move |_: &_| {

@@ -51,6 +51,7 @@ import {
   Popover,
   TextView,
 } from 'nsh/base';
+import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
 import { MarkdownFileEditor } from 'maka/host';
 import { settingsValue } from './settingsOperations';
 import type { AgentFileChange } from '../../../../packages/plugin-sdk/src/index.js';
@@ -116,10 +117,8 @@ export type CurrentFileModel = {
   saveError(): string;
   revision(): number;
   edit(text: string): void;
-  save(): Promise<void>;
+  save(): Promise<boolean>;
   discard(): void;
-  closing(): boolean;
-  confirmClose(close: (() => void) | null): void;
   position: { x: number; y: number };
   stale(): boolean;
   activate(): void;
@@ -172,7 +171,7 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
   const saving = signal(false);
   const revision = signal(0);
   const saveError = createText();
-  const closeRequest = signal<(() => void) | null>(null);
+  let pendingSave: Promise<boolean> | undefined;
   const dirty = () => {
     const b = buffer();
     return b !== null && b.original !== b.text;
@@ -322,8 +321,31 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
       }
     })().catch((reason) => failWatch(watch, reason));
   };
+  const write = async (b: FileBuffer) => {
+    try {
+      const { reply } = await host.control('saveFile', {
+        sessionId: target.sessionId,
+        path: target.path,
+        expectedVersion: b.version,
+        text: b.text,
+      });
+      const result = settingsValue(reply) as Output<'agent', 'saveFile'>;
+      if (result.kind === 'conflict') {
+        saveError.set(message('File changed on disk.'));
+        return false;
+      }
+      buffer.set({ ...b, version: result.version, original: b.text, text: buffer()!.text });
+      model.refresh();
+      return true;
+    } catch (reason) {
+      saveError.set(errorText(reason, 'Could not save the file.'));
+      return false;
+    }
+  };
   const suspend = () => {
+    if (!active) return;
     active = false;
+    if (alive) void model.save();
     stop();
     const previous = captured(state());
     if (state().kind === 'loading') state.set(previous ?? { kind: 'idle' });
@@ -341,8 +363,6 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
     saving,
     saveError,
     revision,
-    closing: () => closeRequest() !== null,
-    confirmClose: (close) => closeRequest.set(close),
     edit(text) {
       let b = buffer();
       if (!b) {
@@ -355,39 +375,23 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
       buffer.set({ ...b, text });
     },
     async save() {
+      if (pendingSave) return (await pendingSave) && model.save();
       const b = buffer();
-      if (!b || !dirty() || saving()) return;
+      if (!b || !dirty()) return true;
       saving.set(true);
       saveError.set('');
-      try {
-        const { reply } = await host.control('saveFile', {
-          sessionId: target.sessionId,
-          path: target.path,
-          expectedVersion: b.version,
-          text: b.text,
-        });
-        const result = settingsValue(reply) as Output<'agent', 'saveFile'>;
-        if (result.kind === 'conflict') {
-          saveError.set(message('File changed on disk.'));
-          return;
-        }
-        buffer.set({ ...b, version: result.version, original: b.text, text: buffer()!.text });
+      pendingSave = write(b).finally(() => {
+        pendingSave = undefined;
         saving.set(false);
-        if (!dirty() && closeRequest()) closeRequest()!();
-        else model.refresh();
-      } catch (reason) {
-        saveError.set(errorText(reason, 'Could not save the file.'));
-      } finally {
-        saving.set(false);
-      }
+      });
+      return pendingSave;
     },
     discard() {
       if (saving()) return;
       buffer.set(null);
       saveError.set('');
       revision.set(revision() + 1);
-      if (closeRequest()) closeRequest()!();
-      else model.refresh();
+      model.refresh();
     },
     stale,
     position: { x: 0, y: 0 },
@@ -723,6 +727,14 @@ function SourceEditorView(props: {
     clearTimeout(hoverTimer);
   });
 
+  if (desktopAvailable && platform.idiom !== 'terminal') {
+    cleanup(
+      currentWindow().on('focusChange', ({ focused }) => {
+        if (!focused) void model.save();
+      }),
+    );
+  }
+
   const originalText = computed(() => props.view().rows.originalText());
   const fullText = () => model.buffer()?.text ?? originalText();
 
@@ -868,13 +880,6 @@ function SourceEditorView(props: {
       <View
         style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 2 }}
       >
-        <If when={model.dirty() || model.saving()}>
-          <FileAction
-            label={tr('Save')}
-            disabled={model.saving()}
-            onPress={() => void model.save()}
-          />
-        </If>
         <If when={markdown}>
           <FileAction
             icon={formatted() ? 'code' : 'markdown'}
@@ -943,19 +948,14 @@ function SourceEditorView(props: {
           {renderText(props.copied()!.message)}
         </Text>
       </If>
-      <If when={!!model.saveError() || model.closing()}>
+      <If when={!!model.saveError()}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Text style={{ ...captionTextStyle, color: C.warning }}>
-            {model.saveError() || tr('Save changes before closing?')}
-          </Text>
+          <Text style={{ ...captionTextStyle, color: C.warning }}>{model.saveError()}</Text>
           <FileAction
             label={tr('Discard edits')}
             disabled={model.saving()}
             onPress={model.discard}
           />
-          <If when={model.closing()}>
-            <FileAction label={tr('Keep editing')} onPress={() => model.confirmClose(null)} />
-          </If>
         </View>
       </If>
       <If when={statusNotice().length > 0}>
@@ -1191,6 +1191,7 @@ function SourceEditorView(props: {
                 }}
                 value={fullText().replace(/\r\n?/g, '\n')}
                 onChange={({ value }) => model.edit(sourceLineEndings(fullText(), value))}
+                onBlur={() => void model.save()}
                 language={model.target.title}
                 lineNumbers
                 folding

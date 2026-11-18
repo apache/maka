@@ -391,13 +391,7 @@ export const workspaceMessages = {
   'Show formatted Markdown': ['Show formatted Markdown', '排版视图', '排版檢視'],
   'File actions': ['File actions', '文件操作', '檔案操作'],
   'Copy file contents': ['Copy file contents', '复制文件内容', '複製檔案內容'],
-  'Save changes before closing?': [
-    'Save changes before closing?',
-    '关闭前保存修改？',
-    '關閉前儲存修改？',
-  ],
   'Discard edits': ['Discard edits', '放弃修改', '捨棄修改'],
-  'Keep editing': ['Keep editing', '继续编辑', '繼續編輯'],
   'Markdown document': ['Markdown document', 'Markdown 文档', 'Markdown 文件'],
   'Refresh current file': ['Refresh current file', '刷新当前文件', '重新整理目前檔案'],
   'Release input': ['Release input', '释放输入', '釋放輸入'],
