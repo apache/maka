@@ -156,3 +156,183 @@ async fn drafts_saved_before_rooms_still_load() {
     assert_eq!((draft.revision, draft.text.as_str()), (3, "kept"));
     assert!(draft.mentions.is_empty() && draft.reply_to.is_none());
 }
+
+#[tokio::test]
+async fn restore_send_merges_verified_attachments_and_consumes_pending_send_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("client.sqlite");
+    let journal = Journal::open(&path).await.unwrap();
+    let host = DeploymentRef {
+        state_domain: "a".repeat(64),
+        deployment: Uuid::new_v4(),
+        revision: 1,
+    };
+    let key = DraftKey::new(
+        &host,
+        &InstanceId(vec![Uuid::new_v4()]),
+        "agent",
+        "review-session",
+        "composer",
+    )
+    .unwrap();
+
+    // 1. Reserve and settle a real attachment upload for this draft owner.
+    let upload_op_id = Uuid::new_v4();
+    let upload_op = Operation {
+        id: upload_op_id,
+        host: host.clone(),
+        endpoint: "agent".into(),
+        method: "uploadAttachment".into(),
+        session_id: Some("review-session".into()),
+        correlation: json!({}),
+        draft: None,
+        upload: Some(UploadReference {
+            key: key.clone(),
+            name: "sample.txt".into(),
+            bytes: 11,
+            digest: "b".repeat(64),
+        }),
+        abandoned: false,
+        reference: None,
+        receipt: None,
+    };
+    journal.reserve(&upload_op).await.unwrap();
+    journal
+        .observe(
+            &upload_op,
+            &Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: OperationResult::Success {
+                        value: json!({
+                            "kind": "uploaded",
+                            "attachment": {
+                                "id": "att-sample",
+                                "sessionId": "review-session",
+                                "name": "sample.txt",
+                                "mimeType": "text/plain",
+                                "bytes": 11
+                            }
+                        }),
+                    },
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+        )
+        .await
+        .unwrap();
+
+    let attachment = DraftAttachment {
+        id: "att-sample".into(),
+        name: "sample.txt".into(),
+        mime_type: "text/plain".into(),
+        bytes: 11,
+    };
+    let initial = journal
+        .save_draft(
+            &key,
+            None,
+            DraftEdit {
+                text: "review this".into(),
+                attachments: vec![attachment.clone()],
+                settled_uploads: vec![upload_op_id],
+                ..DraftEdit::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // 2. Reserve send (consumes draft), then verify unconfirmed send cannot be restored yet.
+    let send_id = Uuid::new_v4();
+    let send_op = Operation {
+        id: send_id,
+        host: host.clone(),
+        endpoint: "agent".into(),
+        method: "send".into(),
+        session_id: Some("review-session".into()),
+        draft: Some(DraftReference {
+            key: key.clone(),
+            revision: initial.revision,
+        }),
+        correlation: serde_json::to_value(SendSnapshot {
+            draft: initial.clone(),
+            selection: json!({"delivery":"queue"}),
+        })
+        .unwrap(),
+        upload: None,
+        abandoned: false,
+        reference: None,
+        receipt: None,
+    };
+    journal.reserve_send(&send_op).await.unwrap();
+    assert!(
+        journal
+            .restore_send(&host, &key, send_id, Some(initial.revision))
+            .await
+            .is_err(),
+        "unconfirmed send must not be restored"
+    );
+
+    // 3. Record turn_stopped rejection and type a newer draft in the composer.
+    journal
+        .observe(
+            &send_op,
+            &Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: OperationResult::Success {
+                        value: json!({
+                            "kind": "rejected",
+                            "sessionId": "review-session",
+                            "reason": "turn_stopped"
+                        }),
+                    },
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+        )
+        .await
+        .unwrap();
+    let typed = journal
+        .save_draft(&key, Some(initial.revision), "next draft".into())
+        .await
+        .unwrap();
+
+    // 4. Restore send atomically: merges text + verified attachment and removes pending send.
+    let restored = journal
+        .restore_send(&host, &key, send_id, Some(typed.revision))
+        .await
+        .unwrap();
+    assert_eq!(restored.text, "next draft\n\nreview this");
+    assert_eq!(restored.attachments, vec![attachment.clone()]);
+    assert!(journal.pending(&host, &key).await.unwrap().is_empty());
+
+    // 5. Subsequent edits keeping the restored attachment remain valid, and repeat restore is rejected.
+    let edited = journal
+        .save_draft(
+            &key,
+            Some(restored.revision),
+            DraftEdit {
+                text: "next draft\n\nreview this carefully".into(),
+                attachments: vec![attachment.clone()],
+                ..DraftEdit::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited.attachments, vec![attachment]);
+
+    journal.pool.close().await;
+    drop(journal);
+    let reopened = Journal::open(&path).await.unwrap();
+    assert!(
+        reopened
+            .restore_send(&host, &key, send_id, Some(edited.revision))
+            .await
+            .is_err(),
+        "consumed pending send must never restore a second time"
+    );
+    assert_eq!(
+        reopened.load_draft(&key).await.unwrap().unwrap().text,
+        "next draft\n\nreview this carefully"
+    );
+    reopened.pool.close().await;
+}

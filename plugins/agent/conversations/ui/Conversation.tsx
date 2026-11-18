@@ -78,6 +78,7 @@ import {
   sendDelivery,
   type SendDelivery,
   retrySend,
+  restoreSend,
   dismissSend,
   abandonSend,
   type SendOperation,
@@ -535,6 +536,7 @@ export function Conversation(props: ConversationProps) {
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
   const sendErrors = signal<Map<string, UiText>>(new Map());
   const checkingSends = signal<Set<string>>(new Set());
+  const restoringSends = signal<Set<string>>(new Set());
   const sendDeliveries = signal<Map<string, SendDelivery>>(new Map());
   let sendSequence = 0;
   const receiptsKnown = signal(false);
@@ -3224,7 +3226,8 @@ export function Conversation(props: ConversationProps) {
       !original ||
       !retryable(original) ||
       activeSends().has(id) ||
-      checkingSends().has(id)
+      checkingSends().has(id) ||
+      restoringSends().has(id)
     )
       return;
     try {
@@ -3257,67 +3260,149 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const editOriginal = async (id: string) => {
-    if (!alive || !draftReady() || activeSends().has(id) || checkingSends().has(id)) return;
-    const freezing = freezeState();
-    const wasFreezing = freezing.kind !== 'idle' && freezing.frozen.id === id;
-    let restoredText = '';
-    let restoredFiles: DraftAttachment[] = [];
-    if (wasFreezing) {
-      if (freezing.kind === 'reserving') return;
-      restoredText = freezing.frozen.text;
-      restoredFiles = freezing.frozen.files;
-    } else {
-      const original = unresolved().find((item) => item.id === id);
-      if (!original) return;
-      const receiptFailure = sendReceiptFailure(original.receipt);
-      const cancelled = sendDeliveries().get(original.id) === 'cancelled';
-      if (!cancelled && !original.abandoned && receiptFailure === null) return;
-      restoredText = original.correlation.draft.text;
-      restoredFiles = original.correlation.draft.attachments;
-    }
-    const existingText = draft();
-    const nextText =
-      restoredText === ''
-        ? existingText
-        : existingText.trim() === '' || existingText === restoredText
-          ? restoredText
-          : `${existingText}\n\n${restoredText}`;
-    if (restoredFiles.length > 0) {
-      const seen = new Set(attachments.files().map((file) => file.id));
-      const merged = [
-        ...attachments.files(),
-        ...restoredFiles.filter((file) => !seen.has(file.id)),
-      ];
-      attachments.restore(merged);
-    }
-    try {
+    if (
+      !alive ||
+      !draftReady() ||
+      sending() ||
+      activeSends().has(id) ||
+      checkingSends().has(id) ||
+      restoringSends().has(id)
+    )
+      return;
+    const applyAtomicRestore = async (targetId: string) => {
       if (savingFailed()) {
         const stored = await loadDraft(client);
-        if (!alive) return;
+        if (!alive) return false;
         draftRevision = stored.revision;
         savingFailed.set(false);
       }
-      if (wasFreezing) {
+      await flushDraft();
+      if (!alive || savingFailed()) return false;
+      holding = true;
+      try {
+        const restored = await restoreSend(client, targetId, draftRevision);
+        if (!alive) return false;
+        draftRevision = restored.revision;
+        if (heldDraft === null) {
+          attachments.restore(restored.attachments);
+          draft.set(restored.text);
+        } else {
+          const typed = heldDraft;
+          const seen = new Set(restored.attachments.map((file) => file.id));
+          const mergedFiles = [
+            ...restored.attachments,
+            ...typed.attachments.filter((file) => !seen.has(file.id)),
+          ];
+          const nextText =
+            restored.text === ''
+              ? typed.text
+              : typed.text.trim() === ''
+                ? restored.text
+                : `${typed.text}\n\n${restored.text}`;
+          attachments.restore(mergedFiles);
+          draft.set(nextText);
+          heldDraft = {
+            text: nextText,
+            attachments: mergedFiles,
+            settledUploads: typed.settledUploads,
+          };
+        }
+        return true;
+      } finally {
+        releaseHeld();
+      }
+    };
+
+    const freezing = freezeState();
+    if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
+      if (freezing.kind === 'reserving') return;
+      const frozen = freezing.frozen;
+      restoringSends.set(new Set(restoringSends()).add(id));
+      try {
+        let reservedId: string | undefined;
+        if (frozen.revision !== undefined) {
+          const originals = await refreshSends();
+          if (!alive) return;
+          reservedId = originals.find((item) => item.draft?.revision === frozen.revision)?.id;
+        }
+        if (reservedId !== undefined) {
+          savingFailed.set(false);
+          releaseHeld();
+          freezeState.set({ kind: 'idle' });
+          if (await applyAtomicRestore(reservedId)) {
+            await refreshSends();
+            if (alive) props.focusComposer();
+          }
+          return;
+        }
+        if (savingFailed()) {
+          const stored = await loadDraft(client);
+          if (!alive) return;
+          draftRevision = stored.revision;
+          savingFailed.set(false);
+        }
+        const existingText = draft();
+        const nextText =
+          frozen.text === ''
+            ? existingText
+            : existingText.trim() === '' || existingText === frozen.text
+              ? frozen.text
+              : `${existingText}\n\n${frozen.text}`;
+        const seen = new Set(attachments.files().map((file) => file.id));
+        const mergedFiles = [
+          ...attachments.files(),
+          ...frozen.files.filter((file) => !seen.has(file.id)),
+        ];
+        const mergedSettled = [
+          ...new Set([...frozen.edit.settledUploads, ...attachments.snapshot().settledUploads]),
+        ];
         holding = false;
         heldDraft = null;
+        attachments.restore(mergedFiles);
+        draft.set(nextText);
+        pendingDraft = {
+          text: nextText,
+          attachments: mergedFiles,
+          settledUploads: mergedSettled,
+        };
+        startSave();
+        await flushDraft();
+        if (!alive || savingFailed()) return;
         freezeState.set({ kind: 'idle' });
+        props.focusComposer();
+      } catch (reason) {
+        sendError(id, reason);
+      } finally {
+        if (alive) {
+          const next = new Set(restoringSends());
+          next.delete(id);
+          restoringSends.set(next);
+        }
       }
-      draft.set(nextText);
-      queueDraft({ text: nextText, ...attachments.snapshot() });
-      await flushDraft();
-      if (!alive || savingFailed()) return;
-      if (!wasFreezing) {
-        await dismissSend(client, id);
-        if (alive) await refreshSends();
+      return;
+    }
+
+    const original = unresolved().find((item) => item.id === id);
+    if (!original || !retryable(original)) return;
+    restoringSends.set(new Set(restoringSends()).add(id));
+    try {
+      if (await applyAtomicRestore(id)) {
+        await refreshSends();
+        if (alive) props.focusComposer();
       }
     } catch (reason) {
       sendError(id, reason);
-      return;
+    } finally {
+      if (alive) {
+        const next = new Set(restoringSends());
+        next.delete(id);
+        restoringSends.set(next);
+      }
     }
-    if (alive) props.focusComposer();
   };
   const dismissOriginal = async (id: string) => {
-    if (!alive || activeSends().has(id) || checkingSends().has(id)) return;
+    if (!alive || activeSends().has(id) || checkingSends().has(id) || restoringSends().has(id))
+      return;
     const freezing = freezeState();
     if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
       if (freezing.kind === 'reserving') return;
@@ -3346,6 +3431,8 @@ export function Conversation(props: ConversationProps) {
       const canRetry = cancelled || original.abandoned || receiptFailure?.retryable === true;
       const failed = canRetry || receiptFailure !== null;
       const checking = checkingSends().has(original.id);
+      const restoring = restoringSends().has(original.id);
+      const busy = checking || restoring;
       const detail = sendErrors().get(original.id);
       if (
         acceptedQueued(original) &&
@@ -3370,19 +3457,21 @@ export function Conversation(props: ConversationProps) {
             : 'unknown',
         detail: checking
           ? tr('Checking send status…')
-          : receiptFailure
-            ? renderText(receiptFailure.detail)
-            : cancelled
-              ? tr('Stopped before delivery. Your message is kept.')
-              : detail
-                ? renderText(detail)
-                : original.abandoned
-                  ? tr('Message was not sent.')
-                  : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
-                    ? tr('Received · waiting for the next step')
-                    : tr('Delivery not confirmed. Check status before retrying.'),
-        retryable: canRetry && !checking,
-        busy: checking,
+          : restoring
+            ? tr('Saving message…')
+            : receiptFailure
+              ? renderText(receiptFailure.detail)
+              : cancelled
+                ? tr('Stopped before delivery. Your message is kept.')
+                : detail
+                  ? renderText(detail)
+                  : original.abandoned
+                    ? tr('Message was not sent.')
+                    : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
+                      ? tr('Received · waiting for the next step')
+                      : tr('Delivery not confirmed. Check status before retrying.'),
+        retryable: canRetry && !busy,
+        busy,
       });
     }
     for (const [id, frozen] of activeSends()) {

@@ -44,9 +44,7 @@ export function PendingMessage(props: {
 }) {
   const session = props.session;
   const canEditInComposer = () =>
-    !props.message.busy &&
-    props.message.state === 'failed' &&
-    (props.message.text !== '' || props.message.attachments.length > 0);
+    props.message.retryable && (props.message.text !== '' || props.message.attachments.length > 0);
   return (
     <View
       style={{

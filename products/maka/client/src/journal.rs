@@ -280,6 +280,26 @@ impl Journal {
         .await
         .map(|_| ())
     }
+    pub(crate) async fn restore_send(
+        &self,
+        host: &DeploymentRef,
+        key: &DraftKey,
+        original: Uuid,
+        expected: Option<u64>,
+    ) -> Result<Draft> {
+        let write::Output::Draft(draft) = self
+            .write(write::Command::RestoreSend {
+                host: host.clone(),
+                key: key.clone(),
+                original,
+                expected,
+            })
+            .await?
+        else {
+            unreachable!("restore_send returns a draft")
+        };
+        Ok(draft)
+    }
     pub(crate) async fn dismiss_send(&self, id: Uuid) -> Result<()> {
         self.write(write::Command::DismissSend(id))
             .await

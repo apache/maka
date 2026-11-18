@@ -107,44 +107,41 @@ const native = {
     };`,
   locale: `export const tr = key => key;`,
 };
-globalThis.checklistStorage = new Map([
-  [
-    'maka.checklist.dismissed',
-    JSON.stringify({
-      'restarted-session': createHash('sha256')
-        .update(Buffer.from([4, 0, 0, 0, 0, 0, 0, 0]))
-        .update(Buffer.from([14, 0, 0, 0, 0, 0, 0, 0]))
-        .update(Buffer.from('Read the notes', 'utf8'))
-        .update(Buffer.from([20, 0, 0, 0, 0, 0, 0, 0]))
-        .update(Buffer.from('Update the changelog', 'utf8'))
-        .update(Buffer.from([5, 0, 0, 0, 0, 0, 0, 0]))
-        .update(Buffer.from('Build', 'utf8'))
-        .update(Buffer.from([3, 0, 0, 0, 0, 0, 0, 0]))
-        .update(Buffer.from('Tag', 'utf8'))
-        .digest('hex'),
-    }),
-  ],
-]);
-const hooks = registerHooks({
-  resolve(specifier, context, next) {
-    const key =
-      context.parentURL?.startsWith(appRoot.href) && specifier === './locale'
-        ? 'locale'
-        : specifier;
-    if (key in native)
-      return { url: `data:text/javascript,${encodeURIComponent(native[key])}`, shortCircuit: true };
-    if (
-      context.parentURL?.startsWith(appRoot.href) &&
-      specifier.startsWith('.') &&
-      !/\.\w+$/.test(specifier)
-    )
-      return next(`${specifier}.ts`, context);
-    return next(specifier, context);
-  },
-});
+globalThis.checklistStorage = new Map();
+function withChecklistHooks() {
+  return registerHooks({
+    resolve(specifier, context, next) {
+      const key =
+        context.parentURL?.startsWith(appRoot.href) && specifier === './locale'
+          ? 'locale'
+          : specifier;
+      if (key in native)
+        return {
+          url: `data:text/javascript,${encodeURIComponent(native[key])}`,
+          shortCircuit: true,
+        };
+      if (
+        context.parentURL?.startsWith(appRoot.href) &&
+        specifier.startsWith('.') &&
+        !/\.\w+$/.test(specifier)
+      )
+        return next(`${specifier}.ts`, context);
+      return next(specifier, context);
+    },
+  });
+}
+async function importChecklistModule(query = '') {
+  const hooks = withChecklistHooks();
+  try {
+    return await import(new URL(`checklistState.ts${query}`, appRoot));
+  } finally {
+    hooks.deregister();
+  }
+}
+const hooks = withChecklistHooks();
 const { effect } = await import('data:text/javascript,' + encodeURIComponent(native.nsh));
-const { createChecklistState } = await import(new URL('checklistState.ts', appRoot));
 hooks.deregister();
+const { createChecklistState } = await importChecklistModule();
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 async function settled(promise) {
@@ -454,19 +451,46 @@ test('reveal does not read when the item is loaded, the list is done, or it is c
   assert.equal(watched.reads.length, 1);
 });
 
-test('dismissed checklists survive restart hydration without flashing and reconnect after a watch error is dismissed', async (t) => {
+test('hiding persists across fresh module restarts without flashing, clears on list replacement, and reconnects after a watch error', async (t) => {
   setup(t);
-  const watched = source();
-  const restarted = createChecklistState(watched, 'restarted-session');
+  globalThis.checklistStorage.clear();
+
+  // 1. Hide on cold empty storage and verify a fresh module instance keeps it hidden without flashing.
+  const beforeRestart = source();
+  const first = createChecklistState(beforeRestart, 'restarted-session');
+  beforeRestart.push(slicePage(1, release(['completed', 'completed', 'in_progress', 'pending'])));
+  await flush();
+  assert.equal(first.shown(), true);
+  first.hide();
+  await flush();
+  assert.equal(first.shown(), false);
+
+  const { createChecklistState: createAfterFirstRestart } =
+    await importChecklistModule('?restart=1');
+  const afterRestart = source();
+  const restarted = createAfterFirstRestart(afterRestart, 'restarted-session');
   const shownStates = [];
   effect(() => shownStates.push(restarted.shown()));
 
-  watched.push(slicePage(1, release(['completed', 'completed', 'completed', 'completed'])));
+  afterRestart.push(slicePage(2, release(['completed', 'completed', 'completed', 'completed'])));
   await flush();
   assert.equal(shownStates.includes(true), false, 'hydrated dismissed checklist flashed visible');
   assert.equal(restarted.shown(), false);
 
-  // Dismissing an initial watch error clears it and reconnects the watch stream.
+  // 2. Replacing the list updates storage so a subsequent fresh restart shows the earlier digest again.
+  afterRestart.push(slicePage(3, [item('Publish', 'in_progress')]));
+  await flush();
+  assert.equal(restarted.shown(), true);
+
+  const { createChecklistState: createAfterSecondRestart } =
+    await importChecklistModule('?restart=2');
+  const afterSecondRestart = source();
+  const reopened = createAfterSecondRestart(afterSecondRestart, 'restarted-session');
+  afterSecondRestart.push(slicePage(4, release(['in_progress', 'pending', 'pending', 'pending'])));
+  await flush();
+  assert.equal(reopened.shown(), true, 'replacement did not persist cleared dismissal');
+
+  // 3. Dismissing an initial watch error clears it and reconnects the watch stream.
   const broken = source();
   const recovered = createChecklistState(broken, 'watch-recover-session');
   await flush();
