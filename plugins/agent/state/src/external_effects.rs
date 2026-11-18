@@ -28,10 +28,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+#[derive(Clone, Copy)]
+pub struct MissingReturn {
+    pub run: RunId,
+    pub key: ExternalEffectKey,
+    pub cell: maka_agent_facts::cells::CellId,
+}
+
 mod sql;
 pub(crate) use sql::{
-    ReadDescriptor, ReadEffect, load_run, native_source_pending, persist, read_descriptor,
-    read_original, replay, verify_native_source,
+    MissingReturns, ReadDescriptor, ReadEffect, load_run, native_source_pending, persist,
+    read_descriptor, read_original, replay, verify_native_source,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -45,6 +52,8 @@ pub struct ExternalEffect {
     pub reference: Option<RecoveryRef>,
     pub observation: Option<OperationReply>,
     pub returned: Option<ContentRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_return: Option<maka_agent_facts::cells::CellId>,
     pub cleanup: OperationCleanup,
 }
 
@@ -91,6 +100,7 @@ impl ExternalEffect {
             reference: None,
             observation: None,
             returned: None,
+            missing_return: None,
             cleanup: OperationCleanup::Unconfirmed,
         }
     }
@@ -175,6 +185,19 @@ impl ExternalEffect {
                     receipt,
                 });
             }
+            ExternalEffectEvent::ReturnUnavailable { cell, .. } => {
+                self.require_admitted()?;
+                if self.returned.is_some() {
+                    return Err(invalid("original external Host return is available"));
+                }
+                if self
+                    .missing_return
+                    .is_some_and(|original| original != *cell)
+                {
+                    return Err(StoreError::EventConflict);
+                }
+                self.missing_return = Some(*cell);
+            }
             ExternalEffectEvent::Returned { output, .. } => {
                 self.require_admitted()?;
                 if self.cleanup != OperationCleanup::Confirmed {
@@ -191,6 +214,7 @@ impl ExternalEffect {
                     return Err(StoreError::EventConflict);
                 }
                 self.returned = Some(output.clone());
+                self.missing_return = None;
             }
             ExternalEffectEvent::CleanupObserved { cleanup, .. } => {
                 self.require_admitted()?;

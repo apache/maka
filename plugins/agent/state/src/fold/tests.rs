@@ -444,3 +444,83 @@ fn replay_continues_after_an_external_tool_was_rejected_before_execution() {
     }
     assert_eq!(view.terminal, Some(Terminal::Cancelled));
 }
+
+#[test]
+fn missing_external_return_releases_followup_but_preserves_the_original_receipt() {
+    use maka_agent_facts::{
+        cells::CellId,
+        executor::Selection,
+        external_effects::{ExternalEffectEvent, ExternalEffectKey},
+    };
+    let descriptor = ContentBlob::new(b"original".to_vec()).reference().clone();
+    let spec = spec(
+        BackendSpec::Executor {
+            selection: Selection {
+                executor: "external".into(),
+                settings: Default::default(),
+            },
+            descriptor: descriptor.clone(),
+        },
+        &descriptor,
+    );
+    let spec_ref = ContentBlob::json(&spec).unwrap().reference().clone();
+    let mut view = RunView::admitted(RunId::new(), spec).unwrap();
+    let key = ExternalEffectKey {
+        task: ExternalTaskId::new(),
+        operation: Uuid::new_v4(),
+    };
+    let cell = CellId::for_external(view.run, key);
+    let effect = |event| Fact::ExternalEffect { event };
+    for fact in [
+        Fact::RunAdmitted { spec: spec_ref },
+        Fact::ExternalTaskPrepared {
+            task: key.task,
+            descriptor: descriptor.clone(),
+            live_workspace: true,
+        },
+        Fact::ExternalTaskAdmitted { task: key.task },
+        Fact::ExternalTaskCleanupObserved {
+            task: key.task,
+            cleanup: OperationCleanup::Confirmed,
+        },
+        effect(ExternalEffectEvent::Prepared {
+            key,
+            descriptor: descriptor.clone(),
+        }),
+        effect(ExternalEffectEvent::Admitted {
+            key,
+            approval: None,
+        }),
+        effect(ExternalEffectEvent::ReturnUnavailable { key, cell }),
+        Fact::RunTerminated {
+            terminal: Terminal::Failed,
+            diagnostic: None,
+        },
+    ] {
+        apply(&mut view, fact);
+    }
+    assert!(!view.blocks_followup());
+    let original = &view.external.as_ref().unwrap().effects[&key.operation];
+    assert!(original.pending() && !original.known());
+    assert_eq!(original.cleanup, OperationCleanup::Unconfirmed);
+
+    apply(
+        &mut view,
+        effect(ExternalEffectEvent::CleanupObserved {
+            key,
+            cleanup: OperationCleanup::Confirmed,
+        }),
+    );
+    apply(
+        &mut view,
+        effect(ExternalEffectEvent::Returned {
+            key,
+            output: descriptor.clone(),
+            finish_turn: false,
+        }),
+    );
+    let original = &view.external.as_ref().unwrap().effects[&key.operation];
+    assert_eq!(original.returned, Some(descriptor));
+    assert_eq!(original.missing_return, None);
+    assert!(!view.blocks_followup());
+}

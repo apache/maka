@@ -93,6 +93,11 @@ pub enum ExternalEffectEvent {
         key: ExternalEffectKey,
         observation: OperationReply,
     },
+    /// The MCP transport closed after admission, before a return was recorded.
+    ReturnUnavailable {
+        key: ExternalEffectKey,
+        cell: crate::cells::CellId,
+    },
     Returned {
         key: ExternalEffectKey,
         output: ContentRef,
@@ -112,6 +117,7 @@ impl ExternalEffectEvent {
             | Self::DisplayRecorded { key, .. }
             | Self::Rejected { key, .. }
             | Self::Admitted { key, .. }
+            | Self::ReturnUnavailable { key, .. }
             | Self::Bound { key, .. }
             | Self::Observed { key, .. }
             | Self::Returned { key, .. }

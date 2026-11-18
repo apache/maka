@@ -1316,7 +1316,7 @@ impl RunCells {
             }
         }
     }
-    async fn read_current(&self, cell: CellId) -> Result<Option<CellView>, ToolError> {
+    pub(super) async fn read_current(&self, cell: CellId) -> Result<Option<CellView>, ToolError> {
         self.check_work()?;
         let Some(view) = self
             .cells

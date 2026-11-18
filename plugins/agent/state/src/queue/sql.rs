@@ -495,12 +495,18 @@ fn project(
                     let (lane, mut target) = placement_columns(placement);
                     if let Placement::Completion { caller } = placement {
                         let (original, _, stopped, _) = run_head(c, *caller)?;
-                        if !matches!(
-                            &source.message.origin,
-                            Some(
-                                maka_agent_facts::message::MessageOrigin::SessionCompletion { .. }
-                            )
-                        ) || original.session_id != session
+                        use maka_agent_facts::message::MessageOrigin;
+                        let valid_source = match &source.message.origin {
+                            Some(MessageOrigin::SessionCompletion { .. }) => true,
+                            Some(MessageOrigin::Session { execution }) => {
+                                execution.run_id == *caller
+                                    && execution.session_id == original.session_id
+                                    && execution.turn_id == original.turn_id
+                            }
+                            _ => false,
+                        };
+                        if !valid_source
+                            || original.session_id != session
                             || original.owner != request.spec.owner
                             || !matches!(original.origin, RunOrigin::Local)
                             || !matches!(

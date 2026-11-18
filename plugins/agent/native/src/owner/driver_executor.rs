@@ -929,7 +929,7 @@ impl ExternalPorts for DriverExecutor {
                     "external runtime requires original message input".into(),
                 ));
             };
-            let content = if source_messages
+            let mut content = if source_messages
                 .iter()
                 .any(|source| source.message.origin.is_some())
             {
@@ -941,6 +941,17 @@ impl ExternalPorts for DriverExecutor {
             } else {
                 content
             };
+            let unresolved = self.access.missing_tool_returns(&self.state).await?;
+            if !unresolved.is_empty() {
+                let note = super::external_recovery::context(
+                    &self.state,
+                    &view.spec.session_id,
+                    unresolved,
+                )
+                .await?;
+                content.text.push_str("\n\n");
+                content.text.push_str(&note);
+            }
             let live_workspace = self.backend.service_binding().is_none();
             let request = Request {
                 task_id: task,
