@@ -291,6 +291,27 @@ mod tests {
     }
 
     #[test]
+    fn stopping_an_agent_terminal_requires_confirmation() {
+        let mut app = fixture("terminal-sidebar.tsx");
+        app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
+        app.wait_for("role:button[View terminal]").unwrap();
+        app.press("role:button[View terminal]").unwrap();
+        app.wait_for("label:Back to Agent terminals").unwrap();
+        app.press("label:Back to Agent terminals").unwrap();
+        app.wait_for("label:Open terminal cargo test").unwrap();
+        app.press("label:Open terminal cargo test").unwrap();
+
+        app.wait_for("label:Stop terminal process").unwrap();
+        app.press("label:Stop terminal process").unwrap();
+        app.wait_for("text:Stop this agent command?").unwrap();
+        app.press("role:button[Cancel]").unwrap();
+        app.wait_for("text:/running.*Read only/").unwrap();
+        app.press("label:Stop terminal process").unwrap();
+        app.press("label:Confirm stop terminal process").unwrap();
+        app.wait_for("text:/cancelled.*Read only/").unwrap();
+    }
+
+    #[test]
     fn terminal_sidebar_restores_the_personal_shell_and_opens_the_exact_agent_resource() {
         let mut app = fixture("terminal-sidebar.tsx");
         app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
