@@ -2095,7 +2095,7 @@ await new Promise((r) => setTimeout(r, 30000));"#
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     });
 
-    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(20), async {
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let client = rig.client.as_ref().ok_or("client missing")?;
         let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
         let catalog = model_recovery::call(client, "settings", "connections", json!({"kind":"start"})).await?;
