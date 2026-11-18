@@ -18,7 +18,7 @@
  */
 
 //! Discovery owns a scheduler fire; the durable Agent queue owns its execution.
-use super::notifications::BackgroundApproval;
+use super::notifications::{BackgroundApproval, NotificationPreparationError};
 use super::*;
 use maka_agent_facts::{
     durable::{Fact, Terminal, UnixMillis},
@@ -27,6 +27,7 @@ use maka_agent_facts::{
 };
 use maka_agent_state::{
     Change, Head,
+    fold::RunView,
     queue::{MessageResolution, QueueCommand, QueueEdit, RequestId},
 };
 use maka_plugin_core::storage::{Data, Mutation, Store};
@@ -39,6 +40,7 @@ pub(super) const COMPLETE: &str = "DiscoveryComplete";
 pub(super) const MEMORY: &str = "DiscoveryMemory";
 pub(super) const VISIBLE_TOOLS: &[&str] = &[COMPLETE, MEMORY];
 pub(super) const MODEL_ROUTE_CHANGED: &str = "background_model_route_changed";
+pub(super) const APPROVED_MODEL_UNAVAILABLE: &str = "background_model_unavailable";
 const RECALL_TOOLS: &[&str] = &["Recall", "RecallMore", "RecallMaterial"];
 const ACTIVE: &str = "discovery/active";
 pub(super) mod access;
@@ -367,20 +369,36 @@ impl Owner {
         };
         let authorized = self.discovery_authorized(&job).await;
         let pending = self.scheduler.has_active_fire(&job).await?;
+        let retired = self.discovery_worker_retired(&job).await?;
         if matches!(job.phase, Phase::Stopping)
             || !pending
             || authorization_revoked(&authorized)
-            || self.discovery_worker_retired(&job).await?
+            || retired
         {
-            let delivery = self.retract_discovery_report(&job).await?;
-            if !matches!(delivery, MessageResolution::Delivered { .. })
-                && !matches!(job.phase, Phase::Stopping)
-            {
+            let delivery = self
+                .retract_discovery_request(&job.bot, &report_identity(&job.fire_id))
+                .await?;
+            if matches!(delivery, MessageResolution::Delivered { .. }) {
+                return Ok(());
+            }
+            if !matches!(job.phase, Phase::Stopping) {
                 job.phase = Phase::Stopping;
                 self.scheduler
                     .save_investigation(revision, &job)
                     .await
                     .map_err(reason)?;
+            }
+            // Commit cancellation before the ready queue can resume the original worker.
+            if !retired
+                && let MessageResolution::Delivered { run, shared: false } = self
+                    .retract_discovery_request(&job.worker, &job.request)
+                    .await?
+            {
+                let view = self
+                    .session_run(&job.worker, run)
+                    .await?
+                    .ok_or("discovery_execution_unavailable")?;
+                self.stop_discovery_run(&view).await?;
             }
         } else {
             authorized?;
@@ -394,25 +412,28 @@ impl Owner {
             Err(error) => Err(reason(error)),
         }
     }
-    async fn retract_discovery_report(&self, job: &Job) -> Result<MessageResolution, String> {
-        let _ordered = self.runs.ordered(&job.bot).await;
+    async fn retract_discovery_request(
+        &self,
+        session: &str,
+        request: &str,
+    ) -> Result<MessageResolution, String> {
+        let _ordered = self.runs.ordered(session).await;
         let queue = self.durable.queue();
-        let identity = report_identity(&job.fire_id);
         let delivery = queue
-            .resolve_message(job.bot.clone(), format!("m_{identity}"))
+            .resolve_message(session.to_owned(), format!("m_{request}"))
             .await
             .map_err(reason)?;
         if matches!(delivery, MessageResolution::Pending) {
-            let pending = queue.read(job.bot.clone()).await.map_err(reason)?;
+            let pending = queue.read(session.to_owned()).await.map_err(reason)?;
             queue
                 .execute(
-                    job.bot.clone(),
+                    session.to_owned(),
                     QueueCommand {
                         id: maka_agent_facts::durable::FactId::new(),
                         at: UnixMillis(now() as i64),
                         expected_revision: pending.revision,
                         edit: QueueEdit::Retract {
-                            request: RequestId(identity),
+                            request: RequestId(request.to_owned()),
                         },
                     },
                     vec![],
@@ -423,6 +444,27 @@ impl Owner {
             return Ok(MessageResolution::Cancelled);
         }
         Ok(delivery)
+    }
+    async fn stop_discovery_run(&self, view: &RunView) -> Result<bool, String> {
+        if view.terminal.is_some() || view.stopped {
+            return Ok(false);
+        }
+        self.durable
+            .control(
+                view.run,
+                Head::from(view),
+                vec![Change::new(
+                    Fact::StopRequested {
+                        diagnostic: "discovery_cancelled".into(),
+                    },
+                    UnixMillis(now() as i64),
+                )],
+                vec![],
+            )
+            .await
+            .map_err(reason)?;
+        self.wake_notify.notify_one();
+        Ok(true)
     }
     async fn discovery_authorized(&self, job: &Job) -> Result<(), String> {
         if !self.settings.bot || !self.settings.scheduled_tasks || !self.bot.is(&job.bot) {
@@ -588,7 +630,8 @@ impl Owner {
             || authorization_revoked(&authorized)
         {
             if matches!(
-                self.retract_discovery_report(&job).await?,
+                self.retract_discovery_request(&job.bot, &report_identity(&job.fire_id))
+                    .await?,
                 MessageResolution::Delivered { .. }
             ) {
                 return self
@@ -651,7 +694,7 @@ impl Owner {
                 let restriction = access::run_restriction(job.tools.profile, &exclusions)?;
                 let configured = self
                     .bot
-                    .configured_tool_ceiling(&source.id, source.configuration.tools.as_deref());
+                    .configured_tool_ceiling(&source.id, &source.configuration);
                 let allowed_tools = self.discovery_worker_tools(
                     &job.tools,
                     configured,
@@ -725,7 +768,21 @@ impl Owner {
                     )
                     .await;
                 let cleanup = native.finish().await;
-                let mut basis = captured.map_err(String::from)?;
+                let mut basis = match captured {
+                    Err(send::CaptureError::ModelUnavailable) if cleanup.is_ok() => {
+                        return self
+                            .settle_discovery(
+                                fire,
+                                revision,
+                                &job,
+                                Outcome::Blocked,
+                                APPROVED_MODEL_UNAVAILABLE,
+                            )
+                            .await
+                            .map(Some);
+                    }
+                    result => result.map_err(String::from)?,
+                };
                 cleanup?;
                 if !job.approval.accepted_model.same_execution_route(
                     basis.model.as_ref().ok_or("discovery_model_unavailable")?,
@@ -785,32 +842,8 @@ impl Owner {
             }
             MessageResolution::Pending => {
                 if matches!(job.phase, Phase::Stopping) {
-                    let _ordered = self.runs.ordered(&job.worker).await;
-                    if matches!(
-                        queue
-                            .resolve_message(job.worker.clone(), message)
-                            .await
-                            .map_err(reason)?,
-                        MessageResolution::Pending
-                    ) {
-                        let pending = queue.read(job.worker.clone()).await.map_err(reason)?;
-                        queue
-                            .execute(
-                                job.worker.clone(),
-                                QueueCommand {
-                                    id: maka_agent_facts::durable::FactId::new(),
-                                    at: UnixMillis(now() as i64),
-                                    expected_revision: pending.revision,
-                                    edit: QueueEdit::Retract {
-                                        request: RequestId(job.request.clone()),
-                                    },
-                                },
-                                vec![],
-                            )
-                            .await
-                            .map_err(reason)?;
-                        self.wake_notify.notify_one();
-                    }
+                    self.retract_discovery_request(&job.worker, &job.request)
+                        .await?;
                 }
                 return Ok(None);
             }
@@ -848,23 +881,7 @@ impl Owner {
                             .map_err(reason)?,
                     );
                 }
-                if matches!(job.phase, Phase::Stopping) && view.terminal.is_none() && !view.stopped
-                {
-                    self.durable
-                        .control(
-                            run,
-                            Head::from(&view),
-                            vec![Change::new(
-                                Fact::StopRequested {
-                                    diagnostic: "discovery_cancelled".into(),
-                                },
-                                UnixMillis(now() as i64),
-                            )],
-                            vec![],
-                        )
-                        .await
-                        .map_err(reason)?;
-                    self.wake_notify.notify_one();
+                if matches!(job.phase, Phase::Stopping) && self.stop_discovery_run(&view).await? {
                     return Ok(None);
                 }
                 let Some(terminal) = view.terminal else {
@@ -976,13 +993,17 @@ impl Owner {
         {
             Ok(Some(notification)) => notification,
             Ok(None) => return Ok(None),
-            Err(error) if error == "notification_route_changed" => {
+            Err(error) => {
+                let message = match error {
+                    NotificationPreparationError::RouteChanged => MODEL_ROUTE_CHANGED,
+                    NotificationPreparationError::ModelUnavailable => APPROVED_MODEL_UNAVAILABLE,
+                    NotificationPreparationError::Other(error) => return Err(error),
+                };
                 return self
-                    .settle_discovery(fire, revision, job, Outcome::Blocked, MODEL_ROUTE_CHANGED)
+                    .settle_discovery(fire, revision, job, Outcome::Blocked, message)
                     .await
                     .map(Some);
             }
-            Err(error) => return Err(error),
         };
         let delivery = self
             .durable

@@ -248,7 +248,7 @@ impl Owner {
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
-        let allowed_tools = self.admitted_tools(id, &session.configuration.tools);
+        let allowed_tools = self.admitted_tools(id, &session.configuration);
         let behavior = self.bot_behavior(
             id,
             self.capture_behavior(

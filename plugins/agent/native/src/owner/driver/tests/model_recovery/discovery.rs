@@ -19,6 +19,7 @@
 
 use super::*;
 use maka_agent_api::{contract::WorkspaceAccess, session::StoredSessionConfiguration};
+use maka_agent_facts::configuration::ConnectionCatalogEntryUpdate;
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -111,6 +112,17 @@ impl Fixture {
     }
     fn owner(&self) -> Arc<Owner> {
         self.rig.captured.lock().unwrap().as_ref().unwrap().clone()
+    }
+    fn active_worker(&self) -> String {
+        self.owner()
+            .scheduler
+            .investigation
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .worker
+            .clone()
     }
     async fn query(&self, method: &str, input: Value) -> Value {
         call(self.rig.client.as_ref().unwrap(), "agent", method, input)
@@ -262,6 +274,25 @@ impl Fixture {
         let errors = self.rig.finish().await;
         assert!(errors.is_empty(), "{errors:?}");
     }
+    async fn use_legacy_bot_registration(&self) {
+        use maka_plugin_core::storage::{Data, Mutation, Namespace, Store};
+
+        let owner = self.owner();
+        let storage = maka_host_runtime::storage::Storage::new(
+            owner.store.clone(),
+            owner.prefix.clone(),
+            Namespace::new("maka.bot", maka_plugin_core::scope::Scope::Profile).unwrap(),
+        );
+        let registration = storage.read("bot".into()).await.unwrap().unwrap();
+        storage
+            .batch(vec![Mutation {
+                key: "bot".into(),
+                expected_revision: Some(registration.revision),
+                data: Data::Present(json!({"sessionId":self.bot})),
+            }])
+            .await
+            .unwrap();
+    }
     async fn change_source(&mut self, update: fn(&mut StoredSessionConfiguration)) {
         self.close().await;
         self.rig.captured.lock().unwrap().take();
@@ -291,9 +322,17 @@ impl Fixture {
         attach(&mut self.rig, &self.boot).await.unwrap();
     }
     async fn change_model_endpoint(&self, listener: &TcpListener) {
+        self.update_model_connection(ConnectionCatalogEntryUpdate {
+            configuration: Some(json!({
+                "baseUrl":format!("http://{}/v1", listener.local_addr().unwrap())
+            })),
+            ..Default::default()
+        })
+        .await;
+    }
+    async fn update_model_connection(&self, changes: ConnectionCatalogEntryUpdate) {
         use maka_agent_facts::configuration::{
-            CatalogMutationResult, ConnectionCatalogEntryUpdate, ConnectionVersionBasis,
-            UpdateCatalogConnectionInput,
+            CatalogMutationResult, ConnectionVersionBasis, UpdateCatalogConnectionInput,
         };
 
         let owner = self.owner();
@@ -311,12 +350,7 @@ impl Fixture {
                     connection_id: connection_id.to_owned(),
                     revision: connection.revision,
                 },
-                changes: ConnectionCatalogEntryUpdate {
-                    configuration: Some(json!({
-                        "baseUrl":format!("http://{}/v1", listener.local_addr().unwrap())
-                    })),
-                    ..Default::default()
-                },
+                changes,
             })
             .await
             .unwrap();
@@ -396,27 +430,9 @@ async fn quiet(f: &Fixture, listener: &TcpListener, socket: &mut TcpStream) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() {
-    use maka_plugin_core::storage::{Data, Mutation, Namespace, Store};
-
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    {
-        let owner = f.owner();
-        let storage = maka_host_runtime::storage::Storage::new(
-            owner.store.clone(),
-            owner.prefix.clone(),
-            Namespace::new("maka.bot", maka_plugin_core::scope::Scope::Profile).unwrap(),
-        );
-        let registration = storage.read("bot".into()).await.unwrap().unwrap();
-        storage
-            .batch(vec![Mutation {
-                key: "bot".into(),
-                expected_revision: Some(registration.revision),
-                data: Data::Present(json!({"sessionId":f.bot})),
-            }])
-            .await
-            .unwrap();
-    }
+    f.use_legacy_bot_registration().await;
     f.change_source(|config| config.tools = Some(vec!["ScheduledTask".into()]))
         .await;
     let task = f.create("Notification receipt").await;
@@ -574,6 +590,18 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     f.close().await;
 }
 
+fn assert_model_requires_approval(detail: &Value, message: &str) {
+    assert_eq!(detail["task"]["status"], "paused", "{detail}");
+    assert_eq!(detail["approved"], false, "{detail}");
+    assert!(detail["task"]["nextFireAt"].is_null(), "{detail}");
+    assert_eq!(
+        detail["task"]["lastError"], "scheduler_authorization_changed",
+        "{detail}"
+    );
+    assert_eq!(detail["task"]["runs"][0]["outcome"], "blocked", "{detail}");
+    assert_eq!(detail["task"]["runs"][0]["message"], message, "{detail}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     let original = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -583,22 +611,8 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     f.change_model_endpoint(&updated).await;
     f.change(&stale, "trigger_now").await;
 
-    let assert_requires_approval = |detail: &Value| {
-        assert_eq!(detail["task"]["status"], "paused", "{detail}");
-        assert_eq!(detail["approved"], false, "{detail}");
-        assert!(detail["task"]["nextFireAt"].is_null(), "{detail}");
-        assert_eq!(
-            detail["task"]["lastError"], "scheduler_authorization_changed",
-            "{detail}"
-        );
-        assert_eq!(detail["task"]["runs"][0]["outcome"], "blocked", "{detail}");
-        assert_eq!(
-            detail["task"]["runs"][0]["message"], "background_model_route_changed",
-            "{detail}"
-        );
-    };
     let blocked = f.settled(&stale, 1).await;
-    assert_requires_approval(&blocked);
+    assert_model_requires_approval(&blocked, "background_model_route_changed");
     assert!(blocked["task"]["runs"][0]["runId"].is_null(), "{blocked}");
 
     let reporting = f.create("Route changes while investigating").await;
@@ -612,7 +626,7 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     )
     .await;
     let blocked = f.settled(&reporting, 1).await;
-    assert_requires_approval(&blocked);
+    assert_model_requires_approval(&blocked, "background_model_route_changed");
     assert!(blocked["task"]["runs"][0]["runId"].is_string(), "{blocked}");
     assert_eq!(f.outbox().await, json!([]));
 
@@ -627,6 +641,67 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     .await;
     assert_eq!(
         f.settled(&stale, 2).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_invalidates_unavailable_models_before_worker_and_report_admission() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let waiting = f.create("Approved before disabling the connection").await;
+    let reporting = f.create("Model removed before report delivery").await;
+
+    f.update_model_connection(ConnectionCatalogEntryUpdate {
+        enabled: Some(false),
+        ..Default::default()
+    })
+    .await;
+    f.change(&waiting, "trigger_now").await;
+    let blocked = f.settled(&waiting, 1).await;
+    assert_model_requires_approval(&blocked, "background_model_unavailable");
+    assert!(blocked["task"]["runs"][0]["runId"].is_null(), "{blocked}");
+
+    f.update_model_connection(ConnectionCatalogEntryUpdate {
+        enabled: Some(true),
+        ..Default::default()
+    })
+    .await;
+    f.change(&reporting, "trigger_now").await;
+    let (mut socket, _) = next(&listener).await;
+    f.update_model_connection(ConnectionCatalogEntryUpdate {
+        enabled_model_ids: Some(vec![]),
+        ..Default::default()
+    })
+    .await;
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"report","text":"A finding whose delivery model was removed"}),
+    )
+    .await;
+    let blocked = f.settled(&reporting, 1).await;
+    assert_model_requires_approval(&blocked, "background_model_unavailable");
+    assert!(blocked["task"]["runs"][0]["runId"].is_string(), "{blocked}");
+    assert_eq!(f.outbox().await, json!([]));
+
+    f.update_model_connection(ConnectionCatalogEntryUpdate {
+        enabled_model_ids: Some(vec!["llama3.2".into()]),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(f.reapprove(&waiting, "session").await["kind"], "committed");
+    f.change(&waiting, "trigger_now").await;
+    let (mut socket, _) = next(&listener).await;
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Checked after enabling the model again"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&waiting, 2).await["task"]["runs"][0]["outcome"],
         "ok"
     );
     f.close().await;
@@ -730,6 +805,60 @@ async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
             .permissions,
         crate::owner::discovery::permissions()
     );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_preserves_the_inherited_tool_ceiling_of_a_legacy_bot() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    f.use_legacy_bot_registration().await;
+    f.change_source(|config| {
+        config.parent_session_id = Some("legacy-caller".into());
+        config.tools = Some(vec!["ScheduledTask".into()]);
+    })
+    .await;
+
+    let names = f.preview(&f.effect("session").await, None).await;
+    assert!(
+        !names.as_array().unwrap().iter().any(|name| name == "Read"),
+        "{names}"
+    );
+
+    let task = f.create("Investigation under the inherited ceiling").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, request) = next(&listener).await;
+    let tools = request["tools"].as_array().unwrap();
+    assert!(
+        !tools.iter().any(|tool| tool["function"]["name"] == "Read"),
+        "{tools:?}"
+    );
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Finished with approved tools"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.send("Check the Bot tool ceiling", json!([])).await;
+    let (mut socket, request) = next(&listener).await;
+    let tools = request["tools"].as_array().unwrap();
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "ScheduledTask"),
+        "{tools:?}"
+    );
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "DiscoveryMemory"),
+        "{tools:?}"
+    );
+    quiet(&f, &listener, &mut socket).await;
     f.close().await;
 }
 
@@ -1352,16 +1481,7 @@ async fn discovery_restart_settles_an_interrupted_original_run_without_replay() 
     let task = f.create("Interrupted investigation").await;
     f.change(&task, "trigger_now").await;
     let (_socket, _) = next(&listener).await;
-    let worker = f
-        .owner()
-        .scheduler
-        .investigation
-        .read()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .worker
-        .clone();
+    let worker = f.active_worker();
     f.reopen().await;
     let original = f
         .owner()
@@ -1381,6 +1501,34 @@ async fn discovery_restart_settles_an_interrupted_original_run_without_replay() 
             .await
             .is_err()
     );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_startup_commits_stop_for_a_paused_worker_before_queue_recovery() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Paused while the Host was stopping").await;
+    f.change(&task, "trigger_now").await;
+    let (_socket, _) = next(&listener).await;
+    let worker = f.active_worker();
+    let owner = f.owner();
+    let run = owner.durable.latest_run(worker).await.unwrap().unwrap();
+
+    // Hold the scheduler at the persisted pause, before its next reconciliation.
+    let producer = owner.producer_gate.lock().await;
+    f.change(&task, "pause").await;
+    let paused = owner.durable.frontier(run).await.unwrap();
+    assert!(!paused.stopped && paused.terminal.is_none());
+
+    owner.restore_discovery().await.unwrap();
+    assert!(owner.durable.frontier(run).await.unwrap().stopped);
+    drop(producer);
+
+    let done = f.settled(&task, 1).await;
+    assert_eq!(done["task"]["status"], "paused");
+    assert_eq!(done["task"]["runs"][0]["outcome"], "blocked");
+    assert_eq!(done["task"]["runs"][0]["runId"], json!(run));
     f.close().await;
 }
 

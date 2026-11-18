@@ -201,14 +201,16 @@ impl Bot {
     pub(super) fn configured_tool_ceiling<'a>(
         &self,
         session: &str,
-        configured: Option<&'a [String]>,
+        configuration: &'a ResolvedConfiguration,
     ) -> Option<&'a [String]> {
-        let tools = configured?;
+        let tools = configuration.tools.as_deref()?;
         let current = self.current.read().expect("bot identity");
-        let legacy_defaults = current
-            .record
-            .as_ref()
-            .is_some_and(|record| record.session_id == session && !record.session_tool_ceiling)
+        // An agent-created legacy Bot inherited its caller's ceiling.
+        let legacy_defaults = configuration.parent_session_id.is_none()
+            && current
+                .record
+                .as_ref()
+                .is_some_and(|record| record.session_id == session && !record.session_tool_ceiling)
             && tools
                 .iter()
                 .all(|tool| LEGACY_COORDINATION_TOOLS.contains(&tool.as_str()));
@@ -882,12 +884,10 @@ impl Owner {
     pub(super) fn admitted_tools(
         &self,
         session: &str,
-        configured: &Option<Vec<String>>,
+        configuration: &ResolvedConfiguration,
     ) -> Option<Vec<String>> {
         if self.settings.bot && self.bot.is(session) {
-            let configured = self
-                .bot
-                .configured_tool_ceiling(session, configured.as_deref());
+            let configured = self.bot.configured_tool_ceiling(session, configuration);
             return Some(
                 LEGACY_COORDINATION_TOOLS
                     .iter()
@@ -902,7 +902,7 @@ impl Owner {
                     .collect(),
             );
         }
-        configured.clone()
+        configuration.tools.clone()
     }
     /// Append the Bot's standing instructions to the behavior frozen for a message
     /// admitted to the Bot Session. Other Sessions are unchanged.

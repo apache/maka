@@ -98,6 +98,30 @@ impl ReturnRoute {
         }
     }
 }
+pub(super) enum NotificationPreparationError {
+    ModelUnavailable,
+    RouteChanged,
+    Other(String),
+}
+
+impl From<String> for NotificationPreparationError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
+}
+
+impl From<NotificationPreparationError> for String {
+    fn from(error: NotificationPreparationError) -> Self {
+        match error {
+            NotificationPreparationError::ModelUnavailable => {
+                send::CaptureError::ModelUnavailable.into()
+            }
+            NotificationPreparationError::RouteChanged => "notification_route_changed".into(),
+            NotificationPreparationError::Other(error) => error,
+        }
+    }
+}
+
 impl Owner {
     pub(crate) fn background<F, Fut>(&self, task: F)
     where
@@ -215,6 +239,7 @@ impl Owner {
             None,
         )
         .await
+        .map_err(String::from)
     }
     pub(super) async fn prepare_notification_checked(
         &self,
@@ -225,7 +250,7 @@ impl Owner {
         origin: MessageOrigin,
         placement: QueuePlacement,
         boundary: Option<&ScheduledTarget>,
-    ) -> Result<Option<PreparedRequest>, String> {
+    ) -> Result<Option<PreparedRequest>, NotificationPreparationError> {
         if let Some(original) = self
             .durable
             .queue()
@@ -236,7 +261,7 @@ impl Owner {
             return Ok(Some(original.request));
         }
         if self.stop.is_cancelled() {
-            return Err("agent_closed".into());
+            return Err("agent_closed".to_owned().into());
         }
         let session = self.session(session_id).await?;
         if session.archived
@@ -265,21 +290,25 @@ impl Owner {
         let cleanup = native.finish().await;
         let mut basis = match (capture, cleanup) {
             (Ok(basis), Ok(())) => basis,
-            (Err(error), Ok(())) => return Err(error.into()),
+            (Err(send::CaptureError::ModelUnavailable), Ok(())) => {
+                return Err(NotificationPreparationError::ModelUnavailable);
+            }
+            (Err(error), Ok(())) => return Err(String::from(error).into()),
             (result, Err(cleanup)) => {
                 return Err(format!(
                     "{}; background preparation cleanup: {cleanup}",
                     result.err().map(String::from).unwrap_or_default()
-                ));
+                )
+                .into());
             }
         };
         if let Some(model) = &route.model {
             let current = basis
                 .model
                 .as_ref()
-                .ok_or("notification_model_unavailable")?;
+                .ok_or_else(|| "notification_model_unavailable".to_owned())?;
             if !model.same_execution_route(current) {
-                return Err("notification_route_changed".into());
+                return Err(NotificationPreparationError::RouteChanged);
             }
             basis.model = Some(model.clone());
         }
@@ -308,6 +337,7 @@ impl Owner {
         )
         .await
         .map(Some)
+        .map_err(Into::into)
     }
 
     /// Original requests are observed, never re-frozen from a stored execution grant.

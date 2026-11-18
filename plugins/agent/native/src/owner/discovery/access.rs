@@ -123,7 +123,7 @@ impl Owner {
         let editing = basis.model.as_ref().and_then(|model| model.editing_tools);
         let configured = self
             .bot
-            .configured_tool_ceiling(&source.id, source.configuration.tools.as_deref());
+            .configured_tool_ceiling(&source.id, &source.configuration);
         let mut names = self
             .select_catalog_tools(&catalog.tools, None, configured, editing)
             .names();

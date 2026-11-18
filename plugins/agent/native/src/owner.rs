@@ -1284,7 +1284,7 @@ impl Owner {
                 (*name == discovery::COMPLETE && !investigation)
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
                     || (bot_only && !bot)
-                    || (!(bot && (bot_only || memory))
+                    || (!bot_only
                         && allowed_tools.is_some_and(|allowed| {
                             !allowed.iter().any(|allowed| allowed.as_str() == *name)
                         }))

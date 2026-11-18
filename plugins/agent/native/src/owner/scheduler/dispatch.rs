@@ -531,7 +531,11 @@ impl Owner {
                     // This receipt also handles a restart between releasing the slot and saving the plan.
                     if matches!(fire.effect, ScheduledEffect::Discovery { .. })
                         && run.outcome == Outcome::Blocked
-                        && run.message == super::super::discovery::MODEL_ROUTE_CHANGED
+                        && matches!(
+                            run.message.as_str(),
+                            super::super::discovery::MODEL_ROUTE_CHANGED
+                                | super::super::discovery::APPROVED_MODEL_UNAVAILABLE
+                        )
                     {
                         require_discovery_approval(&mut plan, run.at);
                     }
