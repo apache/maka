@@ -410,3 +410,6 @@ fn interrupted(cancel: &AtomicBool) -> io::Result<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

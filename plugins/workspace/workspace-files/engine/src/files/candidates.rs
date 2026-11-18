@@ -250,9 +250,7 @@ fn directory_rules(
 ) -> io::Result<Option<Gitignore>> {
     let mut builder = GitignoreBuilder::new("");
     let mut any = false;
-    for name in [".rgignore", ".ignore", ".gitignore"] {
-        any |= add_rules(&mut builder, directory, relative, Path::new(name), cancel)?;
-    }
+    // The last matching rule wins, so add the weakest source first.
     if relative.as_os_str().is_empty() {
         any |= add_rules(
             &mut builder,
@@ -261,6 +259,9 @@ fn directory_rules(
             Path::new(".git/info/exclude"),
             cancel,
         )?;
+    }
+    for name in [".gitignore", ".ignore", ".rgignore"] {
+        any |= add_rules(&mut builder, directory, relative, Path::new(name), cancel)?;
     }
     if !any {
         return Ok(None);

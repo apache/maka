@@ -62,6 +62,26 @@ pub(super) fn metadata(package: &Package) -> Result<Metadata, HostError> {
     )?)
 }
 
+#[cfg(test)]
+fn template(package: &Package) -> Result<&Template, HostError> {
+    package
+        .manifest()
+        .application
+        .as_ref()
+        .and_then(|application| application.composition.as_ref())
+        .ok_or_else(|| "product baseline must declare a composition".into())
+}
+
+#[cfg(test)]
+fn flat(package: &Package) -> Result<Input, HostError> {
+    let template = template(package)?;
+    Ok(Input {
+        base: None,
+        instances: template.children.clone(),
+        ui: template.ui.clone(),
+    })
+}
+
 pub(super) fn wrapped(package: &Package) -> Input {
     Input {
         base: Some(RootComposition {
@@ -182,3 +202,6 @@ pub(super) async fn rebase(
     next.base.as_mut().unwrap().package = package.application_ref();
     Ok(Some((next, package)))
 }
+
+#[cfg(test)]
+mod tests;
