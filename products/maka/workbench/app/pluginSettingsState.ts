@@ -292,7 +292,8 @@ export function createPluginSettings(
           ? pluginTitle(selected()!)
           : tr('Installed plugins'),
     installingCommunity,
-    communityInstance(repo: string) {
+    communityInstance(repo: string, packageId?: string | null) {
+      if (packageId) return inventory()?.instances.find((item) => item.package.id === packageId);
       return inventory()?.instances.find(
         (item) =>
           item.path.length === 1 &&

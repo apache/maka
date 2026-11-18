@@ -37,6 +37,7 @@ import { currentLocale, tr } from './locale';
 import type { PluginSettingsOwner } from './pluginSettingsState';
 type Repo = {
   name: string;
+  id?: string | null;
   description: string;
   installable: boolean;
   category: string;
@@ -205,7 +206,7 @@ export function CommunityPlugins(props: { owner: PluginSettingsOwner }) {
                       when={props.owner.installingCommunity() === r().name}
                       else={
                         <If
-                          when={!!props.owner.communityInstance(r().name)}
+                          when={!!props.owner.communityInstance(r().name, r().id)}
                           else={
                             <SettingsButton
                               label={tr('Install')}

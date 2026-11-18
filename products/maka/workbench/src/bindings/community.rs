@@ -24,6 +24,7 @@ use std::time::Duration;
 #[derive(Clone, JsObject)]
 pub struct Repository {
     pub name: String,
+    pub id: Option<String>,
     pub description: String,
     pub installable: bool,
     pub category: String,
@@ -121,6 +122,7 @@ pub async fn search(text: String, page: u32, locale: String) -> Result<Page, Str
                     title: field("displayName").unwrap_or_default().into(),
                     installable,
                     name: item.full_name,
+                    id: manifest["id"].as_str().map(str::to_owned),
                     description: field("description")
                         .map(str::to_owned)
                         .or(item.description)
