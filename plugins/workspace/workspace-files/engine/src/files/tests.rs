@@ -102,6 +102,26 @@ fn bounded_live_pages_preserve_names_and_reject_foreign_directory_cursors() {
     );
 }
 
+#[test]
+fn root_rgignore_overrides_nested_gitignore_in_candidate_search() {
+    let f = Fixture::new();
+    fs::create_dir(f.root.join("src")).unwrap();
+    fs::write(f.root.join(".rgignore"), "!keep.cache\n").unwrap();
+    fs::write(f.root.join("src/.gitignore"), "*.cache\n").unwrap();
+    fs::write(f.root.join("src/keep.cache"), "").unwrap();
+    fs::write(f.root.join("src/skip.cache"), "").unwrap();
+
+    let mut paths = Vec::new();
+    f.open(None)
+        .unwrap()
+        .candidates(".cache", &AtomicBool::new(false), |entry| {
+            paths.push(entry.path.bytes().unwrap());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(paths, [b"src/keep.cache".to_vec()]);
+}
+
 #[cfg(unix)]
 #[test]
 fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private_roots() {

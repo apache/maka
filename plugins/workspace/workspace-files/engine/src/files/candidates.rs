@@ -130,7 +130,7 @@ impl Directory {
         enum Work {
             Enter(Arc<Dir>, PathBuf),
             Child(Arc<Dir>, PathBuf, Vec<u8>, FileKind),
-            Leave,
+            Leave([usize; 4]),
         }
         interrupted(cancel)?;
         self.validate_inner()?;
@@ -139,19 +139,21 @@ impl Directory {
             Arc::new(target.directory.try_clone()?),
             self.relative.clone(),
         )];
-        let mut rules = Vec::new();
+        let mut rules = [const { Vec::new() }; 4];
         for anchor in &self.anchors[..self.anchors.len() - 1] {
             let relative = anchor
                 .path
                 .strip_prefix(&self.anchors[0].path)
                 .map_err(|_| error("files_changed"))?;
-            rules.push(directory_rules(&anchor.directory, relative, cancel)?);
+            load_directory_rules(&mut rules, &anchor.directory, relative, cancel)?;
         }
         while let Some(work) = pending.pop() {
             interrupted(cancel)?;
             match work {
-                Work::Leave => {
-                    rules.pop();
+                Work::Leave(lengths) => {
+                    for (source, len) in rules.iter_mut().zip(lengths) {
+                        source.truncate(len);
+                    }
                 }
                 Work::Enter(directory, relative) => {
                     let entries = match directory.entries() {
@@ -159,8 +161,9 @@ impl Directory {
                         Err(err) if disappeared(&err) => continue,
                         Err(err) => return Err(err),
                     };
-                    rules.push(directory_rules(&directory, &relative, cancel)?);
-                    pending.push(Work::Leave);
+                    let lengths = rules.each_ref().map(Vec::len);
+                    load_directory_rules(&mut rules, &directory, &relative, cancel)?;
+                    pending.push(Work::Leave(lengths));
                     let absolute = self.anchors[0].path.join(&relative);
                     let mut children = Vec::new();
                     for entry in entries {
@@ -247,64 +250,63 @@ fn skip_extension(path: &str) -> bool {
         || lower.ends_with(".db")
 }
 
-fn directory_rules(
+fn load_directory_rules(
+    rules: &mut [Vec<Gitignore>; 4],
     directory: &Dir,
     relative: &Path,
     cancel: &AtomicBool,
-) -> io::Result<Option<Gitignore>> {
-    let mut builder = GitignoreBuilder::new("");
-    let mut any = false;
-    // The last matching rule wins, so add the weakest source first.
-    if relative.as_os_str().is_empty() {
-        any |= add_rules(
-            &mut builder,
-            directory,
-            relative,
-            Path::new(".git/info/exclude"),
-            cancel,
-        )?;
+) -> io::Result<()> {
+    let files = [
+        Some(".rgignore"),
+        Some(".ignore"),
+        Some(".gitignore"),
+        relative
+            .as_os_str()
+            .is_empty()
+            .then_some(".git/info/exclude"),
+    ];
+    for (source, name) in rules.iter_mut().zip(files) {
+        if let Some(name) = name
+            && let Some(matcher) = read_rules(directory, relative, Path::new(name), cancel)?
+        {
+            source.push(matcher);
+        }
     }
-    for name in [".gitignore", ".ignore", ".rgignore"] {
-        any |= add_rules(&mut builder, directory, relative, Path::new(name), cancel)?;
-    }
-    if !any {
-        return Ok(None);
-    }
-    Ok(builder.build().ok())
+    Ok(())
 }
 
-fn add_rules(
-    builder: &mut GitignoreBuilder,
+fn read_rules(
     directory: &Dir,
     root: &Path,
     name: &Path,
     cancel: &AtomicBool,
-) -> io::Result<bool> {
+) -> io::Result<Option<Gitignore>> {
     interrupted(cancel)?;
     let current;
     let parent = match name.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => {
             current = match directory.open_dir_nofollow(parent) {
                 Ok(directory) => directory,
-                Err(_) => return Ok(false),
+                Err(_) => return Ok(None),
             };
             &current
         }
         _ => directory,
     };
     let Some(file_name) = name.file_name() else {
-        return Ok(false);
+        return Ok(None);
     };
     let mut options = crate::workspace::options();
     options.read(true);
     let file = match parent.open_with(file_name, &options) {
         Ok(file) => file,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Ok(false);
+        return Ok(None);
     }
+    let mut builder = GitignoreBuilder::new("");
     BufReader::new(file.take(metadata.len())).for_byte_line(|line| {
         interrupted(cancel)?;
         if let Ok(text) = std::str::from_utf8(line) {
@@ -312,7 +314,7 @@ fn add_rules(
         }
         Ok(true)
     })?;
-    Ok(true)
+    Ok(builder.build().ok())
 }
 
 fn disappeared(error: &io::Error) -> bool {
@@ -322,14 +324,15 @@ fn disappeared(error: &io::Error) -> bool {
     )
 }
 
-fn excluded(rules: &[Option<Gitignore>], path: &Path, is_dir: bool) -> bool {
-    let mut ignored = false;
-    for rule in rules.iter().flatten() {
-        match rule.matched(path, is_dir) {
-            ignore::Match::None => {}
-            ignore::Match::Ignore(_) => ignored = true,
-            ignore::Match::Whitelist(_) => ignored = false,
+fn excluded(rules: &[Vec<Gitignore>; 4], path: &Path, is_dir: bool) -> bool {
+    // Source precedence wins across directories. Within a source, the nearest file wins.
+    for source in rules {
+        for rule in source.iter().rev() {
+            let matched = rule.matched(path, is_dir);
+            if !matched.is_none() {
+                return matched.is_ignore();
+            }
         }
     }
-    ignored
+    false
 }
