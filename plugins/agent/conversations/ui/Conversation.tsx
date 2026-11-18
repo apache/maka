@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { MarkdownBody } from '../../../../products/maka/workbench/app/MarkdownBody';
 import { createTrajectoryRequests } from './trajectoryRequests';
 import {
   appendDraftQuote,
@@ -91,6 +92,7 @@ import {
 } from '../../../../products/maka/workbench/app/host';
 import {
   animateDisclosure,
+  Disclosure,
   C,
   Header,
   ViewSegment,
@@ -982,6 +984,7 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | TrajectoryEntry
     | { kind: 'summary'; key: string; turnKey: string }
+    | { kind: 'sources'; key: string; rowIds: string[] }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; turnKey?: string; repeats?: number }
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
@@ -1139,6 +1142,12 @@ export function Conversation(props: ConversationProps) {
       }
       openTurn = undefined;
     };
+    let citations: Extract<DisplayEntry, { kind: 'sources' }> | undefined;
+    let citationTurn: string | undefined;
+    const flushSources = () => {
+      if (citations) result.push(citations);
+      citations = undefined;
+    };
     for (const entry of section.entries) {
       const row = entry.kind === 'message' ? section.rowsById.get(entry.rowId) : undefined;
       const turnId =
@@ -1148,6 +1157,10 @@ export function Conversation(props: ConversationProps) {
             ? undefined
             : historyTurnKey(row);
       const turn = turnId ? section.turns.get(turnId) : undefined;
+      if (!botChat && turnId !== citationTurn) {
+        flushSources();
+        citationTurn = turnId;
+      }
       if (botChat && turnId !== openTurn) {
         speak();
         openTurn = turnId;
@@ -1192,6 +1205,15 @@ export function Conversation(props: ConversationProps) {
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
+        if (row.sourceCitation) {
+          citations ??= {
+            kind: 'sources',
+            key: 'sources/' + (turnId ?? entry.key),
+            rowIds: [],
+          };
+          citations.rowIds.push(entry.rowId);
+          continue;
+        }
         result.push({
           kind: 'row',
           key: entry.key,
@@ -1201,6 +1223,7 @@ export function Conversation(props: ConversationProps) {
         });
       }
     }
+    flushSources();
     if (botChat) {
       speak();
       // The running Turn may not be projected yet (its message is still pending).
@@ -4349,6 +4372,46 @@ export function Conversation(props: ConversationProps) {
                   initial.toolKey ? inputAction(toggleTrajectoryTool, initial.toolKey) : undefined
                 }
               />
+            );
+          }
+          if (initial.kind === 'sources') {
+            const open = rowState(initial.key).expanded;
+            const label = tr('Sources');
+            const sourceRows = () => {
+              const latest = entry();
+              return latest.kind === 'sources' ? latest.rowIds : initial.rowIds;
+            };
+            return (
+              <View style={{ gap: 4 }}>
+                <Disclosure
+                  label={label}
+                  open={open()}
+                  onPress={() => {
+                    animateDisclosure();
+                    open.set(!open());
+                  }}
+                >
+                  <Text style={captionTextStyle}>{label}</Text>
+                </Disclosure>
+                <If when={open()}>
+                  <Each of={sourceRows()} key={(id: string) => id}>
+                    {(sourceKey) => {
+                      const first = currentRow(sourceKey());
+                      if (!first) return <View />;
+                      return (
+                        <MarkdownBody
+                          row={() => currentRow(sourceKey()) ?? first}
+                          sourceId={sessionId + '/' + sourceKey()}
+                          sessionId={sessionId}
+                          compact
+                          openLink={openLink}
+                          userScroll={() => cancelNavigation()}
+                        />
+                      );
+                    }}
+                  </Each>
+                </If>
+              </View>
             );
           }
           if (initial.kind === 'summary') {

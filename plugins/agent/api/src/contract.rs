@@ -1444,6 +1444,9 @@ pub struct HistoryChunk {
     pub run_id: Option<maka_agent_facts::durable::RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<maka_agent_ports::session::history::ModelPartIdentity>,
+    /// Provider citation evidence, not assistant prose.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_citation: bool,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1786,6 +1789,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     imported_turn: chunk.imported_turn,
                     run_id: chunk.run_id,
                     model_part: chunk.model_part,
+                    source_citation: chunk.source_citation,
                     has_references: chunk.has_references,
                     quotes: chunk.quotes,
                     final_output: chunk.final_output,

@@ -124,6 +124,7 @@ export type Row = {
   model?: HistoryModel;
   finalOutput?: boolean;
   finalAnswer?: boolean;
+  sourceCitation?: boolean;
   compaction?: HistoryCompaction;
   foldedWork?: AgentHistoryChunk['foldedWork'];
   work?: AgentHistoryChunk['work'];
@@ -316,6 +317,7 @@ export function historyMetadata(
     attemptId: chunk.modelPart?.attemptId,
     finalOutput: chunk.finalOutput,
     finalAnswer: chunk.finalAnswer,
+    sourceCitation: chunk.sourceCitation,
     compaction: chunk.compaction ?? undefined,
     foldedWork: chunk.foldedWork ?? previous?.foldedWork,
     work: chunk.work ?? undefined,
