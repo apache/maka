@@ -56,6 +56,7 @@ pub struct MemoryPage {
 pub struct MemoryChange {
     pub scope: MemoryScope,
     pub edit: MemoryEdit,
+    pub resolution: Option<MemoryResolution>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -87,4 +88,18 @@ pub struct MemoryEvidenceRead {
 pub struct MemoryEvidencePage {
     pub evidence: Vec<MemoryEvidence>,
     pub next: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryResolution {
+    pub session_id: String,
+    pub model: crate::contract::ModelSelection,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReconcileMemories {
+    pub scope: MemoryScope,
+    pub writes: Vec<MemoryWrite>,
+    pub resolution: Option<MemoryResolution>,
 }

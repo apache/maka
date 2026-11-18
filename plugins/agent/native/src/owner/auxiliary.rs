@@ -78,6 +78,7 @@ pub(super) enum Admission {
     },
     Operation {
         reference: Box<maka_plugin_core::operation::RecoveryRef>,
+        attempt: Option<std::num::NonZeroU32>,
         scope: Box<maka_event_log::applications::operations::OperationDispatchScope>,
         execution: Execution,
         binding: ModelBinding,
@@ -112,6 +113,7 @@ impl Auxiliary {
         let (source, binding, purpose, execution, session, operation) = match admission {
             Admission::Operation {
                 reference,
+                attempt,
                 scope,
                 execution,
                 binding,
@@ -123,6 +125,7 @@ impl Auxiliary {
                     namespace: reference.namespace.clone(),
                     operation: reference.operation,
                     fingerprint: reference.fingerprint.clone(),
+                    attempt,
                 };
                 (
                     source,

@@ -247,6 +247,11 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "memory version evidence",
         sql: include_str!("../migrations/0045_memory_evidence.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 46,
+        description: "memory write resolution",
+        sql: include_str!("../migrations/0046_memory_resolution.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -270,6 +275,7 @@ mod migration_tests {
                             && m.description != "scoped ordinary memory"
                             && m.description != "memory assertion metadata"
                             && m.description != "memory version evidence"
+                            && m.description != "memory write resolution"
                     })
                     .copied()
                     .collect();
