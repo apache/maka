@@ -266,7 +266,7 @@ pub enum CleanupEvidence {
     NeverLaunched {
         snapshot: Option<SnapshotProof>,
     },
-    GroupClosed {
+    TaskClosed {
         snapshot: Option<SnapshotProof>,
         receipt: TaskReceipt,
     },
@@ -274,7 +274,7 @@ pub enum CleanupEvidence {
 impl CleanupEvidence {
     pub fn snapshot(&self) -> Option<&SnapshotProof> {
         match self {
-            Self::NeverLaunched { snapshot } | Self::GroupClosed { snapshot, .. } => {
+            Self::NeverLaunched { snapshot } | Self::TaskClosed { snapshot, .. } => {
                 snapshot.as_ref()
             }
         }
@@ -340,6 +340,7 @@ fn read_closure(pinned: &Pinned) -> io::Result<Option<Closure>> {
     let closure: Closure = read_json(file)?;
     let (resource, snapshot) = match &closure {
         Closure::NeverLaunched { resource, snapshot }
+        | Closure::SessionClosed { resource, snapshot }
         | Closure::GroupClosed {
             resource, snapshot, ..
         } => (resource, snapshot),
@@ -362,11 +363,12 @@ fn read_cleanup(pinned: &Pinned) -> io::Result<Option<CleanupEvidence>> {
     let snapshot = snapshot(pinned)?;
     match closure {
         Closure::NeverLaunched { .. } => Ok(Some(CleanupEvidence::NeverLaunched { snapshot })),
-        Closure::GroupClosed {
+        Closure::SessionClosed { .. }
+        | Closure::GroupClosed {
             original_group_closed: true,
             streams_drained: true,
             ..
-        } => Ok(Some(CleanupEvidence::GroupClosed {
+        } => Ok(Some(CleanupEvidence::TaskClosed {
             snapshot,
             receipt: task_receipt(pinned)?,
         })),
@@ -490,6 +492,15 @@ fn read_closed(resource: PathBuf) -> io::Result<Option<ClosedEvidence>> {
                 return Err(invalid("closure differs from original resource"));
             }
             (exit_code, signal)
+        }
+        Closure::SessionClosed {
+            resource: original,
+            snapshot,
+        } => {
+            if original != resource || snapshot != snapshot_identity(&owner)? {
+                return Err(invalid("session closure differs from original resource"));
+            }
+            (None, None)
         }
         Closure::NeverLaunched { .. } => {
             return Err(invalid("unlaunched task has no native protocol stream"));
