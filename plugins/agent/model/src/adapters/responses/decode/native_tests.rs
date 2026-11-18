@@ -73,3 +73,64 @@ fn native_result_requires_unique_item_and_complete_stream() {
     );
     assert!(Decoder::new(None, &[]).push(done(item())).is_err());
 }
+
+#[test]
+fn repeated_responses_annotations_bind_to_their_own_content_part() {
+    use maka_agent_facts::model::CitationAnchor;
+    let mut decoder = Decoder::new(None, &[]);
+    let mut events = decoder.push(json!({"type":"response.output_item.added","item":{"id":"msg","type":"message","content":[]}})).unwrap();
+    let annotation =
+        json!({"type":"url_citation","url":"https://example.org/","start_index":1,"end_index":2});
+    for index in 0..2 {
+        events.extend(decoder.push(json!({"type":"response.output_text.annotation.added","item_id":"msg","content_index":index,"annotation_index":0,"annotation":annotation})).unwrap());
+    }
+    let item = json!({"id":"msg","type":"message","content":[
+        {"type":"output_text","text":"首🙂","annotations":[annotation]},
+        {"type":"output_text","text":"尾巴"}
+    ]});
+    events.extend(
+        decoder
+            .push(json!({"type":"response.output_item.done","item":item}))
+            .unwrap(),
+    );
+    events.extend(
+        decoder
+            .push(json!({"type":"response.completed","response":{"output":[item]}}))
+            .unwrap(),
+    );
+    let citations = events
+        .into_iter()
+        .filter_map(|event| match event {
+            ModelEvent::Source {
+                source:
+                    ModelSource::Url {
+                        provider_options: Some(options),
+                        ..
+                    },
+                anchor,
+            } => Some((options["openai"]["contentIndex"].as_u64().unwrap(), anchor)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        citations,
+        vec![
+            (
+                0,
+                Some(CitationAnchor::Range {
+                    part: "msg".into(),
+                    start: 1,
+                    end: 2
+                })
+            ),
+            (
+                1,
+                Some(CitationAnchor::Range {
+                    part: "msg".into(),
+                    start: 3,
+                    end: 4
+                })
+            ),
+        ]
+    );
+}

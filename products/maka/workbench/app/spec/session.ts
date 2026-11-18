@@ -39,7 +39,7 @@ export type SpecMarkdownSegment =
   | {
       readonly kind: 'markdown';
       readonly key: string;
-      readonly atStart: boolean;
+      readonly start: number;
       readonly text: string;
     }
   | {
@@ -47,6 +47,7 @@ export type SpecMarkdownSegment =
       readonly key: string;
       readonly slot: number;
       readonly source: string;
+      readonly end: number;
       readonly closed: boolean;
     };
 
@@ -63,7 +64,7 @@ function stripFenceIndent(body: string, indentLen: number): string {
  */
 export function splitSpecMarkdown(markdown: string): readonly SpecMarkdownSegment[] {
   if (!/[`~]{3,}[ \t]*spec(?:[ \t\r\n]|$)/i.test(markdown)) {
-    return [{ kind: 'markdown', key: 'm:0', atStart: true, text: markdown }];
+    return [{ kind: 'markdown', key: 'm:0', start: 0, text: markdown }];
   }
 
   const segments: SpecMarkdownSegment[] = [];
@@ -108,7 +109,7 @@ export function splitSpecMarkdown(markdown: string): readonly SpecMarkdownSegmen
               segments.push({
                 kind: 'markdown',
                 key: `m:${specSlot}`,
-                atStart: mdStart === 0,
+                start: mdStart,
                 text: before,
               });
             }
@@ -145,6 +146,7 @@ export function splitSpecMarkdown(markdown: string): readonly SpecMarkdownSegmen
           key: `s:${slot}`,
           slot,
           source: rawBody,
+          end: nextPos,
           closed: true,
         });
         mdStart = nextPos;
@@ -163,13 +165,14 @@ export function splitSpecMarkdown(markdown: string): readonly SpecMarkdownSegmen
       key: `s:${slot}`,
       slot,
       source: rawBody,
+      end: markdown.length,
       closed: false,
     });
     mdStart = markdown.length;
   }
 
   if (specSlot === 0) {
-    return [{ kind: 'markdown', key: 'm:0', atStart: true, text: markdown }];
+    return [{ kind: 'markdown', key: 'm:0', start: 0, text: markdown }];
   }
 
   if (mdStart < markdown.length) {
@@ -178,7 +181,7 @@ export function splitSpecMarkdown(markdown: string): readonly SpecMarkdownSegmen
       segments.push({
         kind: 'markdown',
         key: `m:${specSlot}`,
-        atStart: mdStart === 0,
+        start: mdStart,
         text: tail,
       });
     }

@@ -274,15 +274,17 @@ impl Decoder {
                 is_error,
                 provider_options: Some(item_options(metadata)),
             },
-            Event::Citation(citation) => ModelEvent::Source(ModelSource::Url {
+            Event::Citation(citation) => ModelEvent::Source { anchor: citation.anchor, source: ModelSource::Url {
                 id: citation.id,
                 url: citation.url,
                 title: citation.title,
                 provider_options: Some(json!({"openai": {
+                    "itemId": citation.item_id,
+                    "contentIndex": citation.content_index,
                     "startIndex": citation.start_index,
                     "endIndex": citation.end_index,
                 }})),
-            }),
+            } },
             Event::Finished {
                 reason,
                 usage,

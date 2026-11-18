@@ -475,6 +475,26 @@ pub struct ModelPartIdentity {
     pub ordinal: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HistoryCitation {
+    Url {
+        url: String,
+        title: Option<String>,
+    },
+    Document {
+        title: String,
+        filename: Option<String>,
+        /// Document identity within this model request.
+        #[serde(
+            rename = "documentIndex",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        document_index: Option<u64>,
+    },
+}
+
 /// Display preview only; the original input retains complete text and provenance.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -495,6 +515,12 @@ pub struct Chunk {
     /// Provider citation evidence, not assistant prose.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub source_citation: bool,
+    /// Structured source on the first fragment, with bounded display labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<HistoryCitation>,
+    /// Target ordinal belongs to the same model attempt as this source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation_anchor: Option<maka_agent_facts::model::CitationAnchor<u64>>,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

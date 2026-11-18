@@ -16017,6 +16017,29 @@ export const contracts: {
                     description: 'Provider citation evidence, not assistant prose.',
                     type: 'boolean',
                   },
+                  citation: {
+                    description:
+                      'Structured source on the first fragment, with bounded display labels.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryCitation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  citationAnchor: {
+                    description: 'Target ordinal belongs to the same model attempt as this source.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/CitationAnchor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   hasReferences: {
                     description:
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
@@ -16195,6 +16218,96 @@ export const contracts: {
               ModelAttemptId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryCitation: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'url',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'url'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'document',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                      filename: {
+                        type: ['string', 'null'],
+                      },
+                      documentIndex: {
+                        description: 'Document identity within this model request.',
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'title'],
+                  },
+                ],
+              },
+              CitationAnchor: {
+                description:
+                  'Location in one assistant text part. Ranges are half-open Unicode scalar offsets.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      end: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part', 'start', 'end'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'block_end',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part'],
+                  },
+                ],
               },
               HistoryQuote: {
                 description:
@@ -24624,6 +24737,29 @@ export const contracts: {
                     description: 'Provider citation evidence, not assistant prose.',
                     type: 'boolean',
                   },
+                  citation: {
+                    description:
+                      'Structured source on the first fragment, with bounded display labels.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryCitation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  citationAnchor: {
+                    description: 'Target ordinal belongs to the same model attempt as this source.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/CitationAnchor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   hasReferences: {
                     description:
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
@@ -24802,6 +24938,96 @@ export const contracts: {
               ModelAttemptId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryCitation: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'url',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'url'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'document',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                      filename: {
+                        type: ['string', 'null'],
+                      },
+                      documentIndex: {
+                        description: 'Document identity within this model request.',
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'title'],
+                  },
+                ],
+              },
+              CitationAnchor: {
+                description:
+                  'Location in one assistant text part. Ranges are half-open Unicode scalar offsets.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      end: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part', 'start', 'end'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'block_end',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part'],
+                  },
+                ],
               },
               HistoryQuote: {
                 description:

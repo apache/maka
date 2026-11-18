@@ -573,6 +573,8 @@ fn fragment_metadata(chunk: &mut wire::Chunk) {
     if chunk.offset != 0 {
         chunk.attachments.clear();
         chunk.quotes.clear();
+        chunk.citation = None;
+        chunk.citation_anchor = None;
         chunk.has_references = false;
     }
 }

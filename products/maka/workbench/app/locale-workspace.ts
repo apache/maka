@@ -1028,6 +1028,8 @@ export const workspaceMessages = {
   'Switch worktree': ['Switch worktree', '切换工作树', '切換工作樹'],
   'Pull requests': ['Pull requests', '拉取请求', '拉取請求'],
   Sources: ['Sources', '来源', '來源'],
+  'Answer sources': ['Answer sources', '回答来源', '回答來源'],
+  'Open tabs': ['Open tabs', '已打开的标签页', '已開啟的分頁'],
   'View all': ['View all', '查看全部', '檢視全部'],
   'No subagents': ['No subagents', '暂无子智能体', '尚無子代理'],
   'No open files': ['No open files', '暂无打开的文件', '尚無開啟的檔案'],

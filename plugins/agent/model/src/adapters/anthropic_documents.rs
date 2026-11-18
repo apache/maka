@@ -38,7 +38,7 @@ impl Documents {
         cancellation: &CancellationToken,
     ) -> Result<(), ModelError> {
         for event in events {
-            let Event::Source(source) = event else {
+            let Event::Source { source, .. } = event else {
                 continue;
             };
             let Source::DeferredDocument {

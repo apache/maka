@@ -26,3 +26,4 @@ publish.workspace = true
 base64 = "0.23.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+schemars.workspace = true

@@ -51,7 +51,6 @@ pub(crate) struct Decoder {
     pub mcp_calls: BTreeMap<String, output::ToolCall>,
     pub server_calls: BTreeMap<String, String>,
     pub json_answer: bool,
-    pub has_search_results: bool,
 }
 impl Decoder {
     pub fn new(options: Options) -> Self {
@@ -60,7 +59,6 @@ impl Decoder {
             mcp_calls: BTreeMap::new(),
             server_calls: BTreeMap::new(),
             json_answer: false,
-            has_search_results: false,
         }
     }
     pub fn name(&self, provider: &str) -> String {
@@ -121,6 +119,7 @@ impl Decoder {
     pub fn block(
         &mut self,
         block: Block,
+        part_index: usize,
         next_id: &mut dyn FnMut() -> String,
     ) -> Result<Vec<Part>> {
         let mut parts = Vec::new();
@@ -140,10 +139,11 @@ impl Decoder {
                     extensions,
                 });
                 for citation in citations {
-                    if !(citation.is_web_search() && self.has_search_results)
-                        && let Some(source) = citation.source(&self.options.documents, next_id)
-                    {
-                        parts.push(Part::Source(source));
+                    if let Some(source) = citation.source(&self.options.documents, next_id) {
+                        parts.push(Part::Source {
+                            source,
+                            anchor: Some(output::CitationAnchor::BlockEnd { part: part_index }),
+                        });
                     }
                 }
             }
@@ -284,14 +284,16 @@ impl Decoder {
                     caller_metadata(result.caller.as_ref()),
                 ));
                 if let wire::Search::Results(results) = result.content {
-                    self.has_search_results |= !results.is_empty();
                     for result in results {
-                        parts.push(Part::Source(output::Source::Url {
-                            id: next_id(),
-                            url: result.url,
-                            title: result.title,
-                            extensions: metadata(json!({"pageAge":result.page_age})),
-                        }));
+                        parts.push(Part::Source {
+                            source: output::Source::Url {
+                                id: next_id(),
+                                url: result.url,
+                                title: result.title,
+                                extensions: metadata(json!({"pageAge":result.page_age})),
+                            },
+                            anchor: None,
+                        });
                     }
                 }
             }
@@ -426,7 +428,6 @@ pub fn decode(
     let message: wire::Message = serde_json::from_value(raw.clone())
         .map_err(|e| Error::invalid(e.to_string(), raw.clone()))?;
     let mut decoder = Decoder::new(options);
-    decoder.has_search_results = message.content.iter().any(|block|matches!(block, Block::WebSearchToolResult(wire::Hosted { content: wire::Search::Results(results), .. }) if !results.is_empty()));
     let mut parts = Vec::new();
     for block in message.content {
         if !wire::validate_block(&block, wire::Phase::Complete) {
@@ -435,7 +436,7 @@ pub fn decode(
                 raw,
             ));
         }
-        parts.extend(decoder.block(block, next_id)?);
+        parts.extend(decoder.block(block, parts.len(), next_id)?);
     }
     let finish = finish::finish(
         message.usage,

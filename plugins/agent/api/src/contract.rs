@@ -1447,6 +1447,12 @@ pub struct HistoryChunk {
     /// Provider citation evidence, not assistant prose.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub source_citation: bool,
+    /// Structured source on the first fragment, with bounded display labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<maka_agent_ports::session::history::HistoryCitation>,
+    /// Target ordinal belongs to the same model attempt as this source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation_anchor: Option<maka_agent_facts::model::CitationAnchor<u64>>,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1790,6 +1796,8 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     run_id: chunk.run_id,
                     model_part: chunk.model_part,
                     source_citation: chunk.source_citation,
+                    citation: chunk.citation,
+                    citation_anchor: chunk.citation_anchor,
                     has_references: chunk.has_references,
                     quotes: chunk.quotes,
                     final_output: chunk.final_output,

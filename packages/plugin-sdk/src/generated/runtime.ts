@@ -4569,6 +4569,37 @@ export type AgentQueueRejection =
   | 'invalid_edit'
   | 'execution_changed'
   | 'not_running';
+export type HistoryCitation =
+  | {
+      kind: 'url';
+      url: string;
+      title?: string | null;
+    }
+  | {
+      kind: 'document';
+      title: string;
+      filename?: string | null;
+      /**
+       * Document identity within this model request.
+       */
+      documentIndex?: number | null;
+    };
+/**
+ * Location in one assistant text part. Ranges are half-open Unicode scalar offsets.
+ */
+export type CitationAnchor =
+  | {
+      kind: 'range';
+      part: number;
+      start: number;
+      end: number;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'block_end';
+      part: number;
+      [k: string]: unknown | undefined;
+    };
 /**
  * Model identity recorded for the exact historical assistant step.
  */
@@ -8512,6 +8543,14 @@ export interface AgentHistoryChunk {
    * Provider citation evidence, not assistant prose.
    */
   sourceCitation?: boolean;
+  /**
+   * Structured source on the first fragment, with bounded display labels.
+   */
+  citation?: HistoryCitation | null;
+  /**
+   * Target ordinal belongs to the same model attempt as this source.
+   */
+  citationAnchor?: CitationAnchor | null;
   /**
    * The original user input has quotes, directory references or inline references.
    * Present only on the first fragment; display text cannot reconstruct these references.

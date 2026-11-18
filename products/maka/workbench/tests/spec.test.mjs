@@ -198,7 +198,7 @@ test('splitSpecMarkdown assigns stable slot keys to prefix-overlapping sibling b
     {
       kind: 'markdown',
       key: 'm:0',
-      atStart: true,
+      start: 0,
       text: 'Plain reply without spec fences.',
     },
   ]);
@@ -208,7 +208,7 @@ test('splitSpecMarkdown assigns stable slot keys to prefix-overlapping sibling b
     {
       kind: 'markdown',
       key: 'm:0',
-      atStart: true,
+      start: 0,
       text: 'Intro\n```spec',
     },
   ]);
@@ -216,12 +216,13 @@ test('splitSpecMarkdown assigns stable slot keys to prefix-overlapping sibling b
   // Open streaming fence preserves trailing newline so complete trailing patch lines are distinguishable.
   const openSegs = splitSpecMarkdown('Intro\n```spec\n{"op":"add","path":"/root","value":"a"}\n');
   assert.deepEqual(openSegs, [
-    { kind: 'markdown', key: 'm:0', atStart: true, text: 'Intro\n' },
+    { kind: 'markdown', key: 'm:0', start: 0, text: 'Intro\n' },
     {
       kind: 'spec',
       key: 's:0',
       slot: 0,
       source: '{"op":"add","path":"/root","value":"a"}\n',
+      end: 'Intro\n```spec\n{"op":"add","path":"/root","value":"a"}\n'.length,
       closed: false,
     },
   ]);
@@ -247,8 +248,11 @@ test('splitSpecMarkdown assigns stable slot keys to prefix-overlapping sibling b
       { kind: 'spec', key: 's:1' },
     ],
   );
-  assert.equal(split[0].kind === 'markdown' && split[0].atStart, true);
-  assert.equal(split[2].kind === 'markdown' && split[2].atStart, false);
+  assert.equal(split[0].kind === 'markdown' && split[0].start, 0);
+  assert.equal(
+    split[2].kind === 'markdown' && twoBlockMsg.slice(split[2].start).startsWith(split[2].text),
+    true,
+  );
   assert.equal(split[1].kind === 'spec' && split[1].source, block1);
   assert.equal(split[3].kind === 'spec' && split[3].source, block2Extended);
 
