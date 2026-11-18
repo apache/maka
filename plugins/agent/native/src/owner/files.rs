@@ -135,8 +135,9 @@ impl Owner {
     pub async fn save_file(
         &self,
         input: SaveFile,
-        scope: &Scope,
+        context: &Context,
     ) -> Result<SaveFileResult, String> {
+        let scope = context.scope();
         if !matches!(
             scope.identity,
             maka_capabilities::call::Identity::Native
@@ -150,6 +151,11 @@ impl Owner {
             .await?;
         self.check_file_session(&input.session_id, &original, scope)
             .await?;
+        let content = context
+            .attachments()
+            .get("content")
+            .ok_or("Missing file content.")?
+            .clone();
         worktrees::blocking(scope, &self.stop, move |cancel| {
             let policy = match sandbox {
                 maka_sandbox::Sandbox::Managed { filesystem, .. } => {
@@ -160,10 +166,12 @@ impl Owner {
                     return Err("File editing requires a local workspace.".into());
                 }
             };
+            let bytes = content.read(0..content.bytes())?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| "files_invalid_text")?;
             match directory.save_text(
                 &input.path,
                 &input.expected_version,
-                &input.text,
+                text,
                 policy.as_ref(),
                 &cancel,
             ) {

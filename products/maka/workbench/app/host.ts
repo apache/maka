@@ -221,6 +221,9 @@ export function createHost(application: UiHost) {
     pathLabel(path: unknown) {
       return nativeHost.pathLabel(path);
     },
+    async saveFile(input: Input<'agent', 'saveFile'>, text: string) {
+      return attempt(await nativeHost.control('saveFile', input, text));
+    },
     async control(method: string, input: unknown) {
       return attempt(await nativeHost.control(method, input));
     },

@@ -29,7 +29,7 @@ mod mutation;
 mod permission_window;
 mod plugins;
 mod quick_tools;
-mod settings;
+mod resources;
 mod system_permission;
 mod terminal;
 mod terminal_grid;
@@ -963,13 +963,19 @@ impl ApplicationHost {
         this: Instance<Self>,
         method: String,
         input: JsonValue,
+        content: Option<String>,
     ) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
             let client = source.resolve(&owner).await?;
             let id = Uuid::new_v4();
-            let mutation = client.control(id, &method, input).await?;
+            let resources = content
+                .map(|text| resources::text("content", text))
+                .unwrap_or_default();
+            let mutation = client
+                .control_with_resources(id, &method, input, resources)
+                .await?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))
@@ -1003,7 +1009,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<JsonValue, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
@@ -1032,7 +1038,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<Instance<OriginalMutation>, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = execute(owner.clone(), async move {

@@ -30,6 +30,8 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 export function settingsValue(reply: unknown): unknown {
   const receipt = record(reply) && record(reply.receipt) ? reply.receipt : null;
+  if (receipt?.kind === 'unavailable' && typeof receipt.diagnostic === 'string')
+    throw new Error(receipt.diagnostic);
   const outcome = receipt?.kind === 'recorded' && record(receipt.outcome) ? receipt.outcome : null;
   if (outcome?.kind !== 'returned')
     throw new Error(

@@ -210,7 +210,7 @@ fn editor_saves_the_opened_version_and_rejects_stale_writers() {
     let FileCapture::Ready(before) = root.read_file(&path, None, &cancel).unwrap() else {
         panic!("text")
     };
-    let edited = bytes.replace("one", "two");
+    let edited = format!("{bytes}{}", "追加\r\n".repeat(300_000));
     let version = root
         .save_text(&path, &before.version, &edited, None, &cancel)
         .unwrap()
@@ -225,6 +225,22 @@ fn editor_saves_the_opened_version_and_rejects_stale_writers() {
             .unwrap(),
         None
     );
+    let version = root
+        .save_text(&path, &version, "smaller", None, &cancel)
+        .unwrap()
+        .unwrap();
+    fs::hard_link(&file, workspace.join("alias.md")).unwrap();
+    assert_eq!(
+        root.save_text(&path, &version, "draft", None, &cancel)
+            .unwrap_err()
+            .to_string(),
+        "files_hard_link"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("alias.md")).unwrap(),
+        "smaller"
+    );
+    fs::remove_file(workspace.join("alias.md")).unwrap();
     fs::write(&file, "agent").unwrap();
     assert_eq!(
         root.save_text(&path, &version, "draft", None, &cancel)

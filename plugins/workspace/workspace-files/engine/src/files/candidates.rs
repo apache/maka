@@ -21,8 +21,12 @@
 use super::*;
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
+use gix::bstr::io::BufReadExt;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use std::{io::Read, sync::Arc};
+use std::{
+    io::{BufReader, Read},
+    sync::Arc,
+};
 
 impl Directory {
     /// Browses direct entries for an empty query, otherwise searches descendant file paths.
@@ -275,7 +279,6 @@ fn add_rules(
     name: &Path,
     cancel: &AtomicBool,
 ) -> io::Result<bool> {
-    const MAX_IGNORE_BYTES: u64 = 1024 * 1024;
     interrupted(cancel)?;
     let current;
     let parent = match name.parent() {
@@ -293,28 +296,21 @@ fn add_rules(
     };
     let mut options = crate::workspace::options();
     options.read(true);
-    let mut file = match parent.open_with(file_name, &options) {
+    let file = match parent.open_with(file_name, &options) {
         Ok(file) => file,
         Err(_) => return Ok(false),
     };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Ok(false);
     }
-    let mut bytes = Vec::new();
-    if (&mut file)
-        .take(MAX_IGNORE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .is_err()
-        || bytes.len() as u64 > MAX_IGNORE_BYTES
-    {
-        return Ok(false);
-    }
-    for line in bytes.lines() {
-        let Ok(line) = std::str::from_utf8(line) else {
-            continue;
-        };
-        let _ = builder.add_line(Some(root.to_path_buf()), line);
-    }
+    BufReader::new(file.take(metadata.len())).for_byte_line(|line| {
+        interrupted(cancel)?;
+        if let Ok(text) = std::str::from_utf8(line) {
+            let _ = builder.add_line(Some(root.to_path_buf()), text);
+        }
+        Ok(true)
+    })?;
     Ok(true)
 }
 

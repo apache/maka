@@ -847,6 +847,16 @@ impl Client {
     }
     /// Reserve a shell control attempt separately from composer draft sends.
     pub async fn control(&self, id: Uuid, method: &str, input: Value) -> Result<Mutation> {
+        self.control_with_resources(id, method, input, Attachments::new())
+            .await
+    }
+    pub async fn control_with_resources(
+        &self,
+        id: Uuid,
+        method: &str,
+        input: Value,
+        resources: Attachments,
+    ) -> Result<Mutation> {
         if !CONTROL_METHODS.contains(&method) {
             return Err("unsupported agent control method".into());
         }
@@ -869,7 +879,7 @@ impl Client {
             "agent",
             method,
             input,
-            Attachments::new(),
+            resources,
             session_id,
             correlation,
         )
