@@ -172,6 +172,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     cells: original_cells,
                     steering: steering_messages,
                     notifications: notification_facts,
+                    fallback_cues,
                     step_purposes,
                     attempt_steps,
                 },
@@ -247,6 +248,12 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                             messages,
                         )
                         .await?;
+                }
+                if let Some(cue) = frozen.fallback_cue
+                    && fallback_cues.insert((view.run, cue.attempt))
+                {
+                    messages.append(Message::user(cue.text)).await?;
+                    *current = None;
                 }
                 Ok(())
             }),

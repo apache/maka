@@ -338,7 +338,10 @@ impl DriverModel {
             if !repair {
                 request.adjudications.clear();
                 request.compaction_recovery = Some(attempt);
+                request.required_tool_fallback_of = None;
+                request.composition.tool_choice = prepared.request.tool_choice;
             }
+            frozen.fallback_cue = None;
             frozen.operation = prepared.request.operation;
             frozen.tool_choice = prepared.request.tool_choice;
             frozen.item_acceptance = false;

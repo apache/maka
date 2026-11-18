@@ -41,12 +41,14 @@ const RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 struct Shared {
     output: Arc<Semaphore>,
     without_usage: Mutex<HashSet<(u64, String)>>,
+    without_forced_tool_choice: Mutex<HashSet<(u64, String, String)>>,
 }
 impl Default for Shared {
     fn default() -> Self {
         Self {
             output: Arc::new(Semaphore::new(OUTPUT_WINDOW as usize)),
             without_usage: Mutex::default(),
+            without_forced_tool_choice: Mutex::default(),
         }
     }
 }
@@ -241,12 +243,14 @@ async fn run_inner(
     response_body: &mut Option<Arc<dyn http::Body>>,
 ) -> Result<(), ModelError> {
     let quota_scope = error::QuotaScope::endpoint(&request.provider.base_url);
+    let model_id = request.provider.model.clone();
     let mut prepared = tokio::select! {
         biased;
         _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
         result = request::prepare(request) => result?,
     };
     let route = (context.transport.identity(), prepared.url.clone());
+    let forced_choice_key = (context.transport.identity(), prepared.url.clone(), model_id);
     let remembered = prepared.compatible
         && shared
             .without_usage
@@ -259,6 +263,24 @@ async fn run_inner(
             .as_object_mut()
             .expect("request object")
             .remove("stream_options");
+    }
+    let remembered_tool_choice = shared
+        .without_forced_tool_choice
+        .lock()
+        .expect("tool_choice cache")
+        .contains(&forced_choice_key);
+    if remembered_tool_choice {
+        match prepared.body.get_mut("tool_choice") {
+            Some(serde_json::Value::String(choice)) if choice == "required" => {
+                *choice = "auto".into();
+            }
+            Some(serde_json::Value::Object(map))
+                if map.get("type").and_then(serde_json::Value::as_str) == Some("any") =>
+            {
+                map.insert("type".into(), serde_json::Value::String("auto".into()));
+            }
+            _ => {}
+        }
     }
     let request::Prepared {
         url,
@@ -277,6 +299,7 @@ async fn run_inner(
     let mut events = events::Events::new();
     events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
+    let mut retried_tool_choice = remembered_tool_choice;
     let encoding = if let Some((_, options, language)) = &chat {
         BodyEncoding::Chat(options.clone(), *language)
     } else {
@@ -406,6 +429,29 @@ async fn run_inner(
                         header = encoded_header.without_usage() => header,
                     };
                     retried = true;
+                    body.0.close().await.map_err(body_error)?;
+                    continue;
+                }
+            }
+            if !retried_tool_choice && status == 400 && encoded_header.has_forced_tool_choice() {
+                let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+                if text.contains("tool_choice") || text.contains("tool choice") {
+                    {
+                        let mut cache = shared
+                            .without_forced_tool_choice
+                            .lock()
+                            .expect("tool_choice cache");
+                        if cache.len() >= 1024 {
+                            cache.clear();
+                        }
+                        cache.insert(forced_choice_key.clone());
+                    }
+                    encoded_header = tokio::select! {
+                        biased;
+                        _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
+                        header = encoded_header.without_forced_tool_choice() => header,
+                    };
+                    retried_tool_choice = true;
                     body.0.close().await.map_err(body_error)?;
                     continue;
                 }

@@ -29,6 +29,7 @@ pub(super) struct RecordedInputs {
     pub cells: BTreeMap<CellId, FrozenCellKnowledge>,
     pub steering: BTreeSet<(RunId, String)>,
     pub notifications: BTreeSet<(RunId, FactId)>,
+    pub fallback_cues: BTreeSet<(RunId, ModelAttemptId)>,
     pub step_purposes: BTreeMap<StepId, ModelPurpose>,
     pub attempt_steps: BTreeMap<ModelAttemptId, StepId>,
 }
@@ -129,6 +130,9 @@ impl DriverModel {
                                 .iter()
                                 .map(|notice| (view.run, notice.id)),
                         );
+                        if let Some(cue) = frozen.fallback_cue {
+                            original.fallback_cues.insert((view.run, cue.attempt));
+                        }
                     }
                     for knowledge in frozen.recovered_cells {
                         // A consumed observation never acquires later child knowledge.

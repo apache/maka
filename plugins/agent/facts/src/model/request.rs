@@ -101,6 +101,7 @@ pub enum ToolChoiceMode {
     #[default]
     Auto,
     None,
+    Required,
 }
 
 impl ToolChoiceMode {

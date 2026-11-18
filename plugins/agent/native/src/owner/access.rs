@@ -395,6 +395,11 @@ impl RunAccess {
         Ok(current)
     }
 
+    pub(super) fn is_bot(&self) -> bool {
+        self.owner()
+            .is_ok_and(|owner| owner.settings.bot && owner.bot.is(&self.execution.session_id))
+    }
+
     pub(super) fn select_live_tools(
         catalog: &maka_tools::ToolCatalog,
         configuration: &ResolvedConfiguration,

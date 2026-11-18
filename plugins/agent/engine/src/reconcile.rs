@@ -693,6 +693,9 @@ fn final_reply(view: &RunView, request: &RequestSpec, now: UnixMillis) -> bool {
         })
         || view.current_step != Some(request.step)
         || request.accounting.purpose != maka_agent_facts::context::ModelPurpose::Main
+        || (request.composition.tool_choice
+            == maka_agent_facts::model::request::ToolChoiceMode::Required
+            && request.required_tool_fallback_of.is_none())
         || view.tools.values().any(|tool| tool.accepted.is_none())
         || view
             .cells
@@ -1483,6 +1486,15 @@ fn next_action(
         }
         return if needs_continuation {
             Action::Prepare(Preparation::ToolContinuation { attempt: id })
+        } else if model
+            .and_then(|model| model.request.as_ref())
+            .is_some_and(|request| {
+                request.composition.tool_choice
+                    == maka_agent_facts::model::request::ToolChoiceMode::Required
+                    && request.required_tool_fallback_of.is_none()
+            })
+        {
+            Action::Prepare(Preparation::RequiredToolFallback { attempt: id })
         } else {
             Action::Terminate(Terminal::Completed)
         };

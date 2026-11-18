@@ -122,6 +122,18 @@ impl RequestBody {
             .remove("previous_response_id");
         self
     }
+    pub fn has_forced_tool_choice(&self) -> bool {
+        self.properties.get("tool_choice").and_then(Value::as_str) == Some("required")
+    }
+    pub fn downgrade_forced_tool_choice(&mut self) {
+        if self.has_forced_tool_choice() {
+            self.properties["tool_choice"] = json!("auto");
+        }
+    }
+    pub fn with_prompt(mut self, prompt: Prompt) -> Self {
+        self.prompt = prompt;
+        self
+    }
     pub fn chunks(
         self,
     ) -> impl Stream<Item = std::result::Result<http::Bytes, http::Error>> + Send + 'static {

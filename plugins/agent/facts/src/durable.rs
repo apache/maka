@@ -196,6 +196,8 @@ pub struct RequestSpec {
     pub composition: RequestComposition,
     pub summary_repair_of: Option<ModelAttemptId>,
     pub compaction_recovery: Option<ModelAttemptId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_tool_fallback_of: Option<ModelAttemptId>,
     pub source_capture: ContentRef,
     pub source_digest: String,
     pub effective_source_digest: String,

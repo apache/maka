@@ -293,12 +293,14 @@ pub(crate) fn model_closure(
             dynamic_context: Vec::new(),
             tool_catalog_digest: source.digest.clone(),
             tools: Vec::new(),
+            tool_choice: Default::default(),
             provider_options: None,
             max_output_tokens: None,
             sources: Vec::new(),
         },
         summary_repair_of: None,
         compaction_recovery: None,
+        required_tool_fallback_of: None,
         source_capture: source.clone(),
         source_digest: source.digest.clone(),
         effective_source_digest: source.digest.clone(),
@@ -865,4 +867,78 @@ fn known_publication_failure_only_fences_followup_until_original_cleanup() {
         .cleanup = OperationCleanup::Confirmed;
     assert!(!view.blocks_followup());
     assert_eq!(view.recovery_failure(), Some(&reason));
+}
+
+#[test]
+fn required_tool_choice_requests_one_bounded_fallback_before_final_settlement() {
+    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
+    use maka_plugin_core::operation::OperationCleanup;
+    let now = UnixMillis(1);
+    let mut view = policy_view(Some(500));
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (mut view, mut request, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Success,
+        false,
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    );
+    request.composition.tool_choice = maka_agent_facts::model::request::ToolChoiceMode::Required;
+    assert!(!final_reply(&view, &request, now));
+
+    let level = ModelLevel {
+        input: maka_agent_facts::input::RunInput::HistorySource {
+            source: view.spec.input.clone(),
+        },
+        request: Some(request.clone()),
+        compaction: CompactionLevel::None,
+        baseline: None,
+        failure: None,
+        fallback_available: false,
+        codex: false,
+    };
+    assert!(matches!(
+        next(&view, &Live::default(), now, Some(&level), false),
+        Action::Prepare(Preparation::RequiredToolFallback { attempt: actual }) if actual == attempt
+    ));
+
+    let (mut view, mut fallback_request, fallback_attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Success,
+        false,
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelCleanupObserved {
+            attempt: fallback_attempt,
+            cleanup: OperationCleanup::Confirmed,
+        },
+    );
+    fallback_request.composition.tool_choice =
+        maka_agent_facts::model::request::ToolChoiceMode::Required;
+    fallback_request.required_tool_fallback_of = Some(attempt);
+    assert!(final_reply(&view, &fallback_request, now));
+    let fallback_level = ModelLevel {
+        request: Some(fallback_request),
+        ..level
+    };
+    assert!(matches!(
+        next(&view, &Live::default(), now, Some(&fallback_level), false),
+        Action::Terminate(Terminal::Completed)
+    ));
 }

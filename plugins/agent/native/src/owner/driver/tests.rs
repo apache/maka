@@ -573,8 +573,10 @@ impl Rig {
                     grant: Grant {
                         methods: [
                             "assistantPreferences".into(),
+                            "connection".into(),
                             "connections".into(),
                             "create".into(),
+                            "saveCredential".into(),
                             "update".into(),
                             "updateAssistantPreferences".into(),
                             "usage".into(),
@@ -637,6 +639,10 @@ impl Rig {
         )
         .await?;
         self.host = Some(host.clone());
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\\.\pipe\maka-driver-test-{}", Uuid::new_v4()));
+        #[cfg(not(windows))]
         let socket = self.socket_directory.path().join("wait.sock");
         let listener = LocalListener::bind(&socket)?;
         let cancel = self.stop_serving.clone();
@@ -1057,12 +1063,14 @@ impl Rig {
                 dynamic_context: vec![],
                 tool_catalog_digest: source.reference().digest.clone(),
                 tools: vec![],
+                tool_choice: Default::default(),
                 provider_options: None,
                 max_output_tokens: None,
                 sources: vec![],
             },
             summary_repair_of: None,
             compaction_recovery: None,
+            required_tool_fallback_of: None,
             source_capture: descriptor.clone(),
             source_digest: descriptor.digest.clone(),
             effective_source_digest: descriptor.digest.clone(),

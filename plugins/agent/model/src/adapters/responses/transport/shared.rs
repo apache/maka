@@ -34,6 +34,7 @@ pub struct Shared {
     pub cache: Arc<Semaphore>,
     routes: RandomState,
     failures: Mutex<VecDeque<(u64, Instant)>>,
+    without_forced_tool_choice: Mutex<VecDeque<u64>>,
 }
 
 impl Default for Shared {
@@ -42,6 +43,7 @@ impl Default for Shared {
             cache: Arc::new(Semaphore::new(super::cache::CACHE_LIMIT as usize)),
             routes: RandomState::new(),
             failures: Mutex::new(VecDeque::new()),
+            without_forced_tool_choice: Mutex::new(VecDeque::new()),
         }
     }
 }
@@ -49,6 +51,28 @@ impl Default for Shared {
 impl Shared {
     pub fn route(&self, url: &str, headers: &BTreeMap<String, String>, network: u64) -> u64 {
         self.routes.hash_one((url, headers, network))
+    }
+
+    pub fn forced_tool_choice_key(&self, url: &str, model: &str, network: u64) -> u64 {
+        self.routes.hash_one((url, model, network))
+    }
+
+    pub fn omits_forced_tool_choice(&self, key: u64) -> bool {
+        self.without_forced_tool_choice
+            .lock()
+            .unwrap()
+            .contains(&key)
+    }
+
+    pub fn omit_forced_tool_choice(&self, key: u64) {
+        let mut entries = self.without_forced_tool_choice.lock().unwrap();
+        if entries.contains(&key) {
+            return;
+        }
+        if entries.len() >= 1024 {
+            entries.pop_front();
+        }
+        entries.push_back(key);
     }
 
     pub fn deferred(&self, route: u64, now: Instant) -> bool {

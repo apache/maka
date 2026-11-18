@@ -128,9 +128,32 @@ struct FrozenInput {
     wire: FrozenWire,
     notifications: Vec<FrozenNotification>,
     recovered_cells: Vec<FrozenCellKnowledge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fallback_cue: Option<FrozenFallbackCue>,
     instructions: Option<String>,
     system: Option<SystemPrompt>,
     tool_choice: ToolChoiceMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenFallbackCue {
+    attempt: ModelAttemptId,
+    text: String,
+}
+
+fn bot_fallback_cue(language: maka_agent_facts::language::Language) -> &'static str {
+    match language {
+        maka_agent_facts::language::Language::En => {
+            "Bot turn reminder: plain-text output is internal only and was not delivered to the user. If anything from your reply should reach the user, call `SendUser` now; when you are done for this turn, call `sleep`."
+        }
+        maka_agent_facts::language::Language::ZhCn => {
+            "Bot 回合提示：纯文本输出仅保留在内部执行记录中，未发送给用户。若刚才的内容需要传达给用户，请立即调用 `SendUser`；若本回合工作已完成，请调用 `sleep` 结束回合。"
+        }
+        maka_agent_facts::language::Language::ZhTw => {
+            "Bot 回合提示：純文字輸出僅保留於內部執行紀錄中，未傳送給使用者。若剛才的內容需要傳達給使用者，請立即呼叫 `SendUser`；若本回合工作已完成，請呼叫 `sleep` 結束回合。"
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -537,6 +560,33 @@ impl DriverModel {
                 knowledge,
             });
         }
+        let fallback_cue = if let Preparation::RequiredToolFallback { attempt } = &mode {
+            if summary || view.current_attempt != Some(*attempt) {
+                return Err(RunError::InvalidInput(
+                    "required tool fallback lost its current Main attempt".into(),
+                ));
+            }
+            let prior_step = view.current_step.ok_or_else(|| {
+                RunError::InvalidInput("required tool fallback lost its current Step".into())
+            })?;
+            let prior = reader.request(view.run, prior_step).await?;
+            if prior.accounting.purpose != ModelPurpose::Main
+                || prior.composition.tool_choice != ToolChoiceMode::Required
+                || prior.required_tool_fallback_of.is_some()
+            {
+                return Err(RunError::InvalidInput(
+                    "required tool fallback requires an unretried Required Main step".into(),
+                ));
+            }
+            let text = bot_fallback_cue(view.spec.language).to_owned();
+            messages.append(Message::user(text.clone())).await?;
+            Some(FrozenFallbackCue {
+                attempt: *attempt,
+                text,
+            })
+        } else {
+            None
+        };
         let purpose = if summary {
             ModelPurpose::Summary
         } else {
@@ -557,7 +607,12 @@ impl DriverModel {
             provider: &model.provider,
             options: &model.options,
             context_window: context.and_then(|value| value.model_context_window),
-            tool_choice: ToolChoiceMode::Auto,
+            tool_choice: match (purpose, catalog.as_ref()) {
+                (ModelPurpose::Main, Some(catalog)) => {
+                    driver.main_tool_choice(&definitions, catalog)
+                }
+                _ => ToolChoiceMode::Auto,
+            },
         };
         let accounting = maka_agent_facts::accounting::ModelEvidence {
             binding: source.accepted.binding.clone(),
@@ -707,6 +762,7 @@ impl DriverModel {
                 wire: FrozenWire::capture(&request.request.prompt)?,
                 notifications: notification_sources,
                 recovered_cells,
+                fallback_cue,
                 instructions: request.request.prompt.instructions().map(str::to_owned),
                 system: system.clone(),
                 tool_choice: request.request.tool_choice,
@@ -725,13 +781,17 @@ impl DriverModel {
                 ),
             })?;
             let capture = ContentBlob::json(&source_evidence)?;
-            let projection = ContentBlob::json(&json!({
+            let mut projection = json!({
                 "execution": self.execution, "canonicalRevision": source_evidence.current_revision,
                 "input": view.spec.input, "historicalSourceDigest": source_evidence.cut.digest,
                 "steering": steering_refs,
                 "notifications": &frozen.notifications,
                 "recoveredCells": &frozen.recovered_cells,
-            }))?;
+            });
+            if let Some(cue) = &frozen.fallback_cue {
+                projection["fallbackCue"] = json!(cue);
+            }
+            let projection = ContentBlob::json(&projection)?;
             let mut request_context = model.context.clone();
             if let Some(context) = request_context.as_mut() {
                 context.operation = settings.operation;
@@ -765,9 +825,34 @@ impl DriverModel {
                 dynamic_context,
                 tool_catalog_digest: maka_agent_engine::digest(&definitions)?,
                 tools: definitions,
+                tool_choice: request.request.tool_choice,
                 provider_options: Some(model.options.clone()),
                 max_output_tokens: request.request.max_output_tokens,
                 sources: revisions,
+            };
+            let required_tool_fallback_of = if purpose != ModelPurpose::Main {
+                None
+            } else if let Preparation::RequiredToolFallback { attempt } = &mode {
+                Some(*attempt)
+            } else if let Some(step) = view.current_step {
+                let prior = reader.request(view.run, step).await?;
+                if prior.accounting.purpose == ModelPurpose::Main {
+                    prior.required_tool_fallback_of
+                } else {
+                    let mut inherited = None;
+                    for &candidate in view.steps.keys() {
+                        let existing = reader.request(view.run, candidate).await?;
+                        if existing.accounting.purpose == ModelPurpose::Main
+                            && existing.required_tool_fallback_of.is_some()
+                        {
+                            inherited = existing.required_tool_fallback_of;
+                            break;
+                        }
+                    }
+                    inherited
+                }
+            } else {
+                None
             };
             let spec = RequestSpec {
                 schema_version: SCHEMA_VERSION,
@@ -792,6 +877,7 @@ impl DriverModel {
                     }
                     (_,None) => None,
                 },
+                required_tool_fallback_of,
                 source_capture: capture.reference().clone(),
                 source_digest: source_evidence.cut.digest.clone(),
                 effective_source_digest: projection.reference().digest.clone(),

@@ -75,6 +75,7 @@ async fn bot_controls_remain_visible_with_tool_discovery() -> TestResult<()> {
         })).await?;
         assert_eq!(sent["kind"], "queued", "{sent}");
         let (request, respond) = observed.recv().await.ok_or("Bot request missing")?;
+        assert_eq!(request["tool_choice"], "required", "{request}");
         assert!(has_tool(&request, "tool_search"));
         if !has_tool(&request, "SendUser") || !has_tool(&request, "sleep") {
             return Err(format!("first Bot request lacks its controls: {}", request["tools"]).into());
@@ -84,6 +85,7 @@ async fn bot_controls_remain_visible_with_tool_discovery() -> TestResult<()> {
         }))).map_err(|_| "provider stopped before SendUser")?;
 
         let (request, respond) = observed.recv().await.ok_or("Bot follow-up missing")?;
+        assert_eq!(request["tool_choice"], "required", "{request}");
         assert!(has_tool(&request, "sleep"));
         respond.send(tool_response("sleep", json!({}))).map_err(|_| "provider stopped before sleep")?;
         quiescent_message(client, bot_id, &sent["messageId"]).await?;
@@ -102,6 +104,7 @@ async fn bot_controls_remain_visible_with_tool_discovery() -> TestResult<()> {
             "sessionId":session,"message":"Reply with hello.","backend":backend
         })).await?;
         let (request, respond) = observed.recv().await.ok_or("ordinary request missing")?;
+        assert_eq!(request["tool_choice"], "auto", "{request}");
         assert!(!has_tool(&request, "SendUser") && !has_tool(&request, "sleep"));
         respond.send(completion(json!({"role":"assistant","content":"Hello."}), "stop"))
             .map_err(|_| "provider stopped before ordinary reply")?;
@@ -207,6 +210,7 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
             assert_eq!(sent["kind"], "queued", "{sent}");
             let (request, reply) = observed.recv().await.ok_or("delegated request missing")?;
             assert_eq!(request["model"], expected, "{request}");
+            assert_eq!(request["tool_choice"], "auto", "{request}");
             if round != 4 {
                 assert_eq!(request["reasoning_effort"], "high", "{request}");
                 let text = request["messages"].as_array().unwrap().iter()
@@ -302,4 +306,262 @@ pub(super) fn completion(delta: Value, finish: &str) -> String {
         chunk(delta, Value::Null),
         chunk(json!({}), json!(finish))
     )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bot_plain_text_turn_uses_single_bounded_fallback_on_kimi_k3_1_pro_endpoint()
+-> TestResult<()> {
+    struct ApiSecret;
+    impl maka_capabilities::call::ReadResource for ApiSecret {
+        fn encoding(&self) -> maka_capabilities::call::ResourceEncoding {
+            maka_capabilities::call::ResourceEncoding::Utf8
+        }
+        fn resource_type(&self) -> maka_plugin_core::contract::ResourceType {
+            maka_plugin_core::contract::ResourceType {
+                name: "maka.text.utf8".into(),
+                version: 1,
+            }
+        }
+        fn bytes(&self) -> usize {
+            b"sk-kimi-fixture".len()
+        }
+        fn metadata(&self) -> Value {
+            json!({})
+        }
+        fn read(&self, range: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+            b"sk-kimi-fixture"
+                .get(range)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| "invalid secret range".into())
+        }
+    }
+
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let endpoint = format!("http://{}/coding/v1", listener.local_addr()?);
+    let boot = bootstrap_with(&base, endpoint.clone(), |config| {
+        config["bot"] = json!(true);
+        config["scheduledTasks"] = json!(true);
+    })
+    .await?;
+    let (requests, mut observed) = tokio::sync::mpsc::channel(1);
+    let app = axum::Router::new().route(
+        "/coding/v1/messages",
+        axum::routing::post(move |request: axum::extract::Request| {
+            let requests = requests.clone();
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024)
+                    .await
+                    .unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let (reply, response) =
+                    oneshot::channel::<(axum::http::StatusCode, &'static str, String)>();
+                let _ = requests.send((request, reply)).await;
+                let (status, mime, body) = response.await.unwrap_or((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "application/json",
+                    "{}".into(),
+                ));
+                (status, [("content-type", mime)], body)
+            }
+        }),
+    );
+    let provider = tokio::spawn(async move { axum::serve(listener, app).await });
+    let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(90), async {
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let created = call(client, "settings", "create", json!({
+            "expectedCatalogRevision":catalog["revision"],
+            "connection":{
+                "slug":"kimi-bot","name":"Kimi Bot fixture",
+                "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"kimi-coding-plan"},
+                "configuration":{"baseUrl":endpoint},"enabled":true,"enabledModelIds":["k3.1-pro"],
+                "modelOverrides":{"k3.1-pro":{"codeMode":false,"thinkingLevels":["high"]}}
+            }
+        })).await?;
+        assert_eq!(created["kind"], "committed", "{created}");
+        let connection_id = &created["connection"]["connectionId"];
+        let detail = call(client, "settings", "connection", json!({"connectionId":connection_id})).await?;
+        assert_eq!(detail["kind"], "ready", "{detail}");
+        let saved = call_with_attachments(
+            client,
+            "settings",
+            "saveCredential",
+            json!({"expected":detail["target"],"expectedCredential":null}),
+            Attachments::from([(
+                "secret".into(),
+                Arc::new(ApiSecret) as Arc<dyn maka_capabilities::call::ReadResource>,
+            )]),
+        )
+        .await?;
+        assert_eq!(saved["kind"], "saved", "{saved}");
+
+        let backend = json!({
+            "kind":"model",
+            "connectionId":connection_id,
+            "modelId":"k3.1-pro",
+            "thinkingLevel":"high"
+        });
+        let bot = call(client, "agent", "openBot", json!({})).await?;
+        let bot_id = bot["sessionId"].as_str().ok_or("Bot Session missing")?;
+
+        // Turn 1: K3.1 Pro server-side thinking rejects forced `any` once, downgrades to `auto`,
+        // emits thinking + plain-text `end_turn` with zero tool calls, then recovers in one
+        // bounded fallback step via `SendUser` + `sleep`.
+        let sent = call(client, "agent", "send", json!({
+            "sessionId":bot_id,"message":"Summarize the build status.","backend":backend
+        })).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+
+        let (first_wire, respond) = observed.recv().await.ok_or("initial Bot request missing")?;
+        assert_eq!(first_wire["model"], "k3.1-pro", "{first_wire}");
+        assert_eq!(first_wire["tool_choice"], json!({"type":"any"}), "{first_wire}");
+        assert!(has_anthropic_tool(&first_wire, "SendUser") && has_anthropic_tool(&first_wire, "sleep"));
+        respond
+            .send((
+                axum::http::StatusCode::BAD_REQUEST,
+                "application/json",
+                json!({
+                    "type":"error",
+                    "error":{
+                        "type":"invalid_request_error",
+                        "message":"Thinking may not be enabled when tool_choice forces tool use."
+                    }
+                })
+                .to_string(),
+            ))
+            .map_err(|_| "provider stopped before 400 downgrade")?;
+
+        let (downgraded_wire, respond) = observed.recv().await.ok_or("downgraded Bot request missing")?;
+        assert_eq!(downgraded_wire["tool_choice"], json!({"type":"auto"}), "{downgraded_wire}");
+        respond
+            .send((
+                axum::http::StatusCode::OK,
+                "text/event-stream",
+                anthropic_thinking_text(
+                    "Checking build logs before answering.",
+                    "sig-k3-1-pro",
+                    "All build checks are green.",
+                ),
+            ))
+            .map_err(|_| "provider stopped before plain-text reply")?;
+
+        let (fallback_wire, respond) = observed.recv().await.ok_or("fallback Bot request missing")?;
+        assert_eq!(fallback_wire["tool_choice"], json!({"type":"auto"}), "{fallback_wire}");
+        let messages = fallback_wire["messages"].as_array().ok_or("Anthropic messages missing")?;
+        assert!(
+            messages.iter().any(|msg| msg["role"] == "assistant"
+                && msg["content"].to_string().contains("All build checks are green.")),
+            "fallback request must retain the assistant draft: {fallback_wire}"
+        );
+        assert!(
+            messages
+                .last()
+                .is_some_and(|msg| msg["role"] == "user" && msg["content"].to_string().contains("SendUser")),
+            "fallback request must cue SendUser/sleep: {fallback_wire}"
+        );
+        respond
+            .send((
+                axum::http::StatusCode::OK,
+                "text/event-stream",
+                anthropic_send_and_sleep(
+                    "k3-status",
+                    "All build checks are green.",
+                ),
+            ))
+            .map_err(|_| "provider stopped before SendUser + sleep")?;
+
+        quiescent_message(client, bot_id, &sent["messageId"]).await?;
+        assert!(observed.try_recv().is_err(), "sleep must finish Turn 1 without extra steps");
+        let outbox = call(client, "agent", "botOutbox", json!({"sessionId":bot_id})).await?;
+        assert_eq!(outbox["through"], 1, "{outbox}");
+        assert_eq!(outbox["messages"][0]["text"], "All build checks are green.", "{outbox}");
+
+        // Turn 2: If the model ignores both the initial request and the single fallback cue,
+        // the Turn settles cleanly after at most one fallback step without looping, preserving
+        // the unanswered state (#6514).
+        let second = call(client, "agent", "send", json!({
+            "sessionId":bot_id,"message":"Check again.","backend":backend
+        })).await?;
+        assert_eq!(second["kind"], "queued", "{second}");
+
+        let (turn2_initial, respond) = observed.recv().await.ok_or("Turn 2 initial request missing")?;
+        assert_eq!(turn2_initial["tool_choice"], json!({"type":"auto"}), "{turn2_initial}");
+        respond
+            .send((
+                axum::http::StatusCode::OK,
+                "text/event-stream",
+                anthropic_thinking_text("Thinking 1.", "sig-turn2-1", "Silent plain text 1."),
+            ))
+            .map_err(|_| "provider stopped before Turn 2 initial reply")?;
+
+        let (turn2_fallback, respond) = observed.recv().await.ok_or("Turn 2 fallback request missing")?;
+        assert_eq!(turn2_fallback["tool_choice"], json!({"type":"auto"}), "{turn2_fallback}");
+        respond
+            .send((
+                axum::http::StatusCode::OK,
+                "text/event-stream",
+                anthropic_thinking_text("Thinking 2.", "sig-turn2-2", "Silent plain text 2."),
+            ))
+            .map_err(|_| "provider stopped before Turn 2 fallback reply")?;
+
+        quiescent_message(client, bot_id, &second["messageId"]).await?;
+        assert!(
+            observed.try_recv().is_err(),
+            "plain-text fallback must be bounded to one step per Bot Turn"
+        );
+        let outbox_after = call(client, "agent", "botOutbox", json!({"sessionId":bot_id})).await?;
+        assert_eq!(outbox_after["through"], 1, "{outbox_after}");
+        Ok(())
+    })
+    .await;
+    provider.abort();
+    let errors = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    result??;
+    assert!(errors.is_empty(), "cleanup: {errors:?}");
+    Ok(())
+}
+
+fn has_anthropic_tool(request: &Value, name: &str) -> bool {
+    request["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
+}
+
+fn anthropic_thinking_text(thinking: &str, signature: &str, text: &str) -> String {
+    [
+        ("message_start", json!({"type":"message_start","message":{"id":"msg_k3","type":"message","role":"assistant","content":[],"model":"k3.1-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":24,"output_tokens":0}}})),
+        ("content_block_start", json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}})),
+        ("content_block_delta", json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":thinking}})),
+        ("content_block_delta", json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":signature}})),
+        ("content_block_stop", json!({"type":"content_block_stop","index":0})),
+        ("content_block_start", json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}})),
+        ("content_block_delta", json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":text}})),
+        ("content_block_stop", json!({"type":"content_block_stop","index":1})),
+        ("message_delta", json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":18}})),
+        ("message_stop", json!({"type":"message_stop"})),
+    ]
+    .into_iter()
+    .map(|(event, data)| format!("event: {event}\ndata: {data}\n\n"))
+    .collect()
+}
+
+fn anthropic_send_and_sleep(message_id: &str, text: &str) -> String {
+    let send_args = json!({"messageId":message_id,"messages":[{"text":text}]}).to_string();
+    [
+        ("message_start", json!({"type":"message_start","message":{"id":"msg_k3_tools","type":"message","role":"assistant","content":[],"model":"k3.1-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":36,"output_tokens":0}}})),
+        ("content_block_start", json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_send","name":"SendUser","input":{}}})),
+        ("content_block_delta", json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":send_args}})),
+        ("content_block_stop", json!({"type":"content_block_stop","index":0})),
+        ("content_block_start", json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_sleep","name":"sleep","input":{}}})),
+        ("content_block_delta", json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}})),
+        ("content_block_stop", json!({"type":"content_block_stop","index":1})),
+        ("message_delta", json!({"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":22}})),
+        ("message_stop", json!({"type":"message_stop"})),
+    ]
+    .into_iter()
+    .map(|(event, data)| format!("event: {event}\ndata: {data}\n\n"))
+    .collect()
 }

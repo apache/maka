@@ -249,3 +249,71 @@ fn web_citations_belong_to_their_text_block_even_with_search_results() {
         ]
     );
 }
+
+#[test]
+fn required_tool_choice_encodes_any_when_allowed_and_downgrades_to_auto_under_budgeted_thinking() {
+    let tool = || request::ToolBinding {
+        name: "sleep".into(),
+        definition: tools::Tool::Function(tools::FunctionTool {
+            name: "sleep".into(),
+            description: Some("End turn".into()),
+            input_schema: json!({"type":"object"}),
+            cache_control: None,
+            strict: None,
+            defer_loading: None,
+            eager_input_streaming: None,
+            allowed_callers: None,
+            input_examples: None,
+        }),
+    };
+    let build = |model: &str, options: serde_json::Value| {
+        let options = request::options::ProviderOptions::parse(Some(&options), None).unwrap();
+        request::prepare(
+            request::Request {
+                model: model.into(),
+                messages: &[],
+                tools: vec![tool()],
+                choice: Some(tools::ToolChoice::Required),
+                sampling: request::Sampling {
+                    max_output_tokens: Some(4096),
+                    ..Default::default()
+                },
+                reasoning: Default::default(),
+                format: Default::default(),
+                options,
+                custom_namespace_used: false,
+                streaming: true,
+                header_betas: Vec::new(),
+            },
+            &Default::default(),
+        )
+        .unwrap()
+    };
+
+    let forced = build(
+        "claude-opus-4-6",
+        json!({"thinking":{"type":"adaptive"},"disableParallelToolUse":true}),
+    );
+    let body = serde_json::to_value(&forced.body).unwrap();
+    assert_eq!(
+        body["tool_choice"],
+        json!({"type":"any","disable_parallel_tool_use":true})
+    );
+
+    let budgeted = build(
+        "claude-sonnet-4-5",
+        json!({"thinking":{"type":"enabled","budgetTokens":1024}}),
+    );
+    let body = serde_json::to_value(&budgeted.body).unwrap();
+    assert_eq!(body["tool_choice"], json!({"type":"auto"}));
+    assert!(budgeted.diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic,
+        request::Diagnostic::Tool(crate::anthropic::Warning::ForcedToolChoiceIgnored {
+            name: None
+        })
+    )));
+
+    let rejected = build("claude-opus-5-5", json!({}));
+    let body = serde_json::to_value(&rejected.body).unwrap();
+    assert_eq!(body["tool_choice"], json!({"type":"auto"}));
+}

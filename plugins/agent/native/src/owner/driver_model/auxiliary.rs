@@ -166,7 +166,10 @@ pub(in crate::owner) async fn prepare_completed(
             .context
             .as_ref()
             .and_then(|context| context.model_context_window),
-        tool_choice: frozen.tool_choice,
+        tool_choice: match frozen.tool_choice {
+            ToolChoiceMode::Required => ToolChoiceMode::Auto,
+            other => other,
+        },
     };
     // The snapshot already contains the original provider's fitted media.
     let mut prompt = builder
