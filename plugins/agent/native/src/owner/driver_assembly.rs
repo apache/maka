@@ -436,7 +436,7 @@ impl Owner {
                         && let Err(error) = model.original_cleanup.reconcile_pending().await {
                             tracing::error!(run = %view.run, %error, "Original model cleanup publication remains unresolved");
                         }
-                    let driven = engine.drive(claim.clone(), driver.clone(), cancellation.clone()).await;
+                    let driven = Box::pin(engine.drive(claim.clone(), driver.clone(), cancellation.clone())).await;
                     match driven {
                         Err(RunError::PublicationUncertain { publication, .. }) => {
                             if let Err(source) = publication.reconcile(&state).await {

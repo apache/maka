@@ -144,11 +144,11 @@ pub trait DriverPorts: Send + Sync {
     fn now(&self) -> UnixMillis;
     /// Keep semantic preparation, compression and manual-continuation integrity
     /// checks here. Return exact frozen adapter bytes and complete provenance.
-    fn prepare_step<'a>(
-        &'a self,
-        view: &'a RunView,
+    fn prepare_step(
+        self: Arc<Self>,
+        view: RunView,
         preparation: Preparation,
-    ) -> BoxFuture<'a, Result<PreparedStep, RunError>>;
+    ) -> BoxFuture<'static, Result<PreparedStep, RunError>>;
     /// Pure protocol assessment of original frozen input and canonical progress.
     /// Returning a proof never starts a generation or selects the next action.
     fn assess_recovery<'a>(
