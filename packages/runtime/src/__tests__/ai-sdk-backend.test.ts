@@ -16961,6 +16961,95 @@ describe('AiSdkBackend steering durability and identity', () => {
       outcome: 'completed',
     });
 
+    // A checkpoint may cover an older, acknowledged unknown while a newer
+    // unknown still needs the next user turn. Replaying the full ledger here
+    // can exceed the model window and hide the newer outcome entirely.
+    const newerIdentity = {
+      invocationId: 'newer-invocation',
+      runId: 'newer-run',
+      sessionId: 'session-1',
+      turnId: 'newer-turn',
+      ts: 20,
+      partial: false,
+    } as const;
+    const newerArgs = { command: 'touch second-marker.txt' };
+    const newerEvents: RuntimeEvent[] = [
+      {
+        ...newerIdentity,
+        id: 'newer-protocol',
+        role: 'system',
+        author: 'system',
+        actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
+      },
+      {
+        ...newerIdentity,
+        id: 'newer-call',
+        role: 'model',
+        author: 'agent',
+        origin: 'provider',
+        modelVisibility: 'visible',
+        content: { kind: 'function_call', id: 'newer-tool-call', name: 'Bash', args: newerArgs },
+        refs: { operationId: 'newer-operation', toolCallId: 'newer-tool-call' },
+      },
+      {
+        ...newerIdentity,
+        id: 'newer-dispatch',
+        role: 'system',
+        author: 'system',
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'newer-operation',
+            providerToolCallId: 'newer-tool-call',
+            toolName: 'Bash',
+            canonicalArgsHash: canonicalToolArgsHash('Bash', newerArgs),
+            recoveryMode: 'never_auto_retry',
+          },
+        },
+        refs: { operationId: 'newer-operation', toolCallId: 'newer-tool-call' },
+      },
+    ];
+    const newerInvocation = testInvocationRecord({
+      sessionId: 'session-1',
+      invocationId: 'newer-invocation',
+      runId: 'newer-run',
+      turnId: 'newer-turn',
+      openedAt: 20,
+      closedAt: 21,
+      outcome: 'failed',
+      failureClass: 'outcome_unknown',
+    });
+    const olderCheckpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: priorEvents.filter((event) => event.content !== undefined),
+      summary: structuredSummary('ACKNOWLEDGED_OLD_OUTCOME_CHECKPOINT'),
+    });
+    const mixedModel = textCompletionModel('I will inspect the second marker first.');
+    const mixed = durableTurnHarness('turn-mixed', 'inspect the current state', {
+      runId: 'mixed-run',
+    });
+    const mixedBackend = steeringBackend(mixedModel, {
+      loadTurnRuntimeEvents: mixed.loadTurnRuntimeEvents,
+      loadHistoryCompactCheckpoint: () => olderCheckpoint,
+      contextBudget: buildDefaultContextBudgetPolicy(),
+    });
+    await drainDurably(
+      mixedBackend.send(
+        mixed.input({
+          runtimeContext: [...priorEvents, ...newerEvents],
+          runtimeContextInvocations: [priorInvocation, explicitAnswer, newerInvocation],
+          allowPriorUnknownToolOutcomes: true,
+        }),
+      ),
+      mixed,
+    );
+    const mixedPrompt = JSON.stringify(mixedModel.doStreamCalls[0]);
+    assert.match(mixedPrompt, /ACKNOWLEDGED_OLD_OUTCOME_CHECKPOINT/);
+    assert.match(mixedPrompt, /newer-tool-call/);
+    assert.match(mixedPrompt, /outcome_unknown/);
+    assert.match(mixedPrompt, /Inspect current state/);
+    assert.doesNotMatch(mixedPrompt, /touch marker.txt/);
+
     // An automated turn (Goal, WorkHub, schedule, activation) runs normally
     // once the explicit answer acknowledged the unknown.
     const automatedModel = textCompletionModel('automated turn answer');
