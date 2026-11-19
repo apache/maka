@@ -194,3 +194,135 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         tail_message_id: record.last_message.map(|message| message.tail_message_id),
     })
 }
+
+pub(super) const CATALOG_REFRESH_MIN_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(150);
+
+pub(super) async fn wait_for_catalog_refresh(
+    changes: &mut tokio::sync::watch::Receiver<()>,
+    physical: &mut tokio::sync::watch::Receiver<()>,
+    physical_changed: &mut bool,
+    cancellation: &tokio_util::sync::CancellationToken,
+    throttle_until: Option<tokio::time::Instant>,
+) -> Result<(), String> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
+        result = changes.changed() => result.map_err(|_| "agent_observation_closed")?,
+        result = physical.changed() => {
+            result.map_err(|_| "agent_observation_closed")?;
+            *physical_changed = true;
+        }
+    }
+    if let Some(deadline) = throttle_until {
+        let now = tokio::time::Instant::now();
+        if deadline > now {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+    use tokio::time::{Duration, Instant};
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn refresh_wait_returns_immediately_when_throttle_elapsed() {
+        let (tx, mut changes) = watch::channel(());
+        let (_ptx, mut physical) = watch::channel(());
+        let mut physical_changed = false;
+        let cancel = CancellationToken::new();
+
+        let deadline = Instant::now();
+        tx.send_replace(());
+
+        let start = Instant::now();
+        wait_for_catalog_refresh(
+            &mut changes,
+            &mut physical,
+            &mut physical_changed,
+            &cancel,
+            Some(deadline),
+        )
+        .await
+        .unwrap();
+        assert!(start.elapsed() < Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn refresh_wait_coalesces_burst_until_trailing_deadline() {
+        let (tx, mut changes) = watch::channel(());
+        let (ptx, mut physical) = watch::channel(());
+        let mut physical_changed = false;
+        let cancel = CancellationToken::new();
+
+        let window = Duration::from_millis(80);
+        let deadline = Instant::now() + window;
+        tx.send_replace(());
+
+        let waiter = tokio::spawn(async move {
+            let start = Instant::now();
+            wait_for_catalog_refresh(
+                &mut changes,
+                &mut physical,
+                &mut physical_changed,
+                &cancel,
+                Some(deadline),
+            )
+            .await
+            .unwrap();
+            let elapsed = start.elapsed();
+            physical_changed |= physical.borrow_and_update().has_changed();
+            (elapsed, physical_changed)
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!waiter.is_finished());
+        tx.send_replace(());
+        ptx.send_replace(());
+
+        let (elapsed, saw_physical) = waiter.await.unwrap();
+        assert!(elapsed >= Duration::from_millis(60));
+        assert!(saw_physical);
+    }
+
+    #[tokio::test]
+    async fn refresh_wait_cancels_immediately_during_throttle() {
+        let (tx, mut changes) = watch::channel(());
+        let (_ptx, mut physical) = watch::channel(());
+        let mut physical_changed = false;
+        let cancel = CancellationToken::new();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        tx.send_replace(());
+
+        let cancel_clone = cancel.clone();
+        let waiter = tokio::spawn(async move {
+            wait_for_catalog_refresh(
+                &mut changes,
+                &mut physical,
+                &mut physical_changed,
+                &cancel_clone,
+                Some(deadline),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!waiter.is_finished());
+        let start = Instant::now();
+        cancel.cancel();
+
+        let err = waiter.await.unwrap().unwrap_err();
+        assert_eq!(err, "agent_observation_cancelled");
+        assert!(start.elapsed() < Duration::from_millis(200));
+    }
+}
