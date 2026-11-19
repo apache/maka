@@ -8629,6 +8629,7 @@ dependencies = [
  "maka-transport",
  "maka-ui-build",
  "maka-workbench",
+ "maka-wsl-bridge",
  "nsh-core",
  "nsh-engine",
  "nsh-platform-macos",
@@ -8822,9 +8823,11 @@ dependencies = [
  "dispatch2",
  "embed-resource",
  "libc",
+ "maka-app-client",
  "maka-event-log",
  "maka-host-runtime",
  "maka-workbench",
+ "maka-wsl-bridge",
  "nsh-engine",
  "nsh-platform-linux",
  "nsh-platform-macos",
@@ -9855,6 +9858,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "maka-wsl-bridge"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "yamux",
 ]
 
 [[package]]
@@ -19537,6 +19552,22 @@ checksum = "2a6a39b6b5ba0d02c910d05d7fbc366a4befb8901ea107dcde9c1c97acb8a366"
 dependencies = [
  "rowan",
  "winnow 0.6.26",
+]
+
+[[package]]
+name = "yamux"
+version = "0.13.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1991f6690292030e31b0144d73f5e8368936c58e45e7068254f7138b23b00672"
+dependencies = [
+ "futures",
+ "log",
+ "nohash-hasher",
+ "parking_lot",
+ "pin-project",
+ "rand 0.9.5",
+ "static_assertions",
+ "web-time",
 ]
 
 [[package]]

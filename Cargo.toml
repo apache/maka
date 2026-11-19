@@ -47,6 +47,7 @@ members = [
     "products/maka/client",
     "products/maka/terminal-shell",
     "products/maka/workbench",
+    "products/maka/wsl-bridge",
     "platform/computer-use",
     "platform/event-log",
     "plugins/agent/acp-executor/engine",
@@ -185,6 +186,7 @@ maka-terminal-shell = { path = "products/maka/terminal-shell" }
 maka-ui-support = { path = "platform/ui-support" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }
+maka-wsl-bridge = { path = "products/maka/wsl-bridge" }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 regex = "1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip", "brotli", "deflate", "socks"] }

@@ -52,6 +52,8 @@ mod login_path;
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod shell;
+#[cfg(windows)]
+mod wsl_stdio;
 #[cfg(target_os = "macos")]
 use appkit as backend;
 #[cfg(target_os = "linux")]
@@ -171,6 +173,10 @@ fn main() -> ExitCode {
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn run() -> Result<(), String> {
+    #[cfg(windows)]
+    if let Some(distro) = std::env::var_os("MAKA_DESKTOP_WSL_DISTRO") {
+        return wsl_stdio::Target::from_env(distro)?.run();
+    }
     if [ROOT, ENDPOINT, EPOCH, LAUNCHER]
         .iter()
         .all(|name| std::env::var_os(name).is_none())

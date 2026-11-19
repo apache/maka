@@ -45,10 +45,16 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
         )
         .await
     })?;
-    run(first, runtime)
+    let result = run(first, &runtime, None).map(|_| ());
+    runtime.shutdown_background();
+    result
 }
 
-fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
+pub(crate) fn run(
+    first: Connection,
+    runtime: &Runtime,
+    disconnected: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<bool, String> {
     let Connection {
         bindings, config, ..
     } = first;
@@ -59,7 +65,18 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         .get::<UiReload>()
         .expect("the admitted workbench owns its UI reload channel")
         .take_requests();
-    carry_out(requests, &runtime);
+    carry_out(requests, runtime);
+    let loss = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observer = disconnected.map(|disconnected| {
+        let loss = loss.clone();
+        let mut foreground = active.subscribe();
+        runtime.spawn(async move {
+            if foreground.wait_for(|active| *active).await.is_ok() && disconnected.await.is_ok() {
+                loss.store(true, std::sync::atomic::Ordering::Release);
+                quit_app();
+            }
+        })
+    });
     refuse_reloads(reloading, runtime.handle());
     let result = run_app_with_config(
         shell.attach(config),
@@ -74,10 +91,33 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
             active.send_replace(is_active);
         },
     );
-    runtime.block_on(host::quit(bindings));
-    runtime.shutdown_background();
+    let lost = if let Some(observer) = observer {
+        observer.abort();
+        let _ = runtime.block_on(observer);
+        let lost = loss.load(std::sync::atomic::Ordering::Acquire);
+        runtime.block_on(async {
+            if tokio::time::timeout(host::DETACH_LIMIT, async {
+                if lost {
+                    if let Err(error) = bindings.close().await {
+                        eprintln!("maka-desktop-shell: WSL Host detach: {error}");
+                    }
+                } else {
+                    host::quit(bindings).await;
+                }
+            })
+            .await
+            .is_err()
+            {
+                eprintln!("maka-desktop-shell: WSL Host cleanup timed out");
+            }
+        });
+        lost
+    } else {
+        runtime.block_on(host::quit(bindings));
+        false
+    };
     if result == std::process::ExitCode::SUCCESS {
-        Ok(())
+        Ok(lost)
     } else {
         Err("the Direct2D window failed".into())
     }

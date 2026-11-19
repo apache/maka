@@ -39,8 +39,15 @@ mod signals;
 mod startup;
 #[cfg(windows)]
 mod windows;
+#[cfg(target_os = "linux")]
+mod wsl_stdio;
 
 fn main() -> std::process::ExitCode {
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(maka_wsl_bridge::HELPER))
+    {
+        return wsl_stdio::entry();
+    }
     #[cfg(unix)]
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(maka_agent_native::FRONT_HELPER))

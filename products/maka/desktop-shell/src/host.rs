@@ -55,18 +55,47 @@ impl Connection {
     ) -> Result<Self, String> {
         let epoch = host.epoch();
         let (client, directory) = maka_workbench::host::admit(host, root, "desktop").await?;
+        Ok(Self::mount(client, directory, endpoint, epoch, runtime))
+    }
+
+    #[cfg(windows)]
+    pub async fn admit_wsl(
+        host: HostClient,
+        root: &str,
+        directory: PathBuf,
+        runtime: Handle,
+    ) -> Result<Self, String> {
+        let epoch = host.epoch();
+        let (client, directory) =
+            maka_workbench::host::admit_in(host, root, directory, "desktop").await?;
+        Ok(Self::mount(
+            client,
+            directory,
+            PathBuf::new(),
+            epoch,
+            runtime,
+        ))
+    }
+
+    fn mount(
+        client: maka_app_client::Client,
+        directory: PathBuf,
+        endpoint: PathBuf,
+        epoch: Uuid,
+        runtime: Handle,
+    ) -> Self {
         let bindings = Bindings::new(client, runtime.clone());
         let mut config = maka_workbench::configuration(bindings.registry(None), runtime);
         config.context = config.context.with(bindings.reload());
         config.data_dir = Some(directory);
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
-        Ok(Self {
+        Self {
             bindings,
             config,
             endpoint,
             epoch,
-        })
+        }
     }
 }
 
