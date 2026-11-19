@@ -266,7 +266,12 @@ impl Handler for Agent {
                                 })?));
                             }
                             owner
-                                .prepare_stop_run(&input.session_id, input.run_id, operation)
+                                .prepare_stop_run(
+                                    &input.session_id,
+                                    input.run_id,
+                                    operation,
+                                    context.scope(),
+                                )
                                 .await?
                                 .complete(&context)
                         }

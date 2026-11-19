@@ -437,7 +437,7 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
 }
 
 #[tokio::test]
-async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reopen() {
+async fn stop_cancels_only_what_the_user_queued_atomically_and_survives_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let (root, store) = open(directory.path(), true).await;
     let (spec, contents) = spec();
@@ -457,6 +457,29 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
         "worker-finished",
         Some(MessageOrigin::BotWorker {
             session_id: "worker".into(),
+        }),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
+        "task-completed",
+        Some(MessageOrigin::SessionCompletion {
+            session_id: "worker".into(),
+            message_id: "delegated".into(),
+        }),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
+        "from-another-session",
+        Some(MessageOrigin::Session {
+            execution: maka_agent_facts::durable::ExecutionIdentity {
+                session_id: "peer".into(),
+                turn_id: "peer-turn".into(),
+                run_id: older.run(),
+            },
         }),
     )
     .await;
@@ -489,7 +512,7 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     store
         .data
         .write(StopRun {
-            retract_pending: true,
+            retract: Some(crate::queue::Stopper::User),
             run: older.run(),
             change: Change::new(stop.fact.clone(), stop.at),
         })
@@ -513,7 +536,7 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     let rejected = store
         .data
         .write(StopRun {
-            retract_pending: true,
+            retract: Some(crate::queue::Stopper::User),
             run: current.run(),
             change: conflicting,
         })
@@ -535,7 +558,7 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     store
         .data
         .write(StopRun {
-            retract_pending: true,
+            retract: Some(crate::queue::Stopper::User),
             run: current.run(),
             change: stop.clone(),
         })
@@ -548,25 +571,27 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
         resolution(&store, "queued-one").await,
         MessageResolution::Cancelled
     );
-    assert_eq!(
-        resolution(&store, "worker-finished").await,
-        MessageResolution::Cancelled
-    );
-    assert_eq!(
-        resolution(&store, "discovery-report").await,
-        MessageResolution::Pending
-    );
-    assert_eq!(
-        resolution(&store, "scheduled").await,
-        MessageResolution::Pending
-    );
+    // What a worker, a delegated task or another Session sent stays: its sender will not send it again.
+    for sent_once in [
+        "worker-finished",
+        "task-completed",
+        "from-another-session",
+        "discovery-report",
+        "scheduled",
+    ] {
+        assert_eq!(
+            resolution(&store, sent_once).await,
+            MessageResolution::Pending,
+            "{sent_once}"
+        );
+    }
 
     let later = enqueue(&store, &spec, "after-stop", None).await;
     let cut = store.queue().read(spec.session_id.clone()).await.unwrap();
     store
         .data
         .write(StopRun {
-            retract_pending: true,
+            retract: Some(crate::queue::Stopper::User),
             run: current.run(),
             change: stop.clone(),
         })
@@ -604,12 +629,12 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     );
     assert_eq!(
         resolution(&store, "worker-finished").await,
-        MessageResolution::Cancelled
+        MessageResolution::Pending
     );
     store
         .data
         .write(StopRun {
-            retract_pending: true,
+            retract: Some(crate::queue::Stopper::User),
             run: current.run(),
             change: stop,
         })
@@ -677,7 +702,7 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     store
         .data
         .write(StopRun {
-            retract_pending: true,
+            retract: Some(crate::queue::Stopper::User),
             run: fresh.run(),
             change: Change::new(
                 Fact::StopRequested {
@@ -941,7 +966,65 @@ async fn verify_owned_content_and_run_revision_through_respect_pins_and_boundari
             .await
             .is_err()
     );
+    drop(store);
+    root.close().await.unwrap();
+}
 
+fn from_session(session: &str, run: RunId) -> Option<MessageOrigin> {
+    Some(MessageOrigin::Session {
+        execution: maka_agent_facts::durable::ExecutionIdentity {
+            session_id: session.into(),
+            turn_id: format!("{session}-turn"),
+            run_id: run,
+        },
+    })
+}
+
+#[tokio::test]
+async fn a_session_stop_takes_back_only_what_that_session_sent() {
+    use crate::queue::Stopper;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec, contents) = spec();
+    let worker = Admission::new(spec.clone(), UnixMillis(1), contents);
+    store.admit(worker.clone()).await.unwrap();
+    enqueue(&store, &spec, "typed-by-user", None).await;
+    enqueue(
+        &store,
+        &spec,
+        "from-stopper",
+        from_session("parent", worker.run()),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
+        "from-peer",
+        from_session("peer", worker.run()),
+    )
+    .await;
+    store
+        .data
+        .write(store.stop_run_statement(
+            worker.run(),
+            FactId::new(),
+            UnixMillis(2),
+            Stopper::Session("parent".into()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resolution(&store, "from-stopper").await,
+        MessageResolution::Cancelled
+    );
+    for kept in ["typed-by-user", "from-peer"] {
+        assert_eq!(
+            resolution(&store, kept).await,
+            MessageResolution::Pending,
+            "{kept}"
+        );
+    }
     drop(store);
     root.close().await.unwrap();
 }

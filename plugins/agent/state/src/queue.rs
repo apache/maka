@@ -34,10 +34,27 @@ use std::{collections::BTreeSet, sync::Arc};
 mod sql;
 pub(crate) use sql::{
     DeliveryTarget, Event, consume, consume_external_steering, consume_steering, release_steering,
-    retract_interactive, stop_completions,
+    retract_sent_by, stop_completions,
 };
 
 pub const GOAL_CONTROL_STOP: &str = "goal_control";
+pub const USER_STOP: &str = "user_requested_stop";
+pub const SESSION_STOP: &str = "session_requested_stop";
+
+/// Who asked for a Stop. A Stop takes back only what that party queued.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stopper {
+    User,
+    Session(String),
+}
+impl Stopper {
+    pub fn diagnostic(&self) -> &'static str {
+        match self {
+            Self::User => USER_STOP,
+            Self::Session(_) => SESSION_STOP,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -439,7 +456,7 @@ impl Statement for PreparedEnqueue {
                         diagnostic: "steering_interrupt".into(),
                     },
                 },
-                retract_pending: false,
+                retract: None,
             }
             .execute(c)?;
         }

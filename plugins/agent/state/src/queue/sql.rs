@@ -195,6 +195,33 @@ fn is_interactive(request: &PreparedRequest, source: &RootSourceMessage) -> bool
             Some(maka_agent_facts::message::MessageOrigin::Goal { .. })
         )
 }
+/// A Stop takes back what the stopping party queued. A message from anyone
+/// else is sent once: its sender has already settled it, so retracting it
+/// would leave this Session never told.
+fn sent_by(stopper: &Stopper, source: &RootSourceMessage) -> bool {
+    use maka_agent_facts::{message::MessageOrigin, room::RoomAuthor};
+    match (stopper, &source.message.origin) {
+        (
+            Stopper::User,
+            None
+            | Some(MessageOrigin::Room {
+                author: RoomAuthor::Human,
+                ..
+            }),
+        ) => true,
+        (
+            Stopper::Session(session),
+            Some(
+                MessageOrigin::Session { execution }
+                | MessageOrigin::Room {
+                    author: RoomAuthor::Session { execution },
+                    ..
+                },
+            ),
+        ) => &execution.session_id == session,
+        _ => false,
+    }
+}
 fn run_head(c: &Connection, run: RunId) -> Result<(RunSpec, Head, bool, bool), StoreError> {
     let row: Option<(Vec<u8>,u32,i64,i64,bool,bool)> = c.query_row(
         "SELECT c.payload,r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
@@ -471,10 +498,11 @@ pub(super) fn write(
     record(c, session, next, command.id, command.at, &event)?;
     Ok((QueueCommit { revision: next }, true))
 }
-pub(crate) fn retract_interactive(
+pub(crate) fn retract_sent_by(
     c: &Connection,
     session: &str,
     stop: &Change,
+    stopper: &Stopper,
 ) -> Result<(), StoreError> {
     use sha2::{Digest, Sha256};
 
@@ -482,12 +510,7 @@ pub(crate) fn retract_interactive(
     let mut expected_revision = queue.revision;
     for entry in queue.entries {
         let source = source(c, &entry.request)?;
-        if !is_interactive(&entry.request, &source)
-            || matches!(
-                source.message.origin,
-                Some(maka_agent_facts::message::MessageOrigin::DiscoveryReport { .. })
-            )
-        {
+        if !is_interactive(&entry.request, &source) || !sent_by(stopper, &source) {
             continue;
         }
         let mut hash = Sha256::new();

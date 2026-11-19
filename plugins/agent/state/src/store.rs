@@ -551,12 +551,24 @@ impl Store {
         })
     }
     /// Stop this exact Run at its current head. The first Stop while latest also
-    /// retracts pending interactive requests and reports that Session fence.
-    pub fn stop_run_statement(&self, run: RunId, change: Change) -> StopRun {
+    /// retracts the interactive requests `stopper` queued and reports that Session fence.
+    pub fn stop_run_statement(
+        &self,
+        run: RunId,
+        id: FactId,
+        at: UnixMillis,
+        stopper: crate::queue::Stopper,
+    ) -> StopRun {
         StopRun {
             run,
-            change,
-            retract_pending: true,
+            change: Change {
+                id,
+                at,
+                fact: Fact::StopRequested {
+                    diagnostic: stopper.diagnostic().into(),
+                },
+            },
+            retract: Some(stopper),
         }
     }
     pub async fn missing_external_returns(
@@ -1475,7 +1487,8 @@ pub enum StopOutcome {
 pub struct StopRun {
     pub(crate) run: RunId,
     pub(crate) change: Change,
-    pub(crate) retract_pending: bool,
+    /// Who asked; `None` for a Stop that only interrupts the Run for steering.
+    pub(crate) retract: Option<crate::queue::Stopper>,
 }
 impl Statement for StopRun {
     type Value = StopOutcome;
@@ -1496,10 +1509,10 @@ impl Statement for StopRun {
                 notification: Notification::NONE,
             });
         }
-        let latest =
-            self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
-        if latest {
-            crate::queue::retract_interactive(c, &view.spec.session_id, &self.change)?;
+        let latest = self.retract.is_some()
+            && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
+        if latest && let Some(stopper) = &self.retract {
+            crate::queue::retract_sent_by(c, &view.spec.session_id, &self.change, stopper)?;
         }
         let (_, changed) = sql::append(
             c,
