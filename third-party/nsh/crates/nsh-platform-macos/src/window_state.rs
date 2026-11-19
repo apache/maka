@@ -90,6 +90,10 @@ pub(crate) struct Watch {
     after_full_screen: Cell<Option<WindowPlacement>>,
     /// Its full screen transitions and a hide waiting for them ([`hide`]).
     full_screen: Cell<FullScreenHide>,
+    /// Full screen asked for while it was ordered out: it enters full
+    /// screen when it shows ([`shown`]), since AppKit shows a window that
+    /// enters it. Meanwhile its state reads the mode.
+    full_screen_on_show: Cell<bool>,
     /// Counts moves and resizes, so only the last one of a burst reports.
     settle: Cell<u64>,
 }
@@ -179,6 +183,17 @@ impl FullScreenHide {
         }
     }
 
+    /// Hidden by the app, it waits for full screen to end to be ordered
+    /// out.
+    fn hiding(&self) -> bool {
+        self.hide
+    }
+
+    /// No transition is under way: AppKit takes `toggleFullScreen:`.
+    fn idle(&self) -> bool {
+        self.transition == Transition::None
+    }
+
     /// The window shows again: a hide still waiting is dropped, and it
     /// stays in the mode it ends its transition in.
     fn show(&mut self) -> Step {
@@ -229,10 +244,46 @@ pub(crate) fn hide(watch: &Watch, window: &NSWindow) -> bool {
     }
 }
 
-/// The window observed with `watch` shows: a hide waiting for full screen
-/// to end is dropped.
-pub(crate) fn shown(watch: &Watch) {
+/// `window`, observed with `watch`, is ordered in: a hide waiting for full
+/// screen to end is dropped, and a full screen asked for while it was
+/// hidden begins.
+pub(crate) fn shown(watch: &Watch, window: &NSWindow) {
     watch.full_screen_step(FullScreenHide::show);
+    begin_held_full_screen(watch, window);
+}
+
+/// `window`, observed with `watch`, shows: a full screen held while it
+/// was hidden begins, once no transition is under way.
+fn begin_held_full_screen(watch: &Watch, window: &NSWindow) {
+    if !watch.full_screen_on_show.get() || hidden(watch, window) || !watch.full_screen.get().idle()
+    {
+        return;
+    }
+    watch.full_screen_on_show.set(false);
+    if !crate::chrome::full_screen(window) {
+        window.toggleFullScreen(None);
+    }
+}
+
+/// `window` enters full screen, or, hidden, holds it for when it shows
+/// ([`Watch::full_screen_on_show`]).
+fn enter_full_screen(watch: &Watch, window: &NSWindow) {
+    if hidden(watch, window) {
+        watch.full_screen_on_show.set(true);
+    } else {
+        window.toggleFullScreen(None);
+    }
+}
+
+/// `window`, observed with `watch`, is hidden: ordered out, or hidden by
+/// the app and on its way out of full screen ([`hide`]).
+fn hidden(watch: &Watch, window: &NSWindow) -> bool {
+    ordered_out(window) || watch.full_screen.get().hiding()
+}
+
+/// `window` is ordered out: hidden, not minimized.
+fn ordered_out(window: &NSWindow) -> bool {
+    !window.isVisible() && !window.isMiniaturized()
 }
 
 /// The watch of `target`, borrowed for `f`.
@@ -259,6 +310,7 @@ pub(crate) fn observe(surface: &Surface, target: Target, watch: &Watch, window: 
     watch.windowed.set(None);
     watch.zooming.set(false);
     watch.full_screen.set(FullScreenHide::default());
+    watch.full_screen_on_show.set(false);
     let Some(window) = window else {
         return;
     };
@@ -268,6 +320,13 @@ pub(crate) fn observe(surface: &Surface, target: Target, watch: &Watch, window: 
             if let Target::Own(_) = target {
                 with_watch(&surface, target, |w| w.settle.set(w.settle.get() + 1));
             }
+            // Ordered in where nothing said so (an embedding app showing
+            // its own window): a full screen held meanwhile begins.
+            with_watch(&surface, target, |w| {
+                if let Some(window) = w.window() {
+                    begin_held_full_screen(w, &window);
+                }
+            });
             report(&surface, target);
             // Shown, hidden, minimized, covered, on another screen or the
             // key one: the display link follows a window that shows.
@@ -313,11 +372,18 @@ pub(crate) fn observe(surface: &Surface, target: Target, watch: &Watch, window: 
         crate::window::left_full_screen(&surface, target);
         report(&surface, target);
         // Hidden in full screen: it goes now that it is back on the
-        // desktop it came from.
-        if with_watch(&surface, target, |w| {
-            w.full_screen_step(FullScreenHide::left)
-        }) == Some(Step::OrderOut)
-        {
+        // desktop it came from. Shown again on its way out, it enters the
+        // full screen asked for meanwhile.
+        let step = with_watch(&surface, target, |w| {
+            let step = w.full_screen_step(FullScreenHide::left);
+            if step != Step::OrderOut
+                && let Some(window) = w.window()
+            {
+                begin_held_full_screen(w, &window);
+            }
+            step
+        });
+        if step == Some(Step::OrderOut) {
             crate::window::hidden_after_full_screen(&surface, target);
         }
     });
@@ -444,7 +510,7 @@ pub(crate) fn read_window(watch: &Watch, window: &NSWindow) -> WindowState {
     }
     let bounds = to_bounds(frame, primary);
     let windowed = to_bounds(watch.windowed.get().unwrap_or(frame), primary);
-    let mode = if full {
+    let mode = if full || (watch.full_screen_on_show.get() && ordered_out(window)) {
         WindowMode::FullScreen
     } else if zoomed {
         WindowMode::Maximized
@@ -496,20 +562,26 @@ pub(crate) fn screen(mtm: MainThreadMarker, id: DisplayId) -> Option<Retained<NS
 
 /// `WindowRef.setPlacement`: the window restored to `placement`'s bounds,
 /// then zoomed or in full screen as its mode says. Leaving full screen
-/// takes AppKit's animation: the bounds apply once it is done.
+/// takes AppKit's animation: the bounds apply once it is done. A hidden
+/// window enters full screen when it shows.
 pub(crate) fn set_placement(watch: &Watch, window: &NSWindow, placement: WindowPlacement) {
     let primary = primary_height(MainThreadMarker::from(window));
     let frame = from_bounds(placement.bounds, primary);
     let full = crate::chrome::full_screen(window);
+    watch.full_screen_on_show.set(false);
     match placement.mode {
         WindowMode::FullScreen if full => {
             // Where it returns to.
             watch.windowed.set(Some(frame));
+            // Hidden on its way out: back in full screen when it shows.
+            if watch.full_screen.get().hiding() {
+                watch.full_screen_on_show.set(true);
+            }
         }
         WindowMode::FullScreen => {
             window.setFrame_display(frame, true);
             watch.windowed.set(Some(frame));
-            window.toggleFullScreen(None);
+            enter_full_screen(watch, window);
         }
         _ if full => {
             watch.after_full_screen.set(Some(placement));
@@ -547,12 +619,17 @@ pub(crate) fn will_zoom(watch: &Watch, window: &NSWindow) {
 }
 
 /// `WindowRef.setMode`: puts the window in `mode`, keeping its windowed
-/// bounds (an intent: asking for the mode it is in changes nothing).
+/// bounds (an intent: asking for the mode it is in changes nothing). A
+/// hidden window enters full screen when it shows; zooming leaves it
+/// hidden.
 pub(crate) fn set_mode(watch: &Watch, window: &NSWindow, mode: WindowMode) {
     let full = crate::chrome::full_screen(window);
     let zoomed = !full && window.isZoomed();
+    watch.full_screen_on_show.set(false);
     match mode {
-        WindowMode::FullScreen if !full => window.toggleFullScreen(None),
+        WindowMode::FullScreen if !full || watch.full_screen.get().hiding() => {
+            enter_full_screen(watch, window)
+        }
         WindowMode::Maximized if full => {
             let primary = primary_height(MainThreadMarker::from(window));
             let windowed = watch.windowed.get().unwrap_or_else(|| window.frame());

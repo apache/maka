@@ -278,9 +278,9 @@ Rust 列给出 `WindowRef` 的方法。
 | `focus()` | `focus()` | 显示它，提到所在层级的最前并给它键盘焦点；应用随之激活。窗口保持原有层级。 |
 | `close()` | `close()` | 关闭它，不论 `closeOnPress` 如何。应用自己的窗口卸载其内容（`<Window>`：`reason` 为 `"close"` 的 `onOpenChange`）；主窗口像用户关闭它那样关闭，最后一个窗口关闭时应用结束。 |
 | `minimize()`、`restore()` | `minimize()`、`restore()` | 最小化它，或按原来的模式还原：最大化的窗口最小化后还原时仍是最大化。 |
-| `setMode(mode)` | `set_mode(mode)` | 让它进入 `"normal"`、`"maximized"` 或 `"fullScreen"`；请求它当前的模式不会有变化。 |
+| `setMode(mode)` | `set_mode(mode)` | 让它进入 `"normal"`、`"maximized"` 或 `"fullScreen"`；请求它当前的模式不会有变化。隐藏的窗口保持隐藏：它的 `state()` 读出这个模式，显示时进入该模式。 |
 | `setBounds({ origin?, size?, animated? })` | `set_bounds(WindowFrame { .. })` | 移动它并调整大小，单位为点；省略的字段保持原值。`origin`（`x`、`y`）是它的左上角，从主显示器的左上角量起，`y` 向下增长；只给 `height` 而不给 `y` 时顶边保持不动。macOS 和 Windows 上的 `size` 包含窗口装饰；Linux 上设置 GTK 的默认窗口尺寸。`animated: true` 启用 macOS 的窗口调整动画。宽度和高度接受正有限数值，`x` 和 `y` 接受有限数值；其他值保留字段原值。 |
-| `setPlacement(placement)` | `set_placement(placement)` | 恢复从 `state().placement` 保存的位置：先还原到它的外框，模式要求时再最大化或进入全屏。外框会先放到当前的显示器上：窗口的标题栏仍能在某个显示器上抓到时保持不变，否则居中放到主显示器上，尺寸不超过它。 |
+| `setPlacement(placement)` | `set_placement(placement)` | 恢复从 `state().placement` 保存的位置：先还原到它的外框，模式要求时再最大化或进入全屏（隐藏的窗口保持隐藏，显示时进入该模式）。外框会先放到当前的显示器上：窗口的标题栏仍能在某个显示器上抓到时保持不变，否则居中放到主显示器上，尺寸不超过它。 |
 | `center({ display? })` | `center(display)` | 让它居中于 `display`，省略时居中于它所在的显示器。 |
 | `requestAttention({ critical? })` | `request_attention(critical)` | 请求用户注意：Dock 图标跳动，任务栏按钮闪烁；`critical` 时持续到用户激活应用。 |
 | `on(event, listener)` | `on_<event>(f)` | 监听一个[事件](#事件)；返回一个停止监听的函数。 |

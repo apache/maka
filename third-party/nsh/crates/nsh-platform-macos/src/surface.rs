@@ -374,10 +374,6 @@ pub(crate) struct Surface {
     pub(crate) main_window: crate::window::Held,
     /// The window observed for its bounds ([`crate::window_state`]).
     pub(crate) window: crate::window_state::Watch,
-    /// The mode the standalone app's main window opens in, until it first
-    /// shows (hidden at launch: nsh.json `window.defaultVisible: false`)
-    /// ([`crate::window::launched_main`]).
-    pub(crate) main_open_mode: Cell<Option<nsh_core::desktop::WindowMode>>,
     /// Videos, web views and registered native components.
     pub(crate) native: crate::native::NativeState,
     /// The app's keyboard shortcuts ([`crate::keymap`]).
@@ -496,7 +492,6 @@ impl Surface {
             chrome: Default::default(),
             main_window: Default::default(),
             window: Default::default(),
-            main_open_mode: Cell::new(None),
             shaders: Default::default(),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));

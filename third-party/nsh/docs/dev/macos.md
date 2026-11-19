@@ -235,9 +235,14 @@ belong to the app, which owns retention and its storage budget.
   it is: AppKit would shrink a window taller than its screen when it shows it, and a test's window keeps the size the
   test opens it at on a shorter secondary display. nsh.json `window` applies before the window shows (its attributes,
   size, place, display and mode; with `restoreBounds` the placement the engine kept in the app's storage, which the runner reads first).
-  With `defaultVisible: false` the window is made and its app runs, but it is not ordered in: the mode it opens in
-  waits on the surface (`main_open_mode`) for the first `show()` / `focus()`, a link (`application:openURLs:`) or
-  the Dock's reopen to show it (`window::main_shown`). A development host holds its first show until the first app
+  With `defaultVisible: false` the window is made and its app runs, but it is not ordered in. It takes the mode it
+  opens in as `setMode` does: a zoom leaves a window ordered out, but AppKit shows a window that enters full screen,
+  so a hidden window (this one, one `hide()` hid, also while it leaves full screen to be ordered out, a new
+  `Window.open` one before its first frame) holds a full screen `setMode` or `setPlacement` asks for
+  (`Watch::full_screen_on_show`), its state reading the mode, and enters it once it is ordered in and no transition
+  animates (`window_state::shown`): the first `show()` / `focus()`, a link (`application:openURLs:`) or the Dock's
+  reopen (`window::main_shown`); a window ordered in elsewhere (an embedding app's own) enters it on the
+  notification of its order-in (`NSWindowDidChangeOcclusionStateNotification`). A development host holds its first show until the first app
   came (`Running::held`): the app's `defaultVisible` decides whether it shows, at the host's size and in the normal
   mode, as every app's window (the other launch options apply where a runner makes the window). An error shows the
   window while it is hidden (held, or hidden by the app: a tray app whose startup failed), so it is seen; a reload

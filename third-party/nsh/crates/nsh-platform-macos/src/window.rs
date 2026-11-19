@@ -451,8 +451,6 @@ pub(crate) struct AppWindow {
     /// The app called `focus()` while it waited for its first frame
     /// (`Window.open(..).focus()`): it shows focused.
     focus_requested: Cell<bool>,
-    /// The mode it opens in, applied once it shows.
-    open_mode: Cell<Option<WindowMode>>,
 }
 
 /// The state of window `id` (the main window's for the root) as it is now;
@@ -1194,17 +1192,6 @@ fn request(surface: &Rc<Surface>, id: NodeId, request: &WindowRequest) {
             });
         }
     }
-    if id == ROOT_ID {
-        match request {
-            // A main window hidden at launch shows at last.
-            WindowRequest::Show | WindowRequest::Focus => main_shown(surface),
-            // The app's own mode replaces the one it was to open in.
-            WindowRequest::SetMode(_) | WindowRequest::SetPlacement(_) => {
-                surface.main_open_mode.take();
-            }
-            _ => {}
-        }
-    }
     report(surface, id);
 }
 
@@ -1257,8 +1244,6 @@ fn with_target_watch(surface: &Surface, id: NodeId, f: impl FnOnce(&Watch)) {
 /// Shows window `id` (`focus`: and makes it key); a new window waiting for
 /// its first frame shows with it.
 fn show(surface: &Surface, id: NodeId, window: &NSWindow, focus: bool) {
-    // Shown again while it leaves full screen: it stays.
-    with_target_watch(surface, id, crate::window_state::shown);
     if let Some(w) = surface.windows.borrow().get(&id)
         && let Showing::Waiting(_) = w.showing.get()
     {
@@ -1280,6 +1265,11 @@ fn show(surface: &Surface, id: NodeId, window: &NSWindow, focus: bool) {
         focus || (focusable && activate),
         focus,
     );
+    // Shown again while it leaves full screen, it stays; hidden, it
+    // enters the full screen asked for meanwhile.
+    with_target_watch(surface, id, |watch| {
+        crate::window_state::shown(watch, window)
+    });
 }
 
 /// Orders `window` front: the app activates first when it may (ordering a
@@ -1473,11 +1463,6 @@ fn open_window(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
             parent_window.as_deref(),
         ),
     }
-    let open_mode = open
-        .placement
-        .map(|p| p.mode)
-        .or(options.default_mode)
-        .filter(|m| *m != WindowMode::Normal);
     surface.windows.borrow_mut().insert(
         id,
         AppWindow {
@@ -1495,7 +1480,6 @@ fn open_window(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
             title_bar_area: Cell::new(None),
             showing: Cell::new(Showing::Waiting(0)),
             focus_requested: Cell::new(false),
-            open_mode: Cell::new(open_mode),
         },
     );
     {
@@ -1505,6 +1489,12 @@ fn open_window(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         // It takes the app's appearance, as the main window's root does.
         window.setAppearance(surface.root.ns().appearance().as_deref());
         crate::window_state::observe(surface, Target::Own(id), &w.watch, Some(&window));
+    }
+    // The mode it opens in: zoomed now, in full screen once it shows.
+    if let Some(mode) = open.placement.map(|p| p.mode).or(options.default_mode) {
+        with_watch(surface, id, |watch| {
+            crate::window_state::set_mode(watch, &window, mode)
+        });
     }
     // Dialogs of its first render were presented before it was a window.
     crate::navigation::window_opened(surface, view);
@@ -1631,21 +1621,18 @@ pub(crate) fn batch_applied(surface: &Surface) {
 /// Window `id` has its first frame (or waited long enough): it shows, in
 /// the mode it opens in.
 fn first_frame(surface: &Surface, id: NodeId) {
-    let Some((window, activate, mode, focus)) =
-        surface.windows.try_borrow().ok().and_then(|windows| {
-            let w = windows.get(&id)?;
-            if w.showing.get() == Showing::Done {
-                return None;
-            }
-            w.showing.set(Showing::Done);
-            Some((
-                w.window.clone(),
-                w.held.activate.get(),
-                w.open_mode.take(),
-                w.focus_requested.take(),
-            ))
-        })
-    else {
+    let Some((window, activate, focus)) = surface.windows.try_borrow().ok().and_then(|windows| {
+        let w = windows.get(&id)?;
+        if w.showing.get() == Showing::Done {
+            return None;
+        }
+        w.showing.set(Showing::Done);
+        Some((
+            w.window.clone(),
+            w.held.activate.get(),
+            w.focus_requested.take(),
+        ))
+    }) else {
         return;
     };
     // A window that does not activate (a panel) shows without taking the
@@ -1654,11 +1641,9 @@ fn first_frame(surface: &Surface, id: NodeId) {
     // The root has held the keyboard since the window was made (a field
     // the app focused meanwhile keeps it).
     order_front(surface, &window, activate, key, focus);
-    if let Some(mode) = mode {
-        with_watch(surface, id, |watch| {
-            crate::window_state::set_mode(watch, &window, mode)
-        });
-    }
+    with_watch(surface, id, |watch| {
+        crate::window_state::shown(watch, &window)
+    });
     report(surface, id);
 }
 
@@ -1704,27 +1689,27 @@ pub(crate) fn launch_main(
 }
 
 /// The standalone app's main window launched (`shown`: and showed): it
-/// takes the mode it opens in when it first shows. A full screen or zoomed
-/// window would show at once.
+/// takes the mode it opens in, zoomed at once, in full screen once it
+/// shows.
 pub(crate) fn launched_main(surface: &Surface, mode: Option<WindowMode>, shown: bool) {
-    surface
-        .main_open_mode
-        .set(mode.filter(|m| *m != WindowMode::Normal));
+    if let Some(mode) = mode
+        && let Some(window) = surface.root.ns().window()
+    {
+        crate::window_state::set_mode(&surface.window, &window, mode);
+        crate::window_state::changed(surface);
+    }
     if shown {
         main_shown(surface);
     }
 }
 
-/// The standalone app's main window shows: the first time, it takes the
-/// mode it opens in.
+/// The standalone app's main window was ordered in by the app's runner
+/// (the Dock icon, a link, a development host's first show): shown again
+/// while it leaves full screen, it stays; hidden, it enters the full
+/// screen asked for meanwhile, or the one it opens in.
 pub(crate) fn main_shown(surface: &Surface) {
-    // Shown again while it leaves full screen (the Dock icon, a link):
-    // it stays.
-    crate::window_state::shown(&surface.window);
-    if let Some(mode) = surface.main_open_mode.take()
-        && let Some(window) = surface.root.ns().window()
-    {
-        crate::window_state::set_mode(&surface.window, &window, mode);
+    if let Some(window) = surface.root.ns().window() {
+        crate::window_state::shown(&surface.window, &window);
     }
 }
 
