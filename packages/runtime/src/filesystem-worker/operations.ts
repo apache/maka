@@ -392,7 +392,13 @@ export async function executeFilesystemOperation(
           )),
         };
       }
-      return { kind: 'glob', ...(await globFiles({ ...operation, cwd: path })) };
+      // Brace expansion can walk above the search root without the pattern
+      // text ever containing a `..` segment, so results are filtered back to
+      // the search root the lexical guard promises.
+      return {
+        kind: 'glob',
+        ...(await globFiles({ ...operation, cwd: path, containmentRoot: path })),
+      };
     }
     case 'grep': {
       const path = await resolveExistingAllowed(
