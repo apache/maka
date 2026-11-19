@@ -51,3 +51,6 @@ unsigned-varint = "0.8"
 # v0.21.0-rc.1 predates the rtc fixes qualified in apache/maka#4382.
 # Keep this immutable until an official release contains those fixes.
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "e132552fc67b84c30e63c5ce916a9a63e2484b6f" }
+
+[dev-dependencies]
+tempfile.workspace = true

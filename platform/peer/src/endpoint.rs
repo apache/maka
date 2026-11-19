@@ -27,17 +27,21 @@ use crate::{
 use std::{
     io,
     path::PathBuf,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
-    sync::oneshot,
+    sync::{Mutex, oneshot},
 };
 
 pub struct Endpoint {
     inner: StartedEndpoint,
     next: AtomicU32,
+    opening: Arc<Mutex<()>>,
 }
 
 impl Endpoint {
@@ -62,6 +66,7 @@ impl Endpoint {
             Ok(Self {
                 inner,
                 next: AtomicU32::new(1),
+                opening: Arc::new(Mutex::new(())),
             })
         })
         .await
@@ -101,6 +106,7 @@ impl Endpoint {
     }
 
     pub async fn open(&self, expected: PeerId, address: Multiaddr) -> Result<DuplexStream, String> {
+        let opening = self.opening.clone().lock_owned().await;
         let (tx, rx) = oneshot::channel();
         self.inner
             .commands
@@ -118,10 +124,16 @@ impl Endpoint {
             })
             .await
             .map_err(|_| "peer endpoint stopped")?;
-        let stream = rx
-            .await
-            .map_err(|_| "peer dial was interrupted")?
-            .map_err(|err| err.to_string())?;
+        // The engine admits one application open at a time. Keep its slot
+        // until the reply even if the caller drops this observation.
+        let stream = tokio::spawn(async move {
+            let _opening = opening;
+            rx.await
+        })
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|_| "peer dial was interrupted")?
+        .map_err(|err| err.to_string())?;
         if stream.peer_id != expected || !matches!(stream.path, PeerConnectionPath::Direct(_)) {
             stream.abort.send_replace(true);
             return Err("unexpected peer path or identity".into());
@@ -172,4 +184,56 @@ fn bridge(mut stream: PeerStream) -> DuplexStream {
         stream.abort.send_replace(true);
     });
     app
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_opens_keep_independent_streams_live() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let dir = tempfile::tempdir().unwrap();
+            let mut host = Endpoint::start(
+                dir.path().join("host"),
+                Some("/ip4/127.0.0.1/tcp/0".parse().unwrap()),
+            )
+            .await
+            .unwrap();
+            let client = Endpoint::start(dir.path().join("client"), None)
+                .await
+                .unwrap();
+            let address = host.address().unwrap();
+            let server_id = host.peer_id();
+            let client_id = client.peer_id();
+            let serving = async {
+                let mut calls = tokio::task::JoinSet::new();
+                for _ in 0..8 {
+                    let mut stream = host.accept(client_id).await.unwrap();
+                    calls.spawn(async move {
+                        let value = stream.read_u8().await.unwrap();
+                        stream.write_u8(value).await.unwrap();
+                        stream.shutdown().await.unwrap();
+                    });
+                }
+                while let Some(call) = calls.join_next().await {
+                    call.unwrap();
+                }
+            };
+            let calling = async {
+                let streams = futures::future::join_all(
+                    (0..8).map(|_| client.open(server_id, address.clone())),
+                )
+                .await;
+                for (value, stream) in streams.into_iter().enumerate() {
+                    let mut stream = stream.unwrap();
+                    stream.write_u8(value as u8).await.unwrap();
+                    assert_eq!(stream.read_u8().await.unwrap(), value as u8);
+                }
+            };
+            tokio::join!(serving, calling);
+        })
+        .await
+        .unwrap();
+    }
 }
