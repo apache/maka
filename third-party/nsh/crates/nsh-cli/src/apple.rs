@@ -1,6 +1,7 @@
 //! `nsh.json` `"ios"` and `"macos"`: the `Info.plist` keys and the
 //! entitlements an app adds to what `nsh package` writes for it, and how a
-//! macOS app takes part in the system's UI (`macos.activationPolicy`).
+//! macOS app takes part in the system's UI (`macos.activationPolicy`), and
+//! what iOS shows while the app starts (`ios.launchScreen`).
 //!
 //! Values are JSON, written as property list values (strings, numbers,
 //! booleans, arrays, dictionaries). The keys NSH sets from other `nsh.json`
@@ -9,21 +10,89 @@
 //! key the app sets replaces NSH's default, if it has one. The oldest system
 //! the app runs on (`MinimumOSVersion`, `LSMinimumSystemVersion`) is such a
 //! default, which an app raises for the APIs of a later system but never
-//! lowers below the runtime's own ([`IOS_MINIMUM`], [`MACOS_MINIMUM`]).
+//! lowers below the runtime's own ([`IOS_MINIMUM`], [`MACOS_MINIMUM`]);
+//! builds of the app's Rust code compile for it too ([`AppleMinimums`]).
+
+use std::path::{Path, PathBuf};
 
 use anyhow::bail;
 use serde::Deserialize;
 
-/// The oldest iOS the runtime runs on: the deployment target it is built
-/// for (`.cargo/config.toml`'s `IPHONEOS_DEPLOYMENT_TARGET`, `cargo xtask
-/// dist`). Packages declare it (`MinimumOSVersion`, and `actool`'s
-/// deployment target) unless the app raises it.
+/// The oldest iOS the runtime runs on. Packages declare it
+/// (`MinimumOSVersion`, and `actool`'s deployment target) unless the app
+/// raises it, and every build `nsh` makes of an app's Rust code for iOS
+/// compiles its Rust and C for it ([`AppleMinimums::deployment_target`]),
+/// as nsh's own builds do (`.cargo/config.toml`'s
+/// `IPHONEOS_DEPLOYMENT_TARGET`, `cargo xtask dist`).
 pub(crate) const IOS_MINIMUM: &str = "15.0";
 
 /// The oldest macOS the AppKit runtime runs on (its display links are
 /// `NSView`'s, new in macOS 14). Packages declare it
-/// (`LSMinimumSystemVersion`) unless the app raises it.
+/// (`LSMinimumSystemVersion`) unless the app raises it, and builds of an
+/// app's Rust code for macOS compile for it as for iOS.
 pub(crate) const MACOS_MINIMUM: &str = "14.0";
+
+/// The oldest systems an app runs on, as its packages declare them: its
+/// own `<platform>.infoPlist` minimum when it raises the runtime's, else
+/// the runtime's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppleMinimums {
+    /// iOS's (Mac Catalyst's too: its versions are iOS's).
+    ios: String,
+    /// macOS's.
+    macos: String,
+}
+
+impl Default for AppleMinimums {
+    fn default() -> Self {
+        AppleMinimums {
+            ios: IOS_MINIMUM.into(),
+            macos: MACOS_MINIMUM.into(),
+        }
+    }
+}
+
+impl AppleMinimums {
+    /// The minimums of the app whose `nsh.json` is `config`. A minimum the
+    /// app sets is checked as packages check it; a section of another form
+    /// is left to the reading of the whole `nsh.json` to reject.
+    pub(crate) fn of(config: &serde_json::Value) -> anyhow::Result<Self> {
+        let minimum = |platform: ApplePlatform| -> anyhow::Result<String> {
+            let Some(value) = config
+                .get(platform.key())
+                .and_then(|section| section.get("infoPlist"))
+                .and_then(|info| info.get(platform.minimum_key()))
+            else {
+                return Ok(platform.minimum().into());
+            };
+            check_minimum(value, platform, &format!("{}.infoPlist", platform.key()))?;
+            Ok(value.as_str().unwrap_or_default().into())
+        };
+        Ok(AppleMinimums {
+            ios: minimum(ApplePlatform::Ios)?,
+            macos: minimum(ApplePlatform::Macos)?,
+        })
+    }
+
+    /// The deployment target variable and version of a build for `triple`
+    /// (`None`: this machine) when it is an Apple system's. rustc links for
+    /// it and `cc` compiles C for it; without it they disagree (rustc's
+    /// old default against the SDK's own version), and the C code may need
+    /// a later system than the package declares, or fail to link.
+    pub(crate) fn deployment_target(&self, triple: Option<&str>) -> Option<(&'static str, &str)> {
+        let platform = match triple {
+            Some(triple) if triple.contains("-apple-ios") => ApplePlatform::Ios,
+            Some(triple) if triple.contains("-apple-darwin") => ApplePlatform::Macos,
+            Some(_) => return None,
+            None if cfg!(target_os = "macos") => ApplePlatform::Macos,
+            None => return None,
+        };
+        Some(match platform {
+            ApplePlatform::Ios => ("IPHONEOS_DEPLOYMENT_TARGET", &self.ios),
+            ApplePlatform::Macos => ("MACOSX_DEPLOYMENT_TARGET", &self.macos),
+        })
+    }
+}
 
 /// `nsh.json` `"ios"` (and the keys [`MacosConfig`] shares with it).
 #[derive(Debug, Default, Deserialize)]
@@ -36,6 +105,95 @@ pub(crate) struct AppleConfig {
     /// against the provisioning profile.
     #[serde(default)]
     pub(crate) entitlements: serde_json::Map<String, serde_json::Value>,
+    /// What iOS shows from the tap on the app's icon until the app's first
+    /// frame: the system's background without it.
+    pub(crate) launch_screen: Option<LaunchScreen>,
+}
+
+/// `nsh.json` `ios.launchScreen`: a background color and an image in the
+/// middle of the screen, each one for both appearances or one for each.
+/// Packages compile them into the app's asset catalog and name them in
+/// `UILaunchScreen`, so the system draws them before the app runs.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LaunchScreen {
+    /// The screen's color (`"#131312"`, or `{ "light": .., "dark": .. }`).
+    pub(crate) background: Option<Themed<Color>>,
+    /// A PNG relative to `nsh.json`, drawn for 3x screens: the system
+    /// shows it centered, at a third of its pixel size in points.
+    pub(crate) image: Option<Themed<PathBuf>>,
+}
+
+/// One value for both appearances, or one for each.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Themed<T> {
+    /// The value in light and dark appearance.
+    Both(T),
+    /// A value for each appearance.
+    Each {
+        /// In light appearance.
+        light: T,
+        /// In dark appearance.
+        dark: T,
+    },
+}
+
+impl<T> Themed<T> {
+    /// The light value, and the dark one when it differs.
+    pub(crate) fn variants(&self) -> (&T, Option<&T>) {
+        match self {
+            Themed::Both(value) => (value, None),
+            Themed::Each { light, dark } => (light, Some(dark)),
+        }
+    }
+
+    fn map<U>(self, f: impl Fn(T) -> U) -> Themed<U> {
+        match self {
+            Themed::Both(value) => Themed::Both(f(value)),
+            Themed::Each { light, dark } => Themed::Each {
+                light: f(light),
+                dark: f(dark),
+            },
+        }
+    }
+}
+
+/// An sRGB color written `#rrggbb` or `#rrggbbaa`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) struct Color(pub(crate) [u8; 4]);
+
+impl TryFrom<String> for Color {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let digits = text.strip_prefix('#').unwrap_or_default();
+        let byte = |i: usize| u8::from_str_radix(digits.get(i * 2..i * 2 + 2)?, 16).ok();
+        let alpha = match digits.len() {
+            6 => Some(255),
+            8 => byte(3),
+            _ => None,
+        };
+        // Digits only: `from_str_radix` also takes a sign.
+        let hex = digits.bytes().all(|b| b.is_ascii_hexdigit());
+        match (hex, byte(0), byte(1), byte(2), alpha) {
+            (true, Some(r), Some(g), Some(b), Some(a)) => Ok(Color([r, g, b, a])),
+            _ => Err(format!(
+                "{text:?} is no color; write `#rrggbb` or `#rrggbbaa`"
+            )),
+        }
+    }
+}
+
+impl LaunchScreen {
+    /// The same, with its image relative to `dir`.
+    pub(crate) fn relative_to(self, dir: &Path) -> Self {
+        LaunchScreen {
+            image: self.image.map(|image| image.map(|path| dir.join(path))),
+            ..self
+        }
+    }
 }
 
 /// `nsh.json` `"macos"`: [`AppleConfig`]'s keys, and the app's activation
@@ -223,6 +381,13 @@ impl AppleConfig {
     pub(crate) fn check(&self, platform: ApplePlatform) -> anyhow::Result<()> {
         self.info_plist(platform)?;
         self.entitlements(platform)?;
+        if self.launch_screen.is_some() && self.info_plist.contains_key("UILaunchScreen") {
+            bail!(
+                "nsh.json {0}.infoPlist: `UILaunchScreen` is set by NSH from `{0}.launchScreen`; \
+                 set one of them",
+                platform.key()
+            );
+        }
         Ok(())
     }
 }
@@ -487,6 +652,75 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
+    /// `ios.launchScreen` takes a color and an image for both appearances
+    /// or one for each appearance; colors are `#rrggbb` or `#rrggbbaa`.
+    #[test]
+    fn launch_screens_read_one_value_or_one_per_appearance() {
+        let both = config(serde_json::json!({
+            "launchScreen": { "background": "#131312", "image": "launch.png" }
+        }));
+        assert_eq!(
+            both.launch_screen,
+            Some(LaunchScreen {
+                background: Some(Themed::Both(Color([0x13, 0x13, 0x12, 255]))),
+                image: Some(Themed::Both("launch.png".into())),
+            })
+        );
+        let each = config(serde_json::json!({
+            "launchScreen": {
+                "background": { "light": "#FFFFFF", "dark": "#00000080" },
+                "image": { "light": "light.png", "dark": "dark.png" }
+            }
+        }))
+        .launch_screen
+        .unwrap()
+        .relative_to(Path::new("/app"));
+        assert_eq!(
+            each.background.unwrap().variants(),
+            (&Color([255, 255, 255, 255]), Some(&Color([0, 0, 0, 0x80])))
+        );
+        assert_eq!(
+            each.image.unwrap().variants(),
+            (
+                &PathBuf::from("/app/light.png"),
+                Some(&PathBuf::from("/app/dark.png"))
+            )
+        );
+        for text in [
+            "131312",
+            "#13131",
+            "#1313121",
+            "#gg1312",
+            "#+f+f+f",
+            "#１３１３",
+        ] {
+            assert!(
+                Color::try_from(text.to_owned()).is_err(),
+                "{text} is no color"
+            );
+        }
+    }
+
+    /// The launch screen is either NSH's, from `ios.launchScreen`, or the
+    /// app's own `UILaunchScreen`, never both.
+    #[test]
+    fn a_launch_screen_and_its_info_plist_key_are_not_both_set() {
+        let error = config(serde_json::json!({
+            "launchScreen": { "background": "#131312" },
+            "infoPlist": { "UILaunchScreen": {} }
+        }))
+        .check(ApplePlatform::Ios)
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("`UILaunchScreen` is set by NSH from `ios.launchScreen`"),
+            "{error}"
+        );
+        config(serde_json::json!({ "infoPlist": { "UILaunchScreen": {} } }))
+            .check(ApplePlatform::Ios)
+            .unwrap();
+    }
+
     #[test]
     fn json_values_become_property_list_values() {
         let config = config(serde_json::json!({
@@ -712,6 +946,65 @@ mod tests {
             macos(serde_json::json!({ "infoPlist": { "MinimumOSVersion": "11.0" } }))
                 .check()
                 .is_ok()
+        );
+    }
+
+    /// Builds for an Apple system compile for the oldest one the package
+    /// declares: the app's own minimum when it raises the runtime's.
+    #[test]
+    fn builds_target_the_minimum_their_package_declares() {
+        let minimums = AppleMinimums::of(&serde_json::json!({ "name": "App" })).unwrap();
+        assert_eq!(minimums, AppleMinimums::default());
+        for triple in [
+            "aarch64-apple-ios",
+            "aarch64-apple-ios-sim",
+            "aarch64-apple-ios-macabi",
+        ] {
+            assert_eq!(
+                minimums.deployment_target(Some(triple)),
+                Some(("IPHONEOS_DEPLOYMENT_TARGET", IOS_MINIMUM))
+            );
+        }
+        for triple in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            assert_eq!(
+                minimums.deployment_target(Some(triple)),
+                Some(("MACOSX_DEPLOYMENT_TARGET", MACOS_MINIMUM))
+            );
+        }
+        for triple in [
+            "wasm32-unknown-unknown",
+            "aarch64-linux-android",
+            "x86_64-pc-windows-msvc",
+        ] {
+            assert_eq!(minimums.deployment_target(Some(triple)), None);
+        }
+        assert_eq!(
+            minimums.deployment_target(None).is_some(),
+            cfg!(target_os = "macos")
+        );
+
+        let raised = AppleMinimums::of(&serde_json::json!({
+            "ios": { "infoPlist": { "MinimumOSVersion": "16.4" } },
+            "macos": { "infoPlist": { "LSMinimumSystemVersion": "15.2" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            raised.deployment_target(Some("aarch64-apple-ios")),
+            Some(("IPHONEOS_DEPLOYMENT_TARGET", "16.4"))
+        );
+        assert_eq!(
+            raised.deployment_target(Some("aarch64-apple-darwin")),
+            Some(("MACOSX_DEPLOYMENT_TARGET", "15.2"))
+        );
+
+        let error = AppleMinimums::of(&serde_json::json!({
+            "ios": { "infoPlist": { "MinimumOSVersion": "13.0" } }
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("ios.infoPlist.MinimumOSVersion: \"13.0\" is below"),
+            "{error}"
         );
     }
 

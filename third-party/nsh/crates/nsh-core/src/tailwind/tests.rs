@@ -906,6 +906,43 @@ fn transitions_and_animations() {
     assert!(!t.properties.has(crate::effects::TransitionProps::TRANSFORM));
     let s = styled("transition");
     assert_eq!(s.view.transition.unwrap().duration, 150.0);
+    // NSH's spring: it times itself, so the duration is kept but not used.
+    let t = styled("transition-transform ease-spring-[620,36]")
+        .view
+        .transition
+        .unwrap();
+    let spring = t.spring.expect("a spring");
+    assert_eq!(
+        (spring.stiffness, spring.damping, spring.mass),
+        (620.0, 36.0, 1.0)
+    );
+    assert!((t.run_ms() - spring.settle_ms()).abs() < f32::EPSILON);
+    let t = styled("transition ease-spring-[992,45,2]")
+        .view
+        .transition
+        .unwrap();
+    assert_eq!(t.spring.unwrap().mass, 2.0);
+    // The later timing function wins.
+    let t = styled("transition ease-spring-[620,36] ease-out")
+        .view
+        .transition
+        .unwrap();
+    assert_eq!((t.easing, t.spring), ([0.0, 0.0, 0.2, 1.0], None));
+    for unknown in [
+        "ease-spring-[620]",
+        "ease-spring-[620,0]",
+        "ease-spring",
+        "ease-spring-620",
+    ] {
+        let list = parse(&themed(), unknown);
+        assert_eq!(list.unknown(), [Box::<str>::from(unknown)], "{unknown}");
+    }
+    // A Bézier past 0..1 is kept as written: it overshoots.
+    let t = styled("transition ease-[cubic-bezier(0.3,1.25,0.6,1)]")
+        .view
+        .transition
+        .unwrap();
+    assert_eq!((t.easing, t.spring), ([0.3, 1.25, 0.6, 1.0], None));
     let s = styled("animate-spin");
     assert_eq!(s.view.animation.unwrap().keyframes, Keyframes::Spin);
 }

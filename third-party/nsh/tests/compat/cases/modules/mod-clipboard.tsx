@@ -8,10 +8,12 @@ import { Clipboard } from "nsh";
 function App() {
   const calls = signal("not called");
   const failed = signal("none");
+  const written = signal("not written");
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Calls: ${calls()}`}</Text>
       <Text>{`Failed: ${failed()}`}</Text>
+      <Text>{`Write: ${written()}`}</Text>
       <View
         testID="copy"
         onPress={() => {
@@ -25,6 +27,17 @@ function App() {
         }}
       >
         <Text>Copy</Text>
+      </View>
+      <View
+        testID="copy-html"
+        onPress={() => {
+          Clipboard.write({ text: "Copied text", html: "<p>Copied <b>text</b></p>" }).then(
+            () => written.set("written"),
+            (e) => written.set(String(e)),
+          );
+        }}
+      >
+        <Text>Copy HTML</Text>
       </View>
     </View>
   );

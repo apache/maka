@@ -137,6 +137,14 @@ impl TerminalEmulator for VtEmulator {
         })
     }
 
+    fn cursor_position(&self) -> TerminalCursor {
+        let s = &self.state;
+        TerminalCursor {
+            col: s.x.min(s.cols - 1) as u16,
+            row: s.y as u16,
+        }
+    }
+
     fn take_events(&mut self) -> Vec<TerminalEmulatorEvent> {
         std::mem::take(&mut self.state.events)
     }

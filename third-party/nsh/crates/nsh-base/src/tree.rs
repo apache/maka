@@ -789,7 +789,7 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
             let same = last_flat.with(|l| l.as_ref() == Some(&now));
             last_flat.replace(Some(now));
             if same && props.reveal.get() && !reduce_motion() {
-                list.animate_layout(reveal_motion());
+                list.animate_layout(reveal_motion(None));
             }
         });
     });
@@ -947,6 +947,7 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
         bind("space", false, Rc::new(toggle_current));
     });
     listbox::bind_typeahead(
+        When::Always,
         move || active.get(),
         Rc::new(move |c| {
             let at = now();

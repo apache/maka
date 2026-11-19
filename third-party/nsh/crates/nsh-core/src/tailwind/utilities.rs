@@ -109,6 +109,8 @@ pub(crate) enum Part {
     TransitionProps(u8),
     Duration(f32),
     Ease([f32; 4]),
+    /// NSH's `ease-spring-[…]`: the transition runs on a spring.
+    Spring(crate::element::Spring),
     Delay(f32),
     TransitionNone,
     Animate(Option<Keyframes>),
@@ -417,6 +419,7 @@ pub(crate) struct Parts {
     transition_props: Option<u8>,
     duration: Option<f32>,
     ease: Option<[f32; 4]>,
+    spring: Option<crate::element::Spring>,
     delay: Option<f32>,
     transition_none: bool,
     animate: Option<Option<KeyframeAnimation>>,
@@ -452,7 +455,7 @@ impl Parts {
             | DropShadowAlpha(_) => touched::FILTERS,
             Filter { backdrop: true, .. } | FilterNone { backdrop: true } => touched::BACKDROP,
             FontVariant { .. } => touched::FONT_VARIANT,
-            TransitionProps(_) | Duration(_) | Ease(_) | Delay(_) | TransitionNone => {
+            TransitionProps(_) | Duration(_) | Ease(_) | Spring(_) | Delay(_) | TransitionNone => {
                 touched::TRANSITION
             }
             Animate(_) | Animation(_) => touched::ANIMATE,
@@ -551,7 +554,9 @@ impl Parts {
                 self.transition_none = false;
             }
             Duration(ms) => self.duration = Some(ms),
-            Ease(e) => self.ease = Some(e),
+            // The later timing function wins, as one property.
+            Ease(e) => (self.ease, self.spring) = (Some(e), None),
+            Spring(s) => self.spring = Some(s),
             Delay(ms) => self.delay = Some(ms),
             TransitionNone => {
                 self.transition_none = true;
@@ -766,7 +771,10 @@ impl Parts {
         if !has(touched::TRANSITION) {
         } else if self.transition_none {
             style.view.transition = None;
-        } else if self.transition_props.is_some() || self.duration.is_some() || self.ease.is_some()
+        } else if self.transition_props.is_some()
+            || self.duration.is_some()
+            || self.ease.is_some()
+            || self.spring.is_some()
         {
             let (duration, ease) = theme.transition;
             style.view.transition = Some(Transition {
@@ -779,6 +787,7 @@ impl Parts {
                 }),
                 delay: self.delay.unwrap_or(0.0),
                 easing: self.ease.unwrap_or(ease),
+                spring: self.spring,
             });
         }
         if let Some(k) = self.animate.filter(|_| has(touched::ANIMATE)) {
@@ -1252,6 +1261,9 @@ fn valid(decls: Vec<Decl>) -> Option<Vec<Decl>> {
         PropertyValue::Number(n) => n.0 < 0.0,
         PropertyValue::Points(p) => p.0 < 0.0,
         PropertyValue::OptPoints(p) => p.is_some_and(|p| p.0 < 0.0),
+        PropertyValue::FontSize(p, em) => {
+            p.is_some_and(|p| p.0 < 0.0) || em.is_some_and(|e| e.0 < 0.0)
+        }
         PropertyValue::Dimension(d) => d.into_raw().value() < 0.0,
         PropertyValue::Lpa(d) => d.into_raw().value() < 0.0,
         PropertyValue::Lp(d) => d.into_raw().value() < 0.0,
@@ -2665,6 +2677,18 @@ static PREFIXES: &[(&str, Handler)] = &[
     ("ease", |t, v, _| {
         let e = match t.ease.get(v) {
             Some(e) => *e,
+            // NSH's spring: `ease-spring-[stiffness,damping]` or
+            // `ease-spring-[stiffness,damping,mass]`.
+            None if v.starts_with("spring-[") => {
+                let args = arbitrary(v.strip_prefix("spring-")?)?;
+                let n: Option<Vec<f32>> = args.split(',').map(css::number).collect();
+                let physics = match *n?.as_slice() {
+                    [stiffness, damping] => (stiffness, damping, 1.0),
+                    [stiffness, damping, mass] => (stiffness, damping, mass),
+                    _ => return None,
+                };
+                return part(Part::Spring(crate::style::spring_of(physics)?));
+            }
             None => {
                 let a = arbitrary(v)?;
                 let args = a.strip_prefix("cubic-bezier(")?.strip_suffix(')')?;
@@ -2707,6 +2731,7 @@ static PREFIXES: &[(&str, Handler)] = &[
         one(sets(K::ObjectPosition, p))
     }),
     ("tint", |t, v, _| one(setc(K::TintColor, color(t, v)?))),
+    ("accent", |t, v, _| one(setc(K::AccentColor, color(t, v)?))),
 ];
 
 /// Forms without a value: `shadow`, `ring`, `border`, `rounded`, ...

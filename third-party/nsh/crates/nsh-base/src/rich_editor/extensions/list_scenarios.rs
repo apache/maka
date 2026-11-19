@@ -230,3 +230,26 @@ fn enter_in_empty_items_steps_out_a_level_at_a_time() {
         ed.outline()
     );
 }
+
+#[test]
+fn enter_in_a_checked_task_makes_an_unchecked_one() {
+    let task = |checked: bool, text: &str| json!({ "type": "taskItem", "attrs": { "checked": checked }, "content": [p(text)] });
+    let mut ed = Ed::new(doc(vec![list("taskList", vec![task(true, "done")])]));
+    ed.select("done", None);
+    let end = ed.state.selection().from() + 4;
+    let mut tr = ed.state.tr();
+    tr.set_selection(TextSelection::create(ed.state.doc(), end, None));
+    ed.apply(tr);
+    assert!(ed.key("Enter", false));
+    let tasks = ed.state.doc().child(0);
+    let checked = |i: usize| {
+        tasks
+            .child(i)
+            .attrs()
+            .get("checked")
+            .and_then(Value::as_bool)
+    };
+    assert_eq!(tasks.child_count(), 2);
+    // The task split keeps its state; the new one is still to do.
+    assert_eq!((checked(0), checked(1)), (Some(true), Some(false)));
+}

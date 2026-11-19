@@ -63,7 +63,7 @@ A function that returns a promise reports every failure by rejecting it, as Node
 | `code` | What it means |
 |---|---|
 | `ERR_ACCESS_DENIED` | The app's `capabilities` do not grant the call. The error has `permission`, the capability's key in `nsh.json` (`"fs"`, `"process"`, `"network"`), and `resource`, what was asked for: the path, the command (`"exit"` for `process.exit`), the `"host:port"` of a socket or the WebSocket's URL |
-| `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` | The call belongs to other platforms: files run on desktops and in browsers, processes on desktops, TCP sockets on native hosts, `os.homedir()` on hosts that configure a home directory |
+| `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` | The call belongs to other platforms: files run on native hosts and in browsers, processes on desktops, TCP sockets on native hosts, `os.homedir()` on hosts that configure a home directory |
 | `ERR_NSH_QUOTA_EXCEEDED` | A limit of the runtime is used up: operations or data in flight, children, sockets, WebSockets, bytes waiting to be sent, listeners |
 | `ETIMEDOUT` | The call ran out of time: `run`'s `timeoutMs`, a connection, a WebSocket handshake, write or close |
 | `ENOENT`, `EEXIST`, `EACCES`, `ECONNREFUSED`, ... | The operating system's answer, with Node's codes; `EACCES` and `EPERM` are the OS refusing a file, apart from the app's capabilities |
@@ -87,7 +87,7 @@ A host app may grant less than the app declares ([Sandbox and Capabilities](../d
 
 ## OS metadata and logging
 
-`os.platform(): string` and `os.arch(): string` report the actual native host OS and architecture, and `process.platform` and `process.arch` hold the same values. They are the names of Rust's `std::env::consts::OS` and `ARCH`, as gpui-shell's are: `"macos"`, `"windows"`, `"linux"`, `"ios"`, `"android"` for the OS, `"aarch64"`, `"x86_64"` for the architecture, so apps compare against them directly (`process.platform === "macos"`). `os.EOL: string` is the host's line separator. `os.homedir(): string` returns a configured absolute host home path; where none is configured it throws an error with `code` `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. Directory paths are metadata: file operations still require `fs.read` / `fs.write` grants.
+`os.platform(): string` and `os.arch(): string` report the actual native host OS and architecture, and `process.platform` and `process.arch` hold the same values. They are the names of Rust's `std::env::consts::OS` and `ARCH`, as gpui-shell's are: `"macos"`, `"windows"`, `"linux"`, `"ios"`, `"android"` for the OS, `"aarch64"`, `"x86_64"` for the architecture, so apps compare against them directly (`process.platform === "macos"`). `os.EOL: string` is the host's line separator. `os.homedir(): string` returns a configured absolute host home path; where none is configured it throws an error with `code` `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. An app that declares capabilities needs `"homeDir": true` for it ([capabilities](../docs/sandbox-and-capabilities.md#homedir)); without it the call throws an error with `code` `ERR_ACCESS_DENIED`. Directory paths are metadata: file operations still require `fs.read` / `fs.write` grants.
 
 Browser apps read an empty `process.env` object, and `os.homedir()` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` there, since home paths and environment variables belong to native hosts.
 
@@ -99,7 +99,7 @@ Browser apps read an empty `process.env` object, and `os.homedir()` throws `ERR_
 
 ## Files
 
-`fs/promises` reads and writes native files on desktop hosts (macOS, Windows and Linux), and app-private browser files through the Origin Private File System (OPFS). Every path is checked against `capabilities.fs` before the operation starts: `read` roots for `readFile`, `readdir`, `stat`, `lstat`, `readlink` and `exists`, `write` roots for `writeFile`, `mkdir`, `rename`, `unlink` and `rmdir`. Every failure rejects the promise: a path outside the grants with `code` `ERR_ACCESS_DENIED` (`permission` `"fs"`, `resource` the path as the app wrote it), before any disk work. The same `read` roots hold the local files images,
+`fs/promises` reads and writes native files on native hosts (macOS, Windows, Linux, iOS and Android), and app-private browser files through the Origin Private File System (OPFS). Every path is checked against `capabilities.fs` before the operation starts: `read` roots for `readFile`, `readdir`, `stat`, `lstat`, `readlink` and `exists`, `write` roots for `writeFile`, `mkdir`, `rename`, `unlink` and `rmdir`. Every failure rejects the promise: a path outside the grants with `code` `ERR_ACCESS_DENIED` (`permission` `"fs"`, `resource` the path as the app wrote it), before any disk work. The same `read` roots hold the local files images,
 videos and sounds show ([sandbox](../docs/sandbox-and-capabilities.md#network)).
 
 ```json

@@ -231,6 +231,48 @@ fn open_notes() {
 }
 ```
 
+## Signing in on the web
+
+`open_auth_session` opens a provider's sign-in page (an OAuth authorization URL) and
+answers with the callback URL it redirects to: iOS shows it in an
+`ASWebAuthenticationSession` sheet (`.ephemeral(true)` keeps it apart from the user's
+Safari data), Android in a Custom Tab, other platforms in the system browser. Outside
+iOS the callback comes back as a link of a scheme the app claims (`nsh.json`
+`schemes`); the session takes it, so `next_url_scheme_open` never hears it. The
+answer is `Completed(url)` or `Cancelled` (the user closed the page or came back to
+the app without signing in); a session with nothing to bring its callback back fails
+with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. The page's URL needs the `openUrl`
+capability, as `open_url` does.
+
+When the app learns the user signed in some other way while the page still shows (a
+device code approved on a page that never redirects back), `close_auth_session()`
+closes it: the session answers `Cancelled`, and iOS and Android take the page away and
+bring the app back. A page in a desktop browser stays open. With no session waiting,
+it does nothing.
+
+```rust
+use nsh_core::{
+    auth_session::{AuthSessionOutcome, AuthSessionRequest},
+    prelude::*,
+};
+
+fn sign_in(authorize_url: String) {
+    let session = open_auth_session(AuthSessionRequest::new(authorize_url, "myapp"));
+    spawn(async move {
+        match session.await {
+            Ok(AuthSessionOutcome::Completed(callback)) => log::info!("signed in: {callback}"),
+            Ok(_) => {} // Cancelled.
+            Err(error) => log::warn!("no sign-in page: {error}"),
+        }
+    });
+}
+```
+
+In tests, `Headless::on_auth_session` gives the platform an in-app session and ends
+each one with the outcome given, and `keep_auth_sessions_open` leaves each one open
+until the app closes it (`screen().auth_session_showing()`); without either the page
+is in `opened_urls()` and `open_with_url` delivers the callback.
+
 ## Extending a Rust app with TSX
 
 The crate's `#[native_module("app/native")]` function names what TSX may import: components
@@ -504,6 +546,20 @@ kind, test id, parent, bounds in the root's points before transforms, whether it
 axis and content size in `scroll`, a text view's text and the box it was laid out in in `text`), so a test can check
 that nothing passes its parent, is cut by a view that clips, or is too wide for its text. Both are Rust API of
 `nsh_testing`, for `cargo test`.
+
+A web app's routing is tested on its page: `Headless::start_at_page(config, "https://example.test/app/")` starts the
+app on the web at that address, and `app.browser()` is the browser around it, with the history the web keeps (an
+entry per page a stack pushes and per open dialog, the app's `set_app_url_with(url, HistoryBehavior::Push)` addresses)
+and the user's moves through it: `back()`, `forward()`, `go(delta)` and `type_address("#inbox")`, which the app hears
+as on the web (`next_app_url_change`, `next_url_scheme_open`); `entries()`, `index()` and `url()` read the history.
+
+```rust
+let mut app = Headless::start_at_page(config, "https://example.test/app/").unwrap();
+app.press("Message").unwrap(); // pushes a page and sets `?m=1`
+assert_eq!(app.browser().url(), Some("https://example.test/app/?m=1"));
+app.browser().back().unwrap(); // pops the page
+app.browser().type_address("#inbox").unwrap(); // an `Address` change
+```
 
 A TSX entry is built with `nsh-testing`'s feature `bundle` as `nsh run` builds it, against the UI sets its hosts
 serve: NSH's, and each crate's `registry()`, which `#[native_module]` makes:

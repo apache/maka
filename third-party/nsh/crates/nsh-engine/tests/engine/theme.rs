@@ -52,7 +52,7 @@ fn start(app_theme: Option<Theme>, host_theme: Option<Theme>) -> (Engine, Receiv
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -64,6 +64,8 @@ fn start(app_theme: Option<Theme>, host_theme: Option<Theme>) -> (Engine, Receiv
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let engine = Engine::start_with(
         config,
@@ -159,7 +161,7 @@ fn a_tsx_apps_token_classes_follow_the_host_theme() {
         limits: nsh_engine::Limits::default(),
         ui_sets: vec![nsh_base::registry()],
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -171,6 +173,8 @@ fn a_tsx_apps_token_classes_follow_the_host_theme() {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     assert_eq!(backgrounds(&rx), vec![default_primary()]);
@@ -249,7 +253,7 @@ fn a_hosts_theme_overrides_win_over_the_apps_tokens_they_set_and_keep_the_rest()
         limits: nsh_engine::Limits::default(),
         ui_sets: vec![nsh_base::registry()],
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         storage: None,
         clock: Default::default(),
         context: Default::default(),
@@ -261,6 +265,8 @@ fn a_hosts_theme_overrides_win_over_the_apps_tokens_they_set_and_keep_the_rest()
         audio: None,
         cache: Default::default(),
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     // A brand's primary, light and dark, set before the app runs.
     let overrides = nsh_base::theme_overrides(
@@ -370,7 +376,7 @@ fn start_branded(
         limits: nsh_engine::Limits::default(),
         ui_sets: vec![nsh_base::registry()],
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         storage: None,
         clock: Default::default(),
         context: Default::default(),
@@ -382,6 +388,8 @@ fn start_branded(
         audio: None,
         cache: Default::default(),
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let engine = Engine::start_with(
         config,

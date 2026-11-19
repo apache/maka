@@ -166,7 +166,7 @@ jobs:
       # The nsh the apps in the field were built with, such as v0.5.0 (a repository variable); empty: the latest.
       NSH_VERSION: ${{ vars.NSH_VERSION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install nsh
         run: |
@@ -230,8 +230,8 @@ export async function checkForUpdates() {
       await downloadPackage();
       // iOS and Android: nothing to show, the package runs from the next cold start.
       packageReady.set(canRestart);
-      return;
     }
+    // `shell`: the code is current, only the installed app is behind; offer it quietly.
     appUpdate.set(await checkForUpdate());
   } catch (error) {
     console.warn("update check failed:", error); // the next check tries again

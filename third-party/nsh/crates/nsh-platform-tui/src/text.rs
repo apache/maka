@@ -151,7 +151,7 @@ fn glyphs(text: &AttributedText, cells: CellSize, alignments: &AttachmentAlignme
             );
             let attachment = attachment.map(|(index, a)| {
                 let font = FontExtent::new(cells.height(), Points::ZERO, cells.height() / 2.0);
-                let (ascent, descent) = a.extent(font, alignments.get(start));
+                let (ascent, descent) = alignments.extent(a, font);
                 Attachment {
                     index,
                     ascent: (ascent / cells.height()).ceil() as usize,
@@ -263,6 +263,22 @@ impl CellTextEngine {
                     .filter(|glyph| glyph.start >= start && !glyph.text.contains('\n'))
                     .cloned()
                     .collect();
+            } else if truncated
+                && text.ellipsize == EllipsizeMode::Tail
+                && let Some(row) = rows.last_mut()
+                && let Some(first) = row.first()
+            {
+                // The last row a clamp shows holds the rest of its
+                // paragraph and is cut at the box, as CoreText, Pango and
+                // StaticLayout cut it: ending it where it wrapped would
+                // leave the ellipsis after a word that fit and the box
+                // empty past it.
+                let from = glyphs.partition_point(|glyph| glyph.start < first.start);
+                *row = glyphs[from..]
+                    .iter()
+                    .take_while(|glyph| !glyph.text.contains('\n'))
+                    .cloned()
+                    .collect();
             }
             let available = width.map_or(usize::MAX, |w| {
                 (w / self.cells.width() + 0.01).floor() as usize
@@ -321,6 +337,14 @@ impl TextEngine for CellTextEngine {
                     })
                     .sum::<usize>() as f32,
         )
+    }
+
+    /// The bottom of the first row's own Cells: a Cell is its font's
+    /// ascent, with nothing below the baseline.
+    fn first_baseline(&self, text: &Self::Prepared, width: Points) -> Option<Points> {
+        let rows = self.rows(text, Some(width));
+        let (ascent, _) = row_extent(rows.first()?);
+        Some(self.cells.height() * ascent as f32)
     }
 
     fn layout(&self, text: &Self::Prepared, size: Size<Points>) -> TextLayout {
@@ -502,6 +526,15 @@ fn ellipsize(row: &mut Vec<Glyph>, columns: usize, mode: EllipsizeMode) {
     while left < original.len() && used + original[left].width <= left_budget {
         used += original[left].width;
         left += 1;
+    }
+    if mode == EllipsizeMode::Tail && marker > 0 {
+        // Spaces before the ellipsis go, as on the other backends.
+        while left > 0
+            && original[left - 1].attachment.is_none()
+            && original[left - 1].text.as_ref() == " "
+        {
+            left -= 1;
+        }
     }
     if matches!(mode, EllipsizeMode::Head | EllipsizeMode::Middle) {
         while right > left && used + original[right - 1].width <= budget {

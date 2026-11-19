@@ -149,6 +149,7 @@ pub struct Options {
     pub session_tools: bool,
     pub code_mode: bool,
     pub responses: bool,
+    pub usage_limits: bool,
 }
 
 impl Fixture {
@@ -450,6 +451,8 @@ pub(crate) async fn configure(
     );
     let provider_name = if options.responses {
         "openai-responses-compatible"
+    } else if options.usage_limits {
+        "new-api"
     } else {
         "openai-compatible"
     };
@@ -590,6 +593,17 @@ impl ModelRequest {
                 );
                 if request.method() == Method::GET && request.uri().path() == "/v1/models" {
                     let body = Bytes::from_static(br#"{"data":[{"id":"fixture-discovered-model","name":"Discovered UI Model","context_length":131072,"top_provider":{"max_completion_tokens":4096},"reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["max","high","low","none"],"default_effort":"high"}}]}"#);
+                    return Ok::<Response<ModelBody>, hyper::Error>(
+                        Response::builder()
+                            .header(hyper::header::CONTENT_TYPE, "application/json")
+                            .body(Full::new(body).boxed_unsync())
+                            .unwrap(),
+                    );
+                }
+                if request.method() == Method::GET && request.uri().path() == "/api/usage/token/" {
+                    let body = Bytes::from_static(
+                        br#"{"code":true,"data":{"unlimited_quota":false,"total_granted":100.0,"total_used":28.0,"total_available":72.0}}"#,
+                    );
                     return Ok::<Response<ModelBody>, hyper::Error>(
                         Response::builder()
                             .header(hyper::header::CONTENT_TYPE, "application/json")

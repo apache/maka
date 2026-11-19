@@ -334,8 +334,6 @@ export function HoverCardDemo() {
                     height: 6 + ((c() - lo()) / Math.max(0.01, hi() - lo())) * 38,
                     borderRadius: 1.5,
                     backgroundColor: i() === closes().length - 1 ? toneColor(tone()) : alpha(toneColor(tone()), 0.35),
-                    transitionProperty: "height",
-                    transitionDuration: 300,
                   }}
                 />
               )}

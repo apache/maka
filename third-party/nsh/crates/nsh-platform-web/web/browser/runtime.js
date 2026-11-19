@@ -34,16 +34,18 @@ function facadeURL(specifier, names, late) {
   return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 }
 
-function addImportMap(doc, imports) {
+function addImportMap(doc, map) {
   const importMap = doc.createElement("script");
   importMap.type = "importmap";
-  importMap.textContent = JSON.stringify({ imports });
+  importMap.textContent = JSON.stringify(map);
   doc.head.append(importMap);
 }
 
 export function createBrowserHost(player) {
   let current, pageRealmUsed = false;
   return {
+    // The web views' bridge, loaded by URL (`op_web`).
+    webBridge: new URL("./web-bridge.js", import.meta.url).href,
     bind(wasm) {
       return Object.fromEntries(Object.entries(wasm).map(([name, value]) => [name,
         typeof value === "function" && name !== "nsh_browser_trace"
@@ -62,8 +64,12 @@ export function createBrowserHost(player) {
     // modules (a published app's, `web::native_exports`). Their modules
     // are made before the realm loads any module; their bindings are live,
     // so what a gate called after the start registers (a side module
-    // loaded before the chunk) is filled then.
-    async run(entry, { appId = "", capabilities = "", imports: moduleMap = {}, chunks = {}, nativeExports = {}, params } = {}, owned = []) {
+    // loaded before the chunk) is filled then. `linked`: the app's modules
+    // import one another and the native modules' facades by the URLs of
+    // their files (a published app's, `web::publish_modules`), so the realm
+    // needs no import map and no blob URL, which a strict `script-src`
+    // refuses; its chunk loader still maps chunk ids to `chunks`.
+    async run(entry, { appId = "", capabilities = "", imports: moduleMap = {}, chunks = {}, nativeExports = {}, linked = false, params } = {}, owned = []) {
       if (current?.stopping) throw new Error("cannot start an app during disposal");
       const [width, height] = player.reset();
       let values;
@@ -105,13 +111,20 @@ export function createBrowserHost(player) {
         frame = document.createElement("iframe");
         frame.hidden = true;
         frame.setAttribute("aria-hidden", "true");
-        player.container.append(frame);
+        // In the document's body, not the player's container: a page that
+        // keeps one player moves `player.root` from view to view, and the
+        // container the player was made in leaves the document with its
+        // view. A frame outside the document has no window. Nor in the
+        // root, which moves: moving a frame discards its document.
+        (document.body ?? document.documentElement).append(frame);
         let realm = frame.contentWindow, doc;
-        try { doc = realm.document; } catch {
+        try { doc = realm.document; } catch (error) {
           // A page with an opaque origin (a `sandbox` without
           // `allow-same-origin`) cannot reach its own frames, so the app
           // runs in the page's realm. A document keeps the modules and the
-          // import map it loaded, so that realm runs one app.
+          // import map it loaded, so that realm runs one app. Any other
+          // failure is not that.
+          if (error?.name !== "SecurityError") throw error;
           if (pageRealmUsed) throw new Error("this page has an opaque origin and runs one app; reload it to run another");
           pageRealmUsed = true;
           frame.remove();
@@ -119,7 +132,14 @@ export function createBrowserHost(player) {
           realm = window;
           doc = document;
         }
-        if (frame) {
+        // An `about:blank` frame resolves against its creator's base
+        // already; a `<base>` only when that has moved. A page that names
+        // the site's base (`baseURL`, a published app's) has none, as a
+        // strict `base-uri` refuses it: what the realm loads is named by
+        // absolute URLs, `import.meta.url` resolves against the base
+        // (`setBase`) and so do the app's relative `fetch` URLs
+        // (`installFetch`'s `base`).
+        if (frame && !player.siteBase && doc.baseURI !== player.baseURL) {
           const baseElement = doc.createElement("base");
           // The page's URL as the player started (`player.baseURL`).
           baseElement.href = player.baseURL;
@@ -135,7 +155,7 @@ export function createBrowserHost(player) {
         const chunkBase = entryURL.protocol === "blob:" ? new URL(player.baseURL) : entryURL;
         if (chunkBase === entryURL) map[new URL("bundle.js", entryURL).href] = entryURL.href;
         for (const [id, url] of Object.entries(chunks)) map[new URL(id, chunkBase).href] = new URL(url, player.baseURL).href;
-        for (const [specifier, names] of Object.entries(nativeExports)) {
+        if (!linked) for (const [specifier, names] of Object.entries(nativeExports)) {
           const url = facadeURL(specifier, names, names);
           urls.push(url);
           map[specifier] = url;
@@ -200,6 +220,7 @@ export function createBrowserHost(player) {
         player.wasm.nsh_browser_initialize();
         const reactive = createReactive(call, active, values);
         const dom = createDom(call, values, reactive, active, requestPump);
+        dom.setBase(player.baseURL);
         const hot = app.hot = createHot(reactive, report);
         dom.setHot(hot);
         const env = createEnvironment(reactive, call, dom);
@@ -247,7 +268,7 @@ export function createBrowserHost(player) {
         // any of the app's code runs.
         const network = !!player.testing;
         scope.installTesting(realm, call, { active, wake: requestPump, network });
-        scope.installFetch(realm, call, { active, wake: requestPump, network });
+        scope.installFetch(realm, call, { active, wake: requestPump, network, base: player.siteBase });
         lists = createLists(call, values, reactive, dom, active, requestPump);
         dom.rt.list = lists.render;
         components = createComponents(call, values, reactive, dom);
@@ -257,19 +278,29 @@ export function createBrowserHost(player) {
         dom.setMeasure((node, what) => modules.measure(node, what));
         animation = createAnimation(call, active, requestPump, env);
         const nsh = modules.exports.get("nsh") ?? {};
-        const canvas = createCanvas(call, reactive, dom, active, requestPump);
+        const canvas = createCanvas(call, reactive, dom, active, requestPump, (op, receiver, args) => modules.request(op, receiver, args));
         Object.assign(nsh, animation.api, canvas, { PanResponder: gestures.PanResponder });
         Object.assign(nsh, reactive, env.api, { List: lists.render, mount: dom.mount, resource: createResource(call, reactive, active, requestPump), keymap: createKeymap(call, reactive, dom, env.api.platform, requestPump, hot) });
         host = createHost(call, reactive, dom, env, active, nsh.host);
         nsh.host = host.host;
-        configureAPIs(nsh, modules, dom, active, env);
+        configureAPIs(nsh, modules, dom, active, env, {
+          // The pump is woken first, so the batch of this turn, with the
+          // history entries it pushes, lands before the title is written
+          // and the entry left keeps its own, as a Rust app's title in the
+          // batch does.
+          setWindowTitle: title => {
+            if (!active()) return;
+            requestPump();
+            player.setWindowTitle?.(title);
+          },
+        });
         const page = createWebPage(reactive, player);
         // Where the app is the page, `setUrl` takes a URL of the page's
-        // origin, resolved once as `history.replaceState` resolves it
-        // (against the page's `<base href>`).
+        // origin, resolved once against the site's base
+        // (`player.addressBase`).
         if (nsh.UrlScheme && player.history) {
           scope.configureAddress(nsh.UrlScheme, {
-            base: () => document.baseURI,
+            base: () => player.addressBase(),
             origin: location.origin,
           });
         }
@@ -301,17 +332,20 @@ export function createBrowserHost(player) {
         // Namespace imports and development bundles need the full module
         // catalog too. One map covers these and the late-bound exports of
         // published chunks, including browsers that accept only one map.
-        for (const [specifier, namespace] of namespaces) {
+        if (!linked) for (const [specifier, namespace] of namespaces) {
           if (Object.hasOwn(nativeExports, specifier)) continue;
           const url = facadeURL(specifier, Object.keys(namespace), []);
           urls.push(url);
           map[specifier] = url;
         }
-        addImportMap(doc, map);
+        if (!linked) addImportMap(doc, { imports: map });
         const finished = new Promise((resolve, reject) => {
           rejectLoad = reject;
           Object.defineProperty(realm, "__nsh_browser_realm", { value: Object.freeze({
             entry: entryURL.href, base: chunkBase.href, modules: namespaces, watch: watcher => { watchers.push(watcher); },
+            // A chunk's URL by the one its id resolves to (the import map's
+            // keys), for the chunk loader of a linked app.
+            resolve: url => map[url] ?? url,
             setImporter: load => { app.importModule = load; },
             live: active, prepareChunk: id => player.options.prepareChunk?.(id), ready: resolve, failed: reject,
           }) });

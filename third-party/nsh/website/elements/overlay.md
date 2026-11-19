@@ -98,7 +98,9 @@ With `anchor`, NSH places it next to the anchor:
 - `align` lines it up along that side: `"start"`, `"center"` (the default) or `"end"`. Above and below the anchor,
   start and end follow the layout direction: start is the left edge, or the right edge in a right-to-left layout.
 - `offset` is the gap between the anchor and the overlay; `margin` the distance it keeps from the edges of the
-  safe area, which it stays inside of: it slides along its side to fit.
+  safe area, which it stays inside of: it slides along its side to fit. It is laid out within that room too, so
+  content wider than it, such as a paragraph, wraps to fit, and its percentage sizes and insets (`w-full`,
+  `max-w-[50%]`) are against that room.
 
 An anchored overlay follows its anchor: when the anchor scrolls, moves or changes size, the overlay moves with it in
 the same frame NSH lays it out. `onPosition` tells where it went, so an arrow can point at the anchor or a long menu can

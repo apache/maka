@@ -103,6 +103,24 @@ releases, and Super as Cmd, so `cmd+` shortcuts work there; on macOS terminals w
 binding takes is tried again as Cmd, and menus and hints (`keymap.label`, `Command`) show those shortcuts with
 Ctrl, the key to press there (`⌃O` for `mod+o`).
 
+**Raw key events.** A focused custom view can hear the keys themselves, as on the desktops: `onKeyDown` /
+`onKeyUp` (a Rust view's `on_key_down` / `on_key_up`) report a `KeyEvent` whose `key` is the logical key the
+terminal names (`a`, `A`, `ArrowLeft`, `Enter`), with the modifiers the terminal reports and the `repeat` flag.
+`code` is always empty: a terminal reports no hardware key identity, and the host never derives one from the
+character a key types. `defaultPrevented` is the capture rule's (`capture_keys`) decision, matched on the same
+canonical shortcuts as the app's keymap; a captured key is marked and runs none of the terminal's defaults,
+while listeners still hear it. The app's own shortcuts keep their priority, and a text field or the Minibuffer
+keeps its keys. A dialog (`Modal`) is the keyboard boundary, while a sheet is an overlay in the same window,
+so its keys follow the view that declared it, as on the desktops.
+
+What the terminal reports varies; nothing is invented when it reports less:
+
+| Terminal | What a `KeyEvent` gets |
+|---|---|
+| Plain text / legacy terminal | Presses only: a key down per stroke, no release, and an auto-repeat arrives as another press; no physical code |
+| Kitty keyboard protocol | The standalone host negotiates it: releases and auto-repeats for the keys sent as escape codes (arrows, function keys, modified keys); Enter, Tab, Backspace and plain text stay presses; no physical code |
+| Windows console | Crossterm reads the console's key-up records, so releases arrive; auto-repeats arrive as the console reports them; no physical code |
+
 **Search.** Ctrl+S and Ctrl+R search the text on screen as you type, as readline and Emacs do. The query shows on the
 bottom row after `/` (forward) or `?` (backward), the match is highlighted and focus moves to the control it belongs
 to. Ctrl+S / Ctrl+R go to the next / previous match, Backspace or Ctrl+H takes back the last key, Enter ends the

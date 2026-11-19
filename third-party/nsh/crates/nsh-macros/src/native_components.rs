@@ -19,6 +19,7 @@ const PLATFORMS: &[(&str, &str)] = &[
     ("macos", "target_os = \"macos\""),
     ("linux", "target_os = \"linux\""),
     ("ios", "target_os = \"ios\""),
+    ("android", "target_os = \"android\""),
 ];
 
 pub(crate) fn expand(platform: Ident, item: ItemFn) -> syn::Result<TokenStream2> {
@@ -35,8 +36,13 @@ pub(crate) fn expand(platform: Ident, item: ItemFn) -> syn::Result<TokenStream2>
     };
     let cfg: TokenStream2 = cfg.parse().expect("a cfg predicate");
     let sig = &item.sig;
+    let crate_name = if name == "android" {
+        "nsh".to_owned()
+    } else {
+        format!("nsh_platform_{name}")
+    };
     let usage = format!(
-        "`#[native_components({name})]` takes a plain `fn(components: &nsh_platform_{name}::Components)`"
+        "`#[native_components({name})]` takes a plain `fn(components: &{crate_name}::Components)`"
     );
     if let Some(token) = sig
         .constness
@@ -145,7 +151,7 @@ mod tests {
 
     #[test]
     fn the_platform_is_one_whose_hosts_register_components() {
-        for platform in ["android", "web", "gpui", "Windows"] {
+        for platform in ["web", "gpui", "Windows"] {
             let error = expand(
                 platform,
                 quote!(
@@ -154,7 +160,7 @@ mod tests {
             )
             .unwrap_err();
             assert!(
-                error.contains("one of `windows`, `macos`, `linux`, `ios`"),
+                error.contains("one of `windows`, `macos`, `linux`, `ios`, `android`"),
                 "{platform}: {error}"
             );
         }
@@ -163,6 +169,16 @@ mod tests {
     #[test]
     fn the_function_is_plain_takes_the_components_and_returns_nothing() {
         let usage = "takes a plain `fn(components: &nsh_platform_windows::Components)`";
+        assert!(
+            expand(
+                "android",
+                quote!(
+                    fn components() {}
+                )
+            )
+            .unwrap_err()
+            .contains("takes a plain `fn(components: &nsh::Components)`")
+        );
         for item in [
             quote!(
                 async fn components(components: &C) {}

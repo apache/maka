@@ -52,8 +52,8 @@ impl Owner {
                 .map_err(|error| error.to_string())?
             || !parent
                 .sandbox_floor()
-                .network()
-                .contains(target.spec.network_approval_ceiling())
+                .contains(&target.spec.approval_ceiling())
+                .map_err(|error| error.to_string())?
         {
             return Err("agent_steering_isolation_unavailable".into());
         }

@@ -62,6 +62,31 @@ use crate::{
     view::{NshView, ViewState},
 };
 
+mod offscreen;
+
+/// An image a canvas draws: its pixels, and how many of them make one unit
+/// of the image's own size (what `drawImage`'s source rectangle and its
+/// default size are in).
+#[derive(Clone)]
+pub(crate) struct CanvasBitmap {
+    pub(crate) surface: cairo::ImageSurface,
+    /// 1 for a bitmap decoded whole, whose units are its pixels; an SVG's
+    /// pixels per point, as it was rasterized.
+    pub(crate) scale: f64,
+}
+
+impl CanvasBitmap {
+    /// `texture` as a canvas draws it, `scale` pixels to each of its units.
+    fn new((texture, scale): (gtk::gdk::Texture, f64)) -> Result<CanvasBitmap, String> {
+        Ok(CanvasBitmap {
+            surface: image_surface(&texture)?,
+            scale,
+        })
+    }
+}
+
+pub(crate) use offscreen::render as render_offscreen;
+
 /// Layouts kept per canvas before the cache is emptied.
 const MAX_LAYOUTS: usize = 256;
 /// The largest side of a shadow mask, in pixels.
@@ -75,7 +100,7 @@ pub(crate) struct CanvasState {
     pub(crate) args: Vec<Option<AnimationValue>>,
     /// The images the drawing names, by URI: `None` while loading (or
     /// when they failed to load).
-    images: FxHashMap<Arc<str>, Option<cairo::ImageSurface>>,
+    images: FxHashMap<Arc<str>, Option<CanvasBitmap>>,
     /// Pango layouts of `fillText` / `strokeText`.
     text: RefCell<TextCache>,
     /// The drawing rasterized, and what of it must be drawn again.
@@ -223,12 +248,18 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
         c.dirty.set(Damage::All);
     }
     let hidden = view.state().canvas.as_ref().is_some_and(|c| c.hidden.get());
+    // An SVG is rasterized for the screen it shows on (fractional scales
+    // included).
+    let scale = view
+        .native()
+        .and_then(|n| n.surface())
+        .map_or(view.scale_factor() as f64, |s| s.scale());
     for uri in load {
         let weak = view.downgrade();
         let key = uri.clone();
-        crate::image::load_bitmap(surface, &uri, move |result| {
+        crate::image::load_bitmap(surface, &uri, scale, move |result| {
             let Some(view) = weak.upgrade() else { return };
-            let image = match result.and_then(|t| image_surface(&t)) {
+            let image = match result.and_then(CanvasBitmap::new) {
                 Ok(image) => image,
                 Err(e) => {
                     log::warn!("canvas: {e}");
@@ -695,7 +726,7 @@ impl Default for State {
 struct Replay<'a> {
     cr: &'a cairo::Context,
     args: &'a [Option<AnimationValue>],
-    images: &'a FxHashMap<Arc<str>, Option<cairo::ImageSurface>>,
+    images: &'a FxHashMap<Arc<str>, Option<CanvasBitmap>>,
     text: &'a mut TextCache,
     /// The display's scale.
     scale: f64,
@@ -915,6 +946,7 @@ impl Replay<'_> {
                 dest,
             } => self.image(
                 &image.uri,
+                image.density(),
                 source.map(|s| [s.origin.x.0, s.origin.y.0, s.size.width.0, s.size.height.0]),
                 dest,
             ),
@@ -1370,22 +1402,31 @@ impl Replay<'_> {
         });
     }
 
-    fn image(&mut self, uri: &str, source: Option<[f32; 4]>, dest: &[Num; 4]) {
+    fn image(&mut self, uri: &str, density: f32, source: Option<[f32; 4]>, dest: &[Num; 4]) {
         if self.state.singular {
             return;
         }
-        let Some(Some(image)) = self.images.get(uri) else {
+        let Some(Some(CanvasBitmap {
+            surface: image,
+            scale,
+        })) = self.images.get(uri)
+        else {
             return;
         };
-        let (iw, ih) = (image.width() as f64, image.height() as f64);
+        // The source rectangle and the default size are in the image's own
+        // units: an SVG drawn sharp has `scale` pixels to each.
+        let scale = *scale;
+        let (iw, ih) = (image.width() as f64 / scale, image.height() as f64 / scale);
         let [sx, sy, sw, sh] = source.map_or([0.0, 0.0, iw, ih], |s| s.map(f64::from));
         if sw <= 0.0 || sh <= 0.0 {
             return;
         }
         let [dx, dy, dw, dh] = dest.map(|v| self.n(v));
-        // Missing sizes are the source's.
-        let dw = if dw.is_nan() { sw } else { dw };
-        let dh = if dh.is_nan() { sh } else { dh };
+        // Missing sizes are the source's pixels over the file name's
+        // density (`@3x`), as an `Image`'s: never the screen's.
+        let density = f64::from(density);
+        let dw = if dw.is_nan() { sw / density } else { dw };
+        let dh = if dh.is_nan() { sh / density } else { dh };
         if dw == 0.0 || dh == 0.0 {
             return;
         }
@@ -1395,8 +1436,18 @@ impl Replay<'_> {
             c.rectangle(dx, dy, dw, dh);
             c.clip();
             c.translate(dx, dy);
-            c.scale(dw / sw, dh / sh);
-            c.set_source_surface(&image, -sx, -sy).is_ok()
+            c.scale(dw / (sw * scale), dh / (sh * scale));
+            if c.set_source_surface(&image, -sx * scale, -sy * scale)
+                .is_err()
+            {
+                return false;
+            }
+            // Scaled, the pixels at the image's edges are filtered with what
+            // lies beyond it: padding with the edges keeps them as opaque as
+            // the image is, as browsers' `drawImage` does, instead of fading
+            // them into the transparency around it.
+            c.source().set_extend(cairo::Extend::Pad);
+            true
         };
         self.aside(|r| {
             r.with_shadow(false, &|c| {
@@ -1828,6 +1879,55 @@ mod tests {
         // translated; nothing elsewhere.
         assert_eq!((alpha(5, 5), alpha(45, 5), alpha(22, 2)), (255, 255, 255));
         assert_eq!((alpha(15, 5), alpha(35, 5), alpha(27, 7)), (0, 0, 0));
+    }
+
+    #[test]
+    fn an_image_draws_its_pixels_over_its_file_density() {
+        // 60 × 30 pixels at (0, 0) without a destination size: 60 × 30
+        // points as `dot.png`, 20 × 10 as `dot@3x.png`, at scale 1 and 2.
+        let nan = Num::Const(f32::NAN);
+        let c = Num::Const;
+        let image = cairo::ImageSurface::create(cairo::Format::ARgb32, 60, 30).unwrap();
+        {
+            let cr = cairo::Context::new(&image).unwrap();
+            cr.set_source_rgb(1.0, 0.0, 0.0);
+            cr.paint().unwrap();
+        }
+        for (uri, (w, h)) in [
+            ("asset:/dot.png", (60, 30)),
+            ("asset:/dot@3x.png", (20, 10)),
+        ] {
+            let drawing = Drawing {
+                ops: vec![CanvasOp::DrawImage {
+                    image: nsh_core::canvas::CanvasImage { uri: uri.into() },
+                    source: None,
+                    dest: [c(0.0), c(0.0), nan, nan],
+                }],
+                ..Drawing::default()
+            };
+            let mut canvas = CanvasState::default();
+            canvas.images.insert(
+                uri.into(),
+                Some(CanvasBitmap {
+                    surface: image.clone(),
+                    scale: 1.0,
+                }),
+            );
+            for scale in [1, 2] {
+                let size = (100 * scale, 40 * scale);
+                let raster =
+                    rasterize(&canvas, &drawing, None, Damage::All, size, scale as f64).unwrap();
+                let mut surface = copy(&raster.surface, None, size, scale as f64).unwrap();
+                let stride = surface.stride() as usize;
+                let data = surface.data().map(|d| d.to_vec()).unwrap();
+                let alpha = |x: i32, y: i32| {
+                    data[(y * scale) as usize * stride + (x * scale) as usize * 4 + 3]
+                };
+                let what = format!("{uri} at scale {scale}");
+                assert_eq!(alpha(w - 1, h - 1), 255, "{what}");
+                assert_eq!((alpha(w, 0), alpha(0, h)), (0, 0), "{what}");
+            }
+        }
     }
 
     /// A chart's pattern: a long line, then a run of bars drawn with

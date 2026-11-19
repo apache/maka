@@ -24,6 +24,9 @@ nsh-platform-macos.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 nsh-platform-windows.workspace = true
 
+[target.'cfg(target_os = "android")'.dependencies]
+nsh-platform-android.workspace = true
+
 # The headless test runs `App.tsx` against this crate's set: `nsh-testing`
 # builds it (with the bundler and QuickJS) and runs it.
 [dev-dependencies]

@@ -689,8 +689,10 @@ impl Visual {
             mask.setPath(Some(&path));
         }
         resize(casters, shadows.len(), holder, CAShapeLayer::new);
-        // The box, which the mask hides.
-        let content = rounded(local, radii);
+        // The box, which the mask hides, a point in from its edge: the mask's
+        // edge is antialiased, and along the rounded corners its partly
+        // covered pixels showed the opaque stand-in as a dark arc.
+        let content = rounded(grow(local, -1.0), grown(radii, px(-1.0)));
         // CSS order is top first; later sublayers draw on top.
         for (l, s) in casters.iter().zip(shadows.iter().rev()) {
             let shape = grow(local, s.spread.0 as CGFloat);
@@ -1400,6 +1402,37 @@ mod tests {
             })),
             ..ViewStyle::default()
         }
+    }
+
+    /// An outer shadow under a background that does not hide it is masked
+    /// to everything but the box; its caster's opaque stand-in content
+    /// stays a point inside the box, clear of the mask's antialiased edge
+    /// (its rounded corners showed it as a dark arc).
+    #[test]
+    fn a_masked_shadow_keeps_its_stand_in_inside_the_box() {
+        use objc2_core_graphics::CGPath;
+
+        let layer = CALayer::new();
+        let local = CGRect::new(CGPoint::ZERO, CGSize::new(120.0, 64.0));
+        let radii = CornerRadii::all(px(14.0));
+        let shadow = BoxShadow {
+            offset_x: px(0.0),
+            offset_y: px(1.0),
+            blur: px(2.0),
+            spread: px(0.0),
+            color: Color(0x0000_0014),
+            inset: false,
+        };
+        let mut visual = Visual::default();
+        visual.set_shadows(&layer, &[&shadow], local, radii, false);
+        let (_, casters) = visual.shadows.as_ref().expect("a shadow holder");
+        let content = casters[0].path().expect("the stand-in content");
+        let bounds = CGPath::bounding_box(Some(&*content));
+        assert_eq!(bounds, grow(local, -1.0));
+        assert!(
+            casters[0].fillColor().is_some(),
+            "masked: the stand-in is drawn"
+        );
     }
 
     /// `macos={{ backdrop }}` wins over glass and the blur; glass wins over

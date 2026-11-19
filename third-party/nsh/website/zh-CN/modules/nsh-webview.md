@@ -19,8 +19,9 @@ import { WebView, type WebViewNavigation, type WebViewProps } from "nsh";
 ```ts
 const WebView: (props: WebViewProps) => JSX.Element;
 
-interface WebViewProps extends Omit<ViewProps, "children" | "ios" | "desktop">, WebViewHostProps {
+interface WebViewProps extends Omit<ViewProps, "children" | "ios" | "android" | "desktop">, WebViewHostProps {
   ios?: IOSWebViewHostProps;
+  android?: AndroidWebViewProps;
   desktop?: DesktopWebViewHostProps;
 }
 ```
@@ -63,6 +64,7 @@ mount(Browser);
 | `incognito` | `boolean` | `false` | 页面的网站数据（cookie、存储、缓存）只与网页视图同存亡，与应用的数据分开；Android 上网页视图加载时不使用 HTTP 缓存、不保存表单数据（见[网站数据](../docs/web-view-and-video.md#网站数据)）。在网页视图创建时读取。 |
 | `ios` | `{ allowsBackForwardNavigationGestures?: boolean }` | | 仅 iOS：从边缘轻扫以后退和前进。 |
 | `desktop` | `{ allowsBackForwardNavigationGestures?: boolean }` | | macOS：双指在触控板上轻扫以后退和前进；Windows：在触摸屏上轻扫；Linux：在触控板上轻扫。 |
+| `android` | `{ downloads?: { scope?: string[] } }` | | Android 下载决策使用的 HTTP(S) GET 请求范围，见[下载目的地](../elements/web-view.md#rust-中指定下载目的地)。 |
 
 ## 事件
 
@@ -73,6 +75,7 @@ mount(Browser);
 | `onError` | `{ message: string }` | 页面加载失败。 |
 | `onNavigationStateChange` | `WebViewNavigation` | URL、标题、加载状态或历史记录发生变化。 |
 | `onMessage` | `{ data: string }` | 页面调用了 `window.nsh.postMessage(data)`。 |
+| `onDownload` | `WebViewDownload` | 下载开始、完成、失败或取消。来源、目的地规则和诊断信息见[下载事件](../elements/web-view.md#事件)。 |
 
 ```ts
 interface WebViewNavigation {

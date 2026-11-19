@@ -189,6 +189,52 @@ pub trait HostValue: Sized {
     fn ts_type(types: &mut TsTypes) -> String;
 }
 
+/// Decodes a view's `captureKeys` (`"none"`, `"all"`, or an array of
+/// keystroke strings) with the platform's `mod` convention: `apple` says
+/// `mod` is Command ([`crate::keymap::apple_keys`]).
+///
+/// [`HostValue`]'s decoder for [`crate::KeyCapture`] reads the convention
+/// from the engine's ambient environment. A JS host decodes outside one (the
+/// native JS runtime while it renders, the browser's bridge), so it resolves
+/// the convention from the environment it has and calls this. Backend-only
+/// (`#[doc(hidden)]`), never an app-facing key conversion API.
+#[doc(hidden)]
+pub fn decode_capture_keys<I: HostInput>(
+    input: &I,
+    cx: &mut HostCx,
+    apple: bool,
+) -> Option<crate::KeyCapture> {
+    use crate::{KeyCapture, keymap::Keystroke};
+    if let Some(text) = input.as_string() {
+        return match text.as_str() {
+            "none" => Some(KeyCapture::None),
+            "all" => Some(KeyCapture::All),
+            other => {
+                cx.warn(format!(
+                    "captureKeys: expected \"none\", \"all\" or keystrokes, got {other:?}"
+                ));
+                None
+            }
+        };
+    }
+    let list = input.as_list()?;
+    let mut keys = Vec::with_capacity(list.len());
+    for index in 0..list.len() {
+        let Some(item) = list.item(index) else {
+            continue;
+        };
+        let Some(text) = item.as_string() else {
+            cx.warn(format!("captureKeys[{index}]: expected a keystroke string"));
+            continue;
+        };
+        match Keystroke::parse_with(&text, apple) {
+            Ok(keystroke) => keys.push(keystroke),
+            Err(error) => cx.warn(format!("captureKeys: {error}")),
+        }
+    }
+    Some(KeyCapture::Keys(keys.into()))
+}
+
 /// Where a host prop applies, for the generated element types.
 pub mod on {
     /// Every element.
@@ -491,6 +537,19 @@ export interface Modifiers {
   platform: boolean;
 }
 
+/** A hardware key transition on the focused view: the payload of `onKeyDown` and `onKeyUp` (`nsh_core::KeyEvent`). */
+export interface KeyEvent {
+  /** The source's logical key: the DOM's spelling for named keys (`"Enter"`, `"ArrowLeft"`), else the character the key reports, in its case and layout. `"Unidentified"` when the source names none. */
+  key: string;
+  /** The key's physical identity as the DOM's `KeyboardEvent.code` spells it (`"KeyA"`, `"ArrowLeft"`, `"ShiftLeft"`); `""` when the source has none (GPUI, synthetic input), never guessed from `key`. */
+  code: string;
+  modifiers: Modifiers;
+  /** An auto-repeat of a held key (the press itself is not one). */
+  repeat: boolean;
+  /** The mounted `captureKeys` policy decided this transition: the platform runs no native default and types no text. It is this transition's decision, observed as the DOM's `defaultPrevented` is; a listener cannot veto handling after the fact. */
+  defaultPrevented: boolean;
+}
+
 /** Where the core placed an overlay: the payload of `onPosition`. */
 export interface OverlayPosition {
   /** The side of the anchor it went on: the one asked for, or the other one when only that one has room. */
@@ -535,6 +594,13 @@ export interface MouseEvent {
   pressedButton: MouseButton | null;
   /** The button that changed at this event: the released one on `onMouseUp`, `null` on a move. */
   button: MouseButton | null;
+  /** `"mouse"`, or `"pen"` for a pen over a tablet. */
+  pointerType: PointerType;
+  /** How hard it presses, 0 to 1 (`PointerEvent.pressure`): 0.5 with a button down and 0 without on a device without pressure. */
+  pressure: number;
+  /** A pen's tilt in degrees, -90 to 90 (`PointerEvent.tiltX` / `tiltY`); 0 when not reported. */
+  tiltX: number;
+  tiltY: number;
 }
 
 /** A wheel over a view: the payload of `onWheel` (GPUI's `ScrollWheelEvent`, the DOM's `WheelEvent`). */
@@ -633,15 +699,21 @@ export interface WebViewNavigation {
 
 /** A web view's download (`onDownload`): where it is saved, in the app's data directory's `downloads`. */
 export interface WebViewDownload {
-  state: "started" | "finished" | "failed";
+  state: "started" | "finished" | "failed" | "cancelled";
   id: string;
   url: string;
   filename: string;
   path: string;
+  /** Who owns the bytes: the engine's transfer, a request NSH made, a page, or none (the response is gone). */
+  source: "transfer" | "request" | "page" | "none";
   /** Once finished: the file's size in bytes. */
   bytes?: number;
   /** When it failed: why. */
   message?: string;
+  /** A stable code on failure or cancellation. */
+  code?: string;
+  /** Why it was cancelled. */
+  reason?: "app" | "timeout" | "teardown" | "noListener";
 }
 "#;
 
@@ -696,7 +768,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         EventKind::Wheel,
         on::ALL,
         "(e: WheelEvent) => void",
-        "A mouse wheel or touchpad scrolled over the view (or a view inside it); desktops and the web. The nearest listener hears it. A listener nearer than any scroll view under the pointer takes the wheel: nothing scrolls or zooms natively (a canvas zooms on `e.modifiers.ctrl` and pans otherwise); a scroll view listening, or a view around one, only observes it.",
+        "A mouse wheel or touchpad scrolled over the view (or a view inside it); desktops and the web. The nearest listener hears it. A listener nearer than any scroll view under the pointer takes the wheel: nothing scrolls or zooms natively (a canvas zooms on `e.modifiers.control` and pans otherwise); a scroll view listening, or a view around one, only observes it.",
     ),
     (
         EventKind::Pinch,
@@ -942,6 +1014,18 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         "Before the text changes: `key` is the typed text, `Backspace` or `Enter`.",
     ),
     (
+        EventKind::KeyDown,
+        on::ALL,
+        "(e: KeyEvent) => void",
+        "A hardware key went down on the focused view or a view inside it on desktop and Web. It bubbles to enabled listening ancestors within the same native window. `defaultPrevented` is the mounted `captureKeys` decision for this transition.",
+    ),
+    (
+        EventKind::KeyUp,
+        on::ALL,
+        "(e: KeyEvent) => void",
+        "A hardware key came up on the focused view, with this transition's `defaultPrevented` decision; it bubbles as `onKeyDown` does. A window that loses the focus invents no releases.",
+    ),
+    (
         EventKind::CompositionChange,
         on::INPUT,
         "(e: { composing: boolean; text: string }) => void",
@@ -991,6 +1075,12 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         "Escape or the Android back button, while this is the top overlay listening to it (it takes the key from the overlays below, the pages and `BackHandler`). Closing is the app's.",
     ),
     (
+        EventKind::DetentChange,
+        on::MODAL,
+        "(e: { detent: SheetDetent }) => void",
+        "The user moved an iOS sheet to another of its `detents` (dragging it, its grabber, a scroll at its edge, a screen reader): set `detent` to it to keep the app's value in step.",
+    ),
+    (
         EventKind::Position,
         on::OVERLAY,
         "(e: OverlayPosition) => void",
@@ -1010,11 +1100,19 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::BackPress,
     EventKind::ImageInfo,
     EventKind::WebEvaluation,
+    EventKind::WebViewReply,
+    EventKind::DownloadPending,
+    EventKind::DownloadOffer,
+    EventKind::DownloadProgress,
+    EventKind::DownloadEnd,
     EventKind::Clipboard,
     EventKind::Host,
     EventKind::Pick,
     EventKind::OpenUrl,
     EventKind::ScreenColor,
+    EventKind::Share,
+    EventKind::AuthSession,
+    EventKind::CanvasImage,
     EventKind::FileRequest,
     EventKind::Speech,
     EventKind::Notification,

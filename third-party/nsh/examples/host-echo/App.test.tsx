@@ -9,6 +9,14 @@ test("calls reach the page's host and come back", async () => {
   await app.waitFor('text:{"n":1}');
 });
 
+test("calls still reach the page's host when the page passes parameters", async () => {
+  // A page that serves the app's first data (`runModule({ params })`) keeps answering its calls.
+  const app = await open("./App.tsx", { host: { params: { conversation: "c-42" } } });
+  expect(app.shows("text:available: true")).toBe(true);
+  await app.press("label:call");
+  await app.waitFor('text:{"n":1}');
+});
+
 test("events reach host.on, those sent before the app started too", async () => {
   const app = await open("./App.tsx");
   // `createHost` sent one before the app ran, then one a second.

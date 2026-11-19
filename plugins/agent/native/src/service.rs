@@ -28,7 +28,9 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod catalog;
-use catalog::{catalog_page, catalog_revision};
+use catalog::{
+    CATALOG_REFRESH_MIN_INTERVAL, catalog_page, catalog_revision, wait_for_catalog_refresh,
+};
 pub(crate) use catalog::{summary, summary_for};
 
 mod delivery;
@@ -324,6 +326,7 @@ impl Handler for Agent {
                         } else {
                             false
                         };
+                        let mut retry_immediately = false;
                         if !unchanged || physical_changed {
                             match catalog_page(&owner, &input).await {
                                 Ok(page) => {
@@ -347,16 +350,23 @@ impl Handler for Agent {
                                         && matches!(
                                             input.position,
                                             SessionPosition::Start | SessionPosition::At { .. }
-                                        ) => {}
+                                        ) =>
+                                {
+                                    retry_immediately = true;
+                                }
                                 Err(error) => return Err(error),
                             }
                         }
-                        tokio::select! {
-                            biased;
-                            _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
-                            result = changes.changed() => result.map_err(|_| "agent_observation_closed")?,
-                            result = physical.changed() => { result.map_err(|_| "agent_observation_closed")?; physical_changed = true; },
-                        }
+                        let throttle_until = (!retry_immediately)
+                            .then(|| tokio::time::Instant::now() + CATALOG_REFRESH_MIN_INTERVAL);
+                        wait_for_catalog_refresh(
+                            &mut changes,
+                            &mut physical,
+                            &mut physical_changed,
+                            &context.scope().cancellation,
+                            throttle_until,
+                        )
+                        .await?;
                     }
                 }
                 "sessionMcp" => owner.session_mcp(decode(input)?, context).await,

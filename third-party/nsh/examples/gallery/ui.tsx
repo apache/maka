@@ -12,6 +12,9 @@ import logoLight from "./logo-light.svg";
 
 export * from "../nsh-gallery-ui";
 
+/** `n` and `word`, in the plural unless `n` is one, kept on one line: "1 card", "3 cards". */
+export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
 /**
  * A page's header where the app draws it (desktops, the web: `<NavPage
  * header>`): a back button while the page is above another, the title, and
@@ -77,7 +80,7 @@ export function PageHeader(props: {
           accessibilityLabel="Back"
           hitSlop={6}
           class="hover:bg-hover active:bg-accent"
-          style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 2, paddingLeft: 4, paddingRight: 8, borderRadius: radius.control, cursor: "pointer" }}
+          style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 2, paddingLeft: 4, paddingRight: 8, borderRadius: radius.control }}
         >
           <Icon name="back" size={18} tint={tint()} />
           <Text style={{ fontSize: 13, fontWeight: "500", color: tint() }}>Back</Text>

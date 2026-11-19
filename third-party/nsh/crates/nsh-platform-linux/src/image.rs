@@ -553,24 +553,42 @@ fn fetch(
 
 /// Loads the bitmap `uri` (`https://…`, `asset:/…`, a file path, `data:`)
 /// for a canvas off the main thread, at its natural size; `done` runs on
-/// the main thread with the image (an animation's first frame). An SVG is
-/// rasterized by the shared SVG renderer and handed over as its bitmap.
+/// the main thread with the image (an animation's first frame) and how
+/// many of its pixels make one unit of the image's own size (1 for a
+/// bitmap decoded whole, whose units are its pixels). An SVG is rasterized
+/// by the shared SVG renderer at `scale` pixels per point (the canvas's),
+/// so that it stays sharp on the screen, and handed over as its bitmap.
 ///
 /// A cached texture is handed over before this returns: callers must not
 /// hold a borrow of view state that `done` takes.
 pub(crate) fn load_bitmap(
     surface: &Rc<Surface>,
     uri: &str,
-    done: impl FnOnce(Result<gdk::Texture, String>) + 'static,
+    scale: f64,
+    done: impl FnOnce(Result<(gdk::Texture, f64), String>) + 'static,
 ) {
-    let done = move |result: Result<(Picture, Lease), String>| done(result.map(|(p, _)| p.texture));
+    let done = move |result: Result<(Picture, Lease), String>| {
+        done(result.map(|(p, _)| {
+            // What it was decoded at over its own size.
+            let own = match p.natural {
+                Natural::Vector(points) => f64::from(points.width.0),
+                Natural::Pixels(width, _) => f64::from(width),
+            };
+            let scale = if own > 0.0 {
+                f64::from(p.texture.width()) / own
+            } else {
+                1.0
+            };
+            (p.texture, scale)
+        }))
+    };
     let source = ImageSource {
         uri: uri.into(),
         size: None,
         scales: nsh_core::ImageScales::NONE,
         data: None,
     };
-    let want = Want::natural(1.0);
+    let want = Want::natural(scale.max(1.0) as f32);
     // A canvas keeps the texture itself: the load runs to its end.
     if let Some(load) = fetch(
         surface,

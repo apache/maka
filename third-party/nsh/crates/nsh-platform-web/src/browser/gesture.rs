@@ -56,12 +56,16 @@ impl Gestures {
                 ),
                 changed: false,
                 pointer_type: nsh_core::PointerType::Touch,
+                pressure: 0.5,
+                tilt_x: 0.0,
+                tilt_y: 0.0,
             });
         }
         let touch = TouchEvent {
             phase: TouchPhase::Move,
             timestamp: event.get("timestamp")?.as_number().unwrap_or(0.0),
             points: list,
+            modifiers: Default::default(),
             activated: None,
         };
         let reset = args.index(2)?.truthy();

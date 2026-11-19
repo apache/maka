@@ -299,7 +299,12 @@ impl UiAnimation {
     /// `[animating, (view, prop, value)*]` for every bound property; the
     /// shader views' bound values are written into them instead, and keep
     /// frames coming (`animating`) while one has a frame to render.
-    pub(crate) fn outputs(&mut self) -> Vec<f32> {
+    /// Component slots accepted by `take_component_slot` are handled in
+    /// Rust and skipped from the Java float stream.
+    pub(crate) fn outputs(
+        &mut self,
+        mut take_component_slot: impl FnMut(u32, u16, AnimationValue) -> bool,
+    ) -> Vec<f32> {
         self.write_shader_slots();
         let mut out = Vec::with_capacity(1 + self.bindings.len() * 12);
         out.push(if self.animating() || self.shaders.wants_frame() {
@@ -347,17 +352,24 @@ impl UiAnimation {
                     }
                     // The scroll view's (`sticky` below), never bound.
                     AnimationProp::StickyTop | AnimationProp::StickyLeft => {}
-                    // Java hands it to the component when it changed.
-                    AnimationProp::ComponentSlot(k) => match self.graph.eval(node) {
-                        AnimationValue::Color(c) => out.extend_from_slice(&[
-                            v,
-                            COMPONENT_COLOR + k as f32,
-                            f32::from_bits(c.rotate_right(8)),
-                        ]),
-                        other => {
-                            out.extend_from_slice(&[v, COMPONENT_NUMBER + k as f32, other.number()])
+                    // Handled directly in Rust for Rust-crate components, or via Java for Java ones.
+                    AnimationProp::ComponentSlot(k) => {
+                        let value = self.graph.eval(node);
+                        if !take_component_slot(view, k, value) {
+                            match value {
+                                AnimationValue::Color(c) => out.extend_from_slice(&[
+                                    v,
+                                    COMPONENT_COLOR + k as f32,
+                                    f32::from_bits(c.rotate_right(8)),
+                                ]),
+                                other => out.extend_from_slice(&[
+                                    v,
+                                    COMPONENT_NUMBER + k as f32,
+                                    other.number(),
+                                ]),
+                            }
                         }
-                    },
+                    }
                 }
             }
             if transformed {

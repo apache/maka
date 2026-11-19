@@ -1,9 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md):
 // `AlertDialog.show` of `nsh/base`: it returns a promise, left pending
 // while the dialog shows (no user answers it headless) for an alert and an
-// action sheet with every option and action field set, and it rejects
-// with a TypeError without actions. Its script
-// checks each.
+// action sheet with every option and action field set, and for an alert
+// with every `input` field set, and it rejects with a TypeError without
+// actions or with an `input` in an action sheet. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { AlertDialog, type AlertDialogResult, Button } from "nsh/base";
 
@@ -19,10 +19,12 @@ function App() {
   const alert = signal("not shown");
   const sheet = signal("not shown");
   const empty = signal("not shown");
+  const prompt = signal("not shown");
+  const sheetInput = signal("not shown");
   const watch = (shown: Promise<AlertDialogResult>, set: (s: string) => void) => {
     set(shown instanceof Promise ? "pending" : "no promise");
     shown.then(
-      ({ action }) => set(`chose ${action}`),
+      ({ action, value }) => set(`chose ${action} ${value}`),
       (e) => set(`rejected ${e instanceof TypeError ? "TypeError" : e}`),
     );
   };
@@ -68,6 +70,33 @@ function App() {
       <Text>{`Sheet: ${sheet()}`}</Text>
       <Control label="Empty" onPress={() => watch(AlertDialog.show({ actions: [] }), (s) => empty.set(s))} />
       <Text>{`Empty: ${empty()}`}</Text>
+      <Control
+        label="Prompt"
+        onPress={() =>
+          watch(
+            AlertDialog.show({
+              title: "Rename",
+              actions: [
+                { label: "Cancel", role: "cancel", id: "cancel" },
+                { label: "Rename", id: "rename" },
+              ],
+              input: { defaultValue: "Trip", placeholder: "Name", selectTextOnFocus: true, required: true },
+            }),
+            (s) => prompt.set(s),
+          )
+        }
+      />
+      <Text>{`Prompt: ${prompt()}`}</Text>
+      <Control
+        label="Input in sheet"
+        onPress={() =>
+          watch(
+            AlertDialog.show({ actions: [{ label: "Copy", id: "copy" }], presentation: "actionSheet", input: {} }),
+            (s) => sheetInput.set(s),
+          )
+        }
+      />
+      <Text>{`Input in sheet: ${sheetInput()}`}</Text>
     </View>
   );
 }

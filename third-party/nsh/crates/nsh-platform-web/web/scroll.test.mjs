@@ -70,6 +70,34 @@ test('scrollbar={false} hides the bar on either axis', () => {
   }
 });
 
+test('scrollbarInset keeps the bar clear of bars floating over the view', () => {
+  shown.length = 0;
+  const el = scroll();
+  el._behavior = { enabled: true, bar: [20, 10, 60, 0] };
+  // Its track runs between the top and bottom insets.
+  assert.deepEqual(player.barThumb(el).slice(0, 2), [22, 32]);
+  el.scrollTop = 600;
+  const [start, len] = player.barThumb(el);
+  assert.equal(start + len, 200 - 60 - 2);
+  el.scrollTop = 0;
+  // It runs along the right edge moved in by the right inset.
+  assert.equal(player.barEdge(el), 290);
+  player.hoverBar(el, { clientX: 40 + 285, clientY: 30 + 30 });
+  assert.deepEqual(shown, [el]);
+  shown.length = 0;
+  player.hoverBar(el, { clientX: 40 + 295, clientY: 30 + 30 });
+  player.hoverBar(el, { clientX: 40 + 285, clientY: 30 + 10 });
+  assert.equal(shown.length, 0);
+  // No room between the insets: no bar.
+  el._behavior.bar = [100, 0, 95, 0];
+  assert.equal(player.barThumb(el), null);
+  // A horizontal one runs between the left and right insets, up by the bottom one.
+  const h = scroll(true);
+  h._behavior = { enabled: true, bar: [0, 30, 20, 10] };
+  assert.equal(player.barThumb(h)[0], 12);
+  assert.equal(player.barEdge(h), 180);
+});
+
 // Sticky list cells: the few DOM operations their tracks use.
 class Node {
   constructor(props) {
@@ -215,9 +243,14 @@ function scroller() {
   const p = Object.create(Player.prototype);
   p.root = { parentNode: null };
   p.size = [300, 200];
-  // A scroll that ends tells the engine (`nsh_scroll_ended`), which these
-  // players run without; -1: the engine is not due again (`schedule`).
-  p.wasm = { nsh_scroll_ended: () => -1 };
+  // A scroll that ends and a scroll key tell the engine (`nsh_scroll_ended`,
+  // `nsh_key_scroll`), which these players run without; -1: the engine is
+  // not due again (`schedule`).
+  p.keyScrolls = [];
+  p.wasm = {
+    nsh_scroll_ended: () => -1,
+    nsh_key_scroll: (id, kind, amount) => (p.keyScrolls.push([id, kind, amount]), -1),
+  };
   const el = {
     _id: 1, _kind: 'scroll', _events: new Set(), _applied: 0, parentNode: p.root,
     clientWidth: 300, clientHeight: 200, scrollWidth: 300, scrollHeight: 5000, scrollLeft: 0, scrollTop: 0,
@@ -253,6 +286,17 @@ test('scroll commands win over a wheel or key glide', (t) => {
       assert.equal(el._applied, 1);
     }
   }
+});
+
+test('scroll keys tell the engine, End as End', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  const { p, el } = scroller();
+  p.scrollKey({ key: 'End', shiftKey: false }, el);
+  p.scrollKey({ key: 'PageUp', shiftKey: false }, el);
+  runFrames();
+  // The key's own move (3: to the end, 1: by pages): a list follows its
+  // end from End on; Page Up leaves it.
+  assert.deepEqual(p.keyScrolls, [[1, 3, 0], [1, 1, -1]]);
 });
 
 test('a glide moves with the content the core keeps in place', (t) => {

@@ -16,10 +16,14 @@
 //!   time observer, the end from `AVPlayerItemDidPlayToEndTimeNotification`.
 //!
 //! Everything is one [`Speaker`] per surface, so per engine (one surface is
-//! one engine), on the main thread; it is dropped with the surface. The
-//! `AVAudioEngine` starts at the first play and again after the system
-//! stopped it (a device change): an output that goes away is silence, never
-//! an error the app sees. On iOS the audio session is `ambient` (mixes with
+//! one engine); it is dropped with the surface. Players live on the main
+//! thread. Sounds live on a serial queue of their own ([`Sounds`]): the
+//! main thread only hands their commands over, so a play never holds up a
+//! frame (making the `AVAudioEngine` opens the output device, starting it
+//! and a first play take tens of milliseconds more). The engine is made
+//! with the first sound's decode, and starts at the first play and again
+//! after the system stopped it (a device change): an output that goes away
+//! is silence, never an error the app sees. On iOS the audio session is `ambient` (mixes with
 //! other apps' audio, follows the silent switch), set at the first sound.
 
 use std::{
@@ -29,12 +33,15 @@ use std::{
     ptr,
     ptr::NonNull,
     rc::{Rc, Weak},
-    sync::OnceLock,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
 use block2::RcBlock;
-use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
+use dispatch2::{
+    DispatchQoS, DispatchQueue, DispatchQueueAttr, DispatchRetained, GlobalQueueIdentifier,
+    MainThreadBound,
+};
 use nsh_core::{
     EventKind, EventPayload, ROOT_ID,
     audio::{AudioCommand, AudioError, AudioEvent, MAX_VOICES, PROGRESS_INTERVAL, PlayerSettings},
@@ -53,23 +60,66 @@ use objc2_foundation::{NSNotification, NSNotificationCenter, NSOperationQueue, N
 const BUFFER_INTERRUPTS: usize = 2;
 
 /// One engine's sounds and players.
-#[derive(Default)]
 pub struct Speaker {
-    /// Shared with the decodes in flight, which find it again (or not:
-    /// the surface closed) when they finish.
-    inner: Rc<RefCell<Inner>>,
+    /// Shared with the work in flight on their queues.
+    sounds: Arc<Sounds>,
+    /// On the main thread.
+    players: RefCell<HashMap<u32, Rc<Player>>>,
+}
+
+impl Default for Speaker {
+    fn default() -> Self {
+        Speaker {
+            sounds: Arc::new(Sounds {
+                queue: DispatchQueue::new("nsh.audio.sounds", DispatchQueueAttr::SERIAL),
+                state: Mutex::default(),
+            }),
+            players: RefCell::default(),
+        }
+    }
+}
+
+/// The sounds of a [`Speaker`]: their plays, stops and unloads run on
+/// `queue` in the order the main thread sent them, decodes on a global
+/// queue; both take `state`.
+struct Sounds {
+    queue: DispatchRetained<DispatchQueue>,
+    state: Mutex<SoundState>,
 }
 
 #[derive(Default)]
-struct Inner {
-    /// Made at the first sound.
+struct SoundState {
+    /// Made with the first decode ([`Speaker::load`]), or at the first play
+    /// if that comes first.
     engine: Option<Retained<AnyObject>>,
+    /// The first load asked for the engine with its decode.
+    engine_asked: bool,
     sounds: HashMap<u32, Decoded>,
     /// The sounds decoding; an unload before the decode finished takes
     /// the id out, and the decoded sound is dropped.
     loading: HashSet<u32>,
     voices: Vec<Voice>,
-    players: HashMap<u32, Rc<Player>>,
+}
+
+// SAFETY: the engine, its nodes and the decoded buffers are used only under
+// the mutex, so from one thread at a time; AVAudioEngine, its nodes,
+// AVAudioPCMBuffer and AVAudioFormat may be made on one thread and used on
+// another.
+unsafe impl Send for SoundState {}
+
+impl Sounds {
+    fn state(&self) -> std::sync::MutexGuard<'_, SoundState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Runs `f` on the sounds' queue, after the commands sent before.
+    fn exec(self: &Arc<Self>, f: impl FnOnce(&Sounds) + Send + 'static) {
+        let sounds = self.clone();
+        // The queue's threads drain their pools only now and then:
+        // AVFoundation's autoreleased objects go at once.
+        self.queue
+            .exec_async(move || autoreleasepool(|_| f(&sounds)));
+    }
 }
 
 /// A sound decoded into memory.
@@ -93,14 +143,15 @@ struct Voice {
 
 impl Drop for Speaker {
     fn drop(&mut self) {
-        let inner = self.inner.borrow();
-        for player in inner.players.values() {
+        for player in self.players.borrow().values() {
             player.close();
         }
-        if let Some(engine) = &inner.engine {
-            // SAFETY: AVAudioEngine's documented API.
-            let _: () = unsafe { msg_send![engine, stop] };
-        }
+        self.sounds.exec(|sounds| {
+            if let Some(engine) = &sounds.state().engine {
+                // SAFETY: AVAudioEngine's documented API.
+                let _: () = unsafe { msg_send![engine, stop] };
+            }
+        });
     }
 }
 
@@ -140,25 +191,28 @@ pub fn command(
                 "sounds are loaded from their bytes here",
             ));
         }
-        AudioCommand::Play { volume, rate, .. } => speaker.play(id, *volume, *rate),
-        AudioCommand::Stop { .. } => speaker.stop(id),
-        AudioCommand::Unload { .. } => {
-            speaker.stop(id);
-            let mut inner = speaker.inner.borrow_mut();
-            inner.sounds.remove(&id);
-            inner.loading.remove(&id);
-        }
+        &AudioCommand::Play { volume, rate, .. } => speaker
+            .sounds
+            .exec(move |sounds| sounds.play(id, volume, rate)),
+        AudioCommand::Stop { .. } => speaker.sounds.exec(move |sounds| sounds.stop(id)),
+        AudioCommand::Unload { .. } => speaker.sounds.exec(move |sounds| {
+            sounds.stop(id);
+            let mut state = sounds.state();
+            state.sounds.remove(&id);
+            state.loading.remove(&id);
+        }),
         AudioCommand::Open { src, settings, .. } => {
             let player = Player::new(id, src, *settings, base, control.clone());
-            speaker.inner.borrow_mut().players.insert(id, player);
+            speaker.players.borrow_mut().insert(id, player);
         }
         AudioCommand::Close { .. } => {
-            if let Some(player) = speaker.inner.borrow_mut().players.remove(&id) {
+            let player = speaker.players.borrow_mut().remove(&id);
+            if let Some(player) = player {
                 player.close();
             }
         }
         other => {
-            let player = speaker.inner.borrow().players.get(&id).cloned();
+            let player = speaker.players.borrow().get(&id).cloned();
             if let Some(player) = player {
                 player.apply(other);
             }
@@ -290,27 +344,24 @@ unsafe fn describe(error: *mut AnyObject, fallback: &str) -> String {
     }
 }
 
-/// What a decode hands from its background queue to the main thread.
-struct Decode(Result<(Decoded, AudioEvent), String>);
-
-// SAFETY: the buffer and format are made on the decoding queue and touched
-// by nothing there once made; the main thread is the only one to use them
-// after, so they are never used from two threads at once (AVAudioPCMBuffer
-// and AVAudioFormat may move between threads).
-unsafe impl Send for Decode {}
-
-impl Decode {
-    /// Taken whole, so a closure moves the `Send` wrapper rather than the
-    /// field.
-    fn into_result(self) -> Result<(Decoded, AudioEvent), String> {
-        self.0
-    }
+/// A new engine with its mixer, which connects it to the output: the costly
+/// part of getting sound out (it opens the output device).
+fn make_engine() -> Option<Retained<AnyObject>> {
+    let cls = class(c"AVAudioEngine")?;
+    // SAFETY: AVAudioEngine's documented API.
+    let engine: Retained<AnyObject> = unsafe {
+        let alloc: Allocated<AnyObject> = msg_send![cls, alloc];
+        msg_send![alloc, init]
+    };
+    // The mixer exists, and is connected to the output, once asked for.
+    // SAFETY: as above.
+    let _: Retained<AnyObject> = unsafe { msg_send![&engine, mainMixerNode] };
+    Some(engine)
 }
 
 impl Speaker {
     /// Decodes `bytes` on a background queue, then keeps the sound and
-    /// reports its load on the main thread, unless it was unloaded (or the
-    /// surface closed) in the meantime.
+    /// reports its load, unless it was unloaded in the meantime.
     fn load(
         &self,
         id: u32,
@@ -319,9 +370,14 @@ impl Speaker {
         max: Duration,
         control: &EngineControl,
     ) {
-        let mtm = MainThreadMarker::new().expect("audio commands run on the main thread");
-        self.inner.borrow_mut().loading.insert(id);
-        let speaker = MainThreadBound::new(Rc::downgrade(&self.inner), mtm);
+        let make = {
+            let mut state = self.sounds.state();
+            state.loading.insert(id);
+            let make = state.engine.is_none() && !state.engine_asked;
+            state.engine_asked |= make;
+            make
+        };
+        let sounds = self.sounds.clone();
         let (bytes, hint, control) = (bytes.clone(), hint.to_owned(), control.clone());
         DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(
             DispatchQoS::UserInitiated,
@@ -329,49 +385,50 @@ impl Speaker {
         .exec_async(move || {
             // The queue's threads drain their pools only now and then:
             // NSErrors and AVFoundation's autoreleased objects go at once.
-            let decoded = Decode(autoreleasepool(|_| decode(&bytes, &hint, max)));
-            DispatchQueue::main().exec_async(move || {
-                let mtm = MainThreadMarker::new().expect("the main queue");
-                let Some(inner) = speaker.into_inner(mtm).upgrade() else {
-                    return;
-                };
-                let mut inner = inner.borrow_mut();
-                if !inner.loading.remove(&id) {
-                    return;
+            let decoded = autoreleasepool(|_| decode(&bytes, &hint, max));
+            let engine = if make {
+                // The session is set before the engine is made.
+                session();
+                autoreleasepool(|_| make_engine())
+            } else {
+                None
+            };
+            let mut state = sounds.state();
+            // Unless a play made one first.
+            if let Some(engine) = engine
+                && state.engine.is_none()
+            {
+                state.engine = Some(engine);
+            }
+            if !state.loading.remove(&id) {
+                return;
+            }
+            match decoded {
+                Ok((decoded, event)) => {
+                    state.sounds.insert(id, decoded);
+                    drop(state);
+                    report(&control, id, event);
                 }
-                match decoded.into_result() {
-                    Ok((decoded, event)) => {
-                        inner.sounds.insert(id, decoded);
-                        drop(inner);
-                        report(&control, id, event);
-                    }
-                    Err(message) => {
-                        drop(inner);
-                        report(&control, id, failed(AudioError::Decode, &message));
-                    }
+                Err(message) => {
+                    drop(state);
+                    report(&control, id, failed(AudioError::Decode, &message));
                 }
-            });
+            }
         });
     }
+}
 
-    /// The engine, made and started if needed (again after the system
-    /// stopped it); `None` when it cannot start: the sound is silence.
-    fn engine(inner: &mut Inner) -> Option<Retained<AnyObject>> {
-        if inner.engine.is_none() {
+impl SoundState {
+    /// The engine, made if no load made it yet, and started if needed
+    /// (again after the system stopped it); `None` when it cannot start:
+    /// the sound is silence.
+    fn engine(&mut self) -> Option<Retained<AnyObject>> {
+        if self.engine.is_none() {
+            // A play before the first decode finished.
             session();
-            let cls = class(c"AVAudioEngine")?;
-            // SAFETY: AVAudioEngine's documented API.
-            let engine: Retained<AnyObject> = unsafe {
-                let alloc: Allocated<AnyObject> = msg_send![cls, alloc];
-                msg_send![alloc, init]
-            };
-            // The mixer exists, and is connected to the output, once asked
-            // for.
-            // SAFETY: as above.
-            let _: Retained<AnyObject> = unsafe { msg_send![&engine, mainMixerNode] };
-            inner.engine = Some(engine);
+            self.engine = Some(make_engine()?);
         }
-        let engine = inner.engine.clone()?;
+        let engine = self.engine.clone()?;
         // SAFETY: AVAudioEngine's documented API; `error` is an out
         // parameter.
         unsafe {
@@ -387,9 +444,13 @@ impl Speaker {
         }
         Some(engine)
     }
+}
 
+impl Sounds {
+    /// On the sounds' queue.
     fn play(&self, id: u32, volume: f32, rate: f32) {
-        let mut inner = self.inner.borrow_mut();
+        let mut state = self.state();
+        let inner = &mut *state;
         let Some((buffer, format, duration)) = inner
             .sounds
             .get(&id)
@@ -397,7 +458,7 @@ impl Speaker {
         else {
             return;
         };
-        let Some(engine) = Self::engine(&mut inner) else {
+        let Some(engine) = inner.engine() else {
             return;
         };
         let now = Instant::now();
@@ -452,10 +513,11 @@ impl Speaker {
         voice.until = now + duration.div_f32(rate.max(0.01));
     }
 
+    /// On the sounds' queue.
     fn stop(&self, id: u32) {
-        let mut inner = self.inner.borrow_mut();
+        let mut state = self.state();
         let now = Instant::now();
-        for voice in inner.voices.iter_mut().filter(|v| v.sound == Some(id)) {
+        for voice in state.voices.iter_mut().filter(|v| v.sound == Some(id)) {
             // SAFETY: AVAudioPlayerNode's documented API.
             let _: () = unsafe { msg_send![&voice.player, stop] };
             voice.sound = None;

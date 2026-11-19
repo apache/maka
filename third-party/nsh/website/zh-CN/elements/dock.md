@@ -137,6 +137,8 @@ mount(App);
 | `closable` | `boolean` | 区域会关闭它：它可以关闭，区域没有锁定，它的组也可以交出它。 |
 | `zoomed` | `boolean` | 它的组已放大。 |
 
+标签页在标签栏里的横向滚动视图中排成一行：放不下的标签页可以滚动，而不是超出标签栏的末尾；成为当前显示的标签页会滚动到可见位置。标签栏的类名只设置标签栏本身的样式，所以标签页之间的间距用 `tabClass`（外边距）设置，而不是 `tabBarClass` 上的 `gap`。
+
 ```tsx
 let area!: DockAreaRef;
 
@@ -286,7 +288,7 @@ const terminalOpen = signal(true);
 | `renderEmpty` | `.render_empty(\|placement\| ..)` | `(placement: DockPlacement) => JSX.Element` | 无 | 中心区域为空时显示的内容。 |
 | `renderDragPreview` | `.render_drag_preview(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | 无 | 拖动标签页时跟随指针或手指的内容。 |
 | `groupClass`、`groupStyle` | `.group_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个标签组的框架。 |
-| `tabBarClass`、`tabBarStyle` | `.tab_bar_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个标签栏（`flex-row` 排成一行）。 |
+| `tabBarClass`、`tabBarStyle` | `.tab_bar_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个标签栏：它的高度、背景和边框。标签页在它里面的滚动视图中排成一行；用 `tabClass` 设置标签页之间的间距。 |
 | `tabClass`、`tabStyle` | `.tab_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个标签页；`selected:` 用于当前显示的那个。 |
 | `contentClass`、`contentStyle` | `.content_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个组的内容框架，面板显示在其中。 |
 | `dropIndicatorClass`、`dropIndicatorStyle` | `.drop_indicator_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 放置指示。 |

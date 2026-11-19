@@ -4,7 +4,11 @@
 //! background is.
 //!
 //! The mounter opens the GPU device the first time a shader is mounted
-//! ([`Shaders::set`]). A display link of its own runs while some shader
+//! ([`Shaders::set`]), on a thread of its own ([`Renderer::open`]): the main
+//! thread does not wait for it. While it opens, shader views show their
+//! background and children as they are (as without a device, but the app
+//! is not told there is none); once it is open ([`Shaders::opened`]) they
+//! render, and effects and transitions hide their children. A display link of its own runs while some shader
 //! view has a frame to render or collect ([`ShaderView::wants_frame`]: its
 //! uniforms or size changed, or it reads `nsh.time`); each tick renders at
 //! the screen's scale and a frame that comes back becomes the sublayer's
@@ -59,8 +63,8 @@ use crate::{
 
 /// Whether the children `view`'s shader draws are hidden at `now`: an
 /// effect's always, a transition's while it runs; never where the
-/// `renderer` slot holds no GPU device (the view shows its background and
-/// children as they are).
+/// `renderer` slot holds no GPU device, none found or still opening (the
+/// view shows its background and children as they are).
 fn hides(view: &mut ShaderView, renderer: &OnceCell<Option<Renderer>>, now: Instant) -> bool {
     view.replaces_children(now) && matches!(renderer.get(), Some(Some(_)))
 }
@@ -76,9 +80,13 @@ const OVER: CGFloat = 1.0e6;
 
 /// The shader views of one surface and the GPU device they render with.
 pub(crate) struct Shaders {
-    /// Opened the first time a shader is mounted (`None` inside: there is
-    /// no GPU device).
+    /// Set once the device opened, the first time a shader is mounted
+    /// (`None` inside: there is no GPU device). Empty while it opens.
     renderer: OnceCell<Option<Renderer>>,
+    /// The device is opening ([`Shaders::open`]).
+    opening: bool,
+    /// The mounter, which hears when the device opened.
+    mounter: std::sync::Weak<crate::mount::MounterCell>,
     views: FxHashMap<NodeId, ShaderState>,
     /// Pages and dialogs coming or going through a shader.
     overlays: Vec<NavOverlay>,
@@ -120,7 +128,7 @@ struct ShaderState {
 }
 
 impl Shaders {
-    pub(crate) fn new(target: &EventTarget) -> Self {
+    pub(crate) fn new(target: &EventTarget, mounter: &crate::mount::SharedMounter) -> Self {
         // SAFETY: `shaderFrame:` is implemented by `EventTarget`, which
         // outlives the link (it is invalidated in `Drop`).
         let link =
@@ -132,6 +140,8 @@ impl Shaders {
         unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
         Self {
             renderer: OnceCell::new(),
+            opening: false,
+            mounter: std::sync::Arc::downgrade(mounter),
             views: FxHashMap::default(),
             overlays: Vec::new(),
             held: Vec::new(),
@@ -162,6 +172,51 @@ impl Shaders {
         matches!(self.renderer.get(), Some(None))
     }
 
+    /// Starts opening the GPU device unless it is open or opening: on a
+    /// thread of its own, handed to the mounter on the main queue
+    /// ([`crate::mount::Mounter::shaders_opened`]).
+    fn open(&mut self) {
+        if self.opening || self.renderer.get().is_some() {
+            return;
+        }
+        self.opening = true;
+        let mounter = self.mounter.clone();
+        Renderer::open(PixelFormat::Rgba, move |renderer| {
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                let Some(shared) = mounter.upgrade() else {
+                    return;
+                };
+                let mtm = objc2::MainThreadMarker::new().expect("main queue");
+                if let Some(m) = shared.get(mtm).borrow_mut().as_mut() {
+                    m.shaders_opened(renderer);
+                }
+            });
+        });
+    }
+
+    /// The device opened ([`Shaders::open`]; `None`: there is none): the
+    /// views render with it, and effects and transitions hide their
+    /// children as their frames show. Whether there is none.
+    pub(crate) fn opened(&mut self, renderer: Option<Renderer>) -> bool {
+        self.opening = false;
+        // A mounter made again while it opened may have its own.
+        let _ = self.renderer.set(renderer);
+        let now = Instant::now();
+        let mut masks = Vec::new();
+        for state in self.views.values_mut() {
+            if state.update_masked(&self.renderer, now)
+                && let Some(children) = &state.children
+            {
+                masks.push(children.clone());
+            }
+        }
+        for children in masks {
+            self.sync_mask(&children);
+        }
+        self.wake();
+        self.without_device()
+    }
+
     /// Mounts `layer` on `host`, view `id` (`None`: it shows nothing of
     /// its own). `children` holds the children an effect or a transition
     /// draws (the root's, for a screen's).
@@ -178,8 +233,7 @@ impl Shaders {
             self.remove(id);
             return;
         };
-        self.renderer
-            .get_or_init(|| Renderer::new(PixelFormat::Rgba));
+        self.open();
         if self
             .views
             .get(&id)
@@ -311,8 +365,9 @@ impl Shaders {
     /// change happens after, at once ([`NavOverlay`]). `key` is what it
     /// changes, a stack or the surface (`ROOT_ID`, a dialog): one of the
     /// same key that still runs ends first, so the new one's pictures do
-    /// not hold its frames. Whether it does: where there is no GPU device,
-    /// or nothing to picture, the change keeps its own motion.
+    /// not hold its frames. Whether it does: where there is no GPU device
+    /// (or it is still opening), or nothing to picture, the change keeps
+    /// its own motion.
     pub(crate) fn nav_overlay(
         &mut self,
         key: NodeId,
@@ -322,11 +377,8 @@ impl Shaders {
         shader: &nsh_core::NavShader,
         backwards: bool,
     ) -> bool {
-        if self
-            .renderer
-            .get_or_init(|| Renderer::new(PixelFormat::Rgba))
-            .is_none()
-        {
+        self.open();
+        if !matches!(self.renderer.get(), Some(Some(_))) {
             return false;
         }
         self.overlays.retain(|o| o.key != key);
@@ -356,12 +408,8 @@ impl Shaders {
     /// removed and released them), so the picture before it is taken now.
     /// The first picture held for `key` stays until the change uses it.
     pub(crate) fn hold(&mut self, key: NodeId, host: &UIView, rect: CGRect, scale: CGFloat) {
-        if self.held.iter().any(|h| h.key == key)
-            || self
-                .renderer
-                .get_or_init(|| Renderer::new(PixelFormat::Rgba))
-                .is_none()
-        {
+        self.open();
+        if self.held.iter().any(|h| h.key == key) || !matches!(self.renderer.get(), Some(Some(_))) {
             return;
         }
         let Some((pw, ph)) = picture_size(rect.size.width, rect.size.height, scale) else {
@@ -697,7 +745,7 @@ impl ShaderState {
 /// A shader view whose frames go to IOSurfaces ([`display_frame`]).
 fn surface_view() -> ShaderView {
     let mut view = ShaderView::default();
-    view.show_on_surfaces();
+    view.show_on_surfaces(true);
     view
 }
 
@@ -1210,6 +1258,16 @@ mod tests {
             let mut v = view(role);
             v.start_transition(Duration::from_millis(300), now);
             assert!(!hides(&mut v, &renderer, now), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn while_the_device_opens_nothing_hides_its_children() {
+        // Not open yet.
+        let renderer = OnceCell::new();
+        let now = Instant::now();
+        for role in [ShaderRole::Effect, ShaderRole::Screen] {
+            assert!(!hides(&mut view(role), &renderer, now), "{role:?}");
         }
     }
 

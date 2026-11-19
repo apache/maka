@@ -83,7 +83,10 @@ fn add_lines(app: &mut Headless, test_id: &str, lines: &[&str]) {
         keys(app, &["enter"]);
         app.type_text(&format!("id:{test_id}"), line).unwrap();
     }
-    app.wait(Duration::from_millis(50)).unwrap();
+    // Laid out with its last line, not after a fixed time.
+    if let Some(last) = lines.last() {
+        app.wait_for(&format!("text:{last}")).unwrap();
+    }
 }
 
 #[test]
@@ -109,7 +112,8 @@ fn an_editor_without_a_height_is_as_tall_as_its_document() {
         ],
     );
     see(&mut app, "two");
-    app.wait(Duration::from_millis(50)).unwrap();
+    app.wait_for_gone("text:three", Duration::from_secs(5))
+        .unwrap();
     let shrunk = height(&app, "auto");
     assert!(
         (shrunk - 2.0 * line).abs() < 1.0,
@@ -133,7 +137,18 @@ fn past_its_max_height_an_editor_scrolls() {
         .and_then(|s| s.content_size)
         .expect("the editor's scroll view");
     assert!(content.height.0 >= 6.0 * line - 1.0, "{content:?}");
-    // Scrolled to the caret: the last line inside, the first above.
+    // Scrolled to the caret: the last line inside, the first above. The
+    // scroll lands after the line it brings into view.
+    let bottom = editor.bottom() + px(0.5);
+    let _ = app.wait_until(
+        "the caret's line scrolled into view",
+        Duration::from_secs(5),
+        |s| {
+            s.layout_nodes().into_iter().any(|n| {
+                n.text.as_ref().is_some_and(|t| t.text.text == "six") && n.bounds.bottom() <= bottom
+            })
+        },
+    );
     let last = text_bounds(&app, "six");
     assert!(
         last.bottom() <= editor.bottom() + px(0.5),

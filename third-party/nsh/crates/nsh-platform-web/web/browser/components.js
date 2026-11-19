@@ -2,8 +2,13 @@ import { itemsProps } from "./list.js";
 // Rust component descriptors supply the public props, slots and ref API.
 export function createComponents(invoke, values, reactive, dom) {
   const states = new WeakMap();
-  const hostProps = ["class", "classList", "style", "activeStyle", "hoverStyle", "focusStyle", "focusWithinStyle", "focusVisibleStyle", "disabledStyle", "testID", "tooltip", "onLayout"];
   const handler = name => "on" + name[0].toUpperCase() + name.slice(1);
+  // Props each read from the latest value of `read` (a method bound to it).
+  const propsOf = read => new Proxy({}, {
+    get(_, key) { const value = read(); const field = value == null ? undefined : value[key]; return typeof field === "function" ? field.bind(value) : field; },
+    has(_, key) { const value = read(); return value != null && key in Object(value); },
+    getPrototypeOf() { const value = read(); return value == null ? null : Object.getPrototypeOf(Object(value)); },
+  });
   const make = (spec, call) => function (props = {}) {
     const rt = dom.rt;
     const node = rt.element("view");
@@ -45,7 +50,7 @@ export function createComponents(invoke, values, reactive, dom) {
       for (const prop of spec.props) {
         if (prop.kind === "value" || prop.kind === "renderer") update(prop.name, value => invoke(206, [spec.id, node, prop.name, value]));
       }
-      for (const name of hostProps) update(name, value => rt.prop(node, name, value));
+      for (const name of spec.hostProps) update(name, value => rt.prop(node, name, value));
       if (failed) throw failed;
     });
     if (typeof props.ref === "function") {
@@ -71,21 +76,26 @@ export function createComponents(invoke, values, reactive, dom) {
       }))));
     },
     children(id, wanted) { state(id)?.lazy.set(wanted); },
-    render(id, prop, key, value) {
+    // `func`: a function the component holds itself, called once per key
+    // with props reading the latest value, which later renders set in place.
+    render(id, prop, key, value, func) {
       const current = state(id);
       if (!current) return;
+      const held = typeof func === "function" ? current.renders.get(prop)?.get(key) : undefined;
+      if (held?.value) return held.value.set(value);
       reactive.runWithOwner(current.owner, () => reactive.protect(() => {
         this.unrender(id, prop, key);
-        const render = current.props[prop];
+        const render = typeof func === "function" ? func : current.props[prop];
         if (typeof render !== "function") return;
         return reactive.root(dispose => {
+          const signal = typeof func === "function" ? reactive.signal(value) : undefined;
           const holder = dom.rt.element("view");
           dom.rt.prop(holder, "componentRender", `${prop}\x1f${key}`);
-          try { dom.rt.insert(holder, render(value)); dom.rt.append(current.node, holder); }
+          try { dom.rt.insert(holder, reactive.untracked(() => render(signal ? propsOf(signal) : value))); dom.rt.append(current.node, holder); }
           catch (error) { dispose(); throw error; }
           let entries = current.renders.get(prop);
           if (!entries) current.renders.set(prop, entries = new Map());
-          entries.set(key, { holder, dispose });
+          entries.set(key, { holder, dispose, value: signal });
         });
       }));
     },

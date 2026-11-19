@@ -3,8 +3,10 @@
 // its top right, and every readout a text of the main window: the windows
 // the tests open go to its bottom left corner (or where the platform puts
 // them: GTK centers a dialog or a panel on its parent), so they never cover
-// what a test presses on a real platform.
-import { mount, signal, Text, View } from "nsh";
+// what a test presses on a real platform. The one control inside a window
+// the app opens is the viewer's pin, which shows while the pointer is over
+// the viewer.
+import { mount, platform, signal, Text, View } from "nsh";
 import { currentWindow, focusedWindow, Window, type WindowOptions, type WindowRef, type WindowState, windows } from "nsh/desktop";
 
 const round = (n: number) => Math.round(n);
@@ -17,7 +19,33 @@ const describe = (s: WindowState | null | undefined) =>
       `content=${round(s.contentBounds.size.width)}x${round(s.contentBounds.size.height)}`
     : "none";
 
+/** Where a window is on its display: `fills` when it covers just the display's work area (what a maximized
+ * window shows of itself), else its offset from the work area's corner. */
+const onDisplay = (s: WindowState | null | undefined) => {
+  const area = s?.display?.visibleBounds;
+  if (!s || !area) return "none";
+  const b = s.bounds;
+  const near = (a: number, b: number) => Math.abs(a - b) < 1;
+  if (near(b.origin.x, area.origin.x) && near(b.origin.y, area.origin.y) && near(b.size.width, area.size.width) && near(b.size.height, area.size.height)) return "fills";
+  return `at=${round(b.origin.x - area.origin.x)},${round(b.origin.y - area.origin.y)}`;
+};
+
+/** Whether a window opened at the point the app asked for: `as asked`, `by the system` where the platform places
+ * windows itself (GTK), else where it is and what was asked. */
+const placed = (s: WindowState | null | undefined, asked: WindowOptions["defaultPosition"]) => {
+  if (platform.os === "linux") return "by the system";
+  if (!s) return "none";
+  if (typeof asked !== "object") return `asked ${asked ?? "nothing"}`;
+  const o = s.bounds.origin;
+  if (Math.abs(o.x - asked.x) < 1 && Math.abs(o.y - asked.y) < 1) return "as asked";
+  return `at=${round(o.x)},${round(o.y)} asked=${round(asked.x)},${round(asked.y)}`;
+};
+
+/** Where the notes window was asked to open. */
+let notesAsked: WindowOptions["defaultPosition"];
+
 const opened = signal("none");
+const pins = signal(0);
 const notesSeen = signal("none");
 const panelSeen = signal("none");
 const closes = signal(0);
@@ -81,8 +109,28 @@ function openPalette() {
   palette.focus();
 }
 
+/** What the viewer shows: a pin while the pointer is over it, as a
+ * picture-in-picture window shows its controls. */
+function Viewer() {
+  const over = signal(false);
+  return (
+    <View testID="viewer-surface" onMouseEnter={() => over.set(true)} onMouseLeave={() => over.set(false)} style={{ flex: 1, padding: 12 }}>
+      <If when={over()}>
+        <View onPress={() => pins.set(pins() + 1)} style={{ alignSelf: "flex-start", paddingHorizontal: 6, borderWidth: 1, borderRadius: 4 }}>
+          <Text>Pin viewer</Text>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+function openViewer() {
+  Window.open(Viewer, { id: "viewer", title: "Viewer", defaultSize: { width: 220, height: 140 }, defaultPosition: corner() });
+}
+
 function openNotes() {
-  const first = Window.open(Notes, { id: "notes", title: "Notes", defaultSize: { width: 220, height: 140 }, defaultPosition: corner() });
+  notesAsked = corner();
+  const first = Window.open(Notes, { id: "notes", title: "Notes", defaultSize: { width: 220, height: 140 }, defaultPosition: notesAsked });
   // Open already: the same window, whatever the options say.
   const second = Window.open(Notes, { id: "notes", title: "Other" });
   opened.set(first === second && Window.get("notes") === first ? "same ref" : "different refs");
@@ -115,7 +163,10 @@ function App() {
         <Text>{`Close events: ${closes()}`}</Text>
         <Text>{`Outside: ${outside()}`}</Text>
         <Text>{`Overlay: ${overlay()}`}</Text>
+        <Text>{`Pins: ${pins()}`}</Text>
         <Text>{`Notes: ${describe(notes()?.state())}`}</Text>
+        <Text>{`Notes on display: ${onDisplay(notes()?.state())}`}</Text>
+        <Text>{`Notes placed: ${placed(notes()?.state(), notesAsked)}`}</Text>
         <Text>{`Panel: ${describe(Window.get("panel")?.state())}`}</Text>
         <Text>{`Palette: ${describe(Window.get("palette")?.state())}`}</Text>
         <Text>{`Popup: ${describe(Window.get("popup")?.state())}`}</Text>
@@ -142,6 +193,7 @@ function App() {
         <Action label="Open guard" onPress={() => guardOpen.set(true)} />
         <Action label="Close guard" onPress={() => Window.get("guard")?.close()} />
         <Action label="Focus main" onPress={() => main.focus()} />
+        <Action label="Open viewer" onPress={openViewer} />
         <Action
           label="Call outside"
           onPress={() => {

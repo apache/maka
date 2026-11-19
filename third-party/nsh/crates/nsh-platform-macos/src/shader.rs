@@ -3,8 +3,17 @@
 //! a sublayer under the view's children, clipped to its rounded box as a
 //! background is ([`crate::decor`] shapes it with the view).
 //!
-//! The surface opens the GPU device the first time a shader is mounted
-//! ([`Shaders`]). The shader views with a frame to render or collect
+//! The surface opens the GPU device the first time a shader (or a page's
+//! or a dialog's `transitionShader`) is mounted ([`Shaders::open`]), on a
+//! thread of its own: the main thread does not wait for it. While it
+//! opens, shader views show their background and children as they are
+//! (as without a device, but the app is not told there is none) and a
+//! page or a dialog comes and goes with its own `animation`; once it is
+//! open ([`opened`]) the views render, and effects and transitions hide
+//! their children. Pipelines compile on the renderer's worker: a view
+//! waiting for one renders nothing ([`Need::Compiling`]) until the worker
+//! says it is ready ([`Drive::Compiling`]). The shader views with a frame
+//! to render or collect
 //! ([`ShaderView::wants_frame`]: their uniforms or size changed, or they
 //! read `nsh.time`) render at their window's backing scale, on one frame
 //! callback of the surface's display link while their frames change with
@@ -40,8 +49,9 @@
 //! ([`behind`]), and one with the pixels of the last is not uploaded
 //! again ([`picture_hash`]). A transition pictures
 //! the children as they were when it starts ([`start_transition`]).
-//! `renderInContext:` draws no video or web page, nor other shaders'
-//! frames under an effect taken before they arrive.
+//! A shader frame that arrives invalidates the effects around it too,
+//! so their first picture is replaced once the nested shader is ready.
+//! `renderInContext:` draws no video or web page.
 //!
 //! A page's or a dialog's `transitionShader` runs over the stack or the
 //! surface as a [`NavOverlay`]: pictures of the lower and the upper side,
@@ -72,9 +82,12 @@ use crate::{surface::Surface, view::NshView};
 /// A surface's shader views: the GPU device, and the views rendering.
 #[derive(Default)]
 pub(crate) struct Shaders {
-    /// Opened the first time a shader is mounted (`None` inside: there is
-    /// no device, and shader views show nothing of their own).
+    /// Set once the device opened, the first time a shader is mounted
+    /// (`None` inside: there is no device, and shader views show nothing
+    /// of their own). Empty while it opens ([`Shaders::open`]).
     renderer: OnceCell<Option<Renderer>>,
+    /// The device is opening.
+    opening: Cell<bool>,
     /// The views with a frame to render or collect.
     views: RefCell<Vec<NshView>>,
     /// The views whose shaders read pictures (effects, transitions,
@@ -108,6 +121,10 @@ enum Drive {
     /// The GPU, once it finished the frames rendered: views waiting only
     /// for them to come back.
     Gpu,
+    /// The renderer's worker, once it compiled a pipeline: views waiting
+    /// for their shader's ([`Renderer::on_pipeline_ready`]). Anything new
+    /// to render starts as from [`Drive::Idle`].
+    Compiling,
 }
 
 /// What a view in [`Shaders::views`] has left, least first.
@@ -115,6 +132,8 @@ enum Drive {
 enum Need {
     /// Nothing.
     None,
+    /// Its shader's pipeline, which the renderer's worker compiles.
+    Compiling,
     /// A frame on its way back from the GPU.
     Pending,
     /// One new frame: something changed (after a pass, a frame that found
@@ -125,11 +144,71 @@ enum Need {
 }
 
 impl Shaders {
-    /// The GPU device, opened the first time one asks.
+    /// The GPU device, once it opened ([`Shaders::open`]); `None` while it
+    /// opens and where there is none.
     pub(crate) fn renderer(&self) -> Option<&Renderer> {
-        self.renderer
-            .get_or_init(|| Renderer::new(PixelFormat::Rgba))
-            .as_ref()
+        self.renderer.get().and_then(Option::as_ref)
+    }
+
+    /// The device was looked for and there is none.
+    fn missing(&self) -> bool {
+        matches!(self.renderer.get(), Some(None))
+    }
+
+    /// Starts opening the GPU device unless it is open or opening: on a
+    /// thread of its own, handed to `surface` on the main queue
+    /// ([`opened`]).
+    pub(crate) fn open(&self, surface: &Surface) {
+        if self.opening.get() || self.renderer.get().is_some() {
+            return;
+        }
+        self.opening.set(true);
+        let key = surface.key();
+        Renderer::open(PixelFormat::Rgba, move |renderer| {
+            DispatchQueue::main().exec_async(move || {
+                if let Some(surface) = Surface::with_key(key) {
+                    opened(&surface, renderer);
+                }
+            });
+        });
+    }
+}
+
+/// The GPU device `surface` asked for opened ([`Shaders::open`]; `None`:
+/// there is none, which the app hears: `shadersAvailable()`). The views
+/// mounted meanwhile render, and effects and transitions hide their
+/// children as their frames show.
+fn opened(surface: &Rc<Surface>, renderer: Option<Renderer>) {
+    let shaders = &surface.shaders;
+    shaders.opening.set(false);
+    if shaders.renderer.set(renderer).is_err() {
+        return;
+    }
+    let Some(renderer) = shaders.renderer() else {
+        surface.control(nsh_engine::EngineControl::shaders_unavailable);
+        return;
+    };
+    let key = surface.key();
+    renderer.on_pipeline_ready(move || {
+        DispatchQueue::main().exec_async(move || {
+            if let Some(surface) = Surface::with_key(key) {
+                pipeline_ready(&surface);
+            }
+        });
+    });
+    let now = Instant::now();
+    let pictured = shaders.pictured.borrow().clone();
+    for view in &pictured {
+        refresh_mask(surface, view, now);
+    }
+    start(surface);
+}
+
+/// A pipeline the renderer's worker compiled is ready: the views that
+/// waited for it render ([`Drive::Compiling`]).
+fn pipeline_ready(surface: &Rc<Surface>) {
+    if surface.shaders.drive.get() == Drive::Compiling {
+        pass(surface);
     }
 }
 
@@ -217,6 +296,8 @@ impl ShaderState {
     fn need(&self) -> Need {
         if self.view.animates() || self.stale || self.backdrop_stale {
             Need::Clock
+        } else if self.view.compiling() {
+            Need::Compiling
         } else if self.view.due() {
             if self.role == ShaderRole::Fill {
                 Need::Changed
@@ -353,10 +434,13 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, layer: Option<Arc<Shade
         if layer.is_none() && state.shader.is_none() {
             return;
         }
-        if layer.is_some() && surface.shaders.renderer().is_none() {
-            // No GPU: the app hears it (`shadersAvailable()`); the engine
-            // takes the first report only.
-            surface.control(nsh_engine::EngineControl::shaders_unavailable);
+        if layer.is_some() {
+            surface.shaders.open(surface);
+            if surface.shaders.missing() {
+                // No GPU: the app hears it (`shadersAvailable()`); the
+                // engine takes the first report only.
+                surface.control(nsh_engine::EngineControl::shaders_unavailable);
+            }
         }
         let shader = state
             .shader
@@ -1394,7 +1478,9 @@ pub(crate) fn shown(view: &NshView) {
 /// ([`set_args`]), once the animator is no longer borrowed.
 pub(crate) fn wake(surface: &Surface) {
     let shaders = &surface.shaders;
-    if shaders.drive.get() != Drive::Idle || shaders.views.borrow().is_empty() {
+    if !matches!(shaders.drive.get(), Drive::Idle | Drive::Compiling)
+        || shaders.views.borrow().is_empty()
+    {
         return;
     }
     if let Some(surface) = Surface::with_key(surface.key()) {
@@ -1450,7 +1536,8 @@ fn tick_if(view: &NshView, pictures_due: bool) -> bool {
         let Some(surface) = shader.surface.upgrade() else {
             return false;
         };
-        if surface.shaders.renderer().is_none() {
+        // While the device opens the view waits among them ([`opened`]).
+        if surface.shaders.missing() {
             return false;
         }
         shader.ticking = true;
@@ -1465,7 +1552,11 @@ fn tick_if(view: &NshView, pictures_due: bool) -> bool {
 /// runs now (the batch that changed them) is done.
 fn start(surface: &Rc<Surface>) {
     let shaders = &surface.shaders;
-    if shaders.drive.get() != Drive::Idle || shaders.views.borrow().is_empty() {
+    // Without a device yet (opening: [`opened`] starts them).
+    if !matches!(shaders.drive.get(), Drive::Idle | Drive::Compiling)
+        || shaders.views.borrow().is_empty()
+        || shaders.renderer().is_none()
+    {
         return;
     }
     if surface.wants_frames() || needs(surface) == Need::Clock {
@@ -1505,12 +1596,21 @@ fn pass(surface: &Rc<Surface>) {
 }
 
 /// What renders the views after a pass over them: nothing when none has
-/// anything left; the GPU when they only wait for frames to come back and
-/// the display link does not run anyway (asking it to tell); else the
-/// display link.
+/// anything left; the renderer's worker when they only wait for
+/// pipelines, and the GPU when they only wait for frames to come back,
+/// while the display link does not run anyway (asking it to tell); else
+/// the display link.
 fn next_drive(surface: &Rc<Surface>) -> Drive {
     match needs(surface) {
         Need::None => Drive::Idle,
+        // A view whose pipeline the worker finished while it was not
+        // rendered (the mounter was busy) renders on the link.
+        Need::Compiling
+            if !surface.wants_frames()
+                && surface.shaders.renderer().is_some_and(Renderer::compiling) =>
+        {
+            Drive::Compiling
+        }
         Need::Pending if !surface.wants_frames() && ask_gpu(surface) => Drive::Gpu,
         _ => Drive::Link,
     }
@@ -1606,12 +1706,19 @@ fn frame(surface: &Rc<Surface>) {
 
 /// Renders and collects `view`'s frame, showing one that came back;
 /// whether it has more to render. A frame that showed (or a transition's
-/// that went) changes what the backdrop readers over it read where it
-/// draws ([`behind`]): they picture it again.
+/// that went) changes the content and backdrop pictures that contain it.
 fn render_view(surface: &Rc<Surface>, view: &NshView, renderer: &Renderer, now: Instant) -> bool {
     let (more, showed) = show_frame(surface, view, renderer, now);
     if showed {
-        ui_changed_in(surface, view, true);
+        // Screen outputs live above the root's children, and are excluded
+        // from children_picture. Feeding them back into content readers
+        // would make otherwise static screen effects invalidate each other.
+        let screen = view
+            .state()
+            .shader
+            .as_ref()
+            .is_some_and(|s| is_screen(s.role));
+        ui_changed_in(surface, view, screen);
     }
     more
 }
@@ -1674,7 +1781,7 @@ fn show_frame(
 /// A shader view whose frames go to IOSurfaces ([`display_frame`]).
 fn surface_view() -> ShaderView {
     let mut view = ShaderView::default();
-    view.show_on_surfaces();
+    view.show_on_surfaces(true);
     view
 }
 
@@ -1999,6 +2106,14 @@ mod tests {
         }
     }
 
+    /// Shaders with the device open, if there is one.
+    fn with_device() -> Shaders {
+        Shaders {
+            renderer: OnceCell::from(Renderer::new(PixelFormat::Rgba)),
+            ..Shaders::default()
+        }
+    }
+
     /// A fill that changed renders off the display link and waits for the
     /// GPU after; what changes with time or takes pictures keeps the frame
     /// clock.
@@ -2032,6 +2147,9 @@ mod tests {
             1.0,
         );
         let _ = s.view.render(&renderer, Instant::now());
+        assert_eq!(s.need(), Need::Compiling, "its pipeline compiles");
+        assert!(renderer.wait_for_pipelines(Duration::from_secs(5)));
+        let _ = s.view.render(&renderer, Instant::now());
         if s.need() == Need::Pending {
             let (tx, rx) = std::sync::mpsc::channel();
             assert!(renderer.when_done(move || {
@@ -2058,9 +2176,22 @@ mod tests {
         }
     }
 
+    /// While the device opens, children show as they are, and the device
+    /// is not missing: the app is not told there is none.
+    #[test]
+    fn while_the_device_opens_nothing_hides_its_children() {
+        let shaders = Shaders::default();
+        shaders.opening.set(true);
+        assert!(!shaders.missing());
+        let now = Instant::now();
+        for role in [ShaderRole::Effect, ShaderRole::Screen] {
+            assert!(!state(role).hides(&shaders, now), "{role:?}");
+        }
+    }
+
     #[test]
     fn an_effect_hides_its_children_and_a_transition_while_it_runs() {
-        let shaders = Shaders::default();
+        let shaders = with_device();
         if shaders.renderer().is_none() {
             eprintln!("no GPU: skipped");
             return;

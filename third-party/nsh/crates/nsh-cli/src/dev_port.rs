@@ -43,13 +43,14 @@ impl Session {
         }
         let dir = crate::check::cache()?.join("dev-sessions");
         let (session, stop) = Self::in_dir(&dir, port, WAIT)?;
-        Ok(Some(session.owned(&dir, port, app, stop)?))
+        Ok(Some(session.owned(&dir, port, &identity(app), stop)?))
     }
 
     /// Owns the port of `app`'s last session or the first free one, returning
     /// it. With every port in the range taken, the OS allocates one.
     pub(crate) fn acquire_free(app: &Path) -> anyhow::Result<(Option<Self>, u16)> {
         let dir = crate::check::cache()?.join("dev-sessions");
+        let app = &identity(app);
         match Self::free_in_dir(&dir, DEFAULT_PORT, app, WAIT, port_is_free)? {
             Some((session, port, stop)) => Ok((Some(session.owned(&dir, port, app, stop)?), port)),
             None => Ok((None, 0)),
@@ -149,6 +150,14 @@ fn clear_stop(stop: &Path) -> anyhow::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).context("clear development session stop request"),
     }
+}
+
+/// The app as recorded in `<port>.app`: its absolute entry path, so the same
+/// relative entry in two directories (two checkouts) names two apps.
+fn identity(app: &Path) -> PathBuf {
+    fs::canonicalize(app)
+        .or_else(|_| std::path::absolute(app))
+        .unwrap_or_else(|_| app.to_path_buf())
 }
 
 fn app_file(dir: &Path, port: u16) -> PathBuf {
@@ -284,6 +293,25 @@ mod tests {
         let (new, _) = Session::in_dir(&dir.0, 8790, WAIT).unwrap();
         assert!(!stop.exists());
         drop(new);
+    }
+
+    #[test]
+    fn the_same_relative_entry_in_two_directories_is_two_apps() {
+        let dir = Directory::new();
+        let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+        for d in [&a, &b] {
+            fs::create_dir_all(d).unwrap();
+            fs::write(d.join("App.tsx"), "").unwrap();
+        }
+        let (ia, ib) = (identity(&a.join("App.tsx")), identity(&b.join("App.tsx")));
+        assert!(ia.is_absolute());
+        assert_ne!(ia, ib);
+        // A relative path and its absolute form are one app.
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            identity(Path::new("Cargo.toml")),
+            identity(&cwd.join("Cargo.toml"))
+        );
     }
 
     #[test]

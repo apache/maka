@@ -54,7 +54,8 @@ function NotePage(props: { note: Note }) {
 
 Several heads may be mounted at once: the app's own and one per page of a stack. The one mounted last wins for what it
 sets, and the ones before it give the rest, so the page on top titles the document, and when it is popped the page
-below it does again. What no mounted head sets any more is removed, and the document's own title and language come
-back when none is left. Each prop is reactive: a head that reads a signal follows it.
+below it does again. What no mounted head sets any more is removed; with no head setting a title, the main window's
+title titles the document (`currentWindow().set({ title })`, in Rust `current_window().set(..)`), else the document's own,
+and the document's own language comes back when no head sets one. Each prop is reactive: a head that reads a signal follows it.
 
 [The web](../docs/web.md#search-engines) shows a whole site that search engines index, with each page a URL of its own.

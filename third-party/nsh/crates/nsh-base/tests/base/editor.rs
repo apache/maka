@@ -168,6 +168,92 @@ fn start(props: HarnessProps) -> Headless {
     app
 }
 
+/// The app's bar theme belongs to the editor's scroll view, not its
+/// one-point input sink, even when typing fills that sink.
+#[test]
+fn the_caret_sink_has_no_built_in_scrollbar() {
+    use nsh_base::{ScrollbarLook, ScrollbarMode, ScrollbarTheme, set_scrollbar_theme};
+
+    #[component]
+    fn ThemedEditor() -> impl IntoElement {
+        let mut look = ScrollbarLook::default();
+        look.class = Some("absolute inset-y-0 right-0 w-[10px]".into());
+        look.thumb_class = Some("w-full".into());
+        look.accessibility_label = Some("Editor scroll bar".into());
+        let mut theme = ScrollbarTheme::default();
+        theme.mode = ScrollbarMode::Always;
+        theme.vertical = Some(look);
+        set_scrollbar_theme(Some(theme));
+        view().w(px(600.0)).h(px(200.0)).child(
+            editor()
+                .accessibility_label("Code")
+                .default_value("a line\n".repeat(40))
+                .size_full(),
+        )
+    }
+
+    #[derive(Default)]
+    struct Seen {
+        bars: std::collections::HashSet<NodeId>,
+        scrolls: std::collections::HashSet<NodeId>,
+        parents: HashMap<NodeId, NodeId>,
+    }
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::of::<ThemedEditor>())
+    };
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let into = seen.clone();
+    app.observe(move |_, batch| {
+        let mut seen = into.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::ViewProps { id, props }
+                    if props.accessibility.label.as_deref() == Some("Editor scroll bar") =>
+                {
+                    seen.bars.insert(*id);
+                }
+                MountItem::ScrollConfig { id, .. } => {
+                    seen.scrolls.insert(*id);
+                }
+                MountItem::Insert { parent, child, .. } => {
+                    seen.parents.insert(*child, *parent);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    app.type_text("label:Code", "typed into the caret sink")
+        .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.bars.len(),
+        1,
+        "only the text area's vertical bar is made"
+    );
+    let mut at = *seen.bars.iter().next().unwrap();
+    let mut in_scroll = false;
+    // Component hosts can sit between the track and its scroll view.
+    for _ in 0..seen.parents.len() {
+        let Some(&parent) = seen.parents.get(&at) else {
+            break;
+        };
+        if seen.scrolls.contains(&parent) {
+            in_scroll = true;
+            break;
+        }
+        at = parent;
+    }
+    assert!(
+        in_scroll,
+        "the remaining bar belongs to the editor's scroll view"
+    );
+}
+
 /// Waits until a text on screen reads `text`.
 fn see(app: &mut Headless, text: &str) {
     app.wait_for(&format!("text:{text}")).unwrap();
@@ -216,6 +302,27 @@ fn a_default_value_shows_its_rows_and_line_numbers() {
     }
     assert!(!app.shows("4"));
     assert_eq!(count_numbers(&app), 3);
+}
+
+#[test]
+fn testing_value_reads_the_document_instead_of_the_keyboard_sink() {
+    let mut p = props("Hallo\nworld");
+    p.controlled = true;
+    let mut app = start(p);
+    assert_eq!(
+        app.screen().input_text("id:editor"),
+        Ok(Some("Hallo\nworld"))
+    );
+    app.type_text("id:editor", "A").unwrap();
+    assert_eq!(
+        app.screen().input_text("id:editor"),
+        Ok(Some("AHallo\nworld"))
+    );
+    app.press("id:set-parent").unwrap();
+    assert_eq!(
+        app.screen().input_text("id:editor"),
+        Ok(Some("from parent\nsecond"))
+    );
 }
 
 #[test]
@@ -485,6 +592,32 @@ fn a_long_text_makes_only_the_rows_in_view() {
         (20..150).contains(&rows),
         "{rows} rows made after scrolling"
     );
+}
+
+/// The top of the row reading `text`, as laid out.
+fn row_top(app: &Headless, text: &str) -> f32 {
+    app.screen()
+        .layout_nodes()
+        .iter()
+        .find(|n| n.text.as_ref().is_some_and(|t| t.text.text == text))
+        .map(|n| n.bounds.origin.y.0)
+        .unwrap_or_else(|| panic!("no row reads {text:?}"))
+}
+
+/// The rows grow with the user's text size, as the texts drawn in them do:
+/// measured in the app's font alone, a row drawn larger would run over the
+/// next one.
+#[test]
+fn rows_follow_the_user_s_text_size() {
+    let mut app = start(props("alpha\nbeta\ngamma"));
+    see(&mut app, "gamma");
+    let pitch = row_top(&app, "beta") - row_top(&app, "alpha");
+    assert_eq!(pitch, 20.0);
+    app.set_environment("fontScale", |env| env.font_scale = 1.25)
+        .unwrap();
+    app.wait(std::time::Duration::from_millis(200)).unwrap();
+    let pitch = row_top(&app, "beta") - row_top(&app, "alpha");
+    assert_eq!(pitch, 25.0);
 }
 
 #[test]

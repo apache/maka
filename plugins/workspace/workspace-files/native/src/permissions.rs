@@ -25,6 +25,7 @@ pub(super) async fn authorize(
     access: &dyn NativeCallAccess,
     captured: Captured,
     configuration: &ResolvedConfiguration,
+    state_root: &Path,
     tool: &'static str,
     input: &Value,
     floor: &Sandbox,
@@ -43,6 +44,9 @@ pub(super) async fn authorize(
     let floor = floor.clone();
     let grant_floor = floor.clone();
     let input = input.clone();
+    let workspace = configuration.workspace.clone();
+    let state_root = state_root.to_owned();
+    let can_ask = configuration.permissions.request_permissions;
     let (mut captured, required) = tokio::task::spawn_blocking(move || {
         let mut captured = captured;
         for grant in grants {
@@ -60,8 +64,12 @@ pub(super) async fn authorize(
                 network: Network::Denied,
             };
             if !captured.ceiling.permits(&lexical).map_err(failed)? {
-                return Err(failed(
-                    "Workspace metadata or Host-private files cannot be granted",
+                return Err(ungrantable(
+                    &captured,
+                    &lexical,
+                    &workspace,
+                    &state_root,
+                    can_ask,
                 ));
             }
             let (root, directory, relative) = match path.strip_prefix(&captured.path) {
@@ -131,8 +139,12 @@ pub(super) async fn authorize(
                 network: Network::Denied,
             };
             if !captured.ceiling.permits(&permissions).map_err(failed)? {
-                return Err(failed(
-                    "Workspace metadata or Host-private files cannot be granted",
+                return Err(ungrantable(
+                    &captured,
+                    &permissions,
+                    &workspace,
+                    &state_root,
+                    can_ask,
                 ));
             }
             if !captured.sandbox.permits(&permissions).map_err(failed)? {
@@ -175,4 +187,31 @@ pub(super) async fn authorize(
         ));
     }
     Ok(captured)
+}
+
+/// Why a write is beyond what can be granted: Maka protects the path, the
+/// conversation cannot ask, or its caller does not hold that access.
+fn ungrantable(
+    captured: &Captured,
+    permissions: &Permissions,
+    workspace: &Workspace,
+    state_root: &Path,
+    can_ask: bool,
+) -> ToolError {
+    let protected = maka_workspace_support::reserved(workspace, state_root).and_then(|reserved| {
+        captured
+            .protections
+            .intersect(&reserved)
+            .and_then(|protections| protections.permits(permissions))
+            .map(|permitted| !permitted)
+            .map_err(|error| error.to_string())
+    });
+    match protected {
+        Ok(true) => failed("Workspace metadata or Host-private files cannot be granted"),
+        Ok(false) if !can_ask => failed(maka_agent_authority::permissions::REQUESTS_DISABLED),
+        Ok(false) => failed(
+            "These files are beyond what this conversation's caller can write, so they cannot be granted",
+        ),
+        Err(error) => failed(error),
+    }
 }

@@ -13,6 +13,7 @@
     "webview": {
       "hosts": [],
       "input": true
-    }
+    },
+    "homeDir": true
   }
 }

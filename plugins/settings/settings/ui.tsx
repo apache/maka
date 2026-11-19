@@ -63,6 +63,7 @@ import { createSettingsOperations } from '../../../products/maka/workbench/app/s
 import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
 import { providerLabel } from '../../../products/maka/workbench/app/settingsLabels';
 import { appearance, initializeAppearance } from '../../../products/maka/workbench/app/appearance';
+import { initializeComposerToolbar } from '../../../products/maka/workbench/app/composerToolbar';
 import {
   initializeUiScale,
   uiScale,
@@ -181,6 +182,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const skills = createSkillSettings(host, operations, configurationWorkspace);
   const mcp = createMcpSettings(host, operations, configurationWorkspace);
   initializeAppearance();
+  initializeComposerToolbar();
   initializeUiScale(restored?.scale);
   void general.initializeLanguage().catch(operations.report);
   effect(() => {

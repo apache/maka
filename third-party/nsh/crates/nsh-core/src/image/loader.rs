@@ -195,7 +195,9 @@ pub trait Transport: Send + Sync {
     /// response (the disk cache decides what a `304` or a `5xx` means). It
     /// follows at most [`MAX_REDIRECTS`] redirects, each one [`redirect`]
     /// grants, and ends at one it refuses with [`super::Fetched::refused`]
-    /// (the disk cache then drops its copy of the URL); reads at most
+    /// (the disk cache then drops its copy of the URL); reports the ones
+    /// it followed ([`super::Fetched::redirected`]: the disk cache checks
+    /// them again before it serves the copy); reads at most
     /// [`MAX_BYTES`]; gives up after [`TIMEOUT`]; stops soon after
     /// `get.cancelled` is set.
     fn get(&self, get: Get<'_>) -> Result<super::Fetched, String>;
@@ -362,26 +364,13 @@ pub fn resolve(uri: &str, base: Option<&AssetBase>) -> Option<Location> {
         return Some(Location::Data(uri.to_owned()));
     }
     if uri.starts_with("file:") {
-        return url::Url::parse(uri)
-            .ok()?
-            .to_file_path()
-            .ok()
-            .map(Location::File);
+        return crate::access::file_url_path(uri).map(Location::File);
     }
     let path = std::path::Path::new(uri);
     path.is_absolute().then(|| Location::File(path.into()))
 }
 
-/// `logo@2x.png` -> 2: the pixel density a file name declares (1 without).
-pub fn density(uri: &str) -> f32 {
-    let name = uri.rsplit(['/', '\\']).next().unwrap_or(uri);
-    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
-    stem.rsplit_once('@')
-        .and_then(|(_, s)| s.strip_suffix('x'))
-        .and_then(|n| n.parse::<f32>().ok())
-        .filter(|n| *n > 0.0)
-        .unwrap_or(1.0)
-}
+pub use super::density;
 
 /// Which loads go first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -926,7 +915,7 @@ fn fetch(
         download(url, context, headers, cached, cancelled, progress)
     };
     match &context.disk {
-        Some(cache) => cache.load(url, get),
+        Some(cache) => cache.load(url, &context.access, get),
         None => get(&[]).and_then(|response| match (response.refusal, response.status) {
             (Some(refusal), _) => Err(refusal),
             (None, 200..=299) => Ok(response.body.into()),
@@ -1039,15 +1028,24 @@ mod http {
         }
     }
 
+    /// The response that ends a download, the redirects followed to it,
+    /// and why when it is a redirect the app may not follow.
+    type Ended = (
+        ureq::http::Response<ureq::Body>,
+        Vec<String>,
+        Option<String>,
+    );
+
     /// GETs `url` with `headers`, following redirects one hop at a time:
-    /// the response that ends it, and why when that is a redirect the app
-    /// may not follow ([`redirect`]).
+    /// the response that ends it, the URLs it was redirected to, and why
+    /// when it ends at a redirect the app may not follow ([`redirect`]).
     fn get(
         url: &str,
         access: &Access,
         headers: &[(&'static str, String)],
-    ) -> Result<(ureq::http::Response<ureq::Body>, Option<String>), String> {
+    ) -> Result<Ended, String> {
         let mut url = url.to_owned();
+        let mut redirects = Vec::new();
         for _ in 0..=MAX_REDIRECTS {
             let mut request = agent(&url).get(&url);
             for (name, value) in headers {
@@ -1056,7 +1054,7 @@ mod http {
             let response = request.call().map_err(|e| e.to_string())?;
             let status = response.status().as_u16();
             if !matches!(status, 301 | 302 | 303 | 307 | 308) {
-                return Ok((response, None));
+                return Ok((response, redirects, None));
             }
             let location = response
                 .headers()
@@ -1064,8 +1062,11 @@ mod http {
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| format!("{url}: redirect without a Location"))?;
             match redirect(access, &url, location) {
-                Ok(next) => url = next,
-                Err(refusal) => return Ok((response, Some(refusal))),
+                Ok(next) => {
+                    redirects.push(next.clone());
+                    url = next;
+                }
+                Err(refusal) => return Ok((response, redirects, Some(refusal))),
             }
         }
         Err("too many redirects".to_owned())
@@ -1081,7 +1082,7 @@ mod http {
         cancelled: &AtomicBool,
         progress: &mut dyn FnMut(u64, u64),
     ) -> Result<Fetched, String> {
-        let (mut response, refusal) = get(url, access, headers)?;
+        let (mut response, redirects, refusal) = get(url, access, headers)?;
         let status = response.status().as_u16();
         if let Some(refusal) = refusal {
             return Ok(Fetched::refused(status, refusal));
@@ -1096,7 +1097,7 @@ mod http {
             (!values.is_empty()).then(|| values.join(", "))
         });
         if status >= 300 {
-            return Ok(Fetched::new(status, cache, Vec::new()));
+            return Ok(Fetched::new(status, cache, Vec::new()).redirected(redirects));
         }
         let total = response.body().content_length().unwrap_or(0);
         if total > MAX_BYTES {
@@ -1116,7 +1117,7 @@ mod http {
             bytes.extend_from_slice(&chunk[..n]);
             progress(bytes.len() as u64, total);
         }
-        Ok(Fetched::new(status, cache, bytes))
+        Ok(Fetched::new(status, cache, bytes).redirected(redirects))
     }
 }
 

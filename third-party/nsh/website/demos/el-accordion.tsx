@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
-import { desktop, Log, Panel, Segmented, Split, ui, controlSize, listRow, RowLabel, sectionSurface, DisclosureChevron, disclosurePanel, disclosureTriggerLook } from "./palette";
+import { desktop, Log, Panel, Segmented, Split, ui, controlSize, listRow, RowDivider, RowLabel, sectionSurface, DisclosureChevron, disclosurePanel, disclosureTriggerLook } from "./palette";
 
 // An FAQ: each item a heading whose trigger (a button that says whether it
 // is expanded) opens its answer. The app owns which items are open
@@ -64,9 +64,9 @@ function App() {
         >
           {FAQ.map((item, i) => (
             <AccordionItem value={item.value} disabled={item.disabled}>
-              <View style={{ height: i === 0 ? 0 : 1, backgroundColor: ui().line }} />
               <AccordionHeader>
-                <AccordionTrigger {...disclosureTriggerLook({ first: true, disabled: item.disabled })}>
+                <AccordionTrigger {...disclosureTriggerLook({ first: i === 0, disabled: item.disabled })}>
+                  <RowDivider show={i > 0} />
                   <RowLabel label={item.question} />
                   <DisclosureChevron accordion />
                 </AccordionTrigger>

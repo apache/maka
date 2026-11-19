@@ -1,5 +1,6 @@
 package com.longbridge.nsh;
 
+import android.annotation.TargetApi;
 import android.content.ClipData;
 import android.view.ContentInfo;
 import android.widget.EditText;
@@ -8,6 +9,7 @@ import android.widget.EditText;
  * Pastes and keyboards' content for Android 12+ (only loaded there, so that
  * {@code InputBox} verifies without these types on older versions).
  */
+@TargetApi(31)
 final class InputContent {
     private InputContent() {}
 

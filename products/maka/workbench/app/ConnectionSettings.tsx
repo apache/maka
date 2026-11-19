@@ -19,7 +19,7 @@
 
 import { inputAction } from 'nsh';
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
-import type { ModelSettingsOwner } from './settings';
+import { settingsModelKey, type ModelSettingsOwner } from './settings';
 import { ConnectionAdvanced, ConnectionForm } from './ConnectionForm';
 import { ExternalAgentConfirmation, ExternalAgentSection } from './ExternalAgentSettings';
 import { ProviderPicker } from './ProviderPicker';
@@ -40,9 +40,6 @@ import {
   SettingsSection,
   SettingsSelect,
 } from './SettingsPage';
-
-const choiceKey = (selection: { connectionId: string; modelId: string }) =>
-  JSON.stringify([selection.connectionId, selection.modelId]);
 
 export function ConnectionSettings(props: {
   owner: ModelSettingsOwner;
@@ -87,15 +84,15 @@ function ConnectionList(props: {
   const current = () => {
     const model = owner.defaultModel();
     return model?.kind === 'ready'
-      ? choiceKey(model.choice.selection)
+      ? settingsModelKey(model.choice.selection)
       : model?.kind === 'unavailable'
-        ? choiceKey(model.target)
+        ? settingsModelKey(model.target)
         : '';
   };
   const choices = () => [
     { value: '', title: tr('None') },
     ...owner.modelChoices().map((choice) => ({
-      value: choiceKey(choice.selection),
+      value: settingsModelKey(choice.selection),
       title: choice.label,
       group: choice.connectionName,
     })),
@@ -125,7 +122,7 @@ function ConnectionList(props: {
             change={(value) => {
               const choice = owner
                 .modelChoices()
-                .find((item) => choiceKey(item.selection) === value);
+                .find((item) => settingsModelKey(item.selection) === value);
               void owner.setDefault(choice?.selection ?? null);
             }}
           />

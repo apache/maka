@@ -12,6 +12,7 @@ import {
   undo,
 } from "nsh/base";
 import { colors, mono, richEditorClasses, Segmented } from "../ui";
+import { NodeViewDemo } from "./NodeViewDemo";
 import { IconButton, type LucideIconName, TOOL_GAP, ToggleGroup, type ToggleItem, ToolbarSeparator } from "./RichEditorUi";
 import { createLinkMenu, LinkBubble, type LinkMenu } from "./RichEditorLink";
 
@@ -305,7 +306,16 @@ export function RichEditorDemo() {
     </View>
   );
   return (
-    <If when={zoomed()} else={<View style={{ flex: 1, padding: 16 }}>{panel()}</View>}>
+    <If
+      when={zoomed()}
+      else={
+        <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, padding: 16, paddingBottom: 0 }}>{panel()}</View>
+          {/* The app's components as nodes of a document (addNodeView). */}
+          <NodeViewDemo />
+        </View>
+      }
+    >
       <Overlay style={{ top: 0, left: 0, right: 0, bottom: 0 }} onCancel={() => zoomed.set(false)}>
         {panel()}
       </Overlay>

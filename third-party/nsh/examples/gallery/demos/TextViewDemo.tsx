@@ -1,4 +1,4 @@
-import { cleanup, signal, Text, View } from "nsh";
+import { cleanup, keymap, signal, Text, View } from "nsh";
 import { TextView, type TextViewImage, type TextViewRef } from "nsh/base";
 import { Button, Caption, Card, colors, DemoPage, Segmented, textViewCaretClass, textViewLinkClasses } from "../ui";
 import { ImageViewer } from "./ImageViewer";
@@ -6,7 +6,7 @@ import { LucideIcon } from "../icons";
 
 const MARKDOWN = `# Native Shell
 
-**NSH** loads apps written in *TSX* into native apps at run time and renders them with each platform's ~~web views~~ own views. Press <kbd>⌘K</kbd> to search the docs, or read [the guide](https://github.com/longbridge/nsh).
+**NSH** loads apps written in *TSX* into native apps at run time and renders them with each platform's ~~web views~~ own views. Press <kbd>${keymap.label("mod+k")}</kbd> to search the docs, or read [the guide](https://github.com/longbridge/nsh).
 
 ## How it works
 
@@ -417,9 +417,20 @@ const ANSWER = `Every one with a native backend:
 /** Two documents and a plain text that select as one, around a label that stays out. */
 function SelectionAcross() {
   const selected = signal("");
+  const chosen = signal("");
+  const act = (action: string) => () => chosen.set(`${action} \u201c${selected()}\u201d`);
   return (
     <Card icon="text" title="Selectable view" subtitle="One selection across texts and TextViews">
-      <View selectable class="gap-3" onSelectionChange={({ text }) => selected.set(text)}>
+      <View
+        selectable
+        class="gap-3"
+        onSelectionChange={({ text }) => selected.set(text)}
+        selectionMenu={[
+          { label: "Highlight", onSelect: act("Highlight") },
+          { type: "separator" },
+          { label: "Define", onSelect: act("Define") },
+        ]}
+      >
         <TextView markdown={QUESTION} />
         <TextView markdown={ANSWER} />
         <View class="flex-row items-baseline gap-2">
@@ -429,6 +440,7 @@ function SelectionAcross() {
       </View>
       <Caption label="Drag from the question into the answer, or long press and move the handles" />
       <Caption label="Selected (onSelectionChange)" note={selected() || "nothing"} />
+      <Caption label="Chosen from the selection menu (selectionMenu)" note={chosen() || "nothing yet"} />
     </Card>
   );
 }

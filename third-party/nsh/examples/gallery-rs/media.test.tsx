@@ -33,17 +33,20 @@ test("a message posted to the page is shown as sent", async () => {
     "Inline HTML, with messages both ways",
     "From the page",
     "To the page",
-    "A web site",
-    "Navigation state, back and forward",
-    "Loaded",
+    "Inline page",
+    "Web site",
     "Post to the page",
-    "…",
-    "Reload",
   ]) {
     expect(app.texts()).toContain(text);
   }
+  expect(app.texts()).not.toContain("Reload");
   await app.press("Post to the page");
   await app.waitFor("text:/^hi #/");
+  await app.press("Web site");
+  for (const text of ["A web site", "Navigation state, back and forward", "Loaded", "…", "Reload"]) {
+    expect(app.texts()).toContain(text);
+  }
+  expect(app.texts()).not.toContain("Post to the page");
 });
 
 test("the photo stream loads more at its end", async () => {

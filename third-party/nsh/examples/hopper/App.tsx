@@ -50,7 +50,7 @@ function Header(props: { title: string; back?: boolean }) {
           accessibilityLabel="Back"
           hitSlop={8}
           activeStyle={{ opacity: 0.5 }}
-          style={{ flexDirection: "row", alignItems: "center", gap: 2, paddingRight: 6, cursor: "pointer" }}
+          style={{ flexDirection: "row", alignItems: "center", gap: 2, paddingRight: 6 }}
         >
           <Icon name="back" size={18} tint={color.accent} />
           <Text style={{ fontSize: 15, color: color.accent }}>Back</Text>

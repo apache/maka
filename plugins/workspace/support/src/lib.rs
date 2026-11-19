@@ -66,6 +66,34 @@ pub fn sandbox(
     Ok((base, ceiling))
 }
 
+/// Host-private paths, whatever the access mode: Maka's state and the native
+/// task namespace. Calls from external sources run below this floor.
+pub fn reserved(selected: &Workspace, state_root: &Path) -> Result<maka_sandbox::Sandbox, String> {
+    use maka_sandbox::{
+        Network, Sandbox,
+        filesystem::{Access, Policy, Rule},
+    };
+    let namespace = maka_sandbox::native_task_namespace().map_err(|error| error.to_string())?;
+    let private = private_rules(selected, state_root)?;
+    Sandbox::Managed {
+        filesystem: Policy {
+            default: Access::Write,
+            rules: vec![Rule::subtree(namespace, Access::Deny)],
+            deny_globs: vec![],
+        },
+        network: Network::Allowed,
+    }
+    .intersect(&Sandbox::Managed {
+        filesystem: Policy {
+            default: Access::Write,
+            rules: private,
+            deny_globs: vec![],
+        },
+        network: Network::Allowed,
+    })
+    .map_err(|error| error.to_string())
+}
+
 /// The native Session record is the authority for the sole exception inside
 /// private state. A caller-supplied path can never open this exception.
 pub fn private_rules(

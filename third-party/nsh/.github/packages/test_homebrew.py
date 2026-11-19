@@ -32,7 +32,7 @@ class HomebrewFormulaTest(unittest.TestCase):
         self.assertIn('bin.install_symlink libexec/"bin/nsh"', formula)
         # The test needs no component: brew test runs offline.
         self.assertIn('"build", "hello", "-o", testpath/"out", "--release"', formula)
-        self.assertIn("nsh component list", formula)
+        self.assertIn("nsh component list 2>&1", formula)
         self.assertNotIn('"--target"', formula)
 
     def test_rejects_unpublished_and_prerelease_versions(self):

@@ -27,6 +27,9 @@ test("a long press selects a word, and the edit menu copies it", async () => {
   expect(labels(app)).toEqual(["Cut", "Copy", "Select All"]);
   await app.chooseMenuItem("Copy");
   expect(app.clipboard()).toBe(word);
+  // With its HTML: the word in its paragraph, open on both sides, which a
+  // paste into a RichEditor reads back as it was.
+  expect(app.clipboardItem()?.html).toBe(`<p data-pm-slice="1 1 []">${word}</p>`);
   expect(app.menu()).toBe(null);
 });
 

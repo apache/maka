@@ -143,6 +143,35 @@ pub enum AccessibilityRole {
     AlertDialog,
 }
 
+impl AccessibilityRole {
+    /// Whether the role is a control the pointer presses (a button, link,
+    /// tab, menu item…): text inside one shows the control's pointer, not
+    /// the I-beam of a selectable area around it, as a browser's
+    /// `<button>` text does.
+    pub fn is_control(self) -> bool {
+        matches!(
+            self,
+            Self::Button
+                | Self::Link
+                | Self::ImageButton
+                | Self::KeyboardKey
+                | Self::Checkbox
+                | Self::Combobox
+                | Self::Menuitem
+                | Self::MenuItemCheckbox
+                | Self::MenuItemRadio
+                | Self::Radio
+                | Self::Switch
+                | Self::Tab
+                | Self::Option
+                | Self::TreeItem
+                | Self::Adjustable
+                | Self::Spinbutton
+                | Self::Scrollbar
+        )
+    }
+}
+
 /// Whether a checkable element is checked (`accessibilityState.checked`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Checked {
@@ -251,7 +280,9 @@ pub struct Accessibility {
     pub hint: Option<Arc<str>>,
     /// `accessibilityDescription`: more about the element than its name
     /// (ARIA's `aria-description`): a dialog's message, what a field
-    /// expects.
+    /// expects. While `accessibilityDescribedBy` names a rendered element
+    /// with text, that text, which the core keeps current (ARIA's
+    /// `aria-describedby` wins over `aria-description` alike).
     pub description: Option<Arc<str>>,
     /// `role`.
     pub role: AccessibilityRole,
@@ -279,6 +310,12 @@ pub struct Accessibility {
     /// this one controls (ARIA's `aria-controls`): a combo box's listbox,
     /// a tab's panel. Resolved as [`Accessibility::active_descendant`].
     pub controls: Option<crate::NodeId>,
+    /// `accessibilityDescribedBy`: the view (its native id) whose text
+    /// describes this one (ARIA's `aria-describedby`): a field's error
+    /// line. Resolved as [`Accessibility::active_descendant`]; its text is
+    /// [`Accessibility::description`], so a platform without such a
+    /// relation reads it all the same.
+    pub described_by: Option<crate::NodeId>,
 }
 
 impl Accessibility {
@@ -376,6 +413,13 @@ pub enum AccessibilityProp {
     /// controls (ARIA's `aria-controls`): a combo box's listbox.
     #[prop(js = "accessibilityControls", with = crate::js::host_values::accessibility_controls, reset = AccessibilityProp::Controls(None), ts = "ViewRef | null")]
     Controls(Option<crate::element::ElementTarget>),
+    /// `accessibilityDescribedBy`: the element whose text describes this
+    /// one (ARIA's `aria-describedby`): a field's error or help line,
+    /// placed apart from it. Screen readers read that text after the
+    /// name, in the place of `accessibilityDescription` while it names a
+    /// rendered element with text.
+    #[prop(js = "accessibilityDescribedBy", with = crate::js::host_values::accessibility_described_by, reset = AccessibilityProp::DescribedBy(None), ts = "ViewRef | null")]
+    DescribedBy(Option<crate::element::ElementTarget>),
 }
 
 /// Android's press ripple (`android={{ ripple }}`).
@@ -451,11 +495,28 @@ pub struct ViewProps {
     /// keys); `Some(false)` keeps a view that takes presses out; `None`, the
     /// default, leaves it to the presses ([`ViewProps::focus_stop`]).
     pub focusable: Option<bool>,
+    /// Keys consumed by this view or a focused descendant before native
+    /// defaults run. Backends decide from the mounted rules without
+    /// waiting for a listener (`Interactive::capture_keys`).
+    pub key_capture: crate::KeyCapture,
+    /// Where keyboard ancestry continues for a portaled view (an overlay
+    /// whose native parent is its root view while its logical parent is
+    /// the view it is in): the logical parent's node id. Internal routing
+    /// only; native layout, focus and hit testing keep their parent. `None`
+    /// for ordinary views and for portals with no key listener or capture
+    /// rule on their logical ancestry.
+    pub key_parent: Option<crate::NodeId>,
     /// The view is a selectable view (`View`'s `selectable`): the
     /// texts in its subtree that are not `selectable={false}` share one
     /// selection, from text to text ([`crate::selection`]); an area inside
     /// another is part of the outer one. Texts outside areas select alone.
     pub selectable_view: bool,
+    /// The app's items of a selectable view's selection menu, after the
+    /// system's (`selectionMenu`): plain items and separators, each
+    /// action's `id` reported as the root's `Menu` event when chosen. The
+    /// selection's menu takes the items of the outermost selectable view
+    /// around it ([`crate::desktop::MenuItem::selection_menu`]).
+    pub selection_menu: Arc<[crate::desktop::MenuItem]>,
     /// The text continues the text before it in document order, as a long
     /// line's next wrapped part (`Element::continues_text`): in a
     /// selectable view a copy joins the two with nothing between them,
@@ -475,9 +536,8 @@ impl ViewProps {
     /// pressed by Return or Space (its keys reach it through the app's
     /// keymap while it has the focus), and a view needs no press handler to
     /// be focusable, which would take the presses of a pressable around it
-    /// (a chart in a card that opens a page). The platforms that move the
-    /// keyboard focus between views (macOS, the web, the headless driver)
-    /// all decide with this; inputs that edit are stops by their own rule,
+    /// (a chart in a card that opens a page). Backends use this decision
+    /// for view focus stops; inputs that edit are stops by their own rule,
     /// and each platform adds what it knows of visibility.
     pub fn focus_stop(&self, takes_presses: bool) -> bool {
         self.focusable.unwrap_or(takes_presses) && !self.accessibility.state.disabled
@@ -531,6 +591,21 @@ impl PanActivation {
             active_offset_y: Some(active),
             fail_offset_x: Some(fail),
             fail_offset_y: None,
+        }
+    }
+
+    /// The one axis this pan is for, when its offsets name one: `Some(true)`
+    /// horizontal (an active offset along x, or a fail offset along y),
+    /// `Some(false)` vertical, `None` either. A view listening to `onWheel`
+    /// with a pan along one axis takes only the wheels along it
+    /// ([`crate::input::wheel_along`]).
+    pub fn axis(&self) -> Option<bool> {
+        let x = self.active_offset_x.is_some() || self.fail_offset_y.is_some();
+        let y = self.active_offset_y.is_some() || self.fail_offset_x.is_some();
+        match (x, y) {
+            (true, false) => Some(true),
+            (false, true) => Some(false),
+            _ => None,
         }
     }
 
@@ -590,13 +665,15 @@ pub enum LayoutCurve {
     /// lasting until it settles ([`Spring::settle_ms`]), and moves the same
     /// on every platform. The transition's `duration_ms` is not used. Its
     /// `velocity` and `frame_rate` are not either: a layout moves from rest
-    /// at the screen's rate.
+    /// at the screen's rate. JS names it with a `type: "spring"` phase's
+    /// `stiffness`, `damping` or `mass`.
     ///
     /// [`Spring::settle_ms`]: crate::element::Spring::settle_ms
     Spring(crate::element::Spring),
     /// A spring of this damping ratio fitted into the transition's
     /// duration, which each platform draws with its own spring: the JS
-    /// `LayoutAnimation`'s `type: "spring"` (`springDamping`). Rust prefers
+    /// `LayoutAnimation`'s `type: "spring"` (`springDamping`) without a
+    /// stiffness, damping or mass. Rust prefers
     /// [`LayoutCurve::Spring`].
     FittedSpring {
         /// Damping ratio (0..1): 1 does not overshoot.
@@ -608,6 +685,19 @@ pub enum LayoutCurve {
     /// duration is the keyboard's, `keyboard_duration`). Where there is no
     /// software keyboard, or nothing moved it, it eases in and out.
     Keyboard,
+    /// A cubic Bézier `[x1, y1, x2, y2]` over the transition's duration,
+    /// as CSS `cubic-bezier()` (`type: "bezier"` with `bezier` in JS):
+    /// the curve an app's design names. The `x` of each control point is
+    /// clamped to 0..1.
+    Bezier([f32; 4]),
+}
+
+impl LayoutCurve {
+    /// A cubic Bézier `[x1, y1, x2, y2]` ([`LayoutCurve::Bezier`]), each
+    /// control point's `x` clamped to 0..1.
+    pub fn bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self::Bezier([x1.clamp(0.0, 1.0), y1, x2.clamp(0.0, 1.0), y2])
+    }
 }
 
 /// The property animated when views appear or disappear.

@@ -403,6 +403,33 @@ pub struct ComponentSpec {
     pub generic: bool,
 }
 
+/// The props JS sets on a component's host as on a view (TSX's
+/// `ComponentHostProps` but `ref`): the app's classes and styles, its test
+/// id, its tooltip, layout, file drop, mouse and context menu events.
+pub const HOST_PROPS: &[&str] = &[
+    "class",
+    "classList",
+    "style",
+    "activeStyle",
+    "hoverStyle",
+    "focusStyle",
+    "focusWithinStyle",
+    "focusVisibleStyle",
+    "disabledStyle",
+    "testID",
+    "focusable",
+    "tooltip",
+    "onLayout",
+    "onFileDragEnter",
+    "onFileDragLeave",
+    "onFileDrop",
+    "onMouseEnter",
+    "onMouseMove",
+    "onMouseLeave",
+    "onMouseUp",
+    "onContextMenu",
+];
+
 /// What makes a component's props', events' and methods' specs.
 type Specs = (
     fn(&mut TsTypes) -> Vec<PropSpec>,
@@ -411,6 +438,16 @@ type Specs = (
 );
 
 impl ComponentSpec {
+    /// The [`HOST_PROPS`] JS sets on its host: those it does not declare
+    /// itself. Its own prop or event of a host prop's name is the one apps
+    /// get (`DataTable`'s `onContextMenu` reports a row and column).
+    pub fn host_props(&self) -> impl Iterator<Item = &'static str> + '_ {
+        HOST_PROPS.iter().copied().filter(|&name| {
+            !self.props.iter().any(|p| p.name == name)
+                && !self.events.iter().any(|e| handler_name(e.name) == name)
+        })
+    }
+
     pub(crate) fn of<C: Component>() -> Self {
         Self::build(
             name_of::<C>(),
@@ -1576,10 +1613,23 @@ pub fn declarations(registry: &Registry, omit: &[&str]) -> String {
             None if spec.generic => ("<T>", "<T = any>", ""),
             None => ("", "", ""),
         };
-        // A component with methods: its ref is an object of them.
-        let host = if spec.methods.is_empty() {
-            "ComponentHostProps"
+        // A component with methods: its ref is an object of them. Host
+        // props it declares itself are its own.
+        let mut omit: Vec<&str> = HOST_PROPS
+            .iter()
+            .copied()
+            .filter(|&h| !spec.host_props().any(|p| p == h))
+            .collect();
+        if !spec.methods.is_empty() {
+            omit.insert(0, "ref");
+        }
+        let host = if omit.is_empty() {
+            "ComponentHostProps".to_owned()
         } else {
+            let names = omit.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>();
+            format!("Omit<ComponentHostProps, {}>", names.join(" | "))
+        };
+        if !spec.methods.is_empty() {
             let _ = write!(
                 out,
                 "/** The ref of `{0}`: its methods. */\nexport interface {0}Ref {{\n  /** The component's host node. */\n  readonly node: ViewRef;\n",
@@ -1602,8 +1652,7 @@ pub fn declarations(registry: &Registry, omit: &[&str]) -> String {
                 let _ = writeln!(out, "  {}({params}): {returns};", m.name);
             }
             out.push_str("}\n\n");
-            "Omit<ComponentHostProps, \"ref\">"
-        };
+        }
         let _ = writeln!(
             out,
             "export interface {}Props{params} extends {host}{extends} {{",

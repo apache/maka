@@ -204,8 +204,8 @@ sdkmanager "platforms;android-35" "build-tools;35.0.1" "platform-tools"
 ### Linux
 
 - **GTK 4.14** 及以上；构建运行时还需要它们的开发包和 clang：`libgtk-4-dev clang`（Debian、Ubuntu 24.04 及以上）、`gtk4 clang`（Arch）、`gtk4-devel clang`（Fedora）。
-- Web 视图需要 **WebKitGTK 6.0**（2.40 及以上）：构建运行时需要 `libwebkitgtk-6.0-dev`（Debian、Ubuntu）、`webkitgtk-6.0`（Arch）、`webkitgtk6.0-devel`（Fedora），应用运行的机器上也需要它。没有它时，`cargo xtask dist` 构建的运行时中 Web 视图为占位视图。
-- **GStreamer** 1.14 及以上，用于视频和声音：构建运行时需要 `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev`（Debian、Ubuntu）、`gstreamer gst-plugins-base`（Arch）、`gstreamer1-devel gstreamer1-plugins-base-devel`（Fedora），以及应用要播放的视频和音频格式对应的插件。
+- Web 视图及下载决策需要 **WebKitGTK 6.0**（2.42 及以上）：构建运行时需要 `libwebkitgtk-6.0-dev`（Debian、Ubuntu）、`webkitgtk-6.0`（Arch）、`webkitgtk6.0-devel`（Fedora），应用运行的机器上也需要它。没有它时，`cargo xtask dist` 构建的运行时中 Web 视图为占位视图。
+- **GStreamer** 1.14 及以上，用于视频和声音：构建运行时需要 `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev`（Debian、Ubuntu）、`gstreamer gst-plugins-base`（Arch）、`gstreamer1-devel gstreamer1-plugins-base-devel`（Fedora），以及应用要播放的视频和音频格式对应的插件。开发包供 `Sound` 使用（feature `sound`）：不启用它的 Rust 应用只需 GTK 即可构建。
 
 见 [Linux](./linux.md)。
 

@@ -210,6 +210,39 @@ fn open_notes() {
 }
 ```
 
+## 在网页上登录
+
+`open_auth_session` 打开服务方的登录页（OAuth 授权地址），结果是登录页跳回的回调地址：iOS 用
+`ASWebAuthenticationSession` 弹层显示（`.ephemeral(true)` 不与用户的 Safari 共用数据），Android 用 Custom Tab，
+其他平台用系统浏览器。iOS 以外，回调以应用声明的 scheme（`nsh.json` 的 `schemes`）的链接回到应用，由会话收下，
+`next_url_scheme_open` 收不到它。结果是 `Completed(url)` 或 `Cancelled`（用户关掉了页面，或没登录就回到应用）；
+回调回不到应用时以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 失败。登录页的地址同 `open_url` 一样要 `openUrl` 能力。
+
+登录页还开着、应用已从别处得知用户登录了（在不会跳回的页面上批准了设备码）时，`close_auth_session()` 关掉它：会话以
+`Cancelled` 结束，iOS 和 Android 收起页面、回到应用；桌面浏览器里的页面不动。没有会话在等时什么也不做。
+
+```rust
+use nsh_core::{
+    auth_session::{AuthSessionOutcome, AuthSessionRequest},
+    prelude::*,
+};
+
+fn sign_in(authorize_url: String) {
+    let session = open_auth_session(AuthSessionRequest::new(authorize_url, "myapp"));
+    spawn(async move {
+        match session.await {
+            Ok(AuthSessionOutcome::Completed(callback)) => log::info!("signed in: {callback}"),
+            Ok(_) => {} // 取消了。
+            Err(error) => log::warn!("no sign-in page: {error}"),
+        }
+    });
+}
+```
+
+测试里 `Headless::on_auth_session` 让平台有应用内会话、每个会话按给定的结果结束，`keep_auth_sessions_open` 则让
+每个会话一直开着、直到应用关掉它（`screen().auth_session_showing()`）；都不设时登录页记在 `opened_urls()` 里，用
+`open_with_url` 送回调。
+
 ## 用 TSX 扩展 Rust 应用
 
 crate 的 `#[native_module("app/native")]` 函数声明 TSX 可以导入的内容：组件（`registry.register::<Chart>()`）、函数模块
@@ -453,6 +486,20 @@ test("a tap counts", async () => {
 `app.screen().layout_nodes()` 按树的顺序返回屏幕上的视图及布局给出的位置（`LayoutNode`：种类、test id、父视图、
 根视图坐标下未计变换的边界、是否隐藏、是否裁剪，`scroll` 里是滚动视图的方向和内容尺寸，`text` 里是文字视图的文字及其排版所用的框），
 测试据此检查有没有视图超出父视图、被裁剪的视图截掉，或文字放不下。两者都是 `nsh_testing` 给 `cargo test` 用的 Rust API。
+
+Web 应用的路由在它的页面上测：`Headless::start_at_page(config, "https://example.test/app/")` 以这个地址在 Web 上启动应用，
+`app.browser()` 是它所在的浏览器，带着 Web 记下的历史（栈每推一页、每开一个对话框各一条，应用以
+`set_app_url_with(url, HistoryBehavior::Push)` 设的地址各一条）和用户在其中的移动：`back()`、`forward()`、`go(delta)` 与
+`type_address("#inbox")`，应用像在 Web 上一样收到它们（`next_app_url_change`、`next_url_scheme_open`）；`entries()`、`index()`
+和 `url()` 读历史。
+
+```rust
+let mut app = Headless::start_at_page(config, "https://example.test/app/").unwrap();
+app.press("Message").unwrap(); // 推一页并设 `?m=1`
+assert_eq!(app.browser().url(), Some("https://example.test/app/?m=1"));
+app.browser().back().unwrap(); // 弹掉这一页
+app.browser().type_address("#inbox").unwrap(); // 原因为 `Address` 的变化
+```
 
 TSX 入口用 `nsh-testing` 的特性 `bundle` 按 `nsh run` 的方式构建，使用它的宿主提供的 UI 集合：NSH 的，以及每个 crate 由
 `#[native_module]` 生成的 `registry()`：

@@ -51,9 +51,10 @@ pub(super) fn capture(
     let workspace_directory = directory.try_clone().map_err(failed)?.into_std_file();
     if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
         let ceiling = Sandbox::Disabled.intersect(floor).map_err(failed)?;
-        // A managed floor comes from a Run captured below full access. Its network
-        // is that Run's approval ceiling, so the command starts without network
-        // until a grant applies, as it would in a managed Session.
+        // A managed floor comes from a Run captured below full access. It is that
+        // Run's approval ceiling, so the command starts without network until a
+        // grant applies, as it would in a managed Session. `prepare` keeps its
+        // files within the Run's own ceiling.
         let sandbox = match &ceiling {
             Sandbox::Managed { filesystem, .. } => Sandbox::Managed {
                 filesystem: filesystem.clone(),
@@ -306,7 +307,12 @@ impl Processes {
                 PermissionSource::Processes,
             )
             .await?;
-        let mut sandbox = captured.executor.sandbox().clone();
+        // The floor bounds grants; without one the command holds no more than its Run.
+        let mut sandbox = captured
+            .executor
+            .sandbox()
+            .intersect(access.permission_ceiling())
+            .map_err(failed)?;
         for grant in grants {
             sandbox = sandbox
                 .with_grant(&grant.permissions, &captured.ceiling)

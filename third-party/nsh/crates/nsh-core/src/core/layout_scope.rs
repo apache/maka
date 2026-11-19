@@ -15,7 +15,10 @@
 //! which a change of its size pushes along); and those of the children of a
 //! view moved that way that changed size too (a `flex-1` sibling's content).
 //! Frames are relative to the parent, so a view that only moved does not
-//! move its children. Insertions and removals are not scoped: a scoped
+//! move its children. A view that gained or lost a child in that commit
+//! does not carry the change into its content: its children moved because
+//! of that (a list that updates under a header that collapses), not
+//! because of the scoped node. Insertions and removals are not scoped: a scoped
 //! animation animates frames only (its `update`). A commit that also
 //! animates its whole layout (a layout animation at the root) animates
 //! every frame with that one.
@@ -58,6 +61,15 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// Node `key` lost a child in this commit: noted while a scoped layout
+    /// animation waits.
+    #[inline]
+    pub(super) fn note_restructured(&mut self, key: Key) {
+        if !self.scoped_layout.is_empty() {
+            self.restructured.push(key);
+        }
+    }
+
     /// Leads each run of frames in the batch with the layout animation it
     /// takes: a scope's for the frames its node moves, an empty one for
     /// the others. Nothing while no scope waits, or when the batch animates
@@ -68,6 +80,7 @@ impl<M: TextEngine> Core<M> {
         }
         let requested = std::mem::take(&mut self.scoped_layout);
         let mut resized = std::mem::take(&mut self.resized);
+        let mut restructured = std::mem::take(&mut self.restructured);
         if self
             .mount
             .iter()
@@ -75,6 +88,8 @@ impl<M: TextEngine> Core<M> {
         {
             resized.clear();
             self.resized = resized;
+            restructured.clear();
+            self.restructured = restructured;
             return;
         }
         let scopes: Vec<Scope> = requested
@@ -94,6 +109,18 @@ impl<M: TextEngine> Core<M> {
                 })
             })
             .collect();
+        // A view whose children changed does not carry a size change into
+        // them: those that gained or lost a child are dropped from `resized`.
+        for item in &self.mount {
+            if let MountItem::Insert { parent, .. } = item
+                && let Ok(key) = self.key(*parent)
+            {
+                restructured.push(key);
+            }
+        }
+        restructured.sort_unstable();
+        restructured.dedup();
+        resized.retain(|k| restructured.binary_search(k).is_err());
         resized.sort_unstable();
         resized.dedup();
         if !scopes.is_empty() {
@@ -123,11 +150,13 @@ impl<M: TextEngine> Core<M> {
         }
         resized.clear();
         self.resized = resized;
+        restructured.clear();
+        self.restructured = restructured;
     }
 
     /// Whether `scope`'s change moves the frame of `key`: `key` is in its
     /// subtree, or reached from one of its ancestors' children through
-    /// views that changed size.
+    /// views that changed size and kept their children.
     fn moves(&self, scope: &Scope, key: Key, resized: &[Key]) -> bool {
         let mut k = key;
         // Every view between `key` and `k` changed size.

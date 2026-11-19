@@ -27,8 +27,10 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { Composer } from './Composer';
 import { currentLocale } from '../../../../products/maka/workbench/app/locale';
+import { initializeComposerToolbar } from '../../../../products/maka/workbench/app/composerToolbar';
 
 export function activate(context: UiContext): UiActivation<JSX.Element> {
+  initializeComposerToolbar();
   effect(() => currentLocale.set(context.locale()));
   return {
     exports: {

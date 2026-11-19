@@ -51,6 +51,10 @@ pub struct System {
     pub filesystem: Option<Arc<dyn crate::filesystem::FileSystem>>,
     /// The operating system the app runs on, as the host says.
     pub os: crate::platform::Os,
+    /// Whether the platform puts images on the clipboard and reads them
+    /// back; `None`: as NSH's own backend on [`Self::os`]
+    /// ([`crate::platform::Environment::clipboard_images`]).
+    pub clipboard_images: Option<bool>,
     /// Refuses the app's connections (`net` sockets and WebSockets, both
     /// APIs) before they reach the network: a test's, which reaches it
     /// only when the test asks (`nsh test`'s `network: "live"`). `None`:
@@ -91,6 +95,7 @@ impl System {
             websocket: None,
             filesystem: None,
             os: crate::platform::Os::default(),
+            clipboard_images: None,
             refuse_connections: None,
             updater: None,
             app_url: Default::default(),
@@ -157,6 +162,14 @@ impl System {
     /// The operating system the app runs on.
     pub fn with_os(mut self, os: crate::platform::Os) -> Self {
         self.os = os;
+        self
+    }
+
+    /// Whether the platform puts images on the clipboard; `None`: as NSH's
+    /// own backend on the OS
+    /// ([`crate::platform::Environment::clipboard_images`]).
+    pub fn with_clipboard_images(mut self, clipboard_images: Option<bool>) -> Self {
+        self.clipboard_images = clipboard_images;
         self
     }
 
@@ -344,6 +357,7 @@ impl fmt::Debug for System {
         f.debug_struct("System")
             .field("data_dir", &self.data_dir)
             .field("os", &self.os)
+            .field("clipboard_images", &self.clipboard_images)
             .finish_non_exhaustive()
     }
 }
@@ -580,6 +594,22 @@ pub mod codes {
     /// reclaimed its memory): the web view shows no page until the app
     /// reloads it or gives it a page (a web view's `onError`).
     pub const WEBVIEW_TERMINATED: &str = "ERR_NSH_WEBVIEW_TERMINATED";
+    /// A download could not be owned: its response is gone and the
+    /// platform cannot reproduce it (`WebDownloadSource::None`), so
+    /// neither the app nor the platform can write it.
+    pub const DOWNLOAD_DISCARDED: &str = "ERR_NSH_DOWNLOAD_DISCARDED";
+    /// A download's destination was refused: not an absolute path, a
+    /// missing parent, a directory, a file that appeared, or an unwritable
+    /// private staging directory.
+    pub const DOWNLOAD_DESTINATION: &str = "ERR_NSH_DOWNLOAD_DESTINATION";
+    /// A download's transfer failed in the network or the engine.
+    pub const DOWNLOAD_NETWORK: &str = "ERR_NSH_DOWNLOAD_NETWORK";
+    /// A download wrote a different number of bytes than its declared
+    /// size.
+    pub const DOWNLOAD_SIZE: &str = "ERR_NSH_DOWNLOAD_SIZE";
+    /// A download decision is not valid now: it was already decided,
+    /// finished or cancelled, or names no download.
+    pub const DOWNLOAD_STATE: &str = "ERR_NSH_DOWNLOAD_STATE";
 }
 
 /// An I/O error as Node reports it: `Error` with the message and the

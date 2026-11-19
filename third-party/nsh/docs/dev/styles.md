@@ -37,7 +37,9 @@
   `transform` lists, `translate` / `scale` pairs, shadows' layers (`{ x, y, blur, spread, color, inset }`),
   `pointerEvents`' `box-none` / `box-only` (React Native's, for the view alone), `textOverflow`'s `ellipsis-start` /
   `ellipsis-middle` (where a clamped text is cut), `textAlign`'s `auto` (React Native's: the text's natural side, by its
-  direction); variants past Tailwind's: `selected:` (`accessibilityState.selected`, `selectedStyle`), `ios:` /
+  direction), `transitionTimingFunction`'s `spring(stiffness, damping[, mass])` (class `ease-spring-[k,c]` /
+  `ease-spring-[k,c,m]`, `Styled::ease_spring`: a transition on a spring's physics that times itself,
+  `Transition::spring`; `animation.md`); variants past Tailwind's: `selected:` (`accessibilityState.selected`, `selectedStyle`), `ios:` /
   `android:` / `web:` (the platform), `terminal:` (drawn in a terminal, `Idiom::Terminal`). A new one joins this list.
 - **CSS's meanings**: inline styles mean what classes mean: a style key is the CSS property of its name (or of the form
   "Forms past CSS's" gives it). Every view, however it is styled, keeps
@@ -74,7 +76,8 @@
   `odd:` / `even:` / `only:`, `placeholder:` / `selection:` (a color only, the pseudo-element's: `placeholder:text-*` / `selection:bg-*`, the
   `placeholderColor` / `selectionColor` style keys; other utilities under them are unknown), `!` (important). The state classes have style props of their own (`activeStyle`, `hoverStyle`,
   `focusStyle`, `focusVisibleStyle`, `focusWithinStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`,
-  `pressedStyle`, a `Button`'s `selectedStyle`), resolved the same way: later states win, `disabled` over all. `selected`, `checked`, `indeterminate`,
+  `pressedStyle`, a `Button`'s `selectedStyle`), resolved the same way: later states win, `disabled` over all. A nested `<Text>` takes `hover:` and `active:` from the pointer over its characters (`text.md`
+  "Span states"). `selected`, `checked`, `indeterminate`,
   `expanded`, `pressed` (`state::ARIA_PRESSED`), `busy` and `invalid` are value states (`state::ACCESSIBILITY`, set by
   `Core::set_accessibility_states` from `classes::accessibility_states`) the core sets from the accessibility state (never reported by the platform). The first three are
   below the interaction states: `checked`, then `indeterminate` (Tailwind's order), then `selected`, then `hover`,
@@ -84,7 +87,13 @@
   the node's press listeners from what is mounted, so it shows no press feedback either. A part of a Rust component
   shows its control's `checked`, `indeterminate` and `disabled` to its own classes and state styles
   (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`, and `project_focused` for the part the keys act on; `Prop::ProjectedStates`; `project_data` its `data-*` attributes, `Prop::ProjectedData`): a switch's thumb styled `checked:translate-x-4`, with no accessibility
-  state or press change on the part, so screen readers hear the control alone. `focus-within:` (and
+  state or press change on the part, so screen readers hear the control alone. A part shows its control's press
+  the same way (`Interactive::project_group_active(group)`, `Prop::ProjectedActive`): the control is a group of an
+  NSH name (`Switch`'s `nsh-switch`), so the platform reports its press, and the part's `active:` classes and active
+  style apply while that group is pressed, besides the part's own press (`classes::styled_states`); a press change of
+  the group restyles those parts in its `restyle_subtree` walk (`group_press_changed`). They change as for any other
+  state: a transform animates with `transition-*`, a width at once, so a thumb that stretches smoothly scales
+  (`origin-left active:scale-x-125` with `transition-transform`). `focus-within:` (and
   `focusWithinStyle`, `.focus_within(..)`) is the core's: the platforms report `FOCUSED` for whatever view the
   keyboard focus reaches, whether or not it tracks it (`input::reported_states`; one report per focus change), and the
   core keeps one focus per surface and puts `state::FOCUS_WITHIN` on it and the views around it in the core's tree
@@ -95,7 +104,8 @@
   view taking it (AppKit's first responder when no view has it) is no focus. A view whose classes read only
   `focus-within:` tracks nothing natively. Rust components hear the focus come into an element and leave it with
   `ElementRef::on_focus_in` / `on_focus_out` (GPUI's names, a focus handle's), watches the core runs at the end of
-  the commit round the focus moved in (`core/watch.rs`). `dark:` follows the appearance
+  the commit round the focus moved in (`core/watch.rs`); an element removed with the focus inside it, or that stops
+  carrying the ref, is left, and the ref's next element hears the focus come in. `dark:` follows the appearance
   shown: the app's own when it set one (`nsh.json` `"appearance"`, `setColorScheme`; `Core::set_appearance`), else the
   system's. The theme is Tailwind 4's
   extended by `nsh.json` `"tailwind"` (`colors`, `spacing`, `breakpoints`, `fontSize`, `radius`, `shadow`, ...; unknown
@@ -218,6 +228,10 @@
   `Painter::*_from_view`, `canvas.md`), kept per node in `Style::paint` (`PaintStyle`) and resolved by the core when
   it sends the drawing (`Core::resolved_paint`); views draw nothing with them. `fill-inherit` / `stroke-inherit` set
   nothing (they inherit already).
+- **Accent** (`accentColor`, Tailwind's `accent-*`): CSS's `accent-color`, the color a system control shows its state in.
+  The core passes a native component's own `accentColor` to it as its `accentColor` prop (`Core::sync_accent`), and
+  the control prefers it over the theme color it is otherwise given. Set on the control, not inherited. `nsh/mobile`'s
+  `Switch` reads it (its track when on); the system's segmented control and tab bar could later.
 - **Text style inheritance** (CSS-like): a view's text properties (color, font, size, alignment, ...) pass to the texts and inputs
   inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap`
   (and `truncate`'s no wrapping) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:

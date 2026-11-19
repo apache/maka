@@ -11,6 +11,10 @@ use crate::{
 pub struct Environment {
     /// The surface's size in points.
     pub window: Size<Points>,
+    /// Native horizontal size class, or `None` to use the window width at 600pt.
+    pub horizontal_size_class: Option<crate::platform::SizeClass>,
+    /// Native vertical size class, or `None` to use the window height at 600pt.
+    pub vertical_size_class: Option<crate::platform::SizeClass>,
     /// The edges system UI covers.
     pub safe_area: EdgeInsets,
     /// Space reserved for system controls in a custom desktop title bar.
@@ -72,6 +76,15 @@ pub struct Environment {
     /// The platform picks colors from the screen
     /// ([`crate::platform::Environment::screen_color`]).
     pub screen_color: bool,
+    /// The platform renders canvas drawings offscreen into images
+    /// ([`crate::platform::Environment::canvas_render`]).
+    pub canvas_render: bool,
+    /// The platform shows the system's share sheet
+    /// ([`crate::platform::Environment::share`]).
+    pub share: bool,
+    /// The platform shows web sign-in sessions
+    /// ([`crate::platform::Environment::auth_session`]).
+    pub auth_session: bool,
     /// The platform shows file dialogs and opens, reveals and trashes local
     /// paths ([`crate::platform::Environment::file_requests`]).
     pub file_requests: bool,
@@ -84,6 +97,9 @@ pub struct Environment {
     /// The platform plays sound
     /// ([`crate::platform::Environment::audio`]).
     pub audio: bool,
+    /// The platform shows the system's tab bar on iOS and Android
+    /// ([`crate::platform::Environment::tab_bar`]).
+    pub tab_bar: bool,
     /// The Cell size of a grid surface (a terminal): the core lays out in
     /// its Cells ([`crate::platform::Environment::cell`]); `None` elsewhere.
     pub cell: Option<Size<Points>>,
@@ -96,6 +112,9 @@ pub struct Environment {
     /// The platform shows web views
     /// ([`crate::platform::Environment::web_views`]).
     pub web_views: bool,
+    /// The platform carries out web view requests
+    /// ([`crate::platform::Environment::webview_requests`]).
+    pub webview_requests: bool,
     /// The platform draws shader views
     /// ([`crate::platform::Environment::shaders`]).
     pub shaders: bool,
@@ -113,6 +132,8 @@ impl Default for Environment {
     fn default() -> Self {
         Self {
             window: crate::geometry::size_pt(0.0, 0.0),
+            horizontal_size_class: None,
+            vertical_size_class: None,
             safe_area: EdgeInsets::default(),
             title_bar: crate::geometry::Edges::default(),
             window_state: None,
@@ -138,14 +159,19 @@ impl Default for Environment {
             lifecycle: Lifecycle::Active,
             wake_count: 0,
             screen_color: false,
+            canvas_render: false,
+            share: false,
+            auth_session: false,
             file_requests: false,
             speech: false,
             notifications: false,
             audio: false,
+            tab_bar: true,
             cell: None,
             web_input: false,
             web_evaluate: false,
             web_views: true,
+            webview_requests: false,
             shaders: true,
         }
     }

@@ -287,6 +287,12 @@ style id:shape transitionTimingFunction cubic-bezier(0, 0, 0.58, 1)
 style id:none transitionProperty none
 style id:bezier transitionDuration 150
 style id:bezier transitionTimingFunction cubic-bezier(0.4, 0, 0.2, 1)
+style id:overshoot transitionDuration 200
+style id:overshoot transitionTimingFunction cubic-bezier(0.3, 1.25, 0.6, 1)
+# A spring as a style and as a class is accepted; its timing is checked
+# once nsh-compat's values print a transition's spring.
+style id:spring transitionProperty transform
+style id:spring-class transitionProperty transform
 style id:spin animationName spin
 style id:spin animationDuration 1000
 style id:spin animationDelay 0
@@ -708,6 +714,12 @@ frame id:icon-bottom 7.7 4.8 4 12
 frame id:icon-middle 7.7 7.3 4 12
 frame id:icon-class 7.7 0 4 12
 covers [styles] verticalAlign
+# A box 20 pt tall with no text stands on its bottom edge: it fills the
+# line from its top. A chip as tall whose label's baseline is 14 pt below
+# its top (2 of padding, a 12 pt line) stands on the line by that
+# baseline, 2.8 pt down.
+frame id:chip-edge 7.7 0 6 20
+frame id:chip-first 15.4 2.8 6 20
 
 # paint-tailwind
 tap id:case-paint-tailwind

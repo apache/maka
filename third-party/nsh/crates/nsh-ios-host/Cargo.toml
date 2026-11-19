@@ -13,6 +13,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+nsh-base.workspace = true
 nsh-platform-ios = { workspace = true, features = ["dev"] }
 nsh-dev.workspace = true
 nsh-engine = { workspace = true, features = ["js"] }

@@ -416,7 +416,7 @@ Web and video 页打开 WebView2 之后约 390–405 MB（网页运行在 WebVie
 
 | 应用 | 编写语言 | 可执行文件 | Zip |
 |---|---|---|---|
-| Hello world（`--template rust`） | Rust | 15.0 MB | 6.7 MB |
+| Hello world（`--template rust`） | Rust | 25.3 MB | 10.7 MB |
 | Hello world（`--template ts`） | TSX，运行在 QuickJS 上 | 28.6 MB | 12.4 MB |
 | Hello world（`--template mixed`） | TSX 加一个 Rust crate | 26.3 MB | 11.5 MB |
 

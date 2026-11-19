@@ -8,14 +8,27 @@ use crate::ChannelSink;
 
 #[test]
 fn filesystem_completion_during_initial_evaluation_is_delivered_without_timers() {
-    let dir = std::env::temp_dir().join(format!("nsh-system-startup-{}", std::process::id()));
+    filesystem_startup(false);
+}
+
+#[test]
+fn app_directory_override_reaches_process_and_filesystem_grants() {
+    filesystem_startup(true);
+}
+
+fn filesystem_startup(override_directory: bool) {
+    let dir = std::env::temp_dir().join(format!(
+        "nsh-system-startup-{}-{override_directory}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("data/com.example.system")).unwrap();
-    std::fs::write(
-        dir.join("data/com.example.system/input.txt"),
-        "native file ready",
-    )
-    .unwrap();
+    let data_dir = if override_directory {
+        dir.join("custom")
+    } else {
+        dir.join("data/com.example.system")
+    };
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("input.txt"), "native file ready").unwrap();
     let entry = dir.join("App.tsx");
     std::fs::write(
         &entry,
@@ -26,7 +39,13 @@ if (!process.dataDir || typeof process.env !== "object" || process !== globalThi
   throw new Error(`Engine metadata missing: dataDir=${process.dataDir}, env=${typeof process.env}`);
 }
 const status = signal("waiting");
-const request = fs.readFile("${dataDir}/input.txt", "utf8");
+const request = Promise.all([
+  fs.readFile("${dataDir}/input.txt", "utf8"),
+  fs.readFile(process.dataDir + "/input.txt", "utf8"),
+]).then(([anchor, processPath]) => {
+  if (anchor !== processPath) throw new Error("data directory mismatch");
+  return anchor;
+});
 // Finish the native operation before the engine finishes evaluating this module.
 const until = Date.now() + 100;
 while (Date.now() < until) {}
@@ -65,7 +84,7 @@ mount(() => <Text>{status()}</Text>);
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: Some(dir.join("data")),
+        support_dir: Some(dir.join("data")),
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -77,6 +96,8 @@ mount(() => <Text>{status()}</Text>);
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: override_directory.then_some(data_dir),
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -161,7 +182,7 @@ mount(() => <Text>{status()}</Text>);"#,
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: Some(root.join("data")),
+        support_dir: Some(root.join("data")),
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -173,6 +194,8 @@ mount(() => <Text>{status()}</Text>);"#,
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);

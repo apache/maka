@@ -640,6 +640,54 @@ fn grant(sys: &System, path: &str, write: bool) -> Result<Grant, JsError> {
     ))
 }
 
+/// The real path of the file at `path` the app may share (`Share.show`'s
+/// `files`): granted to read as `fs/promises` reads it, resolved through
+/// its links and still inside the root that grants it, and a file that
+/// exists. Rejects as `fs/promises` would: `ERR_ACCESS_DENIED` for a path
+/// no grant covers (or a link leading out of its root), `ENOENT` for one
+/// that is no file.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn shared_file(sys: &System, path: &str) -> Result<PathBuf, JsError> {
+    let grant = grant(sys, path, false)?;
+    let mut escaped = false;
+    for (root, relative) in &grant.within {
+        let (Ok(real), Ok(real_root)) = (
+            crate::access::canonicalize(&root.join(relative)),
+            crate::access::canonicalize(root),
+        ) else {
+            continue;
+        };
+        if inside(&real, &real_root).is_none() {
+            escaped = true;
+            continue;
+        }
+        if real.is_file() {
+            return Ok(real);
+        }
+    }
+    if escaped {
+        return Err(JsError::access_denied(
+            format!("share: `{path}` leads out of the roots capabilities.fs.read grants"),
+            "fs",
+            path,
+        ));
+    }
+    Err(
+        JsError::from(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .with_code("ENOENT")
+            .with("path", path),
+    )
+}
+
+/// Browsers' pages share no local files: their files are the page's own.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn shared_file(_sys: &System, path: &str) -> Result<PathBuf, JsError> {
+    Err(JsError::Error(format!(
+        "share: this platform shares no local files (`{path}`)"
+    ))
+    .with_code(codes::UNAVAILABLE))
+}
+
 /// The path a call names, its placeholder (`${dataDir}`, ...) resolved. A
 /// `..` the placeholder's own resolution refuses is kept as written, so a
 /// path climbing out of every root is refused as any path outside them is

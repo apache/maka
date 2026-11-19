@@ -6,7 +6,8 @@
 // (`indicatorClass`, `indicatorStyle`) around the app's mark (`indicator`),
 // whose `checked:` and `disabled:` classes follow the item.
 // Choosing one reports `onSelect` while the app owns the value, and closes
-// the menu unless `closeOnSelect` is false. Its script checks each.
+// the menu unless `closeOnSelect` is false. An item's
+// `accessibilityDescription` is read after its name. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Menu, MenuItem } from "nsh/base";
 
@@ -52,7 +53,13 @@ function App() {
         >
           <Text>MinimapItem</Text>
         </MenuItem>
-        <MenuItem testID="sort-name" role="menuitemradio" checked={sort() === "name"} onSelect={choose("name")}>
+        <MenuItem
+          testID="sort-name"
+          role="menuitemradio"
+          checked={sort() === "name"}
+          accessibilityDescription="Sorts by file name"
+          onSelect={choose("name")}
+        >
           <Text>NameItem</Text>
         </MenuItem>
         <MenuItem testID="sort-size" role="menuitemradio" checked={sort() === "size"} onSelect={choose("size")}>

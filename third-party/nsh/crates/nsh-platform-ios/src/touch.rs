@@ -106,7 +106,12 @@ define_class!(
 
         #[unsafe(method(touchesEnded:withEvent:))]
         fn touches_ended(&self, touches: &NSSet<UITouch>, _event: &UIEvent) {
-            self.lift(touches, TouchPhase::End);
+            // A tap that only dismisses the keyboard reaches no responder.
+            let dismissing = touches.count() == 1
+                && touches
+                    .anyObject()
+                    .is_some_and(|t| self.ivars().target.dismissing_tap(&t));
+            self.lift(touches, if dismissing { TouchPhase::Cancel } else { TouchPhase::End });
         }
 
         #[unsafe(method(touchesCancelled:withEvent:))]
@@ -218,6 +223,16 @@ impl TouchTracker {
                 let local = t.touch.locationInView(Some(&t.view));
                 timestamp = t.touch.timestamp() * 1000.0;
                 let is_changed = changed.contains(&t.id);
+                let pencil = t.touch.r#type() == objc2_ui_kit::UITouchType::Pencil;
+                let max_force = t.touch.maximumPossibleForce();
+                let tilt = if pencil {
+                    tilt(
+                        t.touch.altitudeAngle(),
+                        t.touch.azimuthAngleInView(Some(&root)),
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
                 TouchPoint {
                     id: t.id,
                     target: t.target,
@@ -229,7 +244,21 @@ impl TouchTracker {
                     page: point(Points(page.x as f32), Points(page.y as f32)),
                     location: point(Points(local.x as f32), Points(local.y as f32)),
                     changed: is_changed,
-                    pointer_type: nsh_core::PointerType::Touch,
+                    pointer_type: if pencil {
+                        nsh_core::PointerType::Pen
+                    } else {
+                        nsh_core::PointerType::Touch
+                    },
+                    pressure: if is_changed && matches!(phase, TouchPhase::End | TouchPhase::Cancel)
+                    {
+                        0.0
+                    } else if max_force > 0.0 {
+                        (t.touch.force() / max_force).clamp(0.0, 1.0) as f32
+                    } else {
+                        0.5
+                    },
+                    tilt_x: tilt.0,
+                    tilt_y: tilt.1,
                 }
             })
             .collect();
@@ -239,6 +268,7 @@ impl TouchTracker {
             phase,
             timestamp,
             points,
+            modifiers: Default::default(),
             activated: self.ivars().activated.take(),
         }));
     }
@@ -416,4 +446,17 @@ impl PanGate {
             current = v.superview();
         }
     }
+}
+
+/// A pen's `tiltX` / `tiltY` in degrees (the DOM's) from its altitude
+/// (radians from the surface) and azimuth (radians, clockwise from the
+/// right in a y-down view).
+fn tilt(altitude: f64, azimuth: f64) -> (f32, f32) {
+    let t = altitude.tan();
+    if !t.is_finite() || t <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let x = (azimuth.cos() / t).atan().to_degrees();
+    let y = (azimuth.sin() / t).atan().to_degrees();
+    (x as f32, y as f32)
 }

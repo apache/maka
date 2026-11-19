@@ -877,7 +877,6 @@ export function Chat() {
               ...finish.raised,
               borderWidth: 1,
               borderColor: colors.border,
-              cursor: "pointer",
             }}
           >
             <Icon name="plus" size={15} tint={colors.text} />
@@ -895,7 +894,7 @@ export function Chat() {
               accessibilityLabel={chip().label}
               accessibilityState={{ selected: current() === chip().id }}
               class={current() === chip().id ? "bg-accent" : "hover:bg-card active:bg-accent"}
-              style={{ paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.control, gap: 2, cursor: "pointer" }}
+              style={{ paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.control, gap: 2 }}
             >
               <Text style={{ numberOfLines: 1, fontSize: 14, fontWeight: current() === chip().id ? "600" : "400", color: colors.text }}>
                 {chip().label}

@@ -17,10 +17,10 @@ use std::{
 use nsh_core::{element::input, prelude::*};
 use nsh_platform_macos as platform;
 use platform::{
-    objc2::{MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained},
+    objc2::{AnyThread, MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained},
     objc2_app_kit::{
-        NSAccessibility, NSBackingStoreType, NSTextField, NSTextView, NSView, NSWindow,
-        NSWindowStyleMask,
+        NSAccessibility, NSApplication, NSBackingStoreType, NSTextField, NSTextView, NSView,
+        NSWindow, NSWindowStyleMask,
     },
     objc2_foundation::{NSDate, NSPoint, NSRange, NSRect, NSRunLoop, NSSize, NSString},
 };
@@ -60,6 +60,7 @@ fn Fields() -> impl IntoElement {
         .gap(px(8.0))
         .child(field("line").element_ref(&line))
         .child(field("area").multiline(true))
+        .child(field("incomplete").multiline(true))
 }
 
 fn pump(ms: u64) {
@@ -104,7 +105,7 @@ fn find(view: &NSView, matches: &dyn Fn(&NSView) -> bool) -> Option<Retained<NSV
 /// Gives input `id` the keyboard focus and composes `text` in it as an
 /// input method does (`setMarkedText:selectedRange:replacementRange:` on
 /// the text view that edits).
-fn compose(window: &NSWindow, root: &NSView, id: &str, text: &str) {
+fn compose(window: &NSWindow, root: &NSView, id: &str, marked: &NSString) {
     let input = view_with_id(root, id).unwrap_or_else(|| panic!("no input {id}"));
     // A multiline input's text view (its placeholder is a label, a text
     // field), else a single line's field.
@@ -117,14 +118,13 @@ fn compose(window: &NSWindow, root: &NSView, id: &str, text: &str) {
     );
     pump(50);
     let responder = window.firstResponder().expect("a first responder");
-    let marked = NSString::from_str(text);
     let length = marked.length();
     // SAFETY: NSTextInputClient's method, on the text view that edits (the
     // field editor of a field), on the main thread.
     let _: () = unsafe {
         msg_send![
             &*responder,
-            setMarkedText: &*marked,
+            setMarkedText: marked,
             selectedRange: NSRange::new(length, 0),
             replacementRange: NSRange::new(isize::MAX as usize, 0)
         ]
@@ -149,11 +149,12 @@ fn assert_committed(name: &str, text: &str) {
     );
 }
 
-/// Runs after `window_press::run`, which launched the application.
+/// Checks composition reporting and commit through real native editors.
 // `AppOptions` is non-exhaustive: its fields are set after `default()`.
 #[allow(clippy::field_reassign_with_default)]
 pub(super) fn run() {
     let mtm = MainThreadMarker::new().unwrap();
+    NSApplication::sharedApplication(mtm).finishLaunching();
     // SAFETY: The window is created on the process main thread.
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -180,7 +181,7 @@ pub(super) fn run() {
     });
 
     // The app blurs a single line while it composes.
-    compose(&window, &root, "line", "にほん");
+    compose(&window, &root, "line", &NSString::from_str("にほん"));
     until("the line's composition", || {
         EVENTS
             .lock()
@@ -192,7 +193,7 @@ pub(super) fn run() {
 
     // The window gives the focus from a multiline input that composes to
     // another field.
-    compose(&window, &root, "area", "かな");
+    compose(&window, &root, "area", &NSString::from_str("かな"));
     until("the area's composition", || {
         EVENTS
             .lock()
@@ -203,6 +204,30 @@ pub(super) fn run() {
     let field = find(&line, &|v| v.downcast_ref::<NSTextField>().is_some()).expect("its field");
     window.makeFirstResponder(Some(&field));
     assert_committed("area", "かな");
+
+    // A transient, incomplete UTF-16 composition is reported lossily without
+    // replacing AppKit's native text or crashing in NSString's UTF-8 conversion.
+    let mut units = [0x306b, 0xd800, 0x307b];
+    // SAFETY: The initialized buffer contains units.len() UTF-16 units.
+    let incomplete = unsafe {
+        NSString::initWithCharacters_length(
+            NSString::alloc(),
+            std::ptr::NonNull::new(units.as_mut_ptr()).unwrap(),
+            units.len(),
+        )
+    };
+    compose(&window, &root, "incomplete", &incomplete);
+    until("the incomplete composition", || {
+        EVENTS
+            .lock()
+            .unwrap()
+            .contains(&"incomplete composition true に�ほ".to_owned())
+    });
+    let responder = window.firstResponder().unwrap();
+    let editor = responder.downcast_ref::<NSTextView>().unwrap();
+    assert_eq!(editor.string().characterAtIndex(1), 0xd800);
+    window.makeFirstResponder(Some(&field));
+    assert_committed("incomplete", "に�ほ");
 
     println!("ime: a composition is committed and reported when its input loses the focus");
     surface.stop();

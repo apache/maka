@@ -77,6 +77,11 @@ impl ScrollHost for Host<'_> {
         self.surface.control(|c| c.scroll(id, offset, applied));
     }
 
+    fn key_scrolled(&self, key_move: KeyMove) {
+        let id = self.view.id();
+        self.surface.control(|c| c.key_scrolled(id, key_move));
+    }
+
     fn moved(&self, offset: Point<Points>) {
         self.view.moved();
         pin_sticky(self.surface, self.view);
@@ -712,6 +717,10 @@ mod tests {
             down: true,
             repeat: false,
             modifiers,
+            scan: 0,
+            extended: false,
+            sys: false,
+            translated: false,
         }
     }
 

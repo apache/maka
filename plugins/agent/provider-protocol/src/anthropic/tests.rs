@@ -249,3 +249,31 @@ fn web_citations_belong_to_their_text_block_even_with_search_results() {
         ]
     );
 }
+
+#[test]
+fn opaque_result_requires_the_id_of_a_server_call() {
+    use crate::output::Event;
+    let server = json!({"type":"server_tool_use","id":"r","name":"same","input":{"v":1}});
+    let local = json!({"type":"tool_use","id":"l","name":"same","input":{}});
+    let result = json!({"type":"vendor_lookup_tool_result","tool_use_id":"r","content":{"v":2},"is_error":false});
+    let mut decoder = stream::Stream::new(Default::default());
+    let events=decoder.value(json!({"type":"message_start","message":{"id":"m","usage":{"input_tokens":1},"content":[server,local,result]}}), &mut || "unused".into());
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCall(c) => Some((c.id.as_str(), c.name.as_str(), c.provider_executed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, [("r", "same", true), ("l", "same", false)]);
+    assert!(events.iter().any(|e|matches!(e,Event::ToolResult(r) if r.id=="r" && r.name=="same" && r.value==json!({"v":2}))));
+    let mut mismatched = result;
+    mismatched["tool_use_id"] = json!("l");
+    assert!(matches!(
+        &decoder.value(
+            json!({"type":"content_block_start","index":3,"content_block":mismatched}),
+            &mut || "unused".into()
+        )[..],
+        [Event::Error(_)]
+    ));
+}

@@ -20,6 +20,8 @@ use nsh_core::{
     geometry::{Points, Size},
     image::{CacheHeaders, DiskCache, Fetched, Lookup},
 };
+use nsh_platform_apple::image_source;
+pub(crate) use nsh_platform_apple::image_source::source_size;
 use objc2::{
     AnyThread, DefinedClass, Message, define_class, msg_send, rc::Retained, runtime::ProtocolObject,
 };
@@ -337,12 +339,15 @@ impl ImageLoader {
             // fresh copy.
             Some(Source::Url(_)) if remote && self.disk.is_some() => {
                 let cache = self.disk.clone().expect("a disk cache");
+                let access = self.access.clone();
                 let uri = uri.to_owned();
                 DispatchQueue::global_queue(GlobalQueueIdentifier::Priority(
                     DispatchQueueGlobalPriority::Default,
                 ))
                 .exec_async(move || {
-                    let event = match cache.lookup(&uri) {
+                    // A copy that came through a redirect the app may no
+                    // longer follow is dropped there: it downloads again.
+                    let event = match cache.lookup(&uri, &access) {
                         Lookup::Fresh(bytes) => LoadEvent::Bytes {
                             uri,
                             result: Ok(ns_data(&bytes)),
@@ -601,8 +606,12 @@ impl ImageLoader {
         if uri.starts_with("data:") {
             return Some(Source::Data);
         }
-        let path = uri.strip_prefix("file://").unwrap_or(uri);
-        path.starts_with('/').then(|| Source::File(path.into()))
+        // `file:` sources resolve as the core checked them: the URL's
+        // decoded path, never the raw string minus its scheme.
+        if uri.starts_with("file:") {
+            return nsh_core::access::file_url_path(uri).map(Source::File);
+        }
+        uri.starts_with('/').then(|| Source::File(uri.into()))
     }
 }
 
@@ -695,6 +704,9 @@ struct DownloadState {
     total: u64,
     status: isize,
     headers: CacheHeaders,
+    /// The redirects followed so far: the disk cache keeps them with the
+    /// copy and checks them again before it serves it.
+    redirects: Vec<String>,
     reported: Option<std::time::Instant>,
 }
 
@@ -727,8 +739,19 @@ define_class!(
                 .and_then(|u| u.absoluteString())
                 .map(|u| u.to_string());
             // The app's own assets (the dev server's) are not network access.
-            let granted = ivars.uri.starts_with("asset:/")
-                || next.is_some_and(|next| ivars.access.media_redirect(&ivars.uri, &next).is_ok());
+            let granted = if ivars.uri.starts_with("asset:/") {
+                true
+            } else {
+                let followed =
+                    next.and_then(|next| ivars.access.media_redirect(&ivars.uri, &next).ok());
+                match followed {
+                    Some(next) => {
+                        ivars.data.lock().expect("download").redirects.push(next);
+                        true
+                    }
+                    None => false,
+                }
+            };
             let next = if granted {
                 request as *const NSURLRequest as *mut NSURLRequest
             } else {
@@ -752,13 +775,14 @@ define_class!(
                 (Some(cache), error) => {
                     let response = match error {
                         Some(e) => Err(e.localizedDescription().to_string()),
-                        None => Ok(Fetched::new(
-                            state.status as u16,
-                            state.headers,
-                            state.bytes,
-                        )),
+                        None => Ok(
+                            Fetched::new(state.status as u16, state.headers, state.bytes)
+                                .redirected(state.redirects),
+                        ),
                     };
-                    cache.complete(&ivars.uri, response).map(|b| ns_data(&b))
+                    cache
+                        .complete(&ivars.uri, &ivars.access, response)
+                        .map(|b| ns_data(&b))
                 }
                 (None, Some(e)) => Err(e.localizedDescription().to_string()),
                 (None, None) if state.status >= 400 => Err(format!("HTTP {}", state.status)),
@@ -981,8 +1005,9 @@ fn rgba_image(raster: &nsh_core::svg::Raster) -> Option<CFRetained<CGImage>> {
 }
 
 /// Decodes (and downsamples, blurs) with ImageIO. Animated GIF / PNG /
-/// WebP images become an animated `UIImage` whose frames repeat for their
-/// delays. Thread-safe.
+/// WebP / HEIF images become an animated `UIImage` whose frames repeat for
+/// their delays; a multi-size icon or multi-page file shows one image, the
+/// one that fits `max_pixels`. Thread-safe.
 fn decode(data: &CFData, d: Decoding) -> Option<DecodedImage> {
     // SAFETY: the data is immutable while it is read.
     let bytes = unsafe { data.as_bytes_unchecked() };
@@ -1030,100 +1055,18 @@ fn decode(data: &CFData, d: Decoding) -> Option<DecodedImage> {
             width,
             height,
         };
-        let count = source.count().min(MAX_FRAMES);
-        if count <= 1 {
-            return frame(0).map(decoded);
+        // An animation's frames, or the one image of a still file (an
+        // icon's that fits the size shown, any other's primary image).
+        let shown = image_source::shown(&source, max_pixels, MAX_FRAMES);
+        if shown.len() <= 1 {
+            return frame(shown.start).map(decoded);
         }
-        let mut frames = Vec::with_capacity(count);
-        for i in 0..count {
+        let mut frames = Vec::with_capacity(shown.len());
+        for i in shown {
             let Some(image) = frame(i) else { break };
-            frames.push((image, frame_delay(&source, i)));
+            frames.push((image, image_source::frame_delay(&source, i)));
         }
         animated(frames).map(decoded)
-    }
-}
-
-/// The pixel size of the first image, as displayed (EXIF orientations 5–8
-/// turn it a quarter).
-pub(crate) fn source_size(source: &CGImageSource) -> (u32, u32) {
-    use objc2_image_io::{
-        kCGImagePropertyOrientation, kCGImagePropertyPixelHeight, kCGImagePropertyPixelWidth,
-    };
-    // SAFETY: a CoreFoundation dictionary of CFString keys, read with the
-    // documented ImageIO keys and value types.
-    unsafe {
-        let Some(props) = source.properties_at_index(0, None) else {
-            return (0, 0);
-        };
-        let props: &CFDictionary<CFString, CFType> = props.cast_unchecked();
-        let number = |key: &CFString| {
-            props
-                .get(key)
-                .and_then(|v| v.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()))
-                .unwrap_or(0)
-                .max(0) as u32
-        };
-        let (w, h) = (
-            number(kCGImagePropertyPixelWidth),
-            number(kCGImagePropertyPixelHeight),
-        );
-        match number(kCGImagePropertyOrientation) {
-            5..=8 => (h, w),
-            _ => (w, h),
-        }
-    }
-}
-
-/// The delay of frame `i` in centiseconds (GIF's unit), at least 2 (as
-/// browsers: shorter ones show for 10).
-fn frame_delay(source: &CGImageSource, i: usize) -> u32 {
-    use objc2_image_io::{
-        kCGImagePropertyAPNGDelayTime, kCGImagePropertyAPNGUnclampedDelayTime,
-        kCGImagePropertyGIFDelayTime, kCGImagePropertyGIFDictionary,
-        kCGImagePropertyGIFUnclampedDelayTime, kCGImagePropertyPNGDictionary,
-        kCGImagePropertyWebPDelayTime, kCGImagePropertyWebPDictionary,
-        kCGImagePropertyWebPUnclampedDelayTime,
-    };
-    // SAFETY: CoreFoundation dictionaries of CFString keys, read with the
-    // documented ImageIO keys and value types.
-    let seconds = unsafe {
-        source.properties_at_index(i, None).and_then(|props| {
-            let props: &CFDictionary<CFString, CFType> = props.cast_unchecked();
-            [
-                (
-                    kCGImagePropertyGIFDictionary,
-                    kCGImagePropertyGIFUnclampedDelayTime,
-                    kCGImagePropertyGIFDelayTime,
-                ),
-                (
-                    kCGImagePropertyPNGDictionary,
-                    kCGImagePropertyAPNGUnclampedDelayTime,
-                    kCGImagePropertyAPNGDelayTime,
-                ),
-                (
-                    kCGImagePropertyWebPDictionary,
-                    kCGImagePropertyWebPUnclampedDelayTime,
-                    kCGImagePropertyWebPDelayTime,
-                ),
-            ]
-            .into_iter()
-            .find_map(|(dict, unclamped, clamped)| {
-                let format = props.get(dict)?;
-                let format: &CFDictionary<CFString, CFType> =
-                    format.downcast_ref::<CFDictionary>()?.cast_unchecked();
-                let number = |key| {
-                    format
-                        .get(key)
-                        .and_then(|v| v.downcast_ref::<CFNumber>().and_then(|n| n.as_cgfloat()))
-                        .filter(|s| *s > 0.0)
-                };
-                number(unclamped).or_else(|| number(clamped))
-            })
-        })
-    };
-    match seconds {
-        Some(s) if s >= 0.02 => (s * 100.0).round() as u32,
-        _ => 10,
     }
 }
 
@@ -1236,6 +1179,49 @@ mod tests {
         let size = unsafe { natural.image.size() };
         assert_eq!((size.width, size.height), (48.0, 24.0));
         assert!(decode(&CFData::from_bytes(b"<svg><rect"), decoding(24, 1.0)).is_none());
+    }
+
+    /// An ICO of PNGs `sides` pixels square, in that order, as favicons
+    /// are.
+    fn ico(sides: &[usize]) -> Vec<u8> {
+        use nsh_core::canvas::render::ImageFormat;
+        use nsh_platform_apple::canvas_image::{bitmap_context, encode};
+        use objc2_core_graphics::CGBitmapContextCreateImage;
+        let pngs: Vec<Vec<u8>> = sides
+            .iter()
+            .map(|side| {
+                let context = bitmap_context(*side, *side).unwrap();
+                let image = CGBitmapContextCreateImage(Some(&context)).unwrap();
+                encode(&image, ImageFormat::Png).unwrap()
+            })
+            .collect();
+        let mut out = vec![0, 0, 1, 0, sides.len() as u8, 0];
+        let mut offset = 6 + 16 * sides.len();
+        for (side, png) in sides.iter().zip(&pngs) {
+            let side = (*side % 256) as u8;
+            out.extend([side, side, 0, 0, 1, 0, 32, 0]);
+            out.extend((png.len() as u32).to_le_bytes());
+            out.extend((offset as u32).to_le_bytes());
+            offset += png.len();
+        }
+        for png in &pngs {
+            out.extend(png);
+        }
+        out
+    }
+
+    #[test]
+    fn a_multi_size_icon_is_one_still_image() {
+        let icon = CFData::from_bytes(&ico(&[16, 32, 48]));
+        let decoded = decode(&icon, decoding(24, 2.0)).unwrap();
+        // SAFETY: a plain property of an immutable image.
+        assert!(unsafe { decoded.image.images() }.is_none(), "no animation");
+        let image = cg(&decoded);
+        assert_eq!(CGImage::width(Some(&image)), 24, "from the 32-pixel image");
+        assert_eq!((decoded.width, decoded.height), (48, 48), "its largest");
+        let decoded = decode(&icon, decoding(0, 1.0)).unwrap();
+        assert_eq!(CGImage::width(Some(&cg(&decoded))), 48);
+        assert_eq!(info_size(&icon), Some((48, 48)));
     }
 
     #[test]

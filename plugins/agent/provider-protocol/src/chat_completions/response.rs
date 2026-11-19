@@ -25,7 +25,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Usage {
@@ -259,7 +259,137 @@ pub(super) struct Message {
     pub annotations: Option<Vec<Annotation>>,
     pub reasoning_content: Option<String>,
     pub reasoning: Option<String>,
-    pub tool_calls: Option<Vec<ToolDelta>>,
+    pub tool_calls: Option<Vec<CallEntry>>,
+    #[serde(default)]
+    pub executed_tools: Option<Vec<ExecutedTool>>,
+}
+
+#[derive(Debug)]
+pub(super) enum CallEntry {
+    Local(ToolDelta),
+    Server(ExecutedTool),
+}
+impl<'de> Deserialize<'de> for CallEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let raw = Value::deserialize(decoder)?;
+        if raw["execution"] == "client" && raw["provider_executed"] == true
+            || raw["execution"] == "server" && raw["provider_executed"] == false
+        {
+            return Err(D::Error::custom("conflicting tool execution owners"));
+        }
+        if raw["execution"] == "server" || raw["provider_executed"] == true {
+            return serde_json::from_value(raw)
+                .map(Self::Server)
+                .map_err(D::Error::custom);
+        }
+        if raw
+            .get("type")
+            .is_some_and(|v| !v.is_null() && v != "function")
+        {
+            return Err(D::Error::custom("unsupported client tool call type"));
+        }
+        serde_json::from_value(raw)
+            .map(Self::Local)
+            .map_err(D::Error::custom)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ExecutedTool {
+    #[serde(alias = "tool_call_id")]
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+#[derive(Default)]
+pub(super) struct ReportedCalls(HashMap<String, Option<String>>);
+
+impl ReportedCalls {
+    pub(super) fn observe(
+        &mut self,
+        tool: ExecutedTool,
+    ) -> (Option<output::ToolCall>, Option<output::ToolResult>) {
+        let Some(id) = tool.id.as_deref().filter(|id| !id.is_empty()) else {
+            // Some providers supply only a per-response index or usage counter.
+            return (None, None);
+        };
+        let (call, open) = match self.0.entry(id.to_owned()) {
+            Entry::Vacant(entry) => {
+                let call = tool.call(id);
+                let open = entry.insert(Some(call.name.clone()));
+                (Some(call), open)
+            }
+            Entry::Occupied(entry) => (None, entry.into_mut()),
+        };
+        let Some(name) = open.as_deref() else {
+            return (None, None);
+        };
+        let result = tool.result(name);
+        if result.is_some() {
+            *open = None;
+        }
+        (call, result)
+    }
+}
+impl ExecutedTool {
+    pub fn call(&self, id: &str) -> output::ToolCall {
+        let function = self.fields.get("function");
+        let name = function
+            .and_then(|v| v["name"].as_str())
+            .or_else(|| self.fields.get("name").and_then(Value::as_str))
+            .or(self.kind.as_deref())
+            .unwrap_or("provider_tool");
+        let input = self
+            .fields
+            .get("arguments")
+            .or_else(|| function.and_then(|v| v.get("arguments")));
+        output::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input: match input {
+                Some(Value::String(v)) => v.clone(),
+                Some(v) => v.to_string(),
+                None => "{}".into(),
+            },
+            provider_executed: true,
+            dynamic: false,
+            extensions: None,
+        }
+    }
+    fn result(self, name: &str) -> Option<output::ToolResult> {
+        let status = self.fields.get("status").and_then(Value::as_str);
+        let error = self.fields.get("is_error") == Some(&Value::Bool(true))
+            || self.fields.get("error").is_some_and(|v| !v.is_null());
+        let is_error = match status {
+            Some("completed") => error,
+            Some("failed" | "incomplete") => true,
+            None if error
+                || [
+                    "output",
+                    "result",
+                    "search_results",
+                    "browser_results",
+                    "code_results",
+                ]
+                .iter()
+                .any(|key| self.fields.get(*key).is_some_and(|v| !v.is_null())) =>
+            {
+                error
+            }
+            _ => return None,
+        };
+        Some(output::ToolResult {
+            id: self.id.expect("identified provider call"),
+            name: name.into(),
+            is_error,
+            dynamic: false,
+            extensions: None,
+            value: Value::Object(self.fields),
+        })
+    }
 }
 #[derive(Debug, Deserialize)]
 pub(super) struct Choice {
@@ -281,7 +411,8 @@ pub(super) fn decode<T: serde::de::DeserializeOwned>(raw: Value) -> Result<T> {
 }
 impl Envelope {
     pub fn parse(raw: &Value, streaming: bool) -> Result<Self> {
-        let result: Self = decode(raw.clone())?;
+        let result = Self::deserialize(raw)
+            .map_err(|_| Error::invalid("Invalid Chat Completions response.", raw.clone()))?;
         for choice in &result.choices {
             let message = if streaming {
                 choice.delta.as_ref()
@@ -306,7 +437,7 @@ impl Envelope {
                         .tool_calls
                         .iter()
                         .flatten()
-                        .any(|v| v.function.name.is_none() || v.function.arguments.is_none()))
+                        .any(|v| matches!(v, CallEntry::Local(v) if v.function.name.is_none() || v.function.arguments.is_none())))
             {
                 return Err(Error::invalid(
                     "Invalid Chat Completions response.",
@@ -364,7 +495,23 @@ pub fn generate(
             parts.push(Part::Source { source, anchor });
         }
     }
-    for tool in message.tool_calls.into_iter().flatten() {
+    let mut reported = ReportedCalls::default();
+    for entry in message.tool_calls.into_iter().flatten().chain(
+        message
+            .executed_tools
+            .into_iter()
+            .flatten()
+            .map(CallEntry::Server),
+    ) {
+        let tool = match entry {
+            CallEntry::Local(tool) => tool,
+            CallEntry::Server(tool) => {
+                let (call, result) = reported.observe(tool);
+                parts.extend(call.map(Part::ToolCall));
+                parts.extend(result.map(Part::ToolResult));
+                continue;
+            }
+        };
         let extensions = tool.signature(namespace);
         parts.push(Part::ToolCall(output::ToolCall {
             id: tool

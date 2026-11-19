@@ -194,6 +194,8 @@
       }
       if (served !== RUNTIME) {
         showStatus("The runtime changed — reloading…");
+        // The app's own question before the page leaves is not for this reload.
+        player.askBeforeLeaving?.(false);
         location.reload();
         return;
       }

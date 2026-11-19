@@ -11,7 +11,10 @@
   divisor) played by a discrete `CAKeyframeAnimation` on `contents` (a tinted animated image shows its first frame); Android
   (API 28+) uses `ImageDecoder` → `AnimatedImageDrawable`, not cached (each view plays its own copy; no blur); a GIF below
   API 30 (from API 26) plays from a `Movie` of its own (see the pitfall in `pitfalls.md`). `onLoad` reports the
-  source's size in pixels on both platforms, whatever size the view decodes at. Downloads are shared per URI (also between
+  source's size in pixels on both platforms, whatever size the view decodes at. On iOS and macOS only the formats that
+  animate (GIF, APNG, WebP, HEIF and AVIF sequences, JPEG XL) play their images as frames; a still file of several
+  images shows one, the icon size that fits for ICO, ICNS and CUR and the primary image otherwise (a TIFF's first
+  page), and `onLoad` reports that image's size (`nsh_platform_apple::image_source`). Downloads are shared per URI (also between
   views decoding at different sizes) and report `onProgress` at most every 100ms; `Image.getSize` / `Image.prefetch` (Rust,
   `nsh_core::runtime`) ask with `Command::ImageInfo`, are answered by the root's `ImageInfo` event (which the core
   resolves, never JS) and keep the downloaded bytes in a data cache (32 MB) until a view
@@ -107,10 +110,24 @@
   A download that ends at a redirect it did not follow drops the entry and serves nothing; one the app may not load
   arrives as `Fetched::refused` from the core loader's ureq and macOS's `NSURLSession`, and as the unfollowed `3xx`
   from iOS and Android.
+  An entry keeps the redirects its download followed (`Fetched::redirects`, reported by every loader: the core
+  loader's ureq, macOS's and iOS's `NSURLSession` delegates, Android's `Images.java` through `imageCacheComplete`).
+  `lookup`, `complete` and `load` take the app's `Access` and check those redirects with `Access::media_redirect`
+  before a copy is served, fresh or stale: what an app may load can narrow after a copy was stored (its capabilities,
+  the embedding app's grant), and a fresh copy is served without a request that would check it. An entry one of them is
+  refused for is dropped and is a miss, so the request that follows fails as a first one would. A `304` serves the
+  copy on disk only after the same check, and its request's redirects replace the stored ones. A copy whose redirects
+  cannot be kept whole (a control character in one, a header over `MAX_HEADER`) is not stored. The check is the disk
+  cache's: it runs when a load reaches the disk (`lookup` / `complete`), and covers a copy kept from an earlier run.
+  What the process already holds in memory is keyed by URL and served before the disk is asked: the loader's encoded
+  bytes and remembered failures (`loader.rs`), the decoded images, Android's `Images.java` caches.
   Keyed by URL alone (sources carry no request headers, so `Vary` other than `*` cannot differ). `asset:/` URIs are
-  never kept (the dev server's change with the app). Each entry is one file named by a digest of its URL (URL, policy
-  headers, body, CRC32 of them), written under a temporary name and renamed: readers on any thread, surface or
-  process see a whole entry or none, without locks; one that does not read back whole is deleted and is a miss. LRU
+  never kept (the dev server's change with the app). Each entry is one file named by a digest of its URL (URL,
+  redirects, policy headers, body, CRC32 of them; format `NSHIMG2`: entries of `NSHIMG1`, which kept no redirects, are
+  an unknown format, never served, deleted when their URL is asked for again and otherwise trimmed with the least
+  recently used; a runtime of either format deletes the other's entries on a directory they share), written under a
+  temporary name and renamed: readers on any thread, surface or process see a whole entry or none, without locks; one
+  that does not read back whole is deleted and is a miss. LRU
   by modification time (a hit refreshes it at most every 10 minutes); past its limit a scan deletes the oldest down
   to three quarters, and drops temporary files over an hour old. Every engine opens its handle in
   `<root>/<app id>/images` from `EngineConfig::cache` (`CacheOptions::images`, 256 MiB by default:
@@ -150,8 +167,16 @@
   straight RGBA buffer (no copy) and reports it through `ImageData::rgba()`. The source goes by a fresh
   `data:image/png;nsh-key=<random>` key per buffer (no digest of megabytes of pixels per frame; the key's form is one
   `ImageSource::inline` turns into `data:,` when an app writes it, as for digests), and its natural size is the
-  buffer's (`Images::decode` reads it from `rgba()`, not a header). Windows, macOS, Linux and GPUI take the pixels in
-  their decoder closures (`from_rgba`: a copy into their own format, no decode, no downsampling); every other path
+  buffer's (`Images::decode` reads it from `rgba()`, not a header). `ImageSrc::size(Size<Points>)` declares the
+  natural layout size of `image()` independently: a 200×100 buffer drawn at 2× can lay out at 100×50 points.
+  Without it, `rgba` lays out at its pixel width and height in points. The builder sets the source's existing
+  size metadata, as `ImageAsset::size` does; the key, pixel data and reported pixel dimensions stay the same.
+  Windows, macOS, Linux and GPUI take the pixels in their decoder closures (`from_rgba`: no decode or
+  downsampling). macOS scans the alpha bytes: fully opaque buffers become sRGB `NoneSkipLast` CGImages over a
+  data provider holding the original `ImageData`, with no pixel copy or premultiplication; the provider releases
+  its source when its last image reference goes away. Buffers with transparency still copy and premultiply into
+  bitmap storage. The existing budget reservation remains conservative (backing storage plus a display copy).
+  The other backends copy into their own format; every other path
   reading `ImageData::bytes()` (iOS's `NSData`, Android's `Native.imageBytes`, the web's `image_bytes`, `getSize`)
   gets an uncompressed PNG (stored deflate blocks) built once on first use. Old frames leave the caches as any
   unshown source does (L3 never keeps in-memory bytes; L4 entries without a lease are evicted).

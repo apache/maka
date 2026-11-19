@@ -10,7 +10,7 @@ demo: mod-canvas
 `Canvas` draws with an HTML Canvas 2D–style context. Your `draw` function **records** the drawing; the platform replays it natively (Core Graphics on iOS, `android.graphics.Canvas` on Android) at the screen's resolution. Numbers and colors in a drawing may be [animated values](./nsh.md#animation): when they animate, the platform redraws on its own, without running `draw` again.
 
 ```ts
-import { Canvas, CanvasGradient, CanvasRenderingContext2D, Path2D } from "nsh";
+import { Canvas, CanvasGradient, CanvasRenderingContext2D, OffscreenCanvas, Path2D } from "nsh";
 ```
 
 See [Canvas](../docs/canvas.md) for the guide and [`<Canvas>`](../elements/canvas.md) for its props.
@@ -236,6 +236,8 @@ Draws an image given as a URL or an imported asset (`import logo from "./logo.pn
 - `drawImage(image, dx, dy, dw, dh)`: scaled into a rectangle.
 - `drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh)`: part of it (source in image pixels).
 
+An image's natural size in points is its pixels over the density its file name declares, as an `Image`'s: `logo@3x.png`, 300 pixels wide, draws 100 points wide, and a file without `@2x` / `@3x` one point per pixel, on every screen. A part given by its source alone draws at the source's pixels over the same density; an imported asset draws at its imported size.
+
 ## Path2D
 
 ```ts
@@ -257,6 +259,36 @@ cx.fillStyle = "#ef4444";
 cx.fill(heart);
 cx.restore();
 ```
+
+## OffscreenCanvas
+
+```ts
+class OffscreenCanvas {
+  constructor(width: number, height: number);
+  readonly width: number;
+  readonly height: number;
+  getContext(contextId: "2d"): CanvasRenderingContext2D;
+  convertToBlob(options?: { type?: string; scale?: number }): Promise<Blob>;
+}
+```
+
+A canvas of its own size with no view on screen, for images the app saves, shares or puts on the clipboard: a whole diagram at full size, a chart, a share card. Draw with its 2D context (the same `CanvasRenderingContext2D` as `<Canvas draw>`, `measureText` included), then `convertToBlob()` renders what it drew natively, as a `<Canvas>` of that size draws it on screen, into a PNG `Blob`. `scale` sets the pixels per point (the screen's by default); animated values draw at their start, 0.
+
+```ts
+const canvas = new OffscreenCanvas(1200, 800);
+const cx = canvas.getContext("2d");
+cx.fillStyle = "#0f172a";
+cx.font = "600 24px sans-serif";
+cx.fillText("orders → customers", 40, 60);
+const png = await canvas.convertToBlob({ scale: 2 });
+url.set(URL.createObjectURL(png)); // <Image src={url()} />, or its bytes: await png.arrayBuffer()
+```
+
+One canvas can make many images: clearing it whole, `cx.clearRect(0, 0, canvas.width, canvas.height)` with no transform or clip set, starts its drawing anew, keeping the context's state (styles, font, the current path), so each image renders only what was drawn since.
+
+The image is at most 16384 pixels a side and 64 million pixels in all, and an app renders up to 16 images at once; past either limit `convertToBlob` rejects with `ERR_NSH_QUOTA_EXCEEDED`. A render the platform has not finished in 30 seconds rejects with `ETIMEDOUT`. iOS, Android, macOS, Windows, Linux, the GPUI backend and the web render offscreen canvases, each as its canvases draw on screen; on any other platform, `nsh test`'s headless runs among them, `convertToBlob` rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` (`nsh test --target` renders on the platform it names).
+
+On the web, the image fits the browser's canvas limit as well (Safari on iOS and iPadOS allows 16,777,216 pixels in all, 4096 × 4096); a larger one rejects with `ERR_NSH_QUOTA_EXCEEDED`. Images in the drawing come from the page's origin or from servers that allow CORS; any other image is skipped with a warning, as every platform skips an image that fails to load.
 
 ## Not supported
 

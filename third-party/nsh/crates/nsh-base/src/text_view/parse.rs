@@ -57,14 +57,22 @@ impl Request {
                 _ => self.input == parsed.input,
             }
     }
-    fn parse(&self) -> Projection {
+    fn parser(&self) -> Parser {
         // Configure plugins (which may create non-Send ParseOptions callbacks)
         // entirely on the CPU worker; only owned source/configuration crosses.
-        let parser = Parser::new()
+        Parser::new()
             .options(self.options)
             .extensions(self.extensions.clone())
-            .plugins(&self.plugins);
+            .plugins(&self.plugins)
+    }
+    fn parse(&self) -> Projection {
+        let parser = self.parser();
         match &self.input {
+            Input::Markdown(source) if self.source_id.is_none() => Projection {
+                document: parser.markdown(source),
+                raw_len: source.len() as u64,
+                ..Projection::default()
+            },
             Input::Markdown(source) => parser.markdown_projection(source),
             Input::Html(source) => Projection {
                 document: parser.html(source),
@@ -153,6 +161,7 @@ pub(super) fn document(
     effect(move || scope.emit(TextViewEvent::ParseError(failure.get())));
     let shown = stored(None::<Request>);
     let work = stored(Work::default());
+    let incremental = stored(super::markdown::Incremental::default());
     effect(move || {
         let request = Request {
             input: if let Some(source) = props.markdown.get() {
@@ -170,17 +179,31 @@ pub(super) fn document(
         if matches!(request.input, Input::Document(_))
             || (request.source_id.is_none() && request.plugins.is_empty())
         {
-            work.with(|work| {
-                work.latest = Some(request.clone());
+            let replacement = work.with(|work| {
+                let previous = work.latest.replace(request.clone());
                 work.pending = false;
-                work.running = false;
+                previous.as_ref().is_none_or(|old| !request.admits(old))
             });
-            document.set(request.parse());
+            let projection = incremental.with(|reader| match &request.input {
+                Input::Markdown(text) => Projection {
+                    document: reader.parse(&request.parser(), text).document(),
+                    raw_len: text.len() as u64,
+                    ..Projection::default()
+                },
+                _ => {
+                    reader.clear();
+                    request.parse()
+                }
+            });
+            document.set(projection);
             shown.replace(Some(request.clone()));
-            source.set(Some(request));
+            if replacement {
+                source.set(Some(request));
+            }
             failure.set(None);
             return;
         }
+        incremental.with(|reader| reader.clear());
         let (start, replacement) = work.with(|work| {
             if work.latest.as_ref() == Some(&request) {
                 return (false, false);

@@ -19,6 +19,7 @@
 
 import { Text, View, windowSize } from 'nsh';
 import { Select } from 'nsh/base';
+import { useToolbarCompact } from './composerToolbar';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -100,19 +101,21 @@ export function RecentWorkspaces(props: {
           focusStyle={{ backgroundColor: C.line }}
         >
           <Icon name="folder" color={C.muted} />
-          <Text
-            style={[
-              {
-                ...captionTextStyle,
-                color: C.secondary,
-                flexShrink: 1,
-                textOverflow: 'ellipsis-middle',
-              },
-              { numberOfLines: 1 },
-            ]}
-          >
-            {props.path() ? name(props.path()) : tr('Choose workspace')}
-          </Text>
+          <If when={!useToolbarCompact()}>
+            <Text
+              style={[
+                {
+                  ...captionTextStyle,
+                  color: C.secondary,
+                  flexShrink: 1,
+                  textOverflow: 'ellipsis-middle',
+                },
+                { numberOfLines: 1 },
+              ]}
+            >
+              {props.path() ? name(props.path()) : tr('Choose workspace')}
+            </Text>
+          </If>
           <Icon name="down" color={C.muted} />
         </View>
       }

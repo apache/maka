@@ -349,8 +349,13 @@ impl<C> LayoutTree<C> {
     }
 
     /// Replaces `node`'s style: its own size may change, so its parent is
-    /// laid out again (whether it is a boundary or not).
-    pub(crate) fn set_style(&mut self, node: NodeId, style: Style) {
+    /// laid out again (whether it is a boundary or not). The style it has
+    /// already changes nothing (a restyle that only changed colors), and
+    /// no layout is needed for it: returns whether the style changed.
+    pub(crate) fn set_style(&mut self, node: NodeId, style: Style) -> bool {
+        if self.nodes[key(node)].style == style {
+            return false;
+        }
         self.mark_stale(node);
         let n = &mut self.nodes[key(node)];
         if n.holder {
@@ -361,6 +366,7 @@ impl<C> LayoutTree<C> {
         if let Some(parent) = n.parent {
             self.mark_dirty(parent);
         }
+        true
     }
 
     /// Replaces what measures `node`.

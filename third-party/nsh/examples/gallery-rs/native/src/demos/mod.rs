@@ -8,6 +8,7 @@ mod file_drop;
 mod form;
 mod gestures;
 mod images;
+mod keyboard;
 mod lists;
 mod media;
 mod navigation;
@@ -33,8 +34,8 @@ use nsh_core::{
 use crate::{
     nav::{self, Route},
     ui::{
-        IconName, IconTile, MONO, PageHeader, appear, colors, header, icon, press, radius, titled,
-        with_header,
+        IconName, IconTile, MONO, PageHeader, appear, colors, header, icon, press, radius,
+        terminal, titled, with_header,
     },
 };
 
@@ -78,6 +79,13 @@ impl Demo {
 pub(crate) struct Group {
     pub(crate) title: &'static str,
     pub(crate) demos: &'static [Demo],
+}
+
+/// Whether the index and the sidebar show `demo` here.
+pub(crate) fn shown(demo: &'static Demo) -> bool {
+    use nsh_core::platform::Os;
+    demo.name != "Keyboard"
+        || (!terminal() && matches!(os(), Os::MacOs | Os::Windows | Os::Linux | Os::Web))
 }
 
 /// The demos, by what they show (a static: the shell tells them apart by
@@ -203,6 +211,12 @@ pub(crate) static GROUPS: &[Group] = &[
         title: "Platform",
         demos: &[
             Demo {
+                name: "Keyboard",
+                detail: "Held arrows, modifier chords, capture and bubbling, and native Input ownership",
+                icon: IconName::Keyboard,
+                content: || keyboard::keyboard_demo().into_element(),
+            },
+            Demo {
                 name: "Components",
                 detail: "Press feedback, sheet, layout animation, input accessory, modal options",
                 icon: IconName::Components,
@@ -288,6 +302,7 @@ pub(crate) fn index() -> Screen {
             let rows: Vec<AnyElement> = group
                 .demos
                 .iter()
+                .filter(|demo| shown(demo))
                 .enumerate()
                 .map(|(i, demo)| demo_row(demo, i == 0))
                 .collect();
@@ -310,10 +325,17 @@ pub(crate) fn index() -> Screen {
                                         .letter_spacing(px(0.4)),
                                 )
                                 .child(
-                                    text(group.demos.len().to_string())
-                                        .text_size(px(12.0))
-                                        .text_color(colors::FAINT)
-                                        .font_family(MONO),
+                                    text(
+                                        group
+                                            .demos
+                                            .iter()
+                                            .filter(|demo| shown(demo))
+                                            .count()
+                                            .to_string(),
+                                    )
+                                    .text_size(px(12.0))
+                                    .text_color(colors::FAINT)
+                                    .font_family(MONO),
                                 ),
                         )
                         .child(

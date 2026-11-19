@@ -4,6 +4,10 @@ use nsh_core::{
     AttributedText, Bounds, Points, TextLayout, TextLink,
     transition::{Recolor, TextColor},
 };
+use nsh_platform_apple::core_text::{
+    decoration_key, is_attachment_run, run_visual_span, strikethrough_key, stroke_decoration,
+    underline_key,
+};
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,
@@ -29,19 +33,27 @@ use objc2_ui_kit::{
 
 use crate::{
     native_view::NshView,
-    text::{CoreTextLayout, LaidLine, decoration_key, strikethrough_key, underline_key},
+    text::{CoreTextLayout, LaidLine},
     text_selection::{self, Selection},
 };
 
 /// Draws the decoration lines CoreText does not: strikethroughs, and
 /// underlines with a style, thickness or offset (y-up text space).
 fn draw_decorations(cx: &CGContext, line: &LaidLine) {
+    let mut positions = Vec::new();
+    let whole = CFRange {
+        location: 0,
+        length: 0,
+    };
     // SAFETY: the line's own run array (of CTRuns) and their attribute
     // dictionaries, whose values have the types set by the text engine.
     unsafe {
         let runs = line.line.glyph_runs();
         for i in 0..runs.count() {
             let run = &*runs.value_at_index(i).cast::<CTRun>();
+            if is_attachment_run(run) {
+                continue;
+            }
             let attributes = run.attributes();
             let attributes: &CFDictionary<CFString, CFType> = attributes.cast_unchecked();
             let strike = attributes
@@ -76,20 +88,10 @@ fn draw_decorations(cx: &CGContext, line: &LaidLine) {
             if thickness <= 0.0 {
                 thickness = font.underline_thickness().max(1.0);
             }
-            let range = run.string_range();
-            let x = line.origin.x
-                + line
-                    .line
-                    .offset_for_string_index(range.location, std::ptr::null_mut());
-            let width = run.typographic_bounds(
-                CFRange {
-                    location: 0,
-                    length: 0,
-                },
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
+            let Some((left, width)) = run_visual_span(run, whole, &mut positions) else {
+                continue;
+            };
+            let x = line.origin.x + left;
             if let Some(color) = strike {
                 let y = line.origin.y + font.x_height() / 2.0;
                 stroke_decoration(cx, &color, style, x, y, width, thickness);
@@ -121,37 +123,24 @@ fn draw_decorations(cx: &CGContext, line: &LaidLine) {
 /// hidden run's glyphs are clipped out, with their shadow and decorations.
 fn clip_hidden(cx: &CGContext, line: &LaidLine, text: &AttributedText) -> bool {
     let mut hidden: Vec<(CGFloat, CGFloat)> = Vec::new();
-    // SAFETY: the line's own run array (of CTRuns); one position (the run
-    // has a glyph) into a one-point buffer; null out pointers are allowed.
+    let mut positions = Vec::new();
+    let whole = CFRange {
+        location: 0,
+        length: 0,
+    };
+    // SAFETY: the line's own run array (of CTRuns) holds valid `CTRun`s.
     unsafe {
         let runs = line.line.glyph_runs();
         for i in 0..runs.count() {
             let run = &*runs.value_at_index(i).cast::<CTRun>();
             let range = run.string_range();
-            if range.length <= 0 || run.glyph_count() <= 0 || !text.hidden_at(range.location as u32)
-            {
+            if range.length <= 0 || !text.hidden_at(range.location as u32) {
                 continue;
             }
-            // The run's own left edge, whichever way it goes (a right to
-            // left run's first character is at its right).
-            let mut origin = CGPoint::new(0.0, 0.0);
-            run.positions(
-                CFRange {
-                    location: 0,
-                    length: 1,
-                },
-                std::ptr::NonNull::from(&mut origin),
-            );
-            let x = line.origin.x + origin.x;
-            let width = run.typographic_bounds(
-                CFRange {
-                    location: 0,
-                    length: 0,
-                },
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
+            let Some((left, width)) = run_visual_span(run, whole, &mut positions) else {
+                continue;
+            };
+            let x = line.origin.x + left;
             hidden.push((x, x + width));
         }
     }
@@ -175,62 +164,6 @@ fn clip_hidden(cx: &CGContext, line: &LaidLine, text: &AttributedText) -> bool {
     }
     CGContext::clip(c);
     true
-}
-
-/// One decoration line centered on `y` (y-up), `style` as encoded by the
-/// text engine: solid, double, dotted, dashed, wavy.
-fn stroke_decoration(
-    cx: &CGContext,
-    color: &CGColor,
-    style: i32,
-    x: CGFloat,
-    y: CGFloat,
-    width: CGFloat,
-    thickness: CGFloat,
-) {
-    let c = Some(cx);
-    CGContext::save_g_state(c);
-    CGContext::set_stroke_color_with_color(c, Some(color));
-    CGContext::set_line_width(c, thickness);
-    let line = |y: CGFloat| {
-        CGContext::move_to_point(c, x, y);
-        CGContext::add_line_to_point(c, x + width, y);
-    };
-    match style {
-        1 => {
-            // Two lines a thickness apart.
-            line(y + thickness);
-            line(y - thickness);
-        }
-        2 => {
-            let pattern = [0.0, thickness * 2.0];
-            // SAFETY: a two-element pattern.
-            unsafe { CGContext::set_line_dash(c, 0.0, pattern.as_ptr(), 2) };
-            CGContext::set_line_cap(c, objc2_core_graphics::CGLineCap::Round);
-            line(y);
-        }
-        3 => {
-            let pattern = [thickness * 3.0, thickness * 2.0];
-            // SAFETY: a two-element pattern.
-            unsafe { CGContext::set_line_dash(c, 0.0, pattern.as_ptr(), 2) };
-            line(y);
-        }
-        4 => {
-            // A sine wave, one period per four thicknesses.
-            let amplitude = thickness * 1.5;
-            let period = (thickness * 4.0).max(4.0);
-            let steps = ((width / period) * 8.0).ceil().max(2.0) as usize;
-            CGContext::move_to_point(c, x, y);
-            for i in 1..=steps {
-                let t = width * i as CGFloat / steps as CGFloat;
-                let phase = t / period * std::f64::consts::TAU;
-                CGContext::add_line_to_point(c, x + t, y + amplitude * phase.sin());
-            }
-        }
-        _ => line(y),
-    }
-    CGContext::stroke_path(c);
-    CGContext::restore_g_state(c);
 }
 
 #[derive(Default)]
@@ -451,20 +384,25 @@ define_class!(
         }
 
         #[unsafe(method(insertText:))]
-        fn insert_text(&self, _text: &NSString) {}
+        fn insert_text(&self, _text: Option<&NSString>) {}
 
         #[unsafe(method(deleteBackward))]
         fn delete_backward(&self) {}
     }
 
+    // UIKit declares every position and range these methods take nonnull,
+    // yet passes nil at times (the edit menu of a secondary click on text
+    // with nothing selected moves a nil position): each takes an `Option`
+    // and answers nil with "nothing", as a message to nil would, rather
+    // than messaging it.
     unsafe impl UITextInput for TextView {
         #[unsafe(method_id(textInRange:))]
-        fn text_in_range(&self, range: &UITextRange) -> Option<Retained<NSString>> {
-            self.sel_text_in(range)
+        fn text_in_range(&self, range: Option<&UITextRange>) -> Option<Retained<NSString>> {
+            range.and_then(|range| self.sel_text_in(range))
         }
 
         #[unsafe(method(replaceRange:withText:))]
-        fn replace_range(&self, _range: &UITextRange, _text: &NSString) {}
+        fn replace_range(&self, _range: Option<&UITextRange>, _text: Option<&NSString>) {}
 
         #[unsafe(method_id(selectedTextRange))]
         fn selected_text_range(&self) -> Option<Retained<UITextRange>> {
@@ -506,27 +444,42 @@ define_class!(
         }
 
         #[unsafe(method_id(textRangeFromPosition:toPosition:))]
-        fn text_range(&self, from: &UITextPosition, to: &UITextPosition) -> Option<Retained<UITextRange>> {
-            Some(self.sel_range(from, to))
+        fn text_range(
+            &self,
+            from: Option<&UITextPosition>,
+            to: Option<&UITextPosition>,
+        ) -> Option<Retained<UITextRange>> {
+            from.zip(to).map(|(from, to)| self.sel_range(from, to))
         }
 
         #[unsafe(method_id(positionFromPosition:offset:))]
-        fn position_offset(&self, position: &UITextPosition, offset: NSInteger) -> Option<Retained<UITextPosition>> {
-            self.sel_moved(position, offset)
+        fn position_offset(
+            &self,
+            position: Option<&UITextPosition>,
+            offset: NSInteger,
+        ) -> Option<Retained<UITextPosition>> {
+            position.and_then(|position| self.sel_moved(position, offset))
         }
 
         #[unsafe(method_id(positionFromPosition:inDirection:offset:))]
         fn position_direction(
             &self,
-            position: &UITextPosition,
+            position: Option<&UITextPosition>,
             direction: UITextLayoutDirection,
             offset: NSInteger,
         ) -> Option<Retained<UITextPosition>> {
-            self.sel_moved_in(position, direction, offset)
+            position.and_then(|position| self.sel_moved_in(position, direction, offset))
         }
 
         #[unsafe(method(comparePosition:toPosition:))]
-        fn compare_position(&self, position: &UITextPosition, other: &UITextPosition) -> NSComparisonResult {
+        fn compare_position(
+            &self,
+            position: Option<&UITextPosition>,
+            other: Option<&UITextPosition>,
+        ) -> NSComparisonResult {
+            let (Some(position), Some(other)) = (position, other) else {
+                return NSComparisonResult::Same;
+            };
             match text_selection::offset(position).cmp(&text_selection::offset(other)) {
                 std::cmp::Ordering::Less => NSComparisonResult::Ascending,
                 std::cmp::Ordering::Equal => NSComparisonResult::Same,
@@ -535,7 +488,10 @@ define_class!(
         }
 
         #[unsafe(method(offsetFromPosition:toPosition:))]
-        fn offset_from(&self, from: &UITextPosition, to: &UITextPosition) -> NSInteger {
+        fn offset_from(&self, from: Option<&UITextPosition>, to: Option<&UITextPosition>) -> NSInteger {
+            let (Some(from), Some(to)) = (from, to) else {
+                return 0;
+            };
             text_selection::offset(to) as NSInteger - text_selection::offset(from) as NSInteger
         }
 
@@ -555,36 +511,48 @@ define_class!(
         }
 
         #[unsafe(method_id(positionWithinRange:farthestInDirection:))]
-        fn farthest(&self, range: &UITextRange, direction: UITextLayoutDirection) -> Option<Retained<UITextPosition>> {
-            Some(self.sel_farthest(range, direction))
+        fn farthest(
+            &self,
+            range: Option<&UITextRange>,
+            direction: UITextLayoutDirection,
+        ) -> Option<Retained<UITextPosition>> {
+            range.map(|range| self.sel_farthest(range, direction))
         }
 
         #[unsafe(method_id(characterRangeByExtendingPosition:inDirection:))]
-        fn extending(&self, position: &UITextPosition, direction: UITextLayoutDirection) -> Option<Retained<UITextRange>> {
-            Some(self.sel_extend(position, direction))
+        fn extending(
+            &self,
+            position: Option<&UITextPosition>,
+            direction: UITextLayoutDirection,
+        ) -> Option<Retained<UITextRange>> {
+            position.map(|position| self.sel_extend(position, direction))
         }
 
         #[unsafe(method(baseWritingDirectionForPosition:inDirection:))]
-        fn writing_direction(&self, _position: &UITextPosition, _direction: UITextStorageDirection) -> NSWritingDirection {
+        fn writing_direction(
+            &self,
+            _position: Option<&UITextPosition>,
+            _direction: UITextStorageDirection,
+        ) -> NSWritingDirection {
             self.sel_direction()
         }
 
         #[unsafe(method(setBaseWritingDirection:forRange:))]
-        fn set_writing_direction(&self, _direction: NSWritingDirection, _range: &UITextRange) {}
+        fn set_writing_direction(&self, _direction: NSWritingDirection, _range: Option<&UITextRange>) {}
 
         #[unsafe(method(firstRectForRange:))]
-        fn first_rect(&self, range: &UITextRange) -> CGRect {
-            self.sel_first_rect(range)
+        fn first_rect(&self, range: Option<&UITextRange>) -> CGRect {
+            range.map_or(CGRect::ZERO, |range| self.sel_first_rect(range))
         }
 
         #[unsafe(method(caretRectForPosition:))]
-        fn caret_rect(&self, position: &UITextPosition) -> CGRect {
-            self.sel_caret(position)
+        fn caret_rect(&self, position: Option<&UITextPosition>) -> CGRect {
+            position.map_or(CGRect::ZERO, |position| self.sel_caret(position))
         }
 
         #[unsafe(method_id(selectionRectsForRange:))]
-        fn selection_rects(&self, range: &UITextRange) -> Retained<NSArray<UITextSelectionRect>> {
-            self.sel_rects(range)
+        fn selection_rects(&self, range: Option<&UITextRange>) -> Retained<NSArray<UITextSelectionRect>> {
+            range.map_or_else(NSArray::new, |range| self.sel_rects(range))
         }
 
         #[unsafe(method_id(closestPositionToPoint:))]
@@ -593,8 +561,8 @@ define_class!(
         }
 
         #[unsafe(method_id(closestPositionToPoint:withinRange:))]
-        fn closest_within(&self, point: CGPoint, range: &UITextRange) -> Option<Retained<UITextPosition>> {
-            self.sel_closest(point, Some(range))
+        fn closest_within(&self, point: CGPoint, range: Option<&UITextRange>) -> Option<Retained<UITextPosition>> {
+            self.sel_closest(point, range)
         }
 
         #[unsafe(method_id(characterRangeAtPoint:))]

@@ -1182,7 +1182,9 @@ mod tests {
             fn load(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
                 Ok([("nsh.window:main".to_owned(), self.0.clone())].into())
             }
-            fn write(&self, _: StorageChange) {}
+            fn write(&self, _: StorageChange) -> Result<(), String> {
+                Ok(())
+            }
         }
         let display = Display::new(
             DisplayId(1),

@@ -7,36 +7,56 @@
 
 use std::sync::Mutex;
 
-/// Text kept for the app's clipboard calls.
+use crate::element::ClipboardItem;
+
+/// What the app's clipboard calls keep.
 pub trait ClipboardBackend: Send + Sync {
     /// The text it holds.
     fn text(&self) -> Option<String>;
-    /// Holds `text` from now on (`None`: nothing, as after an image was
-    /// copied, which the backend does not keep).
+    /// Holds `text` from now on, alone (`None`: nothing).
     fn set_text(&self, text: Option<String>);
+    /// The item it holds (`Clipboard.write`), every format it keeps; a
+    /// backend that keeps text only holds an item of its text.
+    fn item(&self) -> Option<ClipboardItem> {
+        self.text().map(|text| ClipboardItem { text, html: None })
+    }
+    /// Holds `item` from now on (`None`: nothing, as after an image was
+    /// copied, which the backend does not keep). A backend that keeps text
+    /// only keeps the item's text.
+    fn set_item(&self, item: Option<ClipboardItem>) {
+        self.set_text(item.map(|item| item.text));
+    }
 }
 
 /// A clipboard in memory.
 #[derive(Debug, Default)]
 pub struct MemoryClipboard {
-    text: Mutex<Option<String>>,
+    item: Mutex<Option<ClipboardItem>>,
 }
 
 impl MemoryClipboard {
     /// A clipboard holding `text` at first.
     pub fn new(text: Option<String>) -> MemoryClipboard {
         MemoryClipboard {
-            text: Mutex::new(text),
+            item: Mutex::new(text.map(|text| ClipboardItem { text, html: None })),
         }
     }
 }
 
 impl ClipboardBackend for MemoryClipboard {
     fn text(&self) -> Option<String> {
-        self.text.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.item().map(|item| item.text)
     }
 
     fn set_text(&self, text: Option<String>) {
-        *self.text.lock().unwrap_or_else(|e| e.into_inner()) = text;
+        self.set_item(text.map(|text| ClipboardItem { text, html: None }));
+    }
+
+    fn item(&self) -> Option<ClipboardItem> {
+        self.item.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set_item(&self, item: Option<ClipboardItem>) {
+        *self.item.lock().unwrap_or_else(|e| e.into_inner()) = item;
     }
 }

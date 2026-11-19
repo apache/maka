@@ -54,6 +54,10 @@ tap id:copy
 expect Calls: 5 promises
 wait 300
 expect Failed: none
+# text with its HTML (`Clipboard.write`) goes through as a write does.
+expect Write: not written
+tap id:copy-html
+expect Write: written
 covers [nsh] Clipboard
 # mod-i18n
 tap id:case-mod-i18n
@@ -93,6 +97,21 @@ expect Files refused: rejected RangeError
 expect Size refused: rejected RangeError
 expect Files: pending
 covers [nsh] Picker
+# mod-share
+tap id:case-mod-share
+# no share sheet there: available() resolves false and show rejects as
+# unavailable, never as shared; content it refuses rejects first, by kind.
+expect Available: false
+expect Shown: not shown
+tap id:share
+expect Shown: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Empty: rejected TypeError
+expect Local URL: rejected TypeError
+expect Many: rejected RangeError
+expect File: rejected ERR_ACCESS_DENIED
+expect Blank: rejected TypeError
+expect Long URL: rejected RangeError
+covers [nsh] Share
 # mod-speech
 tap id:case-mod-speech
 # nothing recognizes speech there: available() resolves false and a session
@@ -122,10 +141,12 @@ covers [nsh] AudioPlayer
 # mod-notifications
 tap id:case-mod-notifications
 # nothing shows notifications there: the permission is unavailable and nothing
-# shows, the badge and close do nothing, and bad arguments reject.
+# shows, the badge, close and closeAll do nothing (closeAll resolves with
+# nothing), and bad arguments reject.
 expect Permission: unknown
 tap id:notify
 expect Permission: unavailable unavailable
+expect Closed: undefined
 expect Refused: RangeError RangeError
 expect Shown: false false
 covers [nsh] Notifications
@@ -154,16 +175,20 @@ expect Listener: stopped
 covers [nsh] UrlScheme
 # mod-updater
 tap id:case-mod-updater
-# no packaged app: no package runs, none is offered, there is nothing to
-# download or restart into, and the shell has no packaged version.
+# no packaged app: no package runs, no update (a channel's) or package is offered, there is nothing to
+# download, restart into or install on quit, and the shell has no packaged version.
 expect Running package: none
 expect Shell: none build none, packages false
 expect NSH version: semver
+expect Update: null
 expect Check: null
 expect Download: rejected
 expect Restart: rejected
+expect Install on quit: rejected
 covers [nsh/updater] checkForPackage
+covers [nsh/updater] checkForUpdate
 covers [nsh/updater] downloadPackage
+covers [nsh/updater] installOnQuit
 covers [nsh/updater] restartToPackage
 covers [nsh/updater] runningPackage
 covers [nsh/updater] shellInfo
@@ -207,10 +232,12 @@ expect Desktop: false
 expect Catalyst: false
 expect Version: 0.0
 expect Select: ios
+expect Select named: ios
 expect Select mobile: mobile
 expect Ratio: 1
 expect Font scale: 1
 expect Window: 390x844
+expect Size classes: compact regular
 expect Scheme: light
 expect Lifecycle: active
 expect Wakes: 0
@@ -235,6 +262,8 @@ covers [nsh] colorScheme
 covers [nsh] setColorScheme
 covers [nsh] fontScale
 covers [nsh] windowSize
+covers [nsh] horizontalSizeClass
+covers [nsh] verticalSizeClass
 covers [nsh] lifecycle
 covers [nsh] wakeCount
 covers [nsh] localeSettings
@@ -284,6 +313,16 @@ tap id:tab-rename
 frame id:tab-bar 0 784 390 60
 covers [nsh/mobile] isAvailable
 covers [nsh/mobile] TabBar
+covers [nsh/mobile] SegmentedControl
+# The system's switch shows the app's value, in its style's accent.
+expect Wi-Fi: true
+style id:wifi accentColor #34c759ff
+covers [nsh/mobile] Switch
+covers [styles] accentColor
+
+# The system's date and time picker shows the app's value.
+expect When: 2026-11-17T09:30
+covers [nsh/mobile] DateTimePicker
 # mod-haptics
 tap id:case-mod-haptics
 # every call goes through; a name Haptics does not know throws.
@@ -338,3 +377,14 @@ expect Calls: done
 expect Fps enabled: false
 covers [nsh] fpsEnabled
 covers [nsh] setFpsEnabled
+# mod-fps-mode
+tap id:case-mod-fps-mode
+expect Modes: not called
+tap id:modes
+expect Modes: done
+covers [nsh] setFpsMode
+# mod-perf-stats
+tap id:case-mod-perf-stats
+# no stats until the monitor measured a second.
+expect Fps: none
+covers [nsh] perfStats

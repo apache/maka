@@ -20,6 +20,10 @@
 //! the app is in front. An embedding app that has a delegate of its own keeps
 //! it: its notifications and their presses stay its own, and presses of the
 //! ones NSH showed go to that delegate.
+//!
+//! NSH marks the content of the notifications it shows ([`MARKER`]), and
+//! closing them all removes only the marked ones: on iOS the center is the
+//! embedding app's too, and its own notifications stay.
 
 use std::{
     cell::{Cell, RefCell},
@@ -39,13 +43,17 @@ use objc2::{
     rc::Retained,
     runtime::{AnyClass, AnyObject, Bool, NSObject, NSObjectProtocol},
 };
-use objc2_foundation::{NSArray, NSBundle, NSError, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSNumber, NSString};
 
 /// `UNAuthorizationOptionBadge | Sound | Alert`.
 const AUTHORIZATION: usize = 1 | 2 | 4;
 /// `UNNotificationPresentationOptionBadge | Sound | List | Banner`: a
 /// notification shown while the app is in front shows as it does behind.
 const PRESENTATION: usize = 1 | (1 << 1) | (1 << 3) | (1 << 4);
+/// The key in `userInfo` of the notifications NSH shows: what closing them
+/// all removes, so an embedding app's own stay. It lives in the content,
+/// so the notifications of an earlier run carry it too.
+const MARKER: &str = "nsh";
 
 thread_local! {
     /// The engine that listens to presses, once the app does.
@@ -137,6 +145,10 @@ pub fn command(control: &EngineControl, command: &NotificationCommand) {
             };
             let () =
                 unsafe { msg_send![&*center, removeDeliveredNotificationsWithIdentifiers: &*ids] };
+        }
+        NotificationCommand::CloseAll => {
+            let Some(center) = center() else { return };
+            close_all(&center);
         }
         NotificationCommand::Listen => {
             install();
@@ -235,9 +247,20 @@ fn show(center: &AnyObject, control: EngineControl, id: u32, notification: &Noti
         let content: Retained<AnyObject> = msg_send![content, new];
         let () = msg_send![&*content, setTitle: &*NSString::from_str(&notification.title)];
         let () = msg_send![&*content, setBody: &*NSString::from_str(&notification.body)];
+        let marker = NSString::from_str(MARKER);
+        let yes = NSNumber::new_bool(true);
+        let info = NSDictionary::<NSString, AnyObject>::from_slices(&[&*marker], &[yes.as_ref()]);
+        let () = msg_send![&*content, setUserInfo: &*info];
         // A content without a sound plays none (nor vibrates an iPhone),
         // though `PRESENTATION` lets sounds play.
-        if !notification.silent {
+        // The app's sound by its file name, which the system finds in the
+        // bundle's `Library/Sounds` (`nsh package` copies it there) or plays
+        // the default for when it finds none.
+        if let Some(path) = notification.sound_path() {
+            let name = NSString::from_str(Notification::sound_file_name(path));
+            let sound: Retained<AnyObject> = msg_send![sound, soundNamed: &*name];
+            let () = msg_send![&*content, setSound: &*sound];
+        } else if !notification.silent {
             let sound: Retained<AnyObject> = msg_send![sound, defaultSound];
             let () = msg_send![&*content, setSound: &*sound];
         }
@@ -262,6 +285,68 @@ fn show(center: &AnyObject, control: EngineControl, id: u32, notification: &Noti
             withCompletionHandler: &*done
         ];
     }
+}
+
+/// Removes the notifications NSH showed ([`MARKER`]), pending and
+/// delivered, whichever run showed them. The handlers run on a background
+/// queue, which the center allows: it is thread-safe.
+fn close_all(center: &Retained<AnyObject>) {
+    let again = center.clone();
+    let pending = RcBlock::new(move |requests: *mut NSArray<AnyObject>| {
+        // SAFETY: the array the framework passes, or nil.
+        let Some(requests) = (unsafe { requests.as_ref() }) else {
+            return;
+        };
+        if let Some(ids) = marked(requests.iter()) {
+            // SAFETY: a documented method taking an array of identifiers.
+            let () = unsafe {
+                msg_send![&*again, removePendingNotificationRequestsWithIdentifiers: &*ids]
+            };
+        }
+    });
+    let again = center.clone();
+    let delivered = RcBlock::new(move |notifications: *mut NSArray<AnyObject>| {
+        // SAFETY: the array the framework passes, or nil.
+        let Some(notifications) = (unsafe { notifications.as_ref() }) else {
+            return;
+        };
+        // SAFETY: a delivered notification's documented request.
+        let requests = notifications
+            .iter()
+            .map(|n| -> Retained<AnyObject> { unsafe { msg_send![&*n, request] } });
+        if let Some(ids) = marked(requests) {
+            // SAFETY: a documented method taking an array of identifiers.
+            let () =
+                unsafe { msg_send![&*again, removeDeliveredNotificationsWithIdentifiers: &*ids] };
+        }
+    });
+    // SAFETY: documented methods and their blocks' signatures.
+    unsafe {
+        let () =
+            msg_send![&**center, getPendingNotificationRequestsWithCompletionHandler: &*pending];
+        let () = msg_send![&**center, getDeliveredNotificationsWithCompletionHandler: &*delivered];
+    }
+}
+
+/// The identifiers of the requests NSH made ([`MARKER`]), if any.
+fn marked(
+    requests: impl Iterator<Item = Retained<AnyObject>>,
+) -> Option<Retained<NSArray<NSString>>> {
+    let marker = NSString::from_str(MARKER);
+    let ids: Vec<Retained<NSString>> = requests
+        .filter_map(|request| {
+            // SAFETY: documented properties: a request's content and
+            // identifier, the content's `userInfo` and `objectForKey:`.
+            unsafe {
+                let content: Retained<AnyObject> = msg_send![&*request, content];
+                let info: Option<Retained<AnyObject>> = msg_send![&*content, userInfo];
+                let value: Option<Retained<AnyObject>> = msg_send![&*info?, objectForKey: &*marker];
+                value?;
+                Some(msg_send![&*request, identifier])
+            }
+        })
+        .collect();
+    (!ids.is_empty()).then(|| NSArray::from_retained_slice(&ids))
 }
 
 #[cfg(target_os = "macos")]

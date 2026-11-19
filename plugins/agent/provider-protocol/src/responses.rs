@@ -128,6 +128,12 @@ pub enum Event {
         is_error: bool,
         metadata: ItemMetadata,
     },
+    HostedResult {
+        id: String,
+        name: String,
+        items: Vec<Value>,
+        is_error: bool,
+    },
     Citation(Citation),
     Finished {
         reason: Stop,

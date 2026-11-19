@@ -658,17 +658,6 @@ impl Rv {
         ))
     }
 
-    /// The box of the block node at `pos` (a node selection's), in the
-    /// content box.
-    fn node_box(&self, pos: usize) -> Option<Bounds<Points>> {
-        let tree = self.tree.borrow();
-        let geo = self.geo.borrow();
-        let block = tree.children.values().flatten().find(|b| b.pos == pos)?;
-        let origin = geo.origin(block.id)?;
-        let (_, frame) = geo.frames.get(&block.id)?;
-        Some(Bounds::new(origin, frame.size))
-    }
-
     /// An action chosen from the edit menu: as the keyboard's commands do
     /// it.
     pub(crate) fn edit_action(&self, payload: &EventPayload) {

@@ -83,14 +83,6 @@ impl Column {
 pub(crate) fn render(dv: Dv) -> impl IntoElement {
     let props = dv.props;
     let (scroll_dv, layout_dv) = (dv.clone(), dv.clone());
-    let font = {
-        let dv = dv.clone();
-        move || {
-            dv.rev.get();
-            dv.st.borrow().font.clone()
-        }
-    };
-    let (font_a, font_b, font_c) = (font.clone(), font.clone(), font);
     let height = {
         let dv = dv.clone();
         move || dv.rows_height()
@@ -102,9 +94,13 @@ pub(crate) fn render(dv: Dv) -> impl IntoElement {
         .relative()
         .overflow_hidden()
         .text_color(move || theme().foreground)
-        .font_family(move || font_a().family)
-        .text_size(move || Length::from(font_b().size))
-        .line_height(move || nsh_core::LineHeight::from(font_c().line_height))
+        // The app's own font: the core grows it by the user's text size, as the
+        // controller's `drawn_font` measures it.
+        .font_family(move || crate::editor::controller::font_family(props.font_family.get()))
+        .text_size(move || Length::from(props.font_size.get()))
+        .line_height(move || {
+            nsh_core::LineHeight::from(crate::terminal::row_height(props.line_height.get()))
+        })
         .child(
             scroll()
                 .element_ref(&dv.vscroll)
@@ -637,9 +633,16 @@ fn line_row(
                 // where the side cuts it, as a terminal's diff shows a
                 // line too long for its pane (its side is as wide as its
                 // box: [`content`]).
-                el = el.child(match !wrapped && crate::terminal::is_terminal() {
-                    true => line.right(px(PAD)).truncate(),
-                    false => line,
+                // Elsewhere an unwrapped line stays one line: the side is as
+                // wide as its longest line measured, and a text the platform
+                // draws a little wider is cut there, never wrapped over the
+                // next row.
+                el = el.child(match (wrapped, crate::terminal::is_terminal()) {
+                    (false, true) => line.right(px(PAD)).truncate(),
+                    (false, false) => line
+                        .number_of_lines(1u32)
+                        .text_overflow(nsh_core::EllipsizeMode::Clip),
+                    (true, _) => line,
                 });
             }
             Some(el)
