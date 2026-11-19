@@ -295,7 +295,9 @@ impl Owner {
             let mut preflight_stage = Some(AuthorityStage::WorkspaceScope);
             let mut publication_store = self.durable.clone();
             // Preserve the physical lease even if data preparation fails before the driver starts.
-            let result = async {
+            // Pin the driver phase once per run so its reconciliation state is not carried
+            // inline through the cleanup and queue futures during history replay.
+            let result = Box::pin(async {
                 let access = self.run_access(Arc::new(view.spec.clone()), claim.clone(), &lease).map_err(RunError::InvalidInput)?;
                 let writer = self.store.data_writer_for_work(access.custody().as_ref(), &view.spec.session_id)?;
                 let state = self.durable.with_data_writer(writer)?;
@@ -434,7 +436,7 @@ impl Owner {
                         && let Err(error) = model.original_cleanup.reconcile_pending().await {
                             tracing::error!(run = %view.run, %error, "Original model cleanup publication remains unresolved");
                         }
-                    let driven = engine.drive(claim.clone(), driver.clone(), cancellation.clone()).await;
+                    let driven = Box::pin(engine.drive(claim.clone(), driver.clone(), cancellation.clone())).await;
                     match driven {
                         Err(RunError::PublicationUncertain { publication, .. }) => {
                             if let Err(source) = publication.reconcile(&state).await {
@@ -517,7 +519,7 @@ impl Owner {
                     cleaned?;
                 }
                 driven
-            }
+            })
             .await;
             let result = match (result, preflight_stage) {
                 (Err(error), Some(stage)) if !error.is_cleanup_unconfirmed() => {

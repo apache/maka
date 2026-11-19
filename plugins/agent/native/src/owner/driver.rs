@@ -837,14 +837,32 @@ impl DriverPorts for NativeDriver {
     fn now(&self) -> UnixMillis {
         UnixMillis(now().try_into().expect("Unix milliseconds"))
     }
-    fn prepare_step<'a>(
-        &'a self,
-        view: &'a RunView,
+    fn prepare_step(
+        self: Arc<Self>,
+        view: RunView,
         mode: Preparation,
-    ) -> BoxFuture<'a, Result<PreparedStep, RunError>> {
+    ) -> BoxFuture<'static, Result<PreparedStep, RunError>> {
         Box::pin(async move {
-            self.access.live_configuration().await?;
-            self.model()?.prepare_step(view, mode, self).await
+            struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+            impl<T> Drop for AbortOnDrop<T> {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            // Isolate step preparation and history replay onto a fresh worker stack
+            // tracked by self.workers so outer driver frames never stack beneath replay.
+            let worker = self.clone();
+            let mut handle = AbortOnDrop(self.workers.spawn(async move {
+                worker.access.live_configuration().await?;
+                worker.model()?.prepare_step(&view, mode, &worker).await
+            }));
+            (&mut handle.0).await.map_err(|error| {
+                if error.is_cancelled() {
+                    RunError::Cancelled
+                } else {
+                    RunError::InvalidInput(format!("step preparation task failed: {error}"))
+                }
+            })?
         })
     }
     fn assess_recovery<'a>(
