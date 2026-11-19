@@ -32,6 +32,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub enum Preparation {
     Initial,
+    ResumeFromHistory,
     CodexFallback {
         attempt: ModelAttemptId,
     },

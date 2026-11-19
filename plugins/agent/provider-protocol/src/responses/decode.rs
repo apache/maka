@@ -112,17 +112,108 @@ enum Item {
         action: Value,
         status: String,
     },
-    #[serde(other)]
-    Other,
+    #[serde(untagged)]
+    Hosted(HostedItem),
+}
+
+// A protocol item type or an explicit execution owner identifies remote work.
+// Function/custom calls are decoded above and always require client admission.
+#[derive(Deserialize, Serialize)]
+struct HostedItem {
+    #[serde(rename = "type")]
+    kind: String,
+    id: Option<String>,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+impl HostedItem {
+    fn item_id(&self) -> &str {
+        self.id.as_deref().unwrap_or_else(|| self.call_id())
+    }
+    fn call_id(&self) -> &str {
+        self.fields
+            .get("call_id")
+            .and_then(Value::as_str)
+            .unwrap_or(self.id.as_deref().unwrap_or(""))
+    }
+    fn name(&self) -> &str {
+        self.fields
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.kind)
+    }
+    fn into_wire(mut self) -> Value {
+        self.fields.insert("type".into(), Value::String(self.kind));
+        if let Some(id) = self.id {
+            self.fields.insert("id".into(), Value::String(id));
+        }
+        Value::Object(self.fields)
+    }
+    fn settlement(&self) -> Option<bool> {
+        let error = self.fields.get("error").is_some_and(|v| !v.is_null());
+        match self.fields.get("status").and_then(Value::as_str) {
+            Some("completed") => Some(error),
+            Some("failed" | "incomplete") => Some(true),
+            None if error
+                || ["output", "outputs", "results", "result", "tools"]
+                    .iter()
+                    .any(|key| self.fields.get(*key).is_some_and(|v| !v.is_null())) =>
+            {
+                Some(error)
+            }
+            _ => None,
+        }
+    }
+    fn is_hosted(&self) -> bool {
+        if matches!(
+            self.kind.as_str(),
+            "function_call"
+                | "custom_tool_call"
+                | "computer_call"
+                | "local_shell_call"
+                | "apply_patch_call"
+                | "mcp_approval_request"
+        ) {
+            return false;
+        }
+        match self.fields.get("execution").and_then(Value::as_str) {
+            Some(owner) => owner == "server" && self.kind.ends_with("_call"),
+            None if self.kind == "shell_call" => self
+                .fields
+                .get("environment")
+                .is_some_and(|v| v["type"] == "container_reference"),
+            None => matches!(
+                self.kind.as_str(),
+                "file_search_call"
+                    | "code_interpreter_call"
+                    | "image_generation_call"
+                    | "mcp_call"
+                    | "mcp_list_tools"
+                    | "x_search_call"
+            ),
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
 enum Identity {
     Message,
     Reasoning,
-    Function { call_id: String, name: String },
-    Custom { call_id: String, name: String },
+    Function {
+        call_id: String,
+        name: String,
+    },
+    Custom {
+        call_id: String,
+        name: String,
+    },
     Search,
+    Hosted {
+        kind: String,
+        call_id: String,
+        name: String,
+    },
 }
 struct ObservedItem {
     identity: Identity,
@@ -152,7 +243,17 @@ impl Item {
                 },
             ),
             Self::Search { id, .. } => (id, Identity::Search),
-            Self::Other => return Err(Error::Invalid("unsupported Responses output item".into())),
+            Self::Hosted(item) if item.is_hosted() => (
+                item.item_id(),
+                Identity::Hosted {
+                    kind: item.kind.clone(),
+                    call_id: item.call_id().into(),
+                    name: item.name().into(),
+                },
+            ),
+            Self::Hosted(_) => {
+                return Err(Error::Invalid("unsupported Responses output item".into()));
+            }
         })
     }
 }
@@ -236,6 +337,8 @@ pub struct Decoder {
     pub observed_output: bool,
     pub replay_safe: bool,
     pending_effects: HashSet<String>,
+    pending_receipts: BTreeMap<String, HostedItem>,
+    receipt_ids: HashSet<String>,
 }
 impl Decoder {
     pub fn new(reasoning: ReasoningMode, search_name: Option<String>) -> Self {
@@ -252,6 +355,8 @@ impl Decoder {
             observed_output: false,
             replay_safe: true,
             pending_effects: HashSet::new(),
+            pending_receipts: BTreeMap::new(),
+            receipt_ids: HashSet::new(),
             search_name,
         }
     }
@@ -272,6 +377,10 @@ impl Decoder {
         !self.finished && self.pending_effects.is_empty()
     }
 
+    fn search_name(&self) -> &str {
+        self.search_name.as_deref().unwrap_or("web_search")
+    }
+
     fn invalid(message: &str) -> Error {
         Error::Invalid(message.into())
     }
@@ -281,7 +390,26 @@ impl Decoder {
             return Err(Self::invalid("invalid Responses item identity"));
         }
         if let Some(previous) = self.items.get(id) {
-            if added || previous.identity != identity {
+            let matches = match (&previous.identity, &identity) {
+                (
+                    Identity::Hosted {
+                        kind,
+                        call_id,
+                        name,
+                    },
+                    Identity::Hosted {
+                        kind: next_kind,
+                        call_id: next_id,
+                        name: next_name,
+                    },
+                ) => {
+                    kind == next_kind
+                        && call_id == next_id
+                        && (name == next_name || name == kind || next_name == kind)
+                }
+                (first, next) => first == next,
+            };
+            if added || !matches {
                 return Err(Self::invalid(
                     "Responses item identity changed or duplicated",
                 ));
@@ -293,21 +421,37 @@ impl Decoder {
             {
                 return Err(Self::invalid("invalid Responses tool identity"));
             }
-            if identity == Identity::Search {
+            let hosted = match item {
+                Item::Search { .. } => Some((id, self.search_name(), "{}".to_owned())),
+                Item::Hosted(item) => Some((
+                    item.call_id(),
+                    item.name(),
+                    match item.fields.get("arguments") {
+                        Some(Value::String(arguments)) => arguments.clone(),
+                        Some(arguments) => arguments.to_string(),
+                        None => "{}".into(),
+                    },
+                )),
+                _ => None,
+            };
+            if let Some((call_id, name, arguments)) = hosted {
+                if call_id.is_empty() || name.is_empty() {
+                    return Err(Self::invalid("invalid Responses tool identity"));
+                }
+                let name = name.to_owned();
                 self.pending_effects.insert(id.into());
-                let name = self
-                    .search_name
-                    .clone()
-                    .ok_or_else(|| Self::invalid("unrequested Responses web search"))?;
                 self.observed_output = true;
                 self.replay_safe = false;
                 out.push(OutputEvent::ToolCall {
-                    id: id.into(),
+                    id: call_id.into(),
                     name,
-                    input: ToolInput::Function("{}".into()),
+                    input: ToolInput::Function(arguments),
                     provider_executed: true,
                     metadata: ItemMetadata {
-                        id: id.into(),
+                        id: match item {
+                            Item::Hosted(item) => item.id.clone().unwrap_or_default(),
+                            _ => id.into(),
+                        },
                         replay: None,
                         encrypted_content: None,
                     },
@@ -669,10 +813,6 @@ impl Decoder {
                 }
                 self.observed_output = true;
                 self.replay_safe = false;
-                let name = self
-                    .search_name
-                    .clone()
-                    .ok_or_else(|| Self::invalid("unrequested Responses web search"))?;
                 // A terminal response can contain unfinished provider work.
                 // Retain its call without fabricating a settlement; the strict
                 // step assembler then keeps the outcome unknown.
@@ -681,16 +821,95 @@ impl Decoder {
                     let metadata = metadata(&id);
                     out.push(OutputEvent::ToolResult {
                         id,
-                        name,
+                        name: self.search_name().to_owned(),
                         action,
                         is_error: status == "failed",
                         metadata,
                     });
                 }
             }
-            Item::Other => return Err(Self::invalid("unsupported Responses output item")),
+            Item::Hosted(item) => {
+                self.done.insert(item.item_id().to_owned());
+                if matches!(item.kind.as_str(), "shell_call" | "tool_search_call")
+                    && item.settlement() != Some(true)
+                {
+                    self.pending_receipts
+                        .insert(item.call_id().to_owned(), item);
+                } else if let Some(is_error) = item.settlement() {
+                    self.settle_hosted(item, None, is_error, out);
+                }
+            }
         }
         Ok(())
+    }
+    fn settle_hosted(
+        &mut self,
+        call: HostedItem,
+        receipt: Option<HostedItem>,
+        is_error: bool,
+        out: &mut Vec<OutputEvent>,
+    ) {
+        self.pending_effects.remove(call.item_id());
+        let id = call.call_id().to_owned();
+        let Identity::Hosted { name, .. } = &self.items[call.item_id()].identity else {
+            unreachable!("observed hosted call")
+        };
+        let name = name.clone();
+        let mut items = vec![call.into_wire()];
+        if let Some(receipt) = receipt {
+            if !receipt.item_id().is_empty() {
+                self.receipt_ids.insert(receipt.item_id().into());
+            }
+            items.push(receipt.into_wire());
+        }
+        out.push(OutputEvent::HostedResult {
+            id,
+            name,
+            items,
+            is_error,
+        });
+    }
+
+    fn take_call(&mut self, item: Item, done: bool, out: &mut Vec<OutputEvent>) -> Option<Item> {
+        let Item::Hosted(record) = item else {
+            return Some(item);
+        };
+        if record.item_id().is_empty() && record.is_hosted() {
+            // No stable identity is available for this server activity.
+            self.observed_output = true;
+            self.replay_safe = false;
+            return None;
+        }
+        let call_kind = match record.kind.as_str() {
+            "shell_call_output" => "shell_call",
+            "tool_search_output" => "tool_search_call",
+            _ => return Some(Item::Hosted(record)),
+        };
+        let owner = record.fields.get("execution").and_then(Value::as_str);
+        if owner.is_some_and(|owner| owner != "server") {
+            return Some(Item::Hosted(record));
+        }
+        if self.receipt_ids.contains(record.item_id()) {
+            return None;
+        }
+        let key = record.fields.get("call_id").and_then(Value::as_str);
+        let paired = key.filter(|k| {
+            self.pending_receipts
+                .get(*k)
+                .is_some_and(|c| c.kind == call_kind)
+        });
+        if paired.is_none() && owner != Some("server") {
+            return Some(Item::Hosted(record));
+        }
+        self.observed_output = true;
+        self.replay_safe = false;
+        if done
+            && let Some(is_error) = record.settlement()
+            && let Some(call) = paired.and_then(|key| self.pending_receipts.remove(key))
+        {
+            self.settle_hosted(call, Some(record), is_error, out);
+        }
+        None
     }
     pub fn push(&mut self, value: Value) -> Result<Vec<OutputEvent>> {
         if self.finished {
@@ -709,14 +928,7 @@ impl Decoder {
             // Provider-executed tools may have produced effects even if their
             // final result has not arrived. Function input deltas are local only.
             self.replay_safe = false;
-            let id = if value["type"]
-                .as_str()
-                .is_some_and(|kind| kind.starts_with("response.web_search_call."))
-            {
-                value["item_id"].as_str().unwrap_or("")
-            } else {
-                ""
-            }; // Unknown remote effects have no replayable completion contract.
+            let id = value["item_id"].as_str().unwrap_or("");
             self.pending_effects.insert(id.into());
         }
         let mut replay = BTreeMap::new();
@@ -751,6 +963,9 @@ impl Decoder {
                 });
             }
             Event::Added { item } => {
+                let Some(item) = self.take_call(item, false, &mut out) else {
+                    return Ok(out);
+                };
                 self.observe(&item, true, &mut out)?;
                 match item {
                     Item::Message { id, phase, .. } => {
@@ -766,10 +981,13 @@ impl Decoder {
                     Item::Function { .. } | Item::Custom { .. } => {
                         self.observed_output = true;
                     }
-                    Item::Other => return Err(Self::invalid("unsupported Responses output item")),
+                    Item::Hosted(_) => {}
                 }
             }
             Event::Done { item } => {
+                let Some(item) = self.take_call(item, true, &mut out) else {
+                    return Ok(out);
+                };
                 let template = replay.remove(item.identity()?.0);
                 self.final_item(item, template, &mut out)?;
             }
@@ -850,16 +1068,11 @@ impl Decoder {
                 // Terminal output may repeat already-finalized items or contain
                 // the only complete items. Sparse Codex terminals are also valid.
                 for item in response.output {
-                    self.observe(&item, false, &mut out)?;
-                    let id = match &item {
-                        Item::Message { id, .. }
-                        | Item::Reasoning { id, .. }
-                        | Item::Function { id, .. }
-                        | Item::Custom { id, .. }
-                        | Item::Search { id, .. } => Some(id),
-                        Item::Other => None,
+                    let Some(item) = self.take_call(item, true, &mut out) else {
+                        continue;
                     };
-                    if id.is_some_and(|id| self.done.contains(id)) {
+                    self.observe(&item, false, &mut out)?;
+                    if self.done.contains(item.identity()?.0) {
                         if let Item::Message { id, content, .. } = item {
                             self.message_citations(&id, content, BTreeMap::new(), &mut out);
                         }
@@ -867,6 +1080,12 @@ impl Decoder {
                     }
                     let template = replay.remove(item.identity()?.0);
                     self.final_item(item, template, &mut out)?;
+                }
+                for (_, call) in std::mem::take(&mut self.pending_receipts) {
+                    // The provider confirmed completion even when it omitted a separate output.
+                    if let Some(is_error) = call.settlement() {
+                        self.settle_hosted(call, None, is_error, &mut out);
+                    }
                 }
                 if self.items.len() != self.done.len() || !self.open.is_empty() {
                     return Err(Self::invalid("Responses completed with unfinished output"));
@@ -929,6 +1148,62 @@ impl Decoder {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hosted_output_items_settle_once_without_dispatching_a_local_tool() {
+        for kind in [
+            "file_search_call",
+            "code_interpreter_call",
+            "image_generation_call",
+            "mcp_call",
+            "mcp_list_tools",
+        ] {
+            let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+            let call = json!({"type":kind,"id":"i","name":"same","status":"in_progress"});
+            let done = json!({"type":kind,"id":"i","name":"same","status":"completed","output":"evidence"});
+            let events = decoder
+                .push(json!({"type":"response.output_item.added","item":call}))
+                .unwrap();
+            assert!(
+                matches!(&events[..],[OutputEvent::ToolCall{id,name,provider_executed:true,..}] if id=="i" && name=="same")
+            );
+            assert!(!decoder.retained_output_safe());
+            let events = decoder
+                .push(json!({"type":"response.output_item.done","item":done}))
+                .unwrap();
+            assert!(
+                matches!(&events[..],[OutputEvent::HostedResult{id,items,is_error:false,..}] if id=="i" && items==std::slice::from_ref(&done))
+            );
+            assert!(decoder.retained_output_safe());
+            let events = decoder
+                .push(json!({"type":"response.completed","response":{"output":[done]}}))
+                .unwrap();
+            assert!(matches!(
+                &events[..],
+                [OutputEvent::Finished {
+                    reason: Stop::Stop,
+                    ..
+                }]
+            ));
+        }
+    }
+
+    #[test]
+    fn split_server_output_is_bound_by_call_id_and_client_requests_stay_local() {
+        let mut decoder = Decoder::new(ReasoningMode::PlaintextContent, None);
+        let call = json!({"type":"shell_call","execution":"server","id":"item","call_id":"remote","name":"same","status":"in_progress","arguments":{"cmd":"status"}});
+        let receipt =
+            json!({"type":"shell_call_output","call_id":"remote","output":[{"stdout":"ok"}]});
+        let local = json!({"type":"function_call","id":"item2","call_id":"local","name":"same","arguments":"{}"});
+        let events = decoder
+            .push(json!({"type":"response.completed","response":{"output":[call,receipt,local]}}))
+            .unwrap();
+        assert!(
+            matches!(&events[..],[OutputEvent::ToolCall{id,..},OutputEvent::HostedResult{id:r,items,..},OutputEvent::ToolCall{id:l,provider_executed:false,..},OutputEvent::Finished{reason:Stop::ToolCalls,..}] if id=="remote" && r==id && l=="local" && *items==vec![call,receipt])
+        );
+        let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+        assert!(decoder.push(json!({"type":"response.output_item.done","item":{"type":"computer_call","id":"x","name":"mcp_call","status":"completed"}})).is_err());
+    }
 
     #[test]
     fn deepseek_search_results_and_citations_survive_plaintext_responses() {
@@ -1240,6 +1515,42 @@ mod tests {
             assert!(matches!(&end[..], [OutputEvent::Finished { usage, .. }]
                 if (usage.input, usage.cache_read, usage.cache_write) == (Some(100), read, write)));
         }
+    }
+
+    #[test]
+    fn undeclared_hosted_search_settles_once_and_allows_the_response_to_finish() {
+        let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+        let item = json!({
+            "type":"web_search_call","id":"ws_returned","status":"completed",
+            "action":{"type":"search","query":"rust"}
+        });
+        let start = decoder
+            .push(json!({
+                "type":"response.output_item.added",
+                "item":{"type":"web_search_call","id":"ws_returned","status":"in_progress"}
+            }))
+            .unwrap();
+        assert!(
+            matches!(&start[..], [OutputEvent::ToolCall { id, name, provider_executed: true, .. }]
+            if id == "ws_returned" && name == "web_search")
+        );
+        let done = decoder
+            .push(json!({"type":"response.output_item.done","item":item}))
+            .unwrap();
+        assert!(
+            matches!(&done[..], [OutputEvent::ToolResult { id, name, action, is_error: false, .. }]
+            if id == "ws_returned" && name == "web_search" && *action == item["action"])
+        );
+        let end = decoder
+            .push(json!({"type":"response.completed","response":{"output":[item]}}))
+            .unwrap();
+        assert!(matches!(
+            &end[..],
+            [OutputEvent::Finished {
+                reason: Stop::Stop,
+                ..
+            }]
+        ));
     }
 
     #[test]

@@ -142,6 +142,9 @@ mod state_convert;
 mod tab_group;
 mod value;
 
+// The area's code, for the components of `nsh/base` built on it
+// (`SplitView`): rendered in their own view, with events of their own.
+pub(crate) use dock_area::{AreaCx, area_view};
 pub use dock_area::{
     DockArea, DockAreaApi, DockAreaElement, DockAreaEvent, DockAreaProps, DockDropIndicator,
     DockInfo, DockPanel, DockPanelOptions, DockTab, DockTarget, dock_area,

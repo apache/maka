@@ -31,6 +31,8 @@ import {
   type GeneralAction,
   type GeneralSettingsOwner,
 } from './generalSettingsState.ts';
+import { ComposerToolbarSettings } from './ComposerToolbarSettings';
+import { composerToolbar } from './composerToolbar';
 import { UiScaleSettings } from './UiScaleSettings';
 import { PredictionSettings } from './PredictionSettings';
 import { uiScale } from './uiScale';
@@ -148,6 +150,9 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           />
         </If>
       </SettingsSection>
+      <If when={composerToolbar.supported}>
+        <ComposerToolbarSettings />
+      </If>
       <If
         when={facts()}
         else={

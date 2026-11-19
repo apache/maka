@@ -333,9 +333,11 @@ impl ResizableState {
     /// (the handle between panel `ix` and panel `ix + 1`): what it gains
     /// comes from the panels after the handle, nearest first, as far as
     /// their ranges let it (a fixed panel only gives up space to a drag on
-    /// its own handle), and what it gives up goes to the panel after it,
-    /// taking more from the panels before it (fixed ones aside) once it
-    /// reaches its minimum. The last panel has no handle: nothing happens.
+    /// its own handle), and what it gives up goes to the panels after it,
+    /// nearest first, as far as their maximums let them (the handle stops
+    /// where none takes more), taking more from the panels before it
+    /// (fixed ones aside) once it reaches its minimum. The last panel has
+    /// no handle: nothing happens.
     ///
     /// The worker behind drags and [`Self::resize_panel`]. Unlike
     /// `gpui-base`'s, it does not read the panels' laid out sizes first:
@@ -379,6 +381,19 @@ impl ResizableState {
                 changed -= to_reduce;
             }
         } else {
+            // What the panel gives up goes to the panels after the handle,
+            // nearest first, as far as their maximums let them (a fixed
+            // one only takes space from a drag on its own handle): the
+            // handle stops where they are all at their maximums.
+            let takes = |state: &Self, j: usize| !state.panels[j].fixed || j == main_ix + 1;
+            let room = (main_ix + 1..old_sizes.len())
+                .filter(|&j| takes(self, j))
+                .fold(Points::ZERO, |sum, j| {
+                    sum + (self.panel_size_range(j).end - old_sizes[j]).max(Points::ZERO)
+                });
+            let size = size.max(old_sizes[main_ix] - room);
+            let new_size = size.clamp(size_range.start, size_range.end);
+
             let mut changed = new_size - size;
             new_sizes[ix] = new_size;
 
@@ -394,7 +409,19 @@ impl ResizableState {
                 new_sizes[ix] -= to_reduce;
             }
 
-            new_sizes[main_ix + 1] += old_sizes[main_ix] - size - changed;
+            let mut gained = old_sizes[main_ix] - size - changed;
+            for (j, new_size) in new_sizes.iter_mut().enumerate().skip(main_ix + 1) {
+                if gained <= Points::ZERO {
+                    break;
+                }
+                if !takes(self, j) {
+                    continue;
+                }
+                let available_size = (self.panel_size_range(j).end - *new_size).max(Points::ZERO);
+                let to_add = gained.min(available_size);
+                *new_size += to_add;
+                gained -= to_add;
+            }
         }
 
         // If the total exceeds the container, the main panel gives way.
@@ -585,6 +612,41 @@ mod tests {
         assert_eq!(sizes(&state), [300.0, 100.0, 200.0]);
         state.set_container_size(px(900.0));
         assert_eq!(state.sizes()[0], px(300.0));
+    }
+
+    /// An inspector: a flexible panel before the handle, a fixed one with
+    /// a maximum after it. Dragging the handle toward the flexible panel
+    /// grows the inspector up to its maximum and no further: the flexible
+    /// panel stops shrinking there too.
+    #[test]
+    fn a_panel_after_the_handle_stops_at_its_maximum() {
+        let mut state = measured(&[600.0, 300.0]);
+        state.update_panel(1, Some(px(300.0)), px(220.0)..px(480.0), true);
+        state.start_resizing(0);
+        state.resize_panel_at_handle(0, px(200.0));
+        assert_eq!(sizes(&state), [420.0, 480.0]);
+        // Back toward it, the inspector shrinks again.
+        state.resize_panel_at_handle(0, px(500.0));
+        assert_eq!(sizes(&state), [500.0, 400.0]);
+    }
+
+    #[test]
+    fn shrinking_gives_to_the_panels_after_the_handle_in_turn() {
+        // The next panel stops at its maximum, the one after takes the rest.
+        let mut state = measured(&[400.0, 200.0, 200.0]);
+        state.update_panel(1, Some(px(200.0)), PANEL_MIN_SIZE..px(250.0), false);
+        state.start_resizing(0);
+        state.resize_panel_at_handle(0, px(250.0));
+        assert_eq!(sizes(&state), [250.0, 250.0, 300.0]);
+
+        // A fixed panel past the next one takes nothing: the handle stops
+        // where the next panel reaches its maximum.
+        let mut state = measured(&[400.0, 200.0, 200.0]);
+        state.update_panel(1, Some(px(200.0)), PANEL_MIN_SIZE..px(250.0), false);
+        state.update_panel(2, Some(px(200.0)), PANEL_MIN_SIZE..PANEL_MAX_SIZE, true);
+        state.start_resizing(0);
+        state.resize_panel_at_handle(0, px(250.0));
+        assert_eq!(sizes(&state), [350.0, 250.0, 200.0]);
     }
 
     #[test]

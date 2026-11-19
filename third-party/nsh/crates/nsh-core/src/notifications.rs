@@ -73,6 +73,11 @@ pub struct Notification {
     pub body: String,
     /// Shows it without a sound or vibration, as the web's `silent` does.
     pub silent: bool,
+    /// A sound the app ships, played instead of the system's default: its
+    /// asset path (`sounds/ding.caf`, no `asset:/`). [`Self::silent`] wins
+    /// over it, and a platform that cannot play it plays the default. See
+    /// [`Self::sound`].
+    pub sound: Option<String>,
 }
 
 impl Notification {
@@ -83,6 +88,7 @@ impl Notification {
             title: title.into(),
             body: body.into(),
             silent: false,
+            sound: None,
         }
     }
 
@@ -90,6 +96,57 @@ impl Notification {
     pub fn silent(mut self, silent: bool) -> Self {
         self.silent = silent;
         self
+    }
+
+    /// Plays the app's sound `path` (an asset path, `asset:/` optional)
+    /// instead of the system's default ([`Self::sound`]). `nsh package`
+    /// copies the app's sounds where the system plays them from: macOS and
+    /// iOS read `.caf`, `.aiff` and `.wav` files of at most 30 s by file
+    /// name (so names must differ), Android `.ogg`, `.mp3` and `.wav` as raw
+    /// resources (by name, lowercased, other characters as `_`), Linux the
+    /// file itself. Windows (unpackaged) and the web play the default.
+    pub fn sound(mut self, path: impl Into<String>) -> Self {
+        let path: String = path.into();
+        let path = path.strip_prefix("asset:").unwrap_or(&path);
+        let path = path.trim_start_matches('/');
+        self.sound = (!path.is_empty()).then(|| path.to_owned());
+        self
+    }
+
+    /// The sound to play: [`Self::sound`] unless [`Self::silent`].
+    pub fn sound_path(&self) -> Option<&str> {
+        if self.silent {
+            None
+        } else {
+            self.sound.as_deref()
+        }
+    }
+
+    /// The sound's file name, `path`'s last component: Apple platforms
+    /// play it by that, from the app's `Library/Sounds`.
+    pub fn sound_file_name(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
+    }
+
+    /// The Android raw resource name of the sound at `path`
+    /// ([`Self::sound_file_name`]).
+    pub fn sound_resource_name(path: &str) -> String {
+        let file = Self::sound_file_name(path);
+        let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+        let mut name: String = stem
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
+            name.insert(0, '_');
+        }
+        name
     }
 }
 
@@ -118,6 +175,10 @@ pub enum NotificationCommand {
     },
     /// Remove the notification called this, shown or waiting to show.
     Close(String),
+    /// Remove every notification of the app's, shown or waiting to show,
+    /// those an earlier run of the app left included where the platform
+    /// can reach them.
+    CloseAll,
     /// Report the notifications the user presses, those pressed before now
     /// (which started the app) first.
     Listen,
@@ -141,4 +202,29 @@ impl NotificationEvent {
     pub const SHOWN: &'static str = "shown";
     /// The id of the notification the user pressed.
     pub const PRESSED: &'static str = "pressed";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sound_is_an_asset_path_that_silent_overrides() {
+        let n = Notification::new("a", "T", "").sound("asset:/sounds/Ding.caf");
+        assert_eq!(n.sound.as_deref(), Some("sounds/Ding.caf"));
+        assert_eq!(n.sound_path(), Some("sounds/Ding.caf"));
+        assert_eq!(n.clone().silent(true).sound_path(), None);
+        assert_eq!(Notification::new("a", "T", "").sound("").sound, None);
+        assert_eq!(Notification::sound_file_name("sounds/Ding.caf"), "Ding.caf");
+    }
+
+    #[test]
+    fn a_sound_s_android_name_is_a_valid_resource_name() {
+        assert_eq!(
+            Notification::sound_resource_name("sounds/New Message.ogg"),
+            "new_message"
+        );
+        assert_eq!(Notification::sound_resource_name("1-up.wav"), "_1_up");
+        assert_eq!(Notification::sound_resource_name("ding"), "ding");
+    }
 }

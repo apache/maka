@@ -101,6 +101,171 @@ fn present(window: &gtk::Window) {
     window.present();
 }
 
+// --- Running in the background ----------------------------------------------------------
+
+thread_local! {
+    /// The app runs in the background ([`run_in_background`]).
+    static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    /// In the background, the window that would be the active one: it acts
+    /// as focused (its state, `closeOnBlur`, the keys the agent types).
+    static BACKGROUND_KEY: RefCell<Option<glib::WeakRef<gtk::Window>>> =
+        const { RefCell::new(None) };
+}
+
+/// Runs the app in the background (the development host's `--background`,
+/// which `nsh test --target linux` passes) when someone may type on
+/// `display`: its windows show without taking the focus from the app the
+/// user works in, and the window the app or the test activates only acts
+/// as the active one. An X server with no keyboard but its own virtual
+/// ones (Xvfb) has nobody typing on it, so the app runs as in the
+/// foreground there; a Wayland compositor always has a user.
+pub(crate) fn run_in_background(display: &gdk::Display) {
+    if display.type_().name() == "GdkX11Display" {
+        let names: Vec<String> = display
+            .default_seat()
+            .map(|seat| seat.devices(gdk::SeatCapabilities::KEYBOARD))
+            .unwrap_or_default()
+            .iter()
+            .map(|device| device.name().to_string())
+            .collect();
+        if !has_a_users_keyboard(names.iter().map(String::as_str)) {
+            log::info!(
+                "the X server has no keyboard of a user's: the app runs as in the foreground"
+            );
+            return;
+        }
+    }
+    BACKGROUND.set(true);
+}
+
+/// Whether the X server's keyboards named `names` include one a user types
+/// on: any but its virtual ones, XTest's ("Virtual core XTEST keyboard")
+/// and Xvfb's own ("Xvfb keyboard").
+fn has_a_users_keyboard<'a>(mut names: impl Iterator<Item = &'a str>) -> bool {
+    names.any(|name| !name.contains("XTEST") && !name.starts_with("Xvfb "))
+}
+
+/// Whether the app runs in the background ([`run_in_background`]).
+pub(crate) fn in_background() -> bool {
+    BACKGROUND.get()
+}
+
+/// Whether `window` acts as the active window: GTK's active one, or in the
+/// background the shown one that would be.
+pub(crate) fn is_focused(window: &gtk::Window) -> bool {
+    window.is_active()
+        || (in_background()
+            && window.is_visible()
+            && BACKGROUND_KEY
+                .with_borrow(|k| k.as_ref().and_then(|w| w.upgrade()))
+                .as_ref()
+                == Some(window))
+}
+
+/// Shows `window` activated, as the user's action does; in the background
+/// shown without the focus, the window that would be the active one.
+fn activate(surface: &Rc<Surface>, window: &gtk::Window) {
+    if in_background() {
+        show_inactive(window);
+        became_key(surface, window);
+    } else {
+        present(window);
+    }
+}
+
+/// Shows `window` without activating it. In the background, on X11 its
+/// user time is 0 before it maps, which tells the window manager not to
+/// focus it (EWMH's `_NET_WM_USER_TIME`); a Wayland compositor decides
+/// itself whether a new window takes the focus.
+fn show_inactive(window: &gtk::Window) {
+    if in_background() && !window.is_visible() {
+        // The widget, not its native surface: `gtk::Native` has its own `realize`.
+        WidgetExt::realize(window);
+        #[cfg(feature = "dev")]
+        if let Some(surface) = window.surface() {
+            crate::xtest::no_focus_on_map(&surface);
+        }
+    }
+    window.set_visible(true);
+}
+
+/// The main window activated, as the user's action does ([`activate`]).
+pub(crate) fn activate_main(surface: &Rc<Surface>) {
+    if let Some(window) = main_window(surface) {
+        activate(surface, &window);
+    }
+}
+
+/// Window `id` activated as a press in it does, unless it acts as the
+/// active one already.
+#[cfg(feature = "dev")]
+pub(crate) fn activate_for_press(surface: &Rc<Surface>, id: NodeId) {
+    if let Some(window) = gtk_window(surface, id)
+        && !is_focused(&window)
+    {
+        activate(surface, &window);
+    }
+}
+
+/// In the background, `window` becomes the one that would be active: it
+/// and the one that was report the change after this turn, as GTK's
+/// `is-active` notifies after the window manager's answer.
+fn became_key(surface: &Rc<Surface>, window: &gtk::Window) {
+    let old = BACKGROUND_KEY
+        .replace(Some(window.downgrade()))
+        .and_then(|w| w.upgrade());
+    if old.as_ref() == Some(window) {
+        return;
+    }
+    let weak = Rc::downgrade(surface);
+    let window = window.clone();
+    glib::idle_add_local_once(move || {
+        let Some(surface) = weak.upgrade() else {
+            return;
+        };
+        if let Some(old) = old {
+            key_changed(&surface, &old);
+        }
+        key_changed(&surface, &window);
+    });
+}
+
+/// In the background, `window` hid or goes: the main window becomes the
+/// one that would be active, if it shows.
+fn lost_key(surface: &Rc<Surface>, window: &gtk::Window) {
+    let key = BACKGROUND_KEY.with_borrow(|k| k.as_ref().and_then(|w| w.upgrade()));
+    if !in_background() || key.as_ref() != Some(window) {
+        return;
+    }
+    match main_window(surface).filter(|main| main != window && main.is_visible()) {
+        Some(main) => became_key(surface, &main),
+        None => BACKGROUND_KEY.set(None),
+    }
+}
+
+/// `window` started or stopped acting as the active one in the background:
+/// what GTK's `is-active` notify does.
+fn key_changed(surface: &Rc<Surface>, window: &gtk::Window) {
+    let focused = is_focused(window);
+    if main_window(surface).as_ref() == Some(window) {
+        if focused {
+            launcher_urgent(surface, false);
+        }
+        main_state_changed(surface);
+        return;
+    }
+    let id = surface
+        .windows
+        .borrow()
+        .iter()
+        .find(|(_, w)| &w.window == window)
+        .map(|(id, _)| *id);
+    if let Some(id) = id {
+        active_changed(surface, id, focused);
+        state_changed(surface, id);
+    }
+}
+
 /// The header a window of the app's own shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Header {
@@ -333,6 +498,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
     }
     let options = &open.options;
     let window = gtk::Window::new();
+    window.add_css_class("nsh-window");
     let main = main_window(surface);
     if let Some(app) = main.as_ref().and_then(|w| w.application()) {
         window.set_application(Some(&app));
@@ -441,9 +607,21 @@ fn connect(surface: &Rc<Surface>, id: NodeId, window: &gtk::Window, view: &NshVi
     window.connect_fullscreened_notify(changed(surface));
     window.connect_visible_notify(changed(surface));
     let weak = Rc::downgrade(surface);
+    window.connect_visible_notify(move |window| {
+        if let Some(surface) = weak.upgrade()
+            && !window.is_visible()
+        {
+            lost_key(&surface, window);
+        }
+    });
+    let weak = Rc::downgrade(surface);
     window.connect_is_active_notify(move |window| {
         if let Some(surface) = weak.upgrade() {
-            active_changed(&surface, id, window.is_active());
+            // The user activated it: the one that would be active too.
+            if in_background() && window.is_active() {
+                became_key(&surface, window);
+            }
+            active_changed(&surface, id, is_focused(window));
             state_changed(&surface, id);
         }
     });
@@ -630,23 +808,24 @@ fn show_first(surface: &Rc<Surface>, id: NodeId) {
 }
 
 /// Shows window `id`, activating it when its `activate` says so.
-fn show(surface: &Surface, id: NodeId) {
-    let Some((window, activate)) = surface.windows.borrow_mut().get_mut(&id).map(|w| {
+fn show(surface: &Rc<Surface>, id: NodeId) {
+    let Some((window, activates)) = surface.windows.borrow_mut().get_mut(&id).map(|w| {
         w.pending = None;
         w.active_once = false;
-        let activate = std::mem::take(&mut w.focus_on_show) || w.attributes.activate != Some(false);
-        if activate {
+        let activates =
+            std::mem::take(&mut w.focus_on_show) || w.attributes.activate != Some(false);
+        if activates {
             SHOWN.set(SHOWN.get() + 1);
             w.shown = SHOWN.get();
         }
-        (w.window.clone(), activate)
+        (w.window.clone(), activates)
     }) else {
         return;
     };
-    if activate {
-        present(&window);
+    if activates {
+        activate(surface, &window);
     } else {
-        window.set_visible(true);
+        show_inactive(&window);
     }
 }
 
@@ -1063,7 +1242,7 @@ fn request(surface: &Rc<Surface>, id: NodeId, request: &WindowRequest) {
                 SHOWN.set(SHOWN.get() + 1);
                 w.shown = SHOWN.get();
             }
-            present(&window);
+            activate(surface, &window);
         }
         // The app closes its windows by removing their roots; one asked
         // to close otherwise goes as the app closing it, policies aside.
@@ -1388,7 +1567,7 @@ fn state_of(
     state.mode = mode;
     state.minimized = minimized;
     state.visible = window.is_visible() && !minimized;
-    state.focused = window.is_active();
+    state.focused = is_focused(window);
     state.content_bounds = content_bounds;
     state.native_content_bounds = native;
     state.display = gdk_surface
@@ -1541,6 +1720,10 @@ pub(crate) fn watch_main(surface: &Rc<Surface>, window: &gtk::Window) {
     window.connect_is_active_notify(move |window| {
         if let Some(surface) = weak.upgrade() {
             if window.is_active() {
+                // The user activated it: the one that would be active too.
+                if in_background() {
+                    became_key(&surface, window);
+                }
                 launcher_urgent(&surface, false);
             }
             main_state_changed(&surface);
@@ -1646,13 +1829,16 @@ pub(crate) fn main_request(surface: &Rc<Surface>, request: &WindowRequest) {
     match request {
         WindowRequest::Show => {
             if a.activate != Some(false) {
-                present(&window);
+                activate(surface, &window);
             } else {
-                window.set_visible(true);
+                show_inactive(&window);
             }
         }
-        WindowRequest::Hide => window.set_visible(false),
-        WindowRequest::Focus | WindowRequest::Restore => present(&window),
+        WindowRequest::Hide => {
+            window.set_visible(false);
+            lost_key(surface, &window);
+        }
+        WindowRequest::Focus | WindowRequest::Restore => activate(surface, &window),
         WindowRequest::Close => {
             surface.main_window.borrow_mut().closing = true;
             crate::chrome::close(surface);
@@ -1892,12 +2078,12 @@ pub(crate) fn native_window(surface: &Surface, id: NodeId) -> Option<gtk::Window
 /// own shown activated last that still shows, else the main window.
 pub(crate) fn key_window(surface: &Surface) -> Option<gtk::Window> {
     let main = main_window(surface);
-    if main.as_ref().is_some_and(|w| w.is_active()) {
+    if main.as_ref().is_some_and(is_focused) {
         return main;
     }
     let windows = surface.windows.borrow();
     let shown = windows.values().filter(|w| w.window.is_visible());
-    if let Some(active) = shown.clone().find(|w| w.window.is_active()) {
+    if let Some(active) = shown.clone().find(|w| is_focused(&w.window)) {
         return Some(active.window.clone());
     }
     shown
@@ -1952,7 +2138,7 @@ pub(crate) fn current_state(surface: &Surface, id: NodeId) -> Option<WindowState
 
 /// Dialog root `view` was removed: its window goes, and the shown windows
 /// it owns close. Whether it had one.
-pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
+pub(crate) fn removed(surface: &Rc<Surface>, view: &NshView) -> bool {
     let id = view.id();
     if !is_window(surface, id) {
         return false;
@@ -1965,6 +2151,7 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
         timer.remove();
     }
     w.overlay.set_child(None::<&gtk::Widget>);
+    lost_key(surface, &w.window);
     w.window.destroy();
     true
 }
@@ -1983,6 +2170,11 @@ pub(crate) fn clear(surface: &Surface) {
         }
         w.overlay.set_child(None::<&gtk::Widget>);
         w.window.destroy();
+    }
+    // In the background the main window is the one that would be active
+    // for the next app (a development host's reload).
+    if in_background() {
+        BACKGROUND_KEY.set(main_window(surface).map(|w| w.downgrade()));
     }
     let mut main = surface.main_window.borrow_mut();
     // The main window stays for the next app (a development host's
@@ -2305,5 +2497,26 @@ mod tests {
             dict.lookup::<bool>("progress-visible").unwrap(),
             Some(false)
         );
+    }
+
+    /// An X server whose only keyboards are its virtual ones (Xvfb) has
+    /// nobody typing on it, so an app runs as in the foreground there; any
+    /// other keyboard (a real one, Xwayland's) is a user's.
+    #[test]
+    fn only_a_users_keyboard_keeps_the_app_in_the_background() {
+        assert!(!has_a_users_keyboard(std::iter::empty()));
+        assert!(!has_a_users_keyboard(
+            ["Virtual core XTEST keyboard", "Xvfb keyboard"].into_iter()
+        ));
+        for user in [
+            "AT Translated Set 2 keyboard",
+            "xwayland-keyboard:16",
+            "Wayland Keyboard",
+        ] {
+            assert!(
+                has_a_users_keyboard(["Virtual core XTEST keyboard", user].into_iter()),
+                "{user}"
+            );
+        }
     }
 }

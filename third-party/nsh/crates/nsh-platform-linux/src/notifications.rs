@@ -10,7 +10,8 @@
 //!   answers, `unavailable` otherwise.
 //! - Presses reach only the running process: a notification left after the
 //!   app exits does nothing when pressed, and the daemon's ids die with the
-//!   process, so a restarted app cannot replace or close those it left.
+//!   process, so a restarted app cannot replace or close those it left
+//!   (`CloseAll` closes those of this run).
 //! - The badge is the Unity launcher API's signal
 //!   (`com.canonical.Unity.LauncherEntry`), the one standard docks share
 //!   (Plasma, Ubuntu's and Dash to Dock). No one listening means no badge.
@@ -31,6 +32,8 @@ use nsh_core::{
 };
 use nsh_engine::EngineControl;
 
+use crate::image::AssetBase;
+
 const SERVICE: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
 const LAUNCHER_PATH: &str = "/com/canonical/unity/launcherentry/nsh";
@@ -48,9 +51,14 @@ enum Call {
         control: EngineControl,
         id: u32,
         notification: Notification,
+        /// The app's sound, on disk ([`Notification::sound`]).
+        sound: Option<String>,
         root: glib::WeakRef<gtk::Widget>,
     },
     Close(String),
+    /// Every notification this process shows, once those before it have
+    /// their ids.
+    CloseAll,
 }
 
 /// A notification the daemon shows.
@@ -102,7 +110,12 @@ pub(crate) fn app() -> (String, String) {
 }
 
 /// Applies `command`, reporting through `control`. On the main thread.
-pub(crate) fn command(control: &EngineControl, root: &gtk::Widget, command: &NotificationCommand) {
+pub(crate) fn command(
+    control: &EngineControl,
+    root: &gtk::Widget,
+    command: &NotificationCommand,
+    base: Option<&AssetBase>,
+) {
     let call = match command {
         NotificationCommand::SetBadge(count) => {
             set_badge(*count);
@@ -125,9 +138,11 @@ pub(crate) fn command(control: &EngineControl, root: &gtk::Widget, command: &Not
             control: control.clone(),
             id: *id,
             notification: notification.clone(),
+            sound: sound_file(notification, base),
             root: root.downgrade(),
         },
         NotificationCommand::Close(id) => Call::Close(id.clone()),
+        NotificationCommand::CloseAll => Call::CloseAll,
         _ => return,
     };
     STATE.with(|s| s.borrow_mut().calls.push_back(call));
@@ -268,6 +283,7 @@ fn run(bus: Option<gio::DBusConnection>, call: Call) {
             control,
             id,
             notification,
+            sound,
             root,
         } => {
             let Some(bus) = bus else {
@@ -275,7 +291,7 @@ fn run(bus: Option<gio::DBusConnection>, call: Call) {
                 return finished();
             };
             with_markup(&bus.clone(), move |markup| {
-                show(&bus, control, id, &notification, root, markup);
+                show(&bus, control, id, &notification, sound, root, markup);
             });
         }
         Call::Close(id) => {
@@ -291,6 +307,17 @@ fn run(bus: Option<gio::DBusConnection>, call: Call) {
                 Some(&(number,).to_variant()),
                 |_| finished(),
             );
+        }
+        Call::CloseAll => {
+            // One `Close` each, next in line.
+            STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                let names: Vec<String> = s.shown.keys().cloned().collect();
+                for name in names {
+                    s.calls.push_front(Call::Close(name));
+                }
+            });
+            finished();
         }
     }
 }
@@ -314,6 +341,7 @@ fn show(
     control: EngineControl,
     id: u32,
     notification: &Notification,
+    sound: Option<String>,
     root: glib::WeakRef<gtk::Widget>,
     markup: bool,
 ) {
@@ -321,7 +349,14 @@ fn show(
         let s = s.borrow();
         let replaces = s.shown.get(&notification.id).map_or(0, |n| n.number);
         (
-            notify_args(&s.app_id, &s.app_name, replaces, notification, markup),
+            notify_args(
+                &s.app_id,
+                &s.app_name,
+                replaces,
+                notification,
+                sound.as_deref(),
+                markup,
+            ),
             notification.id.clone(),
         )
     });
@@ -336,12 +371,20 @@ fn show(
     });
 }
 
+/// The app's sound for `notification` on disk, for the daemon: an asset
+/// served over HTTP (the dev server) has none, and plays the default.
+fn sound_file(notification: &Notification, base: Option<&AssetBase>) -> Option<String> {
+    let file = base?.file(notification.sound_path()?)?;
+    file.exists().then(|| file.to_string_lossy().into_owned())
+}
+
 /// The arguments of `Notify`.
 fn notify_args(
     app_id: &str,
     app_name: &str,
     replaces: u32,
     notification: &Notification,
+    sound: Option<&str>,
     markup: bool,
 ) -> glib::Variant {
     // A daemon that reads markup would read the app's text as markup, where
@@ -355,6 +398,8 @@ fn notify_args(
     let mut hints = HashMap::from([("desktop-entry", app_id.to_variant())]);
     if notification.silent {
         hints.insert("suppress-sound", true.to_variant());
+    } else if let Some(sound) = sound {
+        hints.insert("sound-file", sound.to_variant());
     }
     // "default" is the press on the notification itself, so it has no label.
     let actions = vec!["default", ""];
@@ -456,7 +501,7 @@ mod tests {
     #[test]
     fn notify_has_the_signature_of_the_service() {
         let notification = Notification::new("a", "Title", "x < y & z");
-        let args = notify_args("com.example.app", "App", 7, &notification, true);
+        let args = notify_args("com.example.app", "App", 7, &notification, None, true);
         assert_eq!(args.type_().as_str(), "(susssasa{sv}i)");
         assert_eq!(args.child_value(1).get::<u32>(), Some(7));
         assert_eq!(
@@ -481,7 +526,7 @@ mod tests {
     #[test]
     fn a_silent_notification_asks_the_daemon_for_no_sound() {
         let notification = Notification::new("a", "T", "").silent(true);
-        let args = notify_args("id", "App", 0, &notification, false);
+        let args = notify_args("id", "App", 0, &notification, None, false);
         let hints = args
             .child_value(6)
             .get::<HashMap<String, glib::Variant>>()
@@ -490,10 +535,49 @@ mod tests {
     }
 
     #[test]
+    fn the_app_s_sound_goes_to_the_daemon_unless_silent() {
+        let hints = |notification: &Notification| {
+            notify_args("id", "App", 0, notification, Some("/app/ding.wav"), false)
+                .child_value(6)
+                .get::<HashMap<String, glib::Variant>>()
+                .expect("hints")
+        };
+        let loud = hints(&Notification::new("a", "T", "").sound("ding.wav"));
+        assert_eq!(
+            loud["sound-file"].get::<String>().as_deref(),
+            Some("/app/ding.wav")
+        );
+        let quiet = hints(
+            &Notification::new("a", "T", "")
+                .sound("ding.wav")
+                .silent(true),
+        );
+        assert!(!quiet.contains_key("sound-file"));
+    }
+
+    #[test]
+    fn a_sound_file_is_the_asset_on_disk() {
+        let dir = std::env::temp_dir().join(format!("nsh-notify-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sounds")).unwrap();
+        std::fs::write(dir.join("sounds/ding.wav"), b"RIFF").unwrap();
+        let base = AssetBase::Directory(dir.clone());
+        let found = Notification::new("a", "T", "").sound("asset:/sounds/ding.wav");
+        assert_eq!(
+            sound_file(&found, Some(&base)),
+            Some(dir.join("sounds/ding.wav").to_string_lossy().into_owned())
+        );
+        let missing = Notification::new("a", "T", "").sound("sounds/none.wav");
+        assert_eq!(sound_file(&missing, Some(&base)), None);
+        let served = AssetBase::Http("http://localhost/assets".into());
+        assert_eq!(sound_file(&found, Some(&served)), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_body_is_escaped_only_for_a_daemon_that_reads_markup() {
         let notification = Notification::new("a", "T", "x < y & <img src=\"u\">");
         let body = |markup| {
-            notify_args("id", "App", 0, &notification, markup)
+            notify_args("id", "App", 0, &notification, None, markup)
                 .child_value(4)
                 .get::<String>()
                 .expect("body")

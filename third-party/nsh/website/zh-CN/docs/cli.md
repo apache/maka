@@ -151,8 +151,8 @@ nsh test [PATH] [--filter <NAME>] [--trace] [--fps] [--junit <FILE>] [--target <
 | `--target <TARGET>` | 在该平台的开发 host 上运行测试打开的应用，而不是 headless（`macos`、`linux`、`windows`、`gpui`、`tui`、`web`、`ios` 和 `android`；`tui` 在内存终端里运行，`web` 在 headless 的 Chrome、Edge 或 Chromium 里运行）：步骤用平台自己的输入执行（[测试](./testing-and-trace.md#在真实平台上运行)），`open` 会按该平台检查它的选项，平台无法满足的选项会被拒绝（`ERR_NSH_TEST_UNSUPPORTED`：iOS 和 Android 上的 `width` 与 `height`、属于另一类设备的 `platform`）。crate 的 Rust 测试在本机运行，属于不带 `--target` 的运行。 |
 | `--browser <PATH>` | `--target web` 运行应用所用的 Chrome、Edge 或 Chromium 可执行文件（默认：本机安装的那个）。 |
 | `--device <DEVICE>` | 配合 `--target ios`：应用在哪个模拟器里运行，按名称（`"iPhone 16 Pro"`）或 UDID 指定。默认：已启动的模拟器，否则启动最新的 iPhone。 |
-| `--display <N>` | 配合 `--target macos`：应用窗口在哪个显示器上居中打开：`1` 是主显示器（带菜单栏的那个），`2` 是下一个，依此类推；没有这个编号的显示器时在主显示器上打开。默认在副显示器（主显示器之外的第一个，且不是它的镜像）上打开，让测试运行占用一块单独的屏幕；只有一个显示器时在主显示器上打开。测试在每个显示器上的运行结果相同。 |
-| `--foreground` | 配合 `--target macos`：让应用成为当前活跃的应用，和用户使用时一样。默认应用在后台运行：窗口照常显示，键盘留在你正在输入的应用里，测试的点击、按键和快捷键直接发给这些窗口。依赖应用处于活跃状态的测试（`lifecycle()` 随应用是否活跃而变），或 `examples/gallery/tools/perf.py` 这类性能测量（它会传入该选项），应带上它运行。 |
+| `--display <N>` | 配合 `--target macos` 或 `gpui`：应用窗口在哪个显示器上居中打开：`1` 是主显示器（在 macOS 上是带菜单栏的那个），`2` 是下一个，依此类推；没有这个编号的显示器时在主显示器上打开。默认在副显示器（主显示器之外的第一个，且不是它的镜像）上打开，让测试运行占用一块单独的屏幕；只有一个显示器时在主显示器上打开。测试在每个显示器上的运行结果相同。 |
+| `--foreground` | 配合 `--target macos`、`windows`、`gpui` 或 `linux`：让应用成为当前活跃的应用，和用户使用时一样。默认应用在后台运行：窗口照常显示，键盘留在你正在输入的应用里，测试的点击、按键和快捷键直接发给这些窗口。在 Linux 桌面上，后台的按键直接输入到控件里，和 Wayland 上一样；测试 Tab、方向键或输入法时请带上 `--foreground`。在没有人输入的显示器上（Xvfb），Linux 应用无论是否带这个选项都按前台方式运行。依赖应用处于活跃状态的测试（`lifecycle()` 随应用是否活跃而变），或 `examples/gallery/tools/perf.py` 这类性能测量（它会传入该选项），应带上它运行。 |
 | `--web-host <JS>` | headless 运行时测试打开的应用所用的 Web 页面宿主模块（默认：`nsh.json` 的 `web.host`；它导出 `createHost(player)`）：它应答应用的 [`host`](../modules/nsh.md#host) 调用，它的 `player.hostEvent` 会送到 `host.on`（[测试](./testing-and-trace.md#页面的宿主)）。只用于 headless 运行；`--target web` 运行 `nsh.json` 的 `web.host`。 |
 
 NSH 生成的文件都放在 `.nsh/` 下：类型声明、runner 源码，以及默认的构建和打包输出 `.nsh/out/`。Cargo 保留它通常的 `target/` 缓存和已有的 `CARGO_TARGET_DIR` 行为；NSH 不会添加 Cargo 配置来移动它。`--out` 仍可指定输出位置。使用我们推荐的 [huacnlee/cargo](https://github.com/huacnlee/cargo) 时，构建产物放在 `~/.cargo/targets/` 下，可执行文件仍在 `target/`。
@@ -254,6 +254,25 @@ nsh package my-app --target miniprogram --out dist
 nsh update [stable|nightly]
 ```
 
+## nsh add
+
+为当前目录的应用添加第三方扩展：一个来自 crates.io、Git 或本地目录的 Rust crate，应用可在 TSX（`import { Gauge } from "acme/gauge"`）和 Rust（`acme_gauge::gauge()`）中使用它导出的组件、模块和类。实验性功能。
+
+```sh
+nsh add acme-gauge@1.0                                 # 来自 crates.io：取匹配 1.0 的最新版本
+nsh add github:acme/gauge@v1.0.0                    # 来自 GitHub 的标签；或 --rev <提交或分支>；都不给则取默认分支
+nsh add https://git.example.com/gauge.git --tag v1.0.0  # 来自任意 Git 地址
+nsh add --path ../gauge                              # 来自本地目录，按当前内容使用
+```
+
+它把扩展记录到 `nsh.json` 的 `"extensions"`（`"acme-gauge@1.0"`、`"github:acme/gauge@v1.0.0"`、`{ "github": "acme/gauge", "rev": "…" }`、`{ "git": "…", "tag": "v1.0.0" }` 或 `{ "path": "../gauge" }`），交给 Cargo 解析，并把解析到的版本或提交锁定在 `nsh.lock`（随应用一起提交），应用有自己的 crate（`"rust"`）时还会加入其 `[dependencies]`。构建始终使用锁定的版本或提交（本地目录按当前内容），再次运行 `nsh add` 即更新。纯 TSX 应用会像带 crate 的应用一样用扩展重新构建宿主（[使用 Rust](./rust.md)），因此开发机和 CI 需要 Rust 工具链。扩展与应用的 crate 或其他扩展冲突（同名包或同名模块），或与当前 NSH 不兼容时，`nsh.json` 和 `nsh.lock` 保持不变。
+
+扩展是普通的 Cargo 库：根部有 `#[native_module("<module>")]` 入口（与应用自己的 crate 相同），TSX 按这个标识导入它，不需要任何 NSH 专用的元数据。
+
+版本要求沿用 Cargo 的写法和语义：`"acme-gauge@1.2"` 即 `^1.2`（1.2.0 起的任意 1.x），`~1.2`、`=1.2.3`、`>=1.2, <2`、`*` 与 `Cargo.toml` 相同（在 shell 中加引号：`nsh add "acme-gauge@>=1.2, <2"`）。`nsh.json` 写可接受的范围，`nsh.lock` 记录实际解析结果：锁定的版本仍满足要求时构建一直用它，修改要求后重新解析。Git 或本地目录可以在对象写法里加 `"version"`（`{ "github": "acme/gauge", "tag": "v1.2.0", "version": "1.2" }`），与 Cargo 对这类依赖的处理一样，包的版本必须满足它。扩展兼容的 NSH 版本就是它自己对 `nsh-core` 依赖的版本要求（`nsh-core = "0.6"`），编译前会与当前 `nsh` 比对。
+
+扩展的构建脚本和过程宏会在应用构建时执行，其代码以应用的权限运行：请像审查应用代码一样审查扩展来源和 `nsh.lock` 的变更。
+
 ## nsh component
 
 添加、删除或列出已安装 `nsh` 旁边的运行时：它所在平台之外的那些（`android`、`android-symbols`、`ios`、`web`、`gpui`、`tui`）。需要某个运行时的命令第一次运行时会自己添加它（[安装](./installation.md#组件)）。
@@ -279,10 +298,11 @@ nsh keygen <NAME>
 ### nsh update-manifest
 
 ```sh
-nsh update-manifest [<ARCHIVE>...] [--package <FILE.nshpkg>] [--entry <DIR>] [--key <FILE>] [--notes <FILE>] [--link ios=<URL>] [--link android=<URL>] [--base-url <URL>] [-o <DIR>]
+nsh update-manifest [<ARCHIVE>...] [--package <FILE.nshpkg>] [--entry <DIR>] [--key <FILE>] [--notes <FILE>] [--notes <TAG>=<FILE>]... [--link ios=<URL>] [--link android=<URL>] [--base-url <URL>] [-o <DIR>]
 ```
 
 根据各平台 `nsh package` 产出的压缩包写出 `latest.json`（加 `--key` 时还有 `latest.json.sig`）；加 `--package` 时还写入应用代码的签名包（`nsh publish` 产出），写入前会按应用 id 和 `updater.packages.roots` 校验它，详见 [OTA 更新](/zh-CN/docs/ota-updates)。一个版本可以只有包。
+`--notes <TAG>=<FILE>` 加入另一种语言（BCP 47 标签）的更新说明，写在清单旁边的 `notes.<TAG>.md`；需要同时给不带标签的 `--notes`。
 
 ### nsh certify
 

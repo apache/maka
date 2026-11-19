@@ -6,7 +6,7 @@
 // animation configs, and that a layout animated with `LayoutAnimation`
 // ends where its commit puts it. Its script checks
 // each.
-import { Text, View, signal } from "nsh";
+import { Text, View, signal, type ViewRef } from "nsh";
 import { Animated, AnimatedNode, AnimatedValue, Easing, LayoutAnimation, createAnimatedValue } from "nsh";
 
 const fixed = (values: number[]) => values.map((v) => v.toFixed(3)).join(" ");
@@ -28,6 +28,12 @@ function App() {
   const custom = LayoutAnimation.create(250, LayoutAnimation.Types.linear, LayoutAnimation.Properties.opacity);
   const keyboard = LayoutAnimation.create(250, LayoutAnimation.Types.keyboard);
   const width = signal(50);
+  // A physical spring (stiffness, damping, mass), for every change or one view's.
+  const physics = { type: "spring", stiffness: 620, damping: 36, mass: 1 } as const;
+  const sprung = signal(50);
+  const scopedWidth = signal(50);
+  const laidOut = signal("");
+  let scoped: ViewRef | undefined;
   return (
     <View testID="root" style={{ flex: 1, paddingTop: 64 }}>
       <Text>Linear: {fixed(Easing.sample(Easing.linear, 3))}</Text>
@@ -66,6 +72,36 @@ function App() {
       <Text>Spring without stiffness rests at: {stiffless[stiffless.length - 1].toFixed(2)}</Text>
       <Text>Overdamped spring stays finite: {overdamped.every(Number.isFinite) ? "yes" : "no"}</Text>
       <Text>Overdamped spring rests at: {overdamped[overdamped.length - 1].toFixed(2)}</Text>
+      <View
+        testID="spring"
+        onPress={() => {
+          LayoutAnimation.configureNext({ duration: 380, update: physics });
+          sprung.set(150);
+        }}
+      >
+        <Text>Spring layout</Text>
+      </View>
+      <View
+        testID="sprung"
+        style={{ width: sprung(), height: 20 }}
+        onLayout={({ bounds }) => laidOut.set(`sprung ${bounds.size.width}`)}
+      />
+      <View
+        testID="scoped"
+        onPress={() => {
+          scoped?.animateLayout(physics);
+          scopedWidth.set(150);
+        }}
+      >
+        <Text>Scoped spring</Text>
+      </View>
+      <View
+        testID="scoped-box"
+        ref={(r) => (scoped = r)}
+        style={{ width: scopedWidth(), height: 20 }}
+        onLayout={({ bounds }) => laidOut.set(`scoped ${bounds.size.width}`)}
+      />
+      <Text>Laid out: {laidOut()}</Text>
     </View>
   );
 }

@@ -28,10 +28,11 @@ const CONNECT: Duration = Duration::from_secs(60);
 /// Starts the apps tests open on `target`'s host; `browser` is the one
 /// `--target web` runs them in (else the one found on this machine); `fps`
 /// has the host log its performance monitor's readings; `device` is the iOS
-/// simulator (name or UDID); `display` (one-based)
-/// is the display the macOS host opens its windows on (by default a
-/// secondary one when there is one); `foreground` lets the macOS host's apps
-/// become the active app, which run in the background otherwise.
+/// simulator (name or UDID); `display` (one-based) is the display the
+/// macOS and GPUI hosts open their windows on (by default a secondary one
+/// when there is one: [`opens_on_a_display`]); `foreground` lets the apps of the
+/// hosts that run them in the background ([`runs_in_background`]) become the
+/// active app.
 pub(crate) fn starter(
     target: Target,
     browser: Option<&Path>,
@@ -55,11 +56,11 @@ pub(crate) fn starter(
     if device.is_some() && target != Target::Ios {
         anyhow::bail!("--device goes with --target ios");
     }
-    if display.is_some() && target != Target::Macos {
-        anyhow::bail!("--display goes with --target macos");
+    if display.is_some() && !opens_on_a_display(target) {
+        anyhow::bail!("{DISPLAY_TARGETS}");
     }
-    if foreground && target != Target::Macos {
-        anyhow::bail!("--foreground goes with --target macos");
+    if foreground && !runs_in_background(target) {
+        anyhow::bail!("{FOREGROUND_TARGETS}");
     }
     match target {
         Target::Web => return crate::test_web::starter(browser),
@@ -82,6 +83,32 @@ pub(crate) fn starter(
             .map(|h| Box::new(h) as Box<dyn Host>)
     }))
 }
+
+/// Whether `target`'s host runs a test's apps in the background (its
+/// `--background`) unless `nsh test --foreground`: they never become the
+/// active app, so the keyboard stays with the app the user types in, and
+/// the agent's input goes to their windows directly.
+pub(crate) fn runs_in_background(target: Target) -> bool {
+    matches!(
+        target,
+        Target::Macos | Target::Windows | Target::Gpui | Target::Linux
+    )
+}
+
+/// Whether `target`'s host opens a test's windows on the display `nsh test
+/// --display` names, else a secondary one when there is one (its
+/// `--display`), at the size the test asks for on a smaller one too (its
+/// `--keep-window-size`): a test run keeps off the screen in use.
+pub(crate) fn opens_on_a_display(target: Target) -> bool {
+    matches!(target, Target::Macos | Target::Gpui)
+}
+
+/// The error `--display` gives with any other target.
+pub(crate) const DISPLAY_TARGETS: &str = "--display goes with --target macos or gpui";
+
+/// The error `--foreground` gives with any other target.
+pub(crate) const FOREGROUND_TARGETS: &str =
+    "--foreground goes with --target macos, windows, gpui or linux";
 
 /// What `target`'s host honors of `open`'s options, which `open` checks
 /// them against: the platform the apps run on there, and whether the host
@@ -198,26 +225,29 @@ fn start(
     if target == Target::Macos {
         // A window AppKit restored from an earlier run would not be this one.
         command.args(["-ApplePersistenceIgnoreState", "YES"]);
-        // Off the main screen, which the user works on: the display
-        // `--display` names, else a secondary one when there is one (the
-        // host knows the screens).
-        let display = display.map_or_else(|| "secondary".to_owned(), |n| n.to_string());
-        command.args(["--display", &display]);
-        // At the size the test opens the app at, on a display shorter than
-        // it too: AppKit would shrink the window to the screen, and the
-        // app would lay out in less room than the test expects.
-        command.arg("--keep-window-size");
-        // Never the active app: the keyboard stays with the app the user
-        // types in, and the agent's input goes to the window directly.
-        if !foreground {
-            command.arg("--background");
-        }
         // As the app runs (`--background` takes precedence): a menu bar app
         // run `--foreground` has no Dock icon either. As `nsh run` does, a
         // test runs as a regular app when `nsh.json` does not read (the
         // keys only packages use are checked there too).
         let config = crate::package::read_config(&entry).unwrap_or_default();
-        command.args(config.macos.host_args());
+        command.args(config.macos_host_args());
+    }
+    if opens_on_a_display(target) {
+        // Off the main screen, which the user works on: the display
+        // `--display` names, else a secondary one when there is one (the
+        // host knows the screens).
+        let display = display.map_or_else(|| "secondary".to_owned(), |n| n.to_string());
+        command.args(["--display", &display]);
+        // At the size the test opens the app at, on a display smaller than
+        // it too: the window would be fitted to the screen (AppKit shrinks
+        // it as it shows it), and the app would lay out in less room than
+        // the test expects.
+        command.arg("--keep-window-size");
+    }
+    // Never the active app: the keyboard stays with the app the user types
+    // in, and the agent's input goes to the window directly.
+    if runs_in_background(target) && !foreground {
+        command.arg("--background");
     }
     if target == Target::Gpui && cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some()
     {
@@ -373,24 +403,46 @@ pub(crate) fn indented(text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// `--foreground` goes with the macOS host alone: the other targets
-    /// refuse it before anything is built or started.
+    /// `--foreground` goes with the hosts that run apps in the background:
+    /// the other targets refuse it before anything is built or started.
     #[test]
-    fn foreground_is_for_the_macos_host_only() {
+    fn foreground_is_for_the_hosts_that_run_in_the_background() {
+        for target in [Target::Tui, Target::Web, Target::Ios, Target::Android] {
+            assert!(!runs_in_background(target), "{target:?}");
+            let err = starter(target, None, Path::new("."), false, None, None, true).err();
+            assert_eq!(
+                err.map(|e| e.to_string()).as_deref(),
+                Some(FOREGROUND_TARGETS),
+                "{target:?}"
+            );
+        }
+        for target in [Target::Macos, Target::Windows, Target::Gpui, Target::Linux] {
+            assert!(runs_in_background(target), "{target:?}");
+        }
+    }
+
+    /// `--display` goes with the hosts that place windows on a display: the
+    /// other targets refuse it before anything is built or started.
+    #[test]
+    fn display_is_for_the_hosts_that_place_windows() {
         for target in [
             Target::Linux,
             Target::Windows,
-            Target::Gpui,
+            Target::Tui,
             Target::Web,
             Target::Ios,
             Target::Android,
         ] {
-            let err = starter(target, None, Path::new("."), false, None, None, true).err();
+            assert!(!opens_on_a_display(target), "{target:?}");
+            let err = starter(target, None, Path::new("."), false, None, Some(2), false).err();
             assert_eq!(
                 err.map(|e| e.to_string()).as_deref(),
-                Some("--foreground goes with --target macos"),
+                Some(DISPLAY_TARGETS),
                 "{target:?}"
             );
+        }
+        for target in [Target::Macos, Target::Gpui] {
+            assert!(opens_on_a_display(target), "{target:?}");
         }
     }
 

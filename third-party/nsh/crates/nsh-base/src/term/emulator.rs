@@ -152,6 +152,13 @@ pub trait TerminalEmulator {
     fn line(&self, index: usize) -> TerminalLine;
     /// The cursor, `None` while the program hides it.
     fn cursor(&self) -> Option<TerminalCursor>;
+    /// Where the cursor is, shown or hidden: where an input method's
+    /// composition is drawn and its candidates open (a program that draws
+    /// a cursor of its own hides the terminal's). The shown cursor by
+    /// default, else the first cell.
+    fn cursor_position(&self) -> TerminalCursor {
+        self.cursor().unwrap_or_default()
+    }
     /// What happened since the last call.
     fn take_events(&mut self) -> Vec<TerminalEmulatorEvent>;
     /// The input modes the program set.

@@ -149,6 +149,33 @@ impl Component {
     fn installed(&self, root: &Path) -> bool {
         self.record(root).exists() && self.paths.iter().all(|p| root.join(p).exists())
     }
+
+    /// Whether it is installed and was built with this CLI: one left from
+    /// another release (an update that could not add it again, an older
+    /// install) is stale and gets replaced.
+    fn current(&self, root: &Path) -> bool {
+        self.installed(root)
+            && fs::read(self.record(root))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
+                .is_some_and(|record| record.matches_this_build())
+    }
+}
+
+/// Whether the component `name` is installed in the distribution at `root`
+/// and built with this CLI.
+pub(crate) fn current(root: &Path, name: &str) -> bool {
+    Component::named(name).is_ok_and(|c| c.current(root))
+}
+
+/// The components installed in the distribution at `root` but built by
+/// another release.
+pub(crate) fn stale(root: &Path) -> Vec<&'static str> {
+    COMPONENTS
+        .iter()
+        .filter(|c| c.installed(root) && !c.current(root))
+        .map(|c| c.name)
+        .collect()
 }
 
 /// The root of the distribution this CLI is part of (`<root>/bin/nsh`, its
@@ -168,13 +195,20 @@ pub(crate) fn distribution() -> Option<PathBuf> {
 /// needs a runtime the distribution does not have.
 pub(crate) fn ensure(root: &Path, name: &str, missing: &Path) -> anyhow::Result<()> {
     let component = Component::named(name)?;
-    if component.installed(root) && missing.exists() {
+    if component.current(root) && missing.exists() {
         return Ok(());
     }
-    ui::note(format!(
-        "{} is not installed yet: adding it (`nsh component add {name}`)",
-        component.what
-    ));
+    if component.installed(root) {
+        ui::note(format!(
+            "{} is from another nsh release: updating it",
+            component.what
+        ));
+    } else {
+        ui::note(format!(
+            "{} is not installed yet: adding it (`nsh component add {name}`)",
+            component.what
+        ));
+    }
     add(root, component)?;
     if !missing.exists() {
         let file = missing.file_name().unwrap_or(missing.as_os_str());
@@ -217,7 +251,7 @@ pub(crate) fn add_named(names: &[String]) -> anyhow::Result<()> {
     let root = required_distribution()?;
     for name in names {
         let component = Component::named(name)?;
-        if component.installed(&root) {
+        if component.current(&root) {
             ui::done(format!("`{name}` is already installed"));
             continue;
         }
@@ -673,5 +707,34 @@ mod tests {
         assert!(error.contains("nsh update"), "{error}");
         assert!(!tui.installed(&root));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_component_of_another_release_is_stale() {
+        let root = temp("stale");
+        let ios = Component::named("ios").unwrap();
+        let tui = Component::named("tui").unwrap();
+        fs::create_dir_all(root.join("runtime/ios")).unwrap();
+        fs::create_dir_all(root.join("runtime/tui")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        let other = Record {
+            version: "0.0.1".into(),
+            commit: "abcdef0".into(),
+        };
+        fs::write(ios.record(&root), serde_json::to_vec(&other).unwrap()).unwrap();
+        fs::write(
+            tui.record(&root),
+            serde_json::to_vec(&Record::this_build()).unwrap(),
+        )
+        .unwrap();
+        // Installed, but left by another release: `nsh update` and `ensure`
+        // replace it instead of using it.
+        assert!(ios.installed(&root));
+        assert!(!ios.current(&root));
+        assert!(tui.current(&root));
+        assert_eq!(stale(&root), ["ios"]);
+        assert!(!current(&root, "ios"));
+        assert!(current(&root, "tui"));
+        let _ = fs::remove_dir_all(&root);
     }
 }

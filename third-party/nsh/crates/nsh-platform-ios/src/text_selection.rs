@@ -597,6 +597,93 @@ mod tests {
         assert!(class.instance_method(objc2::sel!(isEditable)).is_some());
     }
 
+    /// UIKit can pass nil where `UITextInput` declares a position or a
+    /// range (the edit menu of a secondary click on text with nothing
+    /// selected asked for a position moved from a nil one): every method
+    /// answers "nothing" instead of messaging nil, which aborts the app.
+    #[test]
+    fn nil_positions_and_ranges_answer_nothing() {
+        use objc2_foundation::{NSComparisonResult, NSInteger};
+        use objc2_ui_kit::{UITextSelectionRect, UITextStorageDirection};
+
+        // SAFETY: the view is made, used and dropped on this thread
+        // alone, outside any window: UIKit never sees it. (Answers that
+        // make a position, such as `closestPositionToPoint:withinRange:`'s
+        // for a nil range, check for the main thread and are left out.)
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let view = TextView::new(mtm);
+        let view = &*view;
+        let none_position: Option<&UITextPosition> = None;
+        let none_range: Option<&UITextRange> = None;
+        // Made here: the view's own would ask for the main thread, and a
+        // test runs on another.
+        let start = Position::make(mtm, 0);
+        let start = Some(&*start);
+        let right = UITextLayoutDirection::Right;
+
+        // SAFETY (each call below): the selectors of `UITextInput` with
+        // the argument types it declares, nil where UIKit passed nil.
+        unsafe {
+            let p: Option<Retained<UITextPosition>> =
+                msg_send![view, positionFromPosition: none_position, offset: 1 as NSInteger];
+            assert!(p.is_none());
+            let p: Option<Retained<UITextPosition>> = msg_send![
+                view,
+                positionFromPosition: none_position,
+                inDirection: right,
+                offset: 1 as NSInteger
+            ];
+            assert!(p.is_none());
+            let r: Option<Retained<UITextRange>> =
+                msg_send![view, textRangeFromPosition: none_position, toPosition: start];
+            assert!(r.is_none());
+            let r: Option<Retained<UITextRange>> =
+                msg_send![view, textRangeFromPosition: start, toPosition: none_position];
+            assert!(r.is_none());
+            let c: NSComparisonResult =
+                msg_send![view, comparePosition: none_position, toPosition: start];
+            assert_eq!(c, NSComparisonResult::Same);
+            let c: NSComparisonResult =
+                msg_send![view, comparePosition: start, toPosition: none_position];
+            assert_eq!(c, NSComparisonResult::Same);
+            let o: NSInteger =
+                msg_send![view, offsetFromPosition: none_position, toPosition: start];
+            assert_eq!(o, 0);
+            let o: NSInteger =
+                msg_send![view, offsetFromPosition: start, toPosition: none_position];
+            assert_eq!(o, 0);
+            let p: Option<Retained<UITextPosition>> =
+                msg_send![view, positionWithinRange: none_range, farthestInDirection: right];
+            assert!(p.is_none());
+            let r: Option<Retained<UITextRange>> = msg_send![view, characterRangeByExtendingPosition: none_position, inDirection: right];
+            assert!(r.is_none());
+            let _: NSWritingDirection = msg_send![
+                view,
+                baseWritingDirectionForPosition: none_position,
+                inDirection: UITextStorageDirection::Forward
+            ];
+            let _: () = msg_send![
+                view,
+                setBaseWritingDirection: NSWritingDirection::LeftToRight,
+                forRange: none_range
+            ];
+            let rect: CGRect = msg_send![view, firstRectForRange: none_range];
+            assert_eq!(rect, CGRect::ZERO);
+            let rect: CGRect = msg_send![view, caretRectForPosition: none_position];
+            assert_eq!(rect, CGRect::ZERO);
+            let rects: Retained<NSArray<UITextSelectionRect>> =
+                msg_send![view, selectionRectsForRange: none_range];
+            assert_eq!(rects.count(), 0);
+            let t: Option<Retained<NSString>> = msg_send![view, textInRange: none_range];
+            assert!(t.is_none());
+            let text = NSString::from_str("x");
+            let _: () = msg_send![view, replaceRange: none_range, withText: &*text];
+            let none_text: Option<&NSString> = None;
+            let _: () = msg_send![view, insertText: none_text];
+            let _: () = msg_send![view, setSelectedTextRange: none_range];
+        }
+    }
+
     /// A type encoding without its frame offsets (`@24@0:8` → `@@:`).
     fn shape(types: &std::ffi::CStr) -> String {
         types

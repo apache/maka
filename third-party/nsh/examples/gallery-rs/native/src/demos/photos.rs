@@ -156,7 +156,6 @@ fn tile(photo: Memo<Option<Photo>>) -> impl IntoElement {
                 .gap_2()
                 .rounded(px(radius::CARD))
                 .border_curve(BorderCurve::Continuous)
-                .cursor_pointer()
                 // The card's fill: the gallery theme's `card` (TS `hover:bg-card`).
                 .hover(|s| s.bg(colors::SURFACE))
                 .child(

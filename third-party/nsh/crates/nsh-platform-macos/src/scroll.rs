@@ -1,18 +1,24 @@
 //! Scroll views: offsets, wheel / trackpad / keyboard scrolling,
-//! snapping, sticky cells, the core's scroll requests, scroll events.
+//! snapping, sticky cells, zooming, the core's scroll requests, scroll
+//! events.
 //!
-//! A scroll view only moves along its main axis (zooming is not
-//! supported: `zoomTo` and the zoom props are ignored). Its offset lives in
-//! [`ScrollState`] (`x` / `y`, 0 showing the start of the content inset)
-//! and is shown by its container's layer's `sublayerTransform` while it
-//! moves; the container's bounds origin (as `NSClipView` scrolls) takes it
-//! once the view and the display link rest ([`commit_due`]), as
-//! `setBoundsOrigin:` walks the whole subtree. Scroll views containing
-//! inputs instead update the bounds each frame so AppKit draws newly
-//! visible fields at the live offset. AppKit's geometry (hit
+//! A scroll view moves along its main axis; a zoomable one
+//! (`maximumZoomScale` above `minimumZoomScale`) along both, zoomed by
+//! trackpad pinches and Control + wheel around the pointer and by
+//! `zoomTo` ([`pinch`], [`command`]). Its offset lives in [`ScrollState`]
+//! (`x` / `y`, 0 showing the start of the content inset; UIKit's zoomed
+//! `contentOffset`) and is shown by its container's layer's
+//! `sublayerTransform` while it moves; the container's bounds origin (as
+//! `NSClipView` scrolls) takes it once the view and the display link rest
+//! ([`commit_due`]), as `setBoundsOrigin:` walks the whole subtree. Scroll
+//! views containing inputs, and zoomable ones, instead update the bounds
+//! each frame: AppKit draws newly visible fields at the live offset, and a
+//! zoom is the bounds' size (the frame's over the zoom scale, which AppKit
+//! shows as the container layer's scale), so AppKit draws, hit tests and
+//! converts the zoomed children as they show. AppKit's geometry (hit
 //! tests, conversions, `visibleRect`) follows the bounds, so what asks it
 //! commits first ([`commit_pending`], [`commit_ancestors`]); NSH's own
-//! (picking, [`bounds_origin`]) follows the live offset.
+//! (picking, [`bounds_origin`] and [`zoom`]) follows the live offset.
 //! Every change goes through [`moved_to`], which moves the container,
 //! pins the sticky cells, feeds the native scroll value in the same frame
 //! and queues a report to the engine. Reports are coalesced to one per
@@ -44,8 +50,8 @@ use nsh_core::{
     ViewKind,
     geometry::point,
     scroll::{
-        dragged, ease_out, indicator_alpha, indicator_hold_left, indicator_span, projected, rate,
-        reveal_focus_delta, snap_duration, sticky_shift, thumb_scroll,
+        dragged, ease_out, indicator_alpha, indicator_hold_left, indicator_span_within, projected,
+        rate, reveal_focus_delta, snap_duration, sticky_shift, thumb_scroll,
     },
 };
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
@@ -81,6 +87,50 @@ const THUMB_GRAB: f32 = 12.0;
 /// ...and how far past its ends.
 const THUMB_SLOP: f32 = 4.0;
 
+/// A scroll offset, a change of one or a point in a viewport (points).
+/// Scroll views move along their main axis, zoomable ones along both.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Offset {
+    x: f32,
+    y: f32,
+}
+
+impl Offset {
+    const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    fn along(self, horizontal: bool) -> f32 {
+        if horizontal { self.x } else { self.y }
+    }
+
+    /// This offset with `v` along one axis.
+    fn with(self, horizontal: bool, v: f32) -> Self {
+        if horizontal {
+            Self::new(v, self.y)
+        } else {
+            Self::new(self.x, v)
+        }
+    }
+
+    fn lerp(self, to: Self, k: f32) -> Self {
+        Self::new(self.x + (to.x - self.x) * k, self.y + (to.y - self.y) * k)
+    }
+
+    /// The larger distance along an axis to `to`.
+    fn distance(self, to: Self) -> f32 {
+        (to.x - self.x).abs().max((to.y - self.y).abs())
+    }
+}
+
+impl std::ops::Add for Offset {
+    type Output = Self;
+
+    fn add(self, o: Self) -> Self {
+        Self::new(self.x + o.x, self.y + o.y)
+    }
+}
+
 /// What a scroll view is doing.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum Phase {
@@ -98,7 +148,7 @@ enum Phase {
         last: f64,
         total: f32,
         gesture: bool,
-        raw: f32,
+        raw: Offset,
     },
     /// A trackpad gesture ended at `since` (ms); the system's momentum may
     /// follow.
@@ -109,12 +159,25 @@ enum Phase {
     /// `momentum` for snapping after a fling (momentum events), `end` to
     /// send `onScrollEnd` when it arrives.
     Animate {
-        from: f32,
-        to: f32,
+        from: Offset,
+        to: Offset,
         start: f64,
         duration: f64,
         momentum: bool,
         end: bool,
+    },
+    /// An eased zoom from `from` to `to`, started at `start` (ms), the
+    /// content point (unzoomed) at viewport point `at` moving from `from_c`
+    /// to `to_c` meanwhile: `zoomTo`, or a pinch springing back within the
+    /// limits.
+    Zoom {
+        from: f32,
+        to: f32,
+        from_c: Offset,
+        to_c: Offset,
+        at: Offset,
+        start: f64,
+        duration: f64,
     },
 }
 
@@ -157,6 +220,11 @@ pub(crate) struct Live {
     /// Since when the armed commit found the view at rest (ms): it waits
     /// for the display link to rest at most [`REST_WAIT`] from then.
     rested_at: Option<f64>,
+    /// The zoom a pinch began at (a Control + wheel one's moves on at the
+    /// limits, [`pinch`]).
+    pinch_from: f32,
+    /// The zoom last reported to the engine.
+    reported_zoom: f32,
 }
 
 /// Where trackpad events (gestures and their momentum) put the offset, by
@@ -172,19 +240,19 @@ pub(crate) struct Live {
 struct Resampled {
     /// `(time, offset)`, oldest first; the first is the offset shown
     /// when the events began.
-    points: std::collections::VecDeque<(f64, f32)>,
+    points: std::collections::VecDeque<(f64, Offset)>,
     /// The time between events (ms), smoothed.
     interval: f64,
 }
 
 impl Resampled {
     /// The newest offset (where the events have put the view).
-    fn goal(&self) -> Option<f32> {
+    fn goal(&self) -> Option<Offset> {
         self.points.back().map(|p| p.1)
     }
 
     /// Adds where an event at `time` put the offset.
-    fn push(&mut self, time: f64, pos: f32) {
+    fn push(&mut self, time: f64, pos: Offset) {
         match self.points.back() {
             Some(&(last, _)) if time <= last => {
                 // The same instant (or out of order): the newest wins.
@@ -203,12 +271,12 @@ impl Resampled {
 
     /// The offset at `t` (ms), dropping points before it, and whether
     /// `t` is past the newest (which it then is).
-    fn sample(&mut self, t: f64) -> (f32, bool) {
+    fn sample(&mut self, t: f64) -> (Offset, bool) {
         while self.points.len() > 2 && self.points[1].0 <= t {
             self.points.pop_front();
         }
         let Some(&(t0, p0)) = self.points.front() else {
-            return (0.0, true);
+            return (Offset::default(), true);
         };
         let Some(&(t1, p1)) = self.points.get(1) else {
             return (p0, true);
@@ -221,7 +289,7 @@ impl Resampled {
         } else {
             1.0
         };
-        (p0 + (p1 - p0) * k as f32, false)
+        (p0.lerp(p1, k as f32), false)
     }
 }
 
@@ -239,24 +307,115 @@ fn main(s: &ScrollState) -> f32 {
     if s.horizontal { s.x } else { s.y }
 }
 
-/// The rest limits along the main axis (the top is lower while the
-/// refresh spinner shows).
-fn limits(state: &ViewState) -> (f32, f32) {
+fn pos(s: &ScrollState) -> Offset {
+    Offset::new(s.x, s.y)
+}
+
+/// The offset of `view` (0, 0 for a view that does not scroll).
+fn current(view: &NshView) -> Offset {
+    view.state()
+        .scroll
+        .as_deref()
+        .map_or(Offset::default(), pos)
+}
+
+/// The rest limits, `(min, max)`: along the main axis (the top is lower
+/// while the refresh spinner shows), along both for a zoomable view; the
+/// other axis stays at 0.
+fn limits(state: &ViewState) -> (Offset, Offset) {
     let Some(s) = &state.scroll else {
-        return (0.0, 0.0);
+        return Default::default();
     };
     range(s, (state.frame.size.width.0, state.frame.size.height.0))
 }
 
 /// [`limits`] of scroll state `s` in a viewport of `viewport` points.
-fn range(s: &ScrollState, viewport: (f32, f32)) -> (f32, f32) {
-    let max = s.max(viewport);
-    let min = if !s.horizontal && s.live.refreshing {
+fn range(s: &ScrollState, viewport: (f32, f32)) -> (Offset, Offset) {
+    let (mx, my) = s.max(viewport);
+    let top = if !s.horizontal && s.live.refreshing {
         -s.behavior.refresh_inset().0
     } else {
         0.0
     };
-    (min, if s.horizontal { max.0 } else { max.1 })
+    if s.behavior.zooms() {
+        (Offset::new(0.0, top), Offset::new(mx, my))
+    } else if s.horizontal {
+        (Offset::default(), Offset::new(mx, 0.0))
+    } else {
+        (Offset::new(0.0, top), Offset::new(0.0, my))
+    }
+}
+
+/// `p` within `limits`.
+fn clamp(p: Offset, (min, max): (Offset, Offset)) -> Offset {
+    Offset::new(
+        p.x.clamp(min.x, max.x.max(min.x)),
+        p.y.clamp(min.y, max.y.max(min.y)),
+    )
+}
+
+/// `p` moved by `d`, stopping at the limits; past them (the refresh space)
+/// it only moves back.
+fn stop_at_edges(p: Offset, d: Offset, (min, max): (Offset, Offset)) -> Offset {
+    let one = |p: f32, d: f32, min: f32, max: f32| (p + d).clamp(min.min(p), max.max(min).max(p));
+    Offset::new(one(p.x, d.x, min.x, max.x), one(p.y, d.y, min.y, max.y))
+}
+
+/// How far a zoomable view is zoomed (1 for any other view): the
+/// container's bounds are its size over it.
+pub(crate) fn zoom(view: &NshView) -> f32 {
+    view.state().scroll.as_ref().map_or(1.0, |s| s.zoom)
+}
+
+/// The room before zoomed content smaller than the viewport, which a
+/// zoomable view with `centerContent` centers (viewport points).
+fn centered(state: &ViewState) -> Offset {
+    let Some(s) = &state.scroll else {
+        return Offset::default();
+    };
+    if !s.behavior.zooms() || !s.behavior.center_content {
+        return Offset::default();
+    }
+    let inset = s.behavior.content_inset.map(|v| v.0);
+    let free = |viewport: f32, content: f32| ((viewport - content * s.zoom) / 2.0).max(0.0);
+    Offset::new(
+        free(
+            state.frame.size.width.0 - inset.left - inset.right,
+            s.content.0,
+        ),
+        free(
+            state.frame.size.height.0 - inset.top - inset.bottom,
+            s.content.1,
+        ),
+    )
+}
+
+/// The content point (unzoomed) at point `at` of the viewport.
+fn content_at(view: &NshView, at: Offset) -> Offset {
+    let (ox, oy) = bounds_origin(view);
+    let z = zoom(view);
+    Offset::new(at.x / z + ox, at.y / z + oy)
+}
+
+/// `scale` within the zoom limits; past them by a rubber band while
+/// pinching (`rubber`) when `bouncesZoom`, as the web's.
+fn limit_zoom(b: &ScrollBehavior, scale: f32, rubber: bool) -> f32 {
+    let (min, max) = (b.min_zoom, b.max_zoom.max(b.min_zoom));
+    if scale > max {
+        if rubber && b.bounces_zoom {
+            max * (scale / max).powf(0.3)
+        } else {
+            max
+        }
+    } else if scale < min {
+        if rubber && b.bounces_zoom {
+            min * (scale / min).powf(0.3)
+        } else {
+            min
+        }
+    } else {
+        scale
+    }
 }
 
 /// The offset reported to the engine and in events: UIKit's
@@ -317,21 +476,16 @@ pub(crate) fn can_scroll(view: &NshView, dx: f32, dy: f32) -> bool {
         return false;
     }
     let (min, max) = limits(&state);
-    if max <= min {
-        return false;
-    }
-    let d = if s.horizontal {
-        let d = if dx != 0.0 { dx } else { dy };
-        if s.mirrored && dx != 0.0 { -d } else { d }
-    } else {
-        dy
+    let (d, p) = (wheel_delta(s, dx, dy), pos(s));
+    let moves = |d: f32, p: f32, min: f32, max: f32| {
+        max > min && ((d > 0.0 && p < max - 0.5) || (d < 0.0 && p > min + 0.5))
     };
-    let pos = main(s);
-    (d > 0.0 && pos < max - 0.5) || (d < 0.0 && pos > min + 0.5)
+    moves(d.x, p.x, min.x, max.x) || moves(d.y, p.y, min.y, max.y)
 }
 
 /// Whether `view` is a scroll view the user can move at all: it is
-/// enabled and its content is larger than its viewport along its axis.
+/// enabled and its content is larger than its viewport along its axis
+/// (a zoomable view's along either).
 /// Unlike [`can_scroll`] it needs no direction, so input can ask it as a
 /// scroll begins, before the scroll has one: an embedded app passes on a
 /// scroll with no such view under the pointer
@@ -347,16 +501,19 @@ pub(crate) fn movable(view: &NshView) -> bool {
 /// [`movable`] for scroll state `s` in a viewport of `viewport` points.
 fn movable_in(s: &ScrollState, viewport: (f32, f32)) -> bool {
     let (min, max) = range(s, viewport);
-    s.behavior.enabled && max > min
+    s.behavior.enabled && (max.x > min.x || max.y > min.y)
 }
 
 /// Whether a trackpad gesture by `(dx, dy)` may stretch `view` past its
-/// edge: it is enabled, bounces and scrolls along the gesture's axis.
-/// Input gives it gestures no scroll view can follow ([`can_scroll`]).
+/// edge: it is enabled, bounces and scrolls along the gesture's axis (a
+/// zoomable view along both). Input gives it gestures no scroll view can
+/// follow ([`can_scroll`]).
 pub(crate) fn can_bounce(view: &NshView, dx: f32, dy: f32) -> bool {
     let state = view.state();
     state.scroll.as_ref().is_some_and(|s| {
-        s.behavior.enabled && s.behavior.bounces && s.horizontal == (dx.abs() > dy.abs())
+        s.behavior.enabled
+            && s.behavior.bounces
+            && (s.behavior.zooms() || s.horizontal == (dx.abs() > dy.abs()))
     })
 }
 
@@ -396,16 +553,16 @@ fn interrupt(surface: &Rc<Surface>, view: &NshView) {
 
 /// A trackpad event at `time` (ms, on the display link's clock) put the
 /// offset at `pos`: shown from the next frame on ([`Resampled`]).
-fn feed(surface: &Rc<Surface>, view: &NshView, pos: f32, time: f64) {
+fn feed(surface: &Rc<Surface>, view: &NshView, to: Offset, time: f64) {
     if !mapped(view) {
-        return moved_to(surface, view, pos);
+        return moved_to(surface, view, to);
     }
     {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
         };
-        let shown = main(s);
+        let shown = pos(s);
         let r = s.live.resampled.get_or_insert_with(|| Resampled {
             points: Default::default(),
             interval: 1000.0 / 120.0,
@@ -414,19 +571,19 @@ fn feed(surface: &Rc<Surface>, view: &NshView, pos: f32, time: f64) {
             // The motion starts from what shows, an interval before.
             r.points.push_back((time - r.interval, shown));
         }
-        r.push(time, pos);
+        r.push(time, to);
     }
     ensure_ticking(surface, view);
 }
 
 /// The offset trackpad events have put `view` at (ahead of what shows
 /// while [`Resampled`] catches up).
-fn goal(s: &ScrollState) -> f32 {
+fn goal(s: &ScrollState) -> Offset {
     s.live
         .resampled
         .as_ref()
         .and_then(Resampled::goal)
-        .unwrap_or_else(|| main(s))
+        .unwrap_or_else(|| pos(s))
 }
 
 /// Shows where trackpad events put `view` at once (something else moves
@@ -447,16 +604,21 @@ fn settle(surface: &Rc<Surface>, view: &NshView) {
 
 // Moving.
 
-/// The container bounds origin that shows the scroll offset. Mirrored
-/// children are placed from the right: the offset runs the other way.
+/// The container bounds origin that shows the scroll offset: the content
+/// point (unzoomed) at the viewport's top left. Mirrored children are
+/// placed from the right: the offset runs the other way.
 pub(crate) fn bounds_origin(view: &NshView) -> (f32, f32) {
     let state = view.state();
     let Some(s) = &state.scroll else {
         return (0.0, 0.0);
     };
     let inset = s.behavior.content_inset.map(|v| v.0);
-    let x = s.x - inset.left;
-    (if s.mirrored { -x } else { x }, s.y - inset.top)
+    let room = centered(&state);
+    let x = (s.x - inset.left - room.x) / s.zoom;
+    (
+        if s.mirrored { -x } else { x },
+        (s.y - inset.top - room.y) / s.zoom,
+    )
 }
 
 /// A bounds commit follows the last move by this long (ms).
@@ -470,15 +632,19 @@ const COMMIT_MS: u64 = 140;
 /// jank on long lists). The bounds commit once it settles ([`commit`])
 /// puts AppKit's model right for the price of one walk per scroll.
 /// Inputs need live bounds instead: AppKit clips their drawing by its
-/// visible rectangles, which do not follow the layer transform.
+/// visible rectangles, which do not follow the layer transform; so does a
+/// zoomable view, whose zoom is the bounds' size.
 fn apply_offset(surface: &Rc<Surface>, view: &NshView) {
     let origin = bounds_origin(view);
-    // Every offset, inset and mirroring change comes through here: what
-    // shows under it changed ([`crate::sight`]).
+    // Every offset, inset, zoom and mirroring change comes through here:
+    // what shows under it changed ([`crate::sight`]).
     crate::sight::moved();
-    let inputs = view.state().input_count != 0;
-    if inputs {
-        view.commit_bounds_origin(origin.0, origin.1);
+    let live = {
+        let state = view.state();
+        state.input_count != 0 || state.scroll.as_ref().is_some_and(|s| s.behavior.zooms())
+    };
+    if live {
+        view.commit_bounds(origin.0, origin.1);
     } else {
         let committed = view.container_bounds_origin();
         view.set_layer_scroll(committed.0 - origin.0, committed.1 - origin.1);
@@ -574,7 +740,7 @@ pub(crate) fn commit_ancestors(view: &NshView) {
 
 fn commit_now(view: &NshView) {
     let origin = bounds_origin(view);
-    crate::surface::quiet(|| view.commit_bounds_origin(origin.0, origin.1));
+    crate::surface::quiet(|| view.commit_bounds(origin.0, origin.1));
 }
 
 /// Moves the scroll offset the layer transform has been showing into the
@@ -622,25 +788,28 @@ fn commit(key: u64, id: nsh_core::NodeId) {
         return;
     }
     let origin = bounds_origin(&view);
-    crate::surface::quiet(|| view.commit_bounds_origin(origin.0, origin.1));
+    crate::surface::quiet(|| view.commit_bounds(origin.0, origin.1));
 }
 
-/// Moves `view`'s main axis offset to `pos` (not clamped: drags rubber
-/// band) and updates everything that follows it.
-fn moved_to(surface: &Rc<Surface>, view: &NshView, pos: f32) {
+/// Moves `view`'s offset to `to` (not clamped: drags rubber band) and
+/// updates everything that follows it.
+fn moved_to(surface: &Rc<Surface>, view: &NshView, to: Offset) {
+    if current(view) != to {
+        shown_at(surface, view, to);
+    }
+}
+
+/// Shows `view` at offset `to` (and its zoom) and updates everything that
+/// follows it.
+fn shown_at(surface: &Rc<Surface>, view: &NshView, to: Offset) {
     let (id, x, y, pulled) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
         };
-        let target = if s.horizontal { &mut s.x } else { &mut s.y };
-        if *target == pos {
-            return;
-        }
         // How far it is pulled past its top, when that changes.
-        let pulled =
-            (!s.horizontal && (*target < 0.0 || pos < 0.0)).then(|| Points((-pos).max(0.0)));
-        *target = pos;
+        let pulled = (!s.horizontal && (s.y < 0.0 || to.y < 0.0)).then(|| Points((-to.y).max(0.0)));
+        (s.x, s.y) = (to.x, to.y);
         if s.indicator {
             s.live.shown = now();
             s.live.alpha = 1.0;
@@ -673,7 +842,7 @@ fn moved_to(surface: &Rc<Surface>, view: &NshView, pos: f32) {
 }
 
 fn report(surface: &Surface, view: &NshView) {
-    let (id, x, y, applied) = {
+    let (id, x, y, applied, zoom) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
@@ -682,9 +851,19 @@ fn report(surface: &Surface, view: &NshView) {
             return;
         }
         let applied = s.applied;
+        // The zoom goes before the offset it changed: `onScroll` carries it
+        // (and the 1 a view that zooms no more is back at).
+        let known = s.behavior.zooms() || s.live.reported_zoom != 0.0;
+        let zoom = (known && s.zoom != s.live.reported_zoom).then(|| {
+            s.live.reported_zoom = s.zoom;
+            s.zoom
+        });
         let (x, y) = reported(&state);
-        (state.id, x, y, applied)
+        (state.id, x, y, applied, zoom)
     };
+    if let Some(zoom) = zoom {
+        surface.control(|c| c.zoom(id, zoom));
+    }
     surface.control(|c| c.scroll(id, point(Points(x), Points(y)), applied));
     crate::access::scroll_bar::moved(view);
 }
@@ -693,16 +872,15 @@ fn report(surface: &Surface, view: &NshView) {
 fn animate_to(
     surface: &Rc<Surface>,
     view: &NshView,
-    to: f32,
+    to: Offset,
     duration: f64,
     momentum: bool,
     end: bool,
 ) {
     settle(surface, view);
-    let (min, max) = limits(&view.state());
-    let to = to.clamp(min, max.max(min));
-    let from = view.state().scroll.as_deref().map_or(0.0, main);
-    if (to - from).abs() < 0.5 || duration <= 0.0 {
+    let to = clamp(to, limits(&view.state()));
+    let from = current(view);
+    if from.distance(to) < 0.5 || duration <= 0.0 {
         set_phase(view, Phase::Idle);
         moved_to(surface, view, to);
         if momentum {
@@ -732,10 +910,11 @@ fn animate_to(
 /// `snap_velocity` when it is not 0 (a settled mouse wheel).
 fn release(surface: &Rc<Surface>, view: &NshView, v: f32, snap_velocity: f32) {
     settle(surface, view);
-    let (pos, min, max, target) = {
+    let (p, back, target) = {
         let state = view.state();
         let Some(s) = &state.scroll else { return };
-        let (min, max) = limits(&state);
+        let lims = limits(&state);
+        let (p, max) = (pos(s), lims.1.along(s.horizontal));
         let pos = main(s);
         let lead = if s.horizontal {
             s.behavior.content_inset.left.0
@@ -748,7 +927,8 @@ fn release(surface: &Rc<Surface>, view: &NshView, v: f32, snap_velocity: f32) {
         } else {
             snap_velocity
         };
-        // Snap points are content offsets: UIKit's coordinates.
+        // Snap points are content offsets: UIKit's coordinates. Zoomed
+        // content does not snap.
         let target = s
             .behavior
             .snap_target(
@@ -758,20 +938,14 @@ fn release(surface: &Rc<Surface>, view: &NshView, v: f32, snap_velocity: f32) {
                 Points(dim),
                 Points(max + dim - lead),
             )
-            .map(|t| t.0 + lead);
-        (pos, min, max, target)
+            .filter(|_| !s.behavior.zooms())
+            .map(|t| (p.with(s.horizontal, t.0 + lead), t.0 + lead - pos));
+        (p, clamp(p, lims), target)
     };
-    if pos < min - 0.5 || pos > max + 0.5 {
-        animate_to(
-            surface,
-            view,
-            pos.clamp(min, max.max(min)),
-            ANIMATION,
-            false,
-            true,
-        );
-    } else if let Some(target) = target {
-        let duration = snap_duration(Points(target - pos), v);
+    if p.distance(back) > 0.5 {
+        animate_to(surface, view, back, ANIMATION, false, true);
+    } else if let Some((target, distance)) = target {
+        let duration = snap_duration(Points(distance), v);
         if duration > 0.0 {
             emit(surface, view, EventKind::MomentumStart);
         }
@@ -859,6 +1033,9 @@ fn deadline(view: &NshView) -> Option<f64> {
     let end = match state.scroll.as_ref()?.live.phase {
         Phase::Animate {
             start, duration, ..
+        }
+        | Phase::Zoom {
+            start, duration, ..
         } => start + duration,
         Phase::Wheel {
             last,
@@ -915,13 +1092,14 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
     if let Some(pos) = sampled {
         moved_to(surface, view, pos);
     }
-    let (phase, pos, (min, max)) = {
+    let (phase, p, (min, max)) = {
         let state = view.state();
         let Some(s) = &state.scroll else {
             return Tick::Done;
         };
-        (s.live.phase, main(s), limits(&state))
+        (s.live.phase, pos(s), limits(&state))
     };
+    let hi = Offset::new(max.x.max(min.x), max.y.max(min.y));
     match phase {
         Phase::Animate {
             from,
@@ -932,7 +1110,7 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
             end,
         } => {
             let t = (now - start) / duration;
-            moved_to(surface, view, from + (to - from) * ease_out(t));
+            moved_to(surface, view, from.lerp(to, ease_out(t)));
             if t >= 1.0 {
                 set_phase(view, Phase::Idle);
                 if momentum {
@@ -941,6 +1119,29 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
                 if end {
                     emit(surface, view, EventKind::ScrollEnd);
                 }
+            }
+        }
+        Phase::Zoom {
+            from,
+            to,
+            from_c,
+            to_c,
+            at,
+            start,
+            duration,
+        } => {
+            let t = (now - start) / duration;
+            let k = ease_out(t);
+            zoom_at(
+                surface,
+                view,
+                from + (to - from) * k,
+                from_c.lerp(to_c, k),
+                at,
+            );
+            if t >= 1.0 {
+                set_phase(view, Phase::Idle);
+                sharpen(view);
             }
         }
         Phase::Wheel {
@@ -972,7 +1173,9 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
             set_phase(view, Phase::Idle);
             emit(surface, view, EventKind::ScrollEnd);
         }
-        Phase::Idle if pos > max.max(min) + 0.5 => moved_to(surface, view, max.max(min)),
+        Phase::Idle if p.x > hi.x + 0.5 || p.y > hi.y + 0.5 => {
+            moved_to(surface, view, Offset::new(p.x.min(hi.x), p.y.min(hi.y)));
+        }
         _ => {}
     }
     report(surface, view);
@@ -1120,21 +1323,61 @@ fn overlay_layer(
 /// travel along its track, or `None` when the content fits.
 fn thumb(s: &ScrollState, w: f32, h: f32) -> Option<(CGRect, f32)> {
     const EDGE: f32 = 2.0;
+    // Zoomed content pans both ways, without a bar (as on the web).
+    if s.behavior.zooms() {
+        return None;
+    }
     let inset = s.behavior.content_inset.map(|v| v.0);
-    let (dim, total, offset) = if s.horizontal {
-        (w, s.content.0 + inset.left + inset.right, s.x)
+    let bar = s.behavior.scrollbar_inset.map(|v| v.0.max(0.0));
+    // Along the axis, from where the offset counts (the right of a mirrored
+    // view).
+    let (dim, total, offset, before, after) = if s.horizontal {
+        let (before, after) = if s.mirrored {
+            (bar.right, bar.left)
+        } else {
+            (bar.left, bar.right)
+        };
+        (
+            w,
+            s.content.0 + inset.left + inset.right,
+            s.x,
+            before,
+            after,
+        )
     } else {
-        (h, s.content.1 + inset.top + inset.bottom, s.y)
+        (
+            h,
+            s.content.1 + inset.top + inset.bottom,
+            s.y,
+            bar.top,
+            bar.bottom,
+        )
     };
-    let (start, len) = indicator_span(Points(dim), Points(total), Points(offset))?;
+    let (start, len) = indicator_span_within(
+        Points(dim),
+        Points(total),
+        Points(offset),
+        Points(before),
+        Points(after),
+    )?;
     let (start, len) = (start.0, len.0);
     let frame = if s.horizontal {
         let x = if s.mirrored { w - start - len } else { start };
-        rect(x, h - INDICATOR_THICK - EDGE, len, INDICATOR_THICK)
+        rect(
+            x,
+            h - bar.bottom - INDICATOR_THICK - EDGE,
+            len,
+            INDICATOR_THICK,
+        )
     } else {
-        rect(w - INDICATOR_THICK - EDGE, start, INDICATOR_THICK, len)
+        rect(
+            w - bar.right - INDICATOR_THICK - EDGE,
+            start,
+            INDICATOR_THICK,
+            len,
+        )
     };
-    Some((frame, dim - 2.0 * INDICATOR_MARGIN - len))
+    Some((frame, dim - before - after - 2.0 * INDICATOR_MARGIN - len))
 }
 
 /// Updates the indicator and the refresh spinner of `view` to its offset.
@@ -1410,15 +1653,23 @@ pub(crate) fn config(
 /// the next frame, once the rest of the batch (the `ScrollBy` that keeps
 /// the visible content in place) is applied.
 pub(crate) fn content(surface: &Rc<Surface>, view: &NshView, size: Size<Points>) {
-    let past = {
+    let (past, zooms) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
         };
         s.content = (size.width.0, size.height.0);
-        let pos = main(s);
-        pos > limits(&state).1 + 0.5
+        let (p, zooms) = (pos(s), s.behavior.zooms());
+        let (min, max) = limits(&state);
+        (
+            p.x > max.x.max(min.x) + 0.5 || p.y > max.y.max(min.y) + 0.5,
+            zooms,
+        )
     };
+    if zooms {
+        // Centered content moves with its size.
+        apply_offset(surface, view);
+    }
     if past {
         ensure_ticking(surface, view);
     }
@@ -1433,7 +1684,11 @@ pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
         let Some(s) = &state.scroll else {
             return;
         };
-        main(s) > limits(&state).1 + 0.5
+        {
+            let max = limits(&state).1;
+            let p = pos(s);
+            p.x > max.x + 0.5 || p.y > max.y + 0.5
+        }
     };
     if past {
         ensure_ticking(surface, view);
@@ -1444,17 +1699,24 @@ pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
 /// `ScrollBy`: the core keeps the visible content in place (items above
 /// the viewport changed size); not clamped, the core knows its content.
 pub(crate) fn scroll_by(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
-    let (pos, d) = {
+    let (p, d) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
         };
         s.applied = s.applied.wrapping_add(1);
-        // The off axis would only push the content out of the viewport.
-        let d = if s.horizontal { dx } else { dy };
+        // The off axis would only push the content out of the viewport
+        // (zoomed content moves along both).
+        let d = if s.behavior.zooms() {
+            Offset::new(dx, dy)
+        } else {
+            Offset::default().with(s.horizontal, if s.horizontal { dx } else { dy })
+        };
         // A gesture or animation in flight moves along.
         s.live.phase = match s.live.phase {
-            Phase::Thumb { start } => Phase::Thumb { start: start + d },
+            Phase::Thumb { start } => Phase::Thumb {
+                start: start + d.along(s.horizontal),
+            },
             Phase::Wheel {
                 last,
                 total,
@@ -1485,14 +1747,14 @@ pub(crate) fn scroll_by(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32)
         };
         if let Some(r) = s.live.resampled.as_mut() {
             for p in &mut r.points {
-                p.1 += d;
+                p.1 = p.1 + d;
             }
         }
         s.live.report = true;
-        (main(s), d)
+        (pos(s), d)
     };
-    if d != 0.0 {
-        moved_to(surface, view, pos + d);
+    if d != Offset::default() {
+        moved_to(surface, view, p + d);
     }
     report(surface, view);
 }
@@ -1508,15 +1770,15 @@ pub(crate) fn autoscroll(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32
         if !matches!(s.live.phase, Phase::Idle) {
             return false;
         }
-        let (min, max) = limits(&state);
-        let from = main(s);
+        let from = pos(s);
         // Mirrored lists keep left-to-right offsets.
-        let d = match (s.horizontal, s.mirrored) {
-            (true, true) => -dx,
-            (true, false) => dx,
-            _ => dy,
+        let d = match (s.behavior.zooms(), s.horizontal, s.mirrored) {
+            (true, ..) => Offset::new(dx, dy),
+            (false, true, true) => Offset::new(-dx, 0.0),
+            (false, true, false) => Offset::new(dx, 0.0),
+            _ => Offset::new(0.0, dy),
         };
-        (from, (from + d).clamp(min, max.max(min)))
+        (from, clamp(from + d, limits(&state)))
     };
     if to == from {
         return false;
@@ -1554,14 +1816,22 @@ pub(crate) fn sticky(surface: &Rc<Surface>, view: &NshView, cells: Vec<StickyCel
 
 /// `ScrollBehavior`.
 pub(crate) fn behavior(surface: &Rc<Surface>, view: &NshView, behavior: &ScrollBehavior) {
-    let (inset, refresh, held) = {
+    let (inset, refresh, held, zoom) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
             return;
         };
-        let inset = s.behavior.content_inset != behavior.content_inset;
+        let inset = s.behavior.content_inset != behavior.content_inset
+            || s.behavior.zooms() != behavior.zooms()
+            || s.behavior.center_content != behavior.center_content;
         let refresh = s.behavior.refresh_indicator != behavior.refresh_indicator;
         s.behavior = behavior.clone();
+        // Within the new limits; back to 1 when it zooms no more.
+        let zoom = if behavior.zooms() {
+            limit_zoom(behavior, s.zoom, false)
+        } else {
+            1.0
+        };
         if !behavior.enabled && matches!(s.live.phase, Phase::Thumb { .. } | Phase::Wheel { .. }) {
             s.live.phase = Phase::Idle;
         }
@@ -1572,8 +1842,11 @@ pub(crate) fn behavior(surface: &Rc<Surface>, view: &NshView, behavior: &ScrollB
             && main(s) < 0.0
             && !matches!(s.live.phase, Phase::Wheel { gesture: true, .. }))
         .then(|| behavior.refresh_inset().0);
-        (inset, refresh, held)
+        (inset, refresh, held, (zoom != s.zoom).then_some(zoom))
     };
+    if let Some(zoom) = zoom {
+        zoom_to(surface, view, zoom, None, false);
+    }
     if inset {
         apply_offset(surface, view);
     }
@@ -1581,7 +1854,8 @@ pub(crate) fn behavior(surface: &Rc<Surface>, view: &NshView, behavior: &ScrollB
         update_overlays(view);
     }
     if let Some(room) = held {
-        animate_to(surface, view, -room, ANIMATION, false, false);
+        let to = current(view).with(false, -room);
+        animate_to(surface, view, to, ANIMATION, false, false);
     }
 }
 
@@ -1607,34 +1881,51 @@ pub(crate) fn refreshing(surface: &Rc<Surface>, view: &NshView, refreshing: bool
     if held {
         return;
     }
+    let at = |y: f32| current(view).with(false, y);
     if refreshing && pos <= 0.5 {
-        animate_to(surface, view, -inset, ANIMATION, false, false);
+        animate_to(surface, view, at(-inset), ANIMATION, false, false);
     } else if !refreshing && pos < 0.0 {
-        animate_to(surface, view, 0.0, ANIMATION, false, false);
+        animate_to(surface, view, at(0.0), ANIMATION, false, false);
     }
 }
 
-/// `scrollTo` and `scrollToEnd` (the core resolves `scrollToIndex` and,
-/// usually, `scrollToEnd` into `scrollTo`); `zoomTo` is not supported.
+/// `scrollTo`, `scrollToEnd` (the core resolves `scrollToIndex` and,
+/// usually, `scrollToEnd` into `scrollTo`) and `zoomTo`.
 pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) {
+    if let Command::ZoomTo {
+        scale,
+        center,
+        animated,
+    } = *command
+    {
+        // Not one of the core's counted scrolls (`ScrollBy`, `ScrollTo`),
+        // as on the other platforms.
+        let center = center.map(|c| Offset::new(c.x.0, c.y.0));
+        return zoom_to(surface, view, scale, center, animated);
+    }
     let (target, animated) = {
         let mut state = view.state_mut();
-        let (min, max) = limits(&state);
+        let lims = limits(&state);
         let Some(s) = state.scroll.as_mut() else {
             return;
         };
         let inset = s.behavior.content_inset.map(|v| v.0);
+        let p = pos(s);
         let (target, animated) = match *command {
-            Command::ScrollTo { x, y, animated } => (
-                if s.horizontal {
-                    x.0 + inset.left
+            Command::ScrollTo { x, y, animated } => {
+                let to = Offset::new(x.0 + inset.left, y.0 + inset.top);
+                // Zoomed content goes to both; any other view along its axis.
+                let to = if s.behavior.zooms() {
+                    to
                 } else {
-                    y.0 + inset.top
-                },
-                animated,
-            ),
-            Command::ScrollToEnd { animated } => (max, animated),
-            Command::ScrollToIndex { .. } | Command::ZoomTo { .. } => {
+                    p.with(s.horizontal, to.along(s.horizontal))
+                };
+                (to, animated)
+            }
+            Command::ScrollToEnd { animated } => {
+                (p.with(s.horizontal, lims.1.along(s.horizontal)), animated)
+            }
+            Command::ScrollToIndex { .. } => {
                 log::debug!("scroll: {command:?} is not supported");
                 return;
             }
@@ -1642,7 +1933,7 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) 
         };
         s.applied = s.applied.wrapping_add(1);
         s.live.report = true;
-        (target.clamp(min, max.max(min)), animated)
+        (clamp(target, lims), animated)
     };
     interrupt(surface, view);
     if animated {
@@ -1651,6 +1942,165 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) 
         moved_to(surface, view, target);
     }
     report(surface, view);
+}
+
+// Zooming.
+
+/// Zooms `view` to `scale` with content point `c` (unzoomed) at point `at`
+/// of its viewport, as far as the content's edges let it.
+fn zoom_at(surface: &Rc<Surface>, view: &NshView, scale: f32, c: Offset, at: Offset) {
+    let to = {
+        let mut state = view.state_mut();
+        let Some(s) = state.scroll.as_mut() else {
+            return;
+        };
+        s.zoom = scale;
+        let inset = s.behavior.content_inset.map(|v| v.0);
+        let room = centered(&state);
+        let to = Offset::new(
+            c.x * scale + room.x - at.x + inset.left,
+            c.y * scale + room.y - at.y + inset.top,
+        );
+        clamp(to, limits(&state))
+    };
+    shown_at(surface, view, to);
+}
+
+/// `zoomTo`: `scale` (within the limits) with content point `center`
+/// (unzoomed) in the middle of the viewport, or the point there now.
+fn zoom_to(
+    surface: &Rc<Surface>,
+    view: &NshView,
+    scale: f32,
+    center: Option<Offset>,
+    animated: bool,
+) {
+    let (from, to, at) = {
+        let state = view.state();
+        let Some(s) = &state.scroll else { return };
+        // One that zooms no more goes back to 1 ([`behavior`]).
+        if !s.behavior.zooms() && s.zoom == 1.0 {
+            log::debug!("scroll: zoomTo on a scroll view that does not zoom");
+            return;
+        }
+        let to = if s.behavior.zooms() {
+            limit_zoom(&s.behavior, scale, false)
+        } else {
+            1.0
+        };
+        let size = state.frame.size;
+        (
+            s.zoom,
+            to,
+            Offset::new(size.width.0 / 2.0, size.height.0 / 2.0),
+        )
+    };
+    interrupt(surface, view);
+    let now_c = content_at(view, at);
+    let c = center.unwrap_or(now_c);
+    if animated && mapped(view) && (to - from).abs() > 1e-4 {
+        zoom_eased(surface, view, from, to, now_c, c, at);
+    } else {
+        zoom_at(surface, view, to, c, at);
+        sharpen(view);
+        report(surface, view);
+    }
+}
+
+/// Eases the zoom from `from` to `to`, the content point at `at` moving
+/// from `from_c` to `to_c`.
+fn zoom_eased(
+    surface: &Rc<Surface>,
+    view: &NshView,
+    from: f32,
+    to: f32,
+    from_c: Offset,
+    to_c: Offset,
+    at: Offset,
+) {
+    set_phase(
+        view,
+        Phase::Zoom {
+            from,
+            to,
+            from_c,
+            to_c,
+            at,
+            start: now(),
+            duration: ANIMATION,
+        },
+    );
+    ensure_ticking(surface, view);
+}
+
+/// Whether a pinch at `view` zooms it: it zooms and is `zoomable`.
+pub(crate) fn pinches(view: &NshView) -> bool {
+    view.state()
+        .scroll
+        .as_ref()
+        .is_some_and(|s| s.behavior.zooms() && s.behavior.pinch)
+}
+
+/// A pinch (a trackpad's, or Control + wheel steps) over `view`
+/// ([`pinches`]) began: what moves stops.
+pub(crate) fn pinch_begin(surface: &Rc<Surface>, view: &NshView) {
+    interrupt(surface, view);
+    if let Some(s) = view.state_mut().scroll.as_mut() {
+        s.live.pinch_from = s.zoom;
+    }
+}
+
+/// The pinch is at `scale` times the zoom it began at, around point `at` of
+/// the viewport, which stays on the same content point. Past the limits
+/// it rubber-bands when `rubber` (fingers) and `bouncesZoom`; otherwise it
+/// stops there, and moves on from there (wheel steps back zoom out at
+/// once).
+pub(crate) fn pinch(
+    surface: &Rc<Surface>,
+    view: &NshView,
+    scale: f32,
+    at: (f32, f32),
+    rubber: bool,
+) {
+    let at = Offset::new(at.0, at.1);
+    let to = {
+        let mut state = view.state_mut();
+        let Some(s) = state.scroll.as_mut() else {
+            return;
+        };
+        let raw = s.live.pinch_from * scale;
+        let to = limit_zoom(&s.behavior, raw, rubber);
+        if !rubber && to != raw {
+            s.live.pinch_from = to / scale;
+        }
+        to
+    };
+    let c = content_at(view, at);
+    zoom_at(surface, view, to, c, at);
+}
+
+/// The pinch around `at` ended: past the limits it springs back to them.
+pub(crate) fn pinch_end(surface: &Rc<Surface>, view: &NshView, at: (f32, f32)) {
+    let at = Offset::new(at.0, at.1);
+    let (from, to) = {
+        let state = view.state();
+        let Some(s) = &state.scroll else { return };
+        (s.zoom, limit_zoom(&s.behavior, s.zoom, false))
+    };
+    if (to - from).abs() > 1e-4 {
+        let c = content_at(view, at);
+        zoom_eased(surface, view, from, to, c, c, at);
+    } else {
+        sharpen(view);
+    }
+}
+
+/// Draws the texts and canvases of `view`'s subtree again at the density
+/// its zoom and the transforms above it need, once a zoom ends, as iOS
+/// does, so that zoomed in they stay sharp rather than scale their
+/// pictures (and back at the screen's once it is not zoomed in).
+fn sharpen(view: &NshView) {
+    view.sharpen();
 }
 
 // Pointer drags.
@@ -1701,10 +2151,24 @@ pub(crate) fn grabs_thumb(view: &NshView, x: f32, y: f32) -> bool {
     let Some((frame, _)) = thumb(s, w, h) else {
         return false;
     };
+    // The edge the indicator runs along, moved in by its inset.
+    let bar = s.behavior.scrollbar_inset.map(|v| v.0.max(0.0));
     let (along, across, start, len, edge) = if s.horizontal {
-        (x, y, frame.origin.x as f32, frame.size.width as f32, h)
+        (
+            x,
+            y,
+            frame.origin.x as f32,
+            frame.size.width as f32,
+            h - bar.bottom,
+        )
     } else {
-        (y, x, frame.origin.y as f32, frame.size.height as f32, w)
+        (
+            y,
+            x,
+            frame.origin.y as f32,
+            frame.size.height as f32,
+            w - bar.right,
+        )
     };
     (edge - THUMB_GRAB..=edge).contains(&across)
         && (start - THUMB_SLOP..=start + len + THUMB_SLOP).contains(&along)
@@ -1769,7 +2233,7 @@ pub(crate) fn thumb_move(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32
         else {
             return;
         };
-        let (min, max) = limits(&state);
+        let lims = limits(&state);
         let d = if !s.horizontal {
             dy
         } else if s.mirrored {
@@ -1777,7 +2241,9 @@ pub(crate) fn thumb_move(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32
         } else {
             dx
         };
-        (start + thumb_scroll(Points(d), Points(max), Points(travel)).0).clamp(min, max.max(min))
+        let max = lims.1.along(s.horizontal);
+        let to = start + thumb_scroll(Points(d), Points(max), Points(travel)).0;
+        clamp(pos(s).with(s.horizontal, to), lims)
     };
     moved_to(surface, view, pos);
 }
@@ -1799,17 +2265,20 @@ pub(crate) fn thumb_end(surface: &Rc<Surface>, view: &NshView) {
 
 // Wheels and trackpads.
 
-/// The main-axis share of wheel deltas `(dx, dy)` for `s` (positive: the
-/// offset grows).
-fn wheel_delta(s: &ScrollState, dx: f32, dy: f32) -> f32 {
-    if !s.horizontal {
+/// What wheel deltas `(dx, dy)` move `s` by (positive: the offset grows):
+/// their main-axis share, both for zoomed content.
+fn wheel_delta(s: &ScrollState, dx: f32, dy: f32) -> Offset {
+    let d = if s.behavior.zooms() {
+        return Offset::new(dx, dy);
+    } else if !s.horizontal {
         dy
     } else if dx != 0.0 {
         if s.mirrored { -dx } else { dx }
     } else {
         // Vertical wheels scroll horizontal views too.
         dy
-    }
+    };
+    Offset::default().with(s.horizontal, d)
 }
 
 /// A trackpad scroll gesture over `view` began (also fingers resting on
@@ -1819,7 +2288,7 @@ pub(crate) fn wheel_begin(surface: &Rc<Surface>, view: &NshView) {
         return;
     }
     interrupt(surface, view);
-    let raw = view.state().scroll.as_deref().map_or(0.0, main);
+    let raw = current(view);
     set_phase(
         view,
         Phase::Wheel {
@@ -1848,8 +2317,7 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, tim
         } => (gesture, total, raw),
         _ => {
             interrupt(surface, view);
-            let raw = view.state().scroll.as_deref().map_or(0.0, main);
-            (false, 0.0, raw)
+            (false, 0.0, current(view))
         }
     };
     let (pos, total, raw, intent) = {
@@ -1857,27 +2325,34 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, tim
         let Some(s) = &state.scroll else { return };
         let (min, max) = limits(&state);
         let d = wheel_delta(s, dx, dy);
-        let pos = main(s);
+        let total = total + d.along(s.horizontal);
         if gesture {
             // Trackpads stretch past the edges, as macOS does.
             let previous_raw = raw;
             let raw = previous_raw + d;
-            let to = dragged(
-                Points(raw),
-                Points(min),
-                Points(max.max(min)),
-                Points(viewport(&state, s.horizontal)),
-                s.behavior.bounces,
-            )
-            .0;
-            let at_end = previous_raw <= max && raw > max;
-            (to, total + d, raw, at_end.then_some(d))
+            let stretch = |raw: f32, min: f32, max: f32, horizontal: bool| {
+                let dim = Points(viewport(&state, horizontal));
+                dragged(
+                    Points(raw),
+                    Points(min),
+                    Points(max.max(min)),
+                    dim,
+                    s.behavior.bounces,
+                )
+                .0
+            };
+            let to = Offset::new(
+                stretch(raw.x, min.x, max.x, true),
+                stretch(raw.y, min.y, max.y, false),
+            );
+            let along = s.horizontal;
+            let crossed = previous_raw.along(along) <= max.along(along)
+                && raw.along(along) > max.along(along);
+            (to, total, raw, crossed.then(|| d.along(along)))
         } else {
             // Past an edge (the refresh space) wheels only move back.
-            let lo = min.min(pos);
-            let hi = max.max(min).max(pos);
-            let to = (pos + d).clamp(lo, hi);
-            (to, total + d, to, Some(d))
+            let to = stop_at_edges(pos(s), d, (min, max));
+            (to, total, to, Some(d.along(s.horizontal)))
         }
     };
     if let Some(delta) = intent {
@@ -1912,7 +2387,7 @@ pub(crate) fn wheel_end(surface: &Rc<Surface>, view: &NshView, vx: f32, vy: f32)
         let state = view.state();
         let Some(s) = &state.scroll else { return };
         (
-            wheel_delta(s, vx, vy) / 1000.0,
+            wheel_delta(s, vx, vy).along(s.horizontal) / 1000.0,
             s.behavior.snaps() || s.behavior.paging,
         )
     };
@@ -1922,11 +2397,11 @@ pub(crate) fn wheel_end(surface: &Rc<Surface>, view: &NshView, vx: f32, vy: f32)
         pulled_to_refresh(surface, view);
     }
     // After the refresh check: refreshing lowers the top limit.
-    let (pos, (min, max)) = {
+    let outside = {
         let state = view.state();
-        (state.scroll.as_deref().map_or(0.0, goal), limits(&state))
+        let p = state.scroll.as_deref().map_or(Offset::default(), goal);
+        p.distance(clamp(p, limits(&state))) > 0.5
     };
-    let outside = pos < min - 0.5 || pos > max.max(min) + 0.5;
     if gesture && !outside && !snaps {
         // The system's momentum may follow ([`momentum_begin`]).
         set_phase(view, Phase::AwaitMomentum { since: now() });
@@ -1961,11 +2436,7 @@ pub(crate) fn momentum(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, 
     let pos = {
         let state = view.state();
         let Some(s) = &state.scroll else { return };
-        let (min, max) = limits(&state);
-        let pos = goal(s);
-        let lo = min.min(pos);
-        let hi = max.max(min).max(pos);
-        (pos + wheel_delta(s, dx, dy)).clamp(lo, hi)
+        stop_at_edges(goal(s), wheel_delta(s, dx, dy), limits(&state))
     };
     feed(surface, view, pos, time);
 }
@@ -2066,7 +2537,7 @@ pub(crate) fn key_scroll(
     let Some(view) = key_scroll_view(from, horizontal, dx, dy) else {
         return false;
     };
-    let (base, viewport, min, max) = {
+    let (base, viewport, min, max, axis) = {
         let state = view.state();
         let Some(s) = &state.scroll else {
             return false;
@@ -2075,11 +2546,26 @@ pub(crate) fn key_scroll(
         // A repeat continues from where the running scroll goes.
         let base = match s.live.phase {
             Phase::Animate { to, .. } => to,
-            _ => main(s),
+            _ => pos(s),
         };
-        (base, viewport(&state, s.horizontal), min, max)
+        // Zoomed content moves along the key's axis.
+        let axis = if s.behavior.zooms() {
+            horizontal
+        } else {
+            s.horizontal
+        };
+        (base, viewport(&state, axis), min, max, axis)
     };
-    let to = key_target(m, base, viewport, min, max);
+    let to = base.with(
+        axis,
+        key_target(
+            m,
+            base.along(axis),
+            viewport,
+            min.along(axis),
+            max.along(axis),
+        ),
+    );
     let intent = match m {
         KeyMove::Start => "start",
         KeyMove::End => "end",
@@ -2088,6 +2574,16 @@ pub(crate) fn key_scroll(
     scroll_intent(surface, &view, intent, None);
     interrupt(surface, &view);
     animate_to(surface, &view, to, KEY_ANIMATION, false, true);
+    // A list follows its real end from here on (rows never rendered are
+    // only estimated), and the other keys leave it.
+    let id = view.state().id;
+    let m = match m {
+        KeyMove::Points(d) => nsh_core::scroll::KeyMove::Points(Points(d)),
+        KeyMove::Pages(n) => nsh_core::scroll::KeyMove::Pages(n),
+        KeyMove::Start => nsh_core::scroll::KeyMove::Start,
+        KeyMove::End => nsh_core::scroll::KeyMove::End,
+    };
+    surface.control(|c| c.key_scrolled(id, m));
     true
 }
 
@@ -2140,43 +2636,41 @@ pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
         if view.kind() != ViewKind::Scroll || !mapped(&view) {
             continue;
         }
+        // In the scroll view's coordinates: zoomed, as AppKit converts.
         let bounds = target
             .ns()
             .convertRect_toView(target.ns().bounds(), Some(view.ns()));
-        let (horizontal, base, dim, min, max, pos) = {
+        let (base, p, lims, dims) = {
             let state = view.state();
             let Some(s) = &state.scroll else { continue };
             let base = match s.live.phase {
                 Phase::Animate { to, .. } => to,
-                _ => main(s),
+                _ => pos(s),
             };
-            let (min, max) = limits(&state);
-            (
-                s.horizontal,
-                base,
-                viewport(&state, s.horizontal),
-                min,
-                max,
-                main(s),
-            )
+            let dims = Offset::new(viewport(&state, true), viewport(&state, false));
+            (base, pos(s), limits(&state), dims)
         };
-        let (start, len) = if horizontal {
-            (bounds.origin.x as f32 - moved_x, bounds.size.width as f32)
-        } else {
-            (bounds.origin.y as f32 - moved_y, bounds.size.height as f32)
+        // Along both axes: the limits keep a view where it does not move.
+        let reveal = |start: f64, len: f64, moved: f32, horizontal: bool| {
+            // Pending animations count from where they are headed.
+            let start = start as f32 - moved - (base.along(horizontal) - p.along(horizontal));
+            let end = Points(start + len as f32);
+            let dim = Points(dims.along(horizontal));
+            base.along(horizontal) + reveal_focus_delta(Points(start), end, dim).0
         };
-        // Pending animations count from where they are headed.
-        let start = start - (base - pos);
-        let delta = reveal_focus_delta(Points(start), Points(start + len), Points(dim)).0;
-        let to = (base + delta).clamp(min, max.max(min));
-        if (to - base).abs() < 0.5 {
+        let (o, size) = (bounds.origin, bounds.size);
+        let to = clamp(
+            Offset::new(
+                reveal(o.x, size.width, moved_x, true),
+                reveal(o.y, size.height, moved_y, false),
+            ),
+            lims,
+        );
+        if base.distance(to) < 0.5 {
             continue;
         }
-        if horizontal {
-            moved_x += to - base;
-        } else {
-            moved_y += to - base;
-        }
+        moved_x += to.x - base.x;
+        moved_y += to.y - base.y;
         interrupt(surface, &view);
         animate_to(surface, &view, to, ANIMATION, false, true);
     }
@@ -2270,8 +2764,8 @@ mod tests {
     #[test]
     fn only_the_indicators_fade_is_cosmetic() {
         let gliding = Phase::Animate {
-            from: 0.0,
-            to: 40.0,
+            from: Offset::new(0.0, 0.0),
+            to: Offset::new(0.0, 40.0),
             start: 0.0,
             duration: KEY_ANIMATION,
             momentum: false,
@@ -2309,21 +2803,65 @@ mod tests {
             points: Default::default(),
             interval: 8.0,
         };
-        r.points.push_back((0.0, 0.0));
+        let at = |y: f32| Offset::new(0.0, y);
+        r.points.push_back((0.0, at(0.0)));
         // Events every 8 ms, 10 points each; frames sample at other times.
         for i in 1..=4 {
-            r.push(i as f64 * 8.0, i as f32 * 10.0);
+            r.push(i as f64 * 8.0, at(i as f32 * 10.0));
         }
         assert!((r.interval - 8.0).abs() < 1e-9);
-        assert_eq!(r.goal(), Some(40.0));
-        assert_eq!(r.sample(4.0), (5.0, false));
-        assert_eq!(r.sample(12.0), (15.0, false));
-        assert_eq!(r.sample(20.0), (25.0, false));
+        assert_eq!(r.goal(), Some(at(40.0)));
+        assert_eq!(r.sample(4.0), (at(5.0), false));
+        assert_eq!(r.sample(12.0), (at(15.0), false));
+        assert_eq!(r.sample(20.0), (at(25.0), false));
         // Past the newest event: it holds there.
-        assert_eq!(r.sample(50.0), (40.0, true));
+        assert_eq!(r.sample(50.0), (at(40.0), true));
         // An event at the same instant replaces the newest.
-        r.push(32.0, 42.0);
-        assert_eq!(r.goal(), Some(42.0));
+        r.push(32.0, at(42.0));
+        assert_eq!(r.goal(), Some(at(42.0)));
+    }
+
+    #[test]
+    fn zooms_stay_within_their_limits_unless_fingers_stretch_them() {
+        let b = ScrollBehavior {
+            min_zoom: 0.25,
+            max_zoom: 1.5,
+            ..ScrollBehavior::default()
+        };
+        assert_eq!(limit_zoom(&b, 1.2, true), 1.2);
+        assert_eq!(limit_zoom(&b, 3.0, false), 1.5);
+        assert_eq!(limit_zoom(&b, 0.1, false), 0.25);
+        // A pinch past the limits rubber-bands, less and less.
+        let over = limit_zoom(&b, 3.0, true);
+        assert!(over > 1.5 && over < 2.0, "{over}");
+        assert!(limit_zoom(&b, 0.1, true) < 0.25);
+        let firm = ScrollBehavior {
+            bounces_zoom: false,
+            ..b
+        };
+        assert_eq!(limit_zoom(&firm, 3.0, true), 1.5);
+    }
+
+    #[test]
+    fn wheels_move_zoomed_content_both_ways_and_other_views_along_their_axis() {
+        let mut s = ScrollState::default();
+        assert_eq!(wheel_delta(&s, 3.0, 5.0), Offset::new(0.0, 5.0));
+        s.horizontal = true;
+        assert_eq!(wheel_delta(&s, 3.0, 5.0), Offset::new(3.0, 0.0));
+        assert_eq!(wheel_delta(&s, 0.0, 5.0), Offset::new(5.0, 0.0));
+        s.behavior.max_zoom = 2.0;
+        assert_eq!(wheel_delta(&s, 3.0, 5.0), Offset::new(3.0, 5.0));
+        // At the edges they stop, past them (the refresh space) they only
+        // move back.
+        let lims = (Offset::new(0.0, 0.0), Offset::new(100.0, 50.0));
+        assert_eq!(
+            stop_at_edges(Offset::new(95.0, 10.0), Offset::new(10.0, -20.0), lims),
+            Offset::new(100.0, 0.0)
+        );
+        assert_eq!(
+            stop_at_edges(Offset::new(0.0, -30.0), Offset::new(0.0, -5.0), lims),
+            Offset::new(0.0, -30.0)
+        );
     }
 
     #[test]

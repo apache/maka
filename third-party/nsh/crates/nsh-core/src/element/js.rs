@@ -300,6 +300,12 @@ pub trait JsHost {
         let _ = (data, mime, name, last_modified);
         Err(PropError("a `File` cannot be made here".into()))
     }
+    /// A `Blob` of type `mime` holding `data` (shared, not copied). A host
+    /// without `Blob` refuses.
+    fn new_blob(&self, data: &crate::ImageData, mime: &str) -> Result<JsRaw, PropError> {
+        let _ = (data, mime);
+        Err(PropError("a `Blob` cannot be made here".into()))
+    }
     /// A function taking nothing and returning `undefined` that runs `f`
     /// each time it is called ([`super::Stop`]'s). A host without
     /// functions refuses.

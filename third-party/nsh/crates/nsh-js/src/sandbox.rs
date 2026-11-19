@@ -9,7 +9,9 @@
 //! interprets, and returning `true` unwinds the call with an exception no
 //! `catch` can swallow. A long-lived app therefore never accumulates time
 //! toward a limit; only a single call that does not return in time is cut
-//! off.
+//! off. A call is charged the time its thread runs ([`charged_now`]): time
+//! the system keeps the app frozen or suspended in the background is not
+//! the call's.
 //!
 //! A bundle holds only the app's code (nsh's runtime is native), so
 //! nothing in JS is trusted: limits and checks are enforced here, in Rust,
@@ -24,7 +26,9 @@ use std::{
     },
 };
 
-use nsh_core::{js::Limits, time::Instant};
+use nsh_core::js::Limits;
+#[cfg(not(unix))]
+use nsh_core::time::Instant;
 use rquickjs::{Ctx, allocator::Allocator};
 
 /// The VM's allocator: enforces the heap limit itself and records a refused
@@ -191,9 +195,9 @@ pub(crate) struct Budget {
     limits: Limits,
     /// Whether a call is running (nested calls share its budget).
     running: Cell<bool>,
-    /// When the running call must have returned (`None`: no budget, as an
-    /// app on its own has none).
-    deadline: Rc<Cell<Option<Instant>>>,
+    /// When the running call must have returned, on the clock calls are
+    /// charged on (`None`: no budget, as an app on its own has none).
+    deadline: Rc<Cell<Option<Charged>>>,
     /// The call that overran, until its error is reported.
     tripped: Rc<Cell<Option<Phase>>>,
     /// The running call's kind.
@@ -247,8 +251,8 @@ impl Budget {
         };
         self.phase.set(phase);
         self.tripped.set(None);
-        // `Duration::MAX` (no limit) is past any instant: no deadline.
-        self.deadline.set(Instant::now().checked_add(budget));
+        // `Duration::MAX` (no limit) is past any reading: no deadline.
+        self.deadline.set(charged_now().checked_add(budget));
         true
     }
 
@@ -290,7 +294,7 @@ impl Budget {
                 return true;
             }
             match deadline.get() {
-                Some(d) if Instant::now() > d => {
+                Some(d) if charged_now() > d => {
                     tripped.set(Some(phase.get()));
                     true
                 }
@@ -298,6 +302,41 @@ impl Budget {
             }
         })
     }
+}
+
+/// A reading of the clock calls are charged on ([`charged_now`]).
+#[cfg(unix)]
+type Charged = std::time::Duration;
+#[cfg(not(unix))]
+type Charged = Instant;
+
+/// Now on the clock calls are charged on: the time the current thread has
+/// run (its CPU time) on Linux, Android, macOS and iOS, monotonic time
+/// elsewhere. A call is cut off for running too long, not for being stopped:
+/// a mobile system freezes an app in the background (Android's app freezers,
+/// iOS suspending it) whatever it is doing, and on a monotonic clock a call
+/// it froze for more than its budget was cut off on thaw, wherever it was.
+/// Nor is the time a thread waits for a CPU on a busy device the call's.
+/// Every call is made, and every interrupt check runs, on the VM's thread.
+#[cfg(unix)]
+fn charged_now() -> Charged {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid `timespec` for the call to fill.
+    let read = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
+    // Every unix nsh runs on keeps it; were one not to, no call would be
+    // cut off there.
+    debug_assert_eq!(read, 0, "the thread's CPU-time clock");
+    Charged::new(now.tv_sec as u64, now.tv_nsec as u32)
+}
+
+/// Now on the clock calls are charged on: monotonic time on Windows (whose
+/// desktop apps are not frozen in the background) and in WebAssembly.
+#[cfg(not(unix))]
+fn charged_now() -> Charged {
+    Instant::now()
 }
 
 /// Removes every way from a string to code (`eval`, the function
@@ -383,6 +422,34 @@ mod tests {
         assert!(unwound.is_err());
         // No clock left running: the next call starts its own.
         assert!(budget.run(Phase::Call).started);
+    }
+
+    /// A thread that does not run (the app frozen or suspended in the
+    /// background; here, asleep) spends none of its call's budget; running,
+    /// it does.
+    #[cfg(unix)]
+    #[test]
+    fn a_call_is_charged_the_time_it_runs_not_the_time_it_is_stopped() {
+        use std::time::{Duration, Instant};
+
+        let budget = Budget::new(Limits {
+            call_budget: Duration::from_millis(50),
+            ..Limits::default()
+        });
+        let mut interrupt = budget.interrupt_handler(None);
+        let _running = budget.run(Phase::Call);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!interrupt(), "cut off for time it did not run");
+        let spinning = Instant::now();
+        let mut tripped = false;
+        while spinning.elapsed() < Duration::from_secs(5) {
+            if interrupt() {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "never cut off while it ran");
+        assert!(budget.take_trip().unwrap().contains("budget of 50 ms"));
     }
 
     #[test]

@@ -28,11 +28,14 @@
 //!   checkable items are stateful boolean actions, so the menu shows the
 //!   check), disabled items disabled actions. The menu bar is a
 //!   `gtk::PopoverMenuBar` above the app, not shown while the title bar is
-//!   hidden or in full screen; shortcuts are a `gtk::ShortcutController` on
-//!   the window in the capture phase, so they win over the app's keys,
-//!   except the editing roles', which stay the text field's, and a
-//!   binding of `nsh/keymap` of the same keystroke (`keymap::claims`). Context menus
-//!   are `gtk::PopoverMenu`s with a group of their own (`nshpopup`).
+//!   hidden or in full screen; shortcuts are dispatched by the window's
+//!   key decision ([`crate::key_focus::press`]) after the app's own
+//!   bindings (`keymap::claims`) and the focused view's raw keys and
+//!   capture, and before its defaults, so a capture takes a menu key. The
+//!   editing roles' keys stay the text field's. Context menus are
+//!   `gtk::PopoverMenu`s with a group of their own (`nshpopup`); their
+//!   grabs keep the window's key controller from seeing releases, so the
+//!   popovers watch their own ([`crate::key_focus::observe_popovers`]).
 
 use std::{
     cell::{Cell, RefCell},
@@ -51,6 +54,8 @@ use nsh_core::{
 };
 
 use crate::surface::Surface;
+
+type MenuShortcuts = Rc<[(gtk::ShortcutTrigger, gtk::NamedAction)]>;
 
 /// The hidden title bar's height at least, in points (Adwaita's header
 /// bar).
@@ -82,8 +87,13 @@ pub(crate) struct Chrome {
     open_popup: RefCell<Option<(Arc<[MenuItem]>, gtk::PopoverMenu)>>,
     /// The menu bar shown.
     bar: RefCell<Option<gtk::PopoverMenuBar>>,
-    /// The application menu's shortcuts (on the window).
-    shortcuts: RefCell<Option<gtk::ShortcutController>>,
+    /// The native popovers whose releases are watched
+    /// ([`crate::key_focus::observe_popovers`]): one watcher each, also
+    /// when a subtree is walked again.
+    pub(crate) popovers: RefCell<Vec<glib::WeakRef<gtk::Popover>>>,
+    /// The application menu's shortcuts, in menu order: (trigger, action).
+    /// [`menu_shortcut`] runs them in [`crate::key_focus::press`]'s order.
+    menu_shortcuts: RefCell<Option<MenuShortcuts>>,
     /// The window watched for full screen.
     watched: RefCell<glib::WeakRef<gtk::Window>>,
     /// The last primary press (ms, surface coordinates), for double
@@ -176,6 +186,8 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
             crate::app::quit();
         }
         DesktopCommand::SetQuitOnRequest(quit) => c.asks_quit.set(!quit),
+        // Additional quit request sources are currently macOS-only.
+        DesktopCommand::SetQuitRequestOptions(_) | DesktopCommand::CancelQuitRequest => {}
         // Quits as above, then the runner starts the app again.
         DesktopCommand::Restart => crate::app::restart(),
         // Addressed to a dialog root ([`crate::window`]).
@@ -608,6 +620,7 @@ impl Builder<'_> {
                     enabled,
                     items,
                     icon,
+                    ..
                 } => {
                     let sub = self.menu(items);
                     let item = gio::MenuItem::new_submenu(Some(&label.replace('_', "__")), &sub);
@@ -678,9 +691,7 @@ impl Builder<'_> {
 /// the menu bar (or removes them).
 fn install_menu(surface: &Rc<Surface>, window: &gtk::Window) {
     let c = &surface.chrome;
-    if let Some(old) = c.shortcuts.borrow_mut().take() {
-        window.remove_controller(&old);
-    }
+    *c.menu_shortcuts.borrow_mut() = None;
     let menu = c.menu.borrow().clone();
     let Some(items) = menu else {
         window.insert_action_group("nsh", None::<&gio::ActionGroup>);
@@ -697,36 +708,57 @@ fn install_menu(surface: &Rc<Surface>, window: &gtk::Window) {
     };
     let model = builder.menu(&items);
     window.insert_action_group("nsh", Some(&group));
-    let controller = gtk::ShortcutController::new();
-    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
-    for (accel, action) in builder.shortcuts {
-        if let Some(trigger) = gtk::ShortcutTrigger::parse_string(&accel) {
-            let named = gtk::NamedAction::new(&action);
-            let weak = Rc::downgrade(surface);
-            let keys = controller.downgrade();
-            // A binding of `nsh/keymap` of the same keystroke comes first.
-            let action = gtk::CallbackAction::new(move |widget, args| {
-                let claimed = weak.upgrade().is_some_and(|surface| {
-                    keys.upgrade()
-                        .and_then(|c| c.current_event())
-                        .is_some_and(|event| crate::keymap::claims(&surface, &event))
-                });
-                if !claimed && named.activate(gtk::ShortcutActionFlags::empty(), widget, args) {
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            });
-            controller.add_shortcut(gtk::Shortcut::new(Some(trigger), Some(action)));
-        }
-    }
-    window.add_controller(controller.clone());
-    *c.shortcuts.borrow_mut() = Some(controller);
+    let shortcuts: Vec<_> = builder
+        .shortcuts
+        .into_iter()
+        .filter_map(|(accel, action)| {
+            let trigger = gtk::ShortcutTrigger::parse_string(&accel)?;
+            Some((trigger, gtk::NamedAction::new(&action)))
+        })
+        .collect();
+    *c.menu_shortcuts.borrow_mut() = if shortcuts.is_empty() {
+        None
+    } else {
+        Some(shortcuts.into())
+    };
     set_menu_bar(surface, Some(&model));
 }
 
+/// The application menu's shortcut for `event`, as GTK's
+/// `ShortcutController` runs it: exact triggers before partial ones
+/// (layout fallbacks), in menu order, stopping at the action that takes
+/// the key. True when one did.
+///
+/// [`crate::key_focus::press`] runs this after the app's bindings
+/// (`keymap::claims`) and the focused view's raw keys and capture, and
+/// before the defaults: a capture takes a menu key, and the menu still
+/// works where no view hears raw keys (a native field, no focus).
+pub(crate) fn menu_shortcut(surface: &Surface, widget: &gtk::Widget, event: &gdk::Event) -> bool {
+    let shortcuts = surface.chrome.menu_shortcuts.borrow().clone();
+    let Some(shortcuts) = shortcuts else {
+        return false;
+    };
+    // GTK discards partial candidates as soon as an exact one exists.
+    let mut exact = false;
+    for (trigger, action) in shortcuts.iter() {
+        if trigger.trigger(event, false) == gdk::KeyMatch::Exact {
+            exact = true;
+            if action.activate(gtk::ShortcutActionFlags::empty(), widget, None) {
+                return true;
+            }
+        }
+    }
+    if exact {
+        return false;
+    }
+    shortcuts.iter().any(|(trigger, action)| {
+        trigger.trigger(event, false) == gdk::KeyMatch::Partial
+            && action.activate(gtk::ShortcutActionFlags::empty(), widget, None)
+    })
+}
+
 /// Shows `model` as the menu bar above the app (none: removes it).
-fn set_menu_bar(surface: &Surface, model: Option<&gio::Menu>) {
+fn set_menu_bar(surface: &Rc<Surface>, model: Option<&gio::Menu>) {
     let c = &surface.chrome;
     let Some(slot) = c.slot.borrow().as_ref().and_then(|w| w.upgrade()) else {
         return;
@@ -736,6 +768,7 @@ fn set_menu_bar(surface: &Surface, model: Option<&gio::Menu>) {
     }
     if let Some(model) = model {
         let bar = gtk::PopoverMenuBar::from_model(Some(model));
+        crate::key_focus::observe_popovers(surface, bar.upcast_ref());
         slot.append(&bar);
         *c.bar.borrow_mut() = Some(bar);
     }
@@ -823,6 +856,7 @@ fn popup(surface: &Rc<Surface>, items: &[MenuItem], at: Option<(f32, f32)>) {
         .or_else(|| crate::input::last_pointer(surface))
         .unwrap_or_default();
     let menu = gtk::PopoverMenu::from_model_full(&model, gtk::PopoverMenuFlags::NESTED);
+    crate::key_focus::observe_popovers(surface, menu.upcast_ref());
     #[cfg(feature = "dev")]
     {
         *surface.chrome.open_popup.borrow_mut() = Some((items.into(), menu.clone()));

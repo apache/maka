@@ -228,7 +228,8 @@ impl Script {
             .with_filesystem(system.filesystem)
             .with_app_url(system.app_url)
             .with_base_url(bundle.base_url.clone())
-            .with_os(environment.os);
+            .with_os(environment.os)
+            .with_clipboard_images(environment.clipboard_images);
             script.0.initialize(Services {
                 system: services,
                 host: system.host,
@@ -323,6 +324,8 @@ impl Script {
     /// A browser page has no performance monitor: `fpsEnabled()` stays
     /// false.
     pub(crate) fn set_fps_enabled(&self, _: bool) {}
+    /// Nor its stats: `perfStats()` stays null.
+    pub(crate) fn set_perf_stats(&self, _: Option<&nsh_core::platform::PerfStats>) {}
     pub(crate) fn set_tokens(&self, value: Arc<Tokens>) {
         self.0.set_tokens(value);
     }

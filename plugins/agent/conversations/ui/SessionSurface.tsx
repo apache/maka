@@ -45,6 +45,7 @@ import type { ComputerFrameSource } from './computerFrames';
 import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { StageFloatingComposer } from '../../../../products/maka/workbench/app/StageFloatingComposer';
+import { ComposerUsageLimits } from '../../../../products/maka/workbench/app/ComposerUsageLimits';
 import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import {
   backendName,
@@ -2904,6 +2905,18 @@ export function createConversationUi(
                         if (sid) resources.attachOpener(sid, node);
                       }
                     : undefined
+                }
+                usageLimits={
+                  platform.idiom === 'terminal' ? undefined : (
+                    <ComposerUsageLimits
+                      backend={() =>
+                        composerSession()?.backend() ??
+                        (selected() === null && pendingWorkspace()
+                          ? pendingComposer().backend()
+                          : null)
+                      }
+                    />
+                  )
                 }
                 workspacePicker={
                   platform.idiom === 'terminal' || side ? undefined : (

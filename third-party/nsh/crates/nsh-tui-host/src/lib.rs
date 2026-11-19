@@ -39,7 +39,8 @@ pub struct Args {
     /// Where the host writes its log; a file in the temporary directory when absent.
     #[arg(long)]
     pub log_file: Option<PathBuf>,
-    /// The app's data directory; the engine's default when absent.
+    /// The app's data directory (a run's own, from `nsh test`); the one
+    /// under its id in the system's when absent.
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
     /// Log at trace level.
@@ -91,7 +92,7 @@ pub fn main_with_args(mut options: AppOptions, args: Args) -> io::Result<()> {
     });
     logging::init(&log_file, args.trace)?;
     options.limits = Limits::standalone();
-    options.data_dir = args.data_dir.clone().or_else(nsh_engine::data_dir);
+    options.data_dir = args.data_dir.clone();
     options.trace = args.trace;
     options.fps = args.fps;
     options.cells = args.points_per_cell;
@@ -181,8 +182,12 @@ pub fn main_with_args(mut options: AppOptions, args: Args) -> io::Result<()> {
                     terminal::set_cursor_style(shown)?;
                 }
                 let event = terminal::poll(timeout)?;
-                if let RunEvent::Input(nsh_platform_tui::Input::Focus(true)) = event {
-                    session.reassert()?;
+                match &event {
+                    RunEvent::Input(nsh_platform_tui::Input::Focus(true)) => session.reassert()?,
+                    RunEvent::Input(nsh_platform_tui::Input::Focus(false)) => {
+                        session.focus_lost()?;
+                    }
+                    _ => {}
                 }
                 Ok(event)
             }

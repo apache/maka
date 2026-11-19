@@ -106,13 +106,24 @@ its font; the text lays out the same and copies whole, so inline code is a span
 
 ```rust tabs
 text("Run ")
-    .child(text(" npm test ").font_family("ui-monospace").bg(rgb(0xeff1f3)).rounded(px(4.0)))
+    .child(text("npm test").font_family("ui-monospace").bg(rgb(0xeff1f3)).rounded(px(4.0)).px(px(4.0)))
     .child(" first.")
 ```
 
 ```tsx tabs
 <Text>
-  Run <Text style={{ fontFamily: "ui-monospace", backgroundColor: "#eff1f3", borderRadius: 4 }}> npm test </Text> first.
+  Run <Text style={{ fontFamily: "ui-monospace", backgroundColor: "#eff1f3", borderRadius: 4, paddingHorizontal: 4 }}>npm test</Text> first.
+</Text>
+```
+
+Horizontal padding on a span takes room in its line at the span's two ends, and its background covers it, as a CSS
+inline box's does; vertical padding grows its background above and below the text, leaving the line's height as it
+is, and borders leave a span as it is. A relative `fontSize` keeps the span in
+proportion to its paragraph wherever it is used:
+
+```tsx
+<Text style={{ fontSize: 16 }}>
+  Run <Text style={{ fontSize: "0.875em", backgroundColor: "#eff1f3", borderRadius: 4, paddingHorizontal: 3 }}>npm test</Text> first.
 </Text>
 ```
 
@@ -181,12 +192,27 @@ others of the same names.
 </Text>
 ```
 
+On the baseline, a view that holds text stands on the line by the baseline of its first line of text, as CSS
+places an `inline-block` or `inline-flex` box: a chip, a tag or a mention in a sentence has its label on the line of
+the words around it, whatever its padding and font size, and the line reserves what the view has above and below that
+baseline. A view without text (an image, a colored box) stands on its bottom edge, as an image does.
+
+```tsx
+<Text style={{ fontSize: 15, lineHeight: 24 }}>
+  Bought more{" "}
+  <View style={{ flexDirection: "row", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+    <Text style={{ fontSize: 13 }}>NVDA</Text>
+  </View>{" "}
+  today
+</Text>
+```
+
 ## Text styles
 
 | Property | Values | Rust |
 |---|---|---|
 | `color` | A [color](./styling.md#colors). Default black | `.text_color(..)` |
-| `fontSize` | Points. Default 14 | `.text_size(px(..))`, `.text_sm()`, `.text_lg()`, ... |
+| `fontSize` | Points. Default 14. Or relative to the inherited size, as CSS's `em` and percentages: `"0.875em"`, `"87.5%"` | `.text_size(px(..))`, `.text_size(relative(0.875))`, `.text_sm()`, `.text_lg()`, ... |
 | `fontWeight` | `"normal"` (400), `"bold"` (700), or `100`–`900` (number or string) | `.font_weight(FontWeight::BOLD)` |
 | `fontStyle` | `"normal"`, `"italic"`: color emoji stay upright | `.italic()` |
 | `fontFamily` | A system family, a generic family, or an [imported font](./fonts.md) | `.font_family(..)` |

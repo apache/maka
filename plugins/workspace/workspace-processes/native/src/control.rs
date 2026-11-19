@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use maka_agent_facts::interaction::PermissionSource;
 use maka_host_runtime::shell::{
     ControlErrorKind,
     request::{parse_ref, require_ref},
@@ -177,18 +178,37 @@ impl Processes {
                     return Err(failed("PTY is controlled by a connected user"));
                 }
                 let current = access.current().await?;
-                if !floor
-                    .contains(&record.permissions.sandbox)
-                    .map_err(failed)?
-                {
-                    return Err(failed(
-                        "PTY sandbox lacks the current private namespace restrictions; start a new terminal",
-                    ));
-                }
-                if current.permission_basis() != record.permissions.basis {
+                let basis = current.permission_basis();
+                if basis != record.permissions.basis {
                     return Err(failed(
                         "PTY launch permissions no longer match this Session; start a new terminal",
                     ));
+                }
+                let required = &record.permissions.sandbox;
+                if !floor.contains(required).map_err(failed)? {
+                    return Err(failed(
+                        "PTY sandbox exceeds the current permission ceiling; start a new terminal",
+                    ));
+                }
+                if let Some(base) = access.file_approval_base() {
+                    let mut held = base.intersect(floor).map_err(failed)?;
+                    if let Sandbox::Managed { network, .. } = &mut held {
+                        // Keep the existing network PTY lifetime; file grants are scoped to the current call.
+                        *network = floor.network().clone();
+                    }
+                    if !held.contains(required).map_err(failed)? {
+                        for grant in access
+                            .permission_grants(access.target(), &basis, PermissionSource::Processes)
+                            .await?
+                        {
+                            held = held.with_grant(&grant.permissions, floor).map_err(failed)?;
+                        }
+                        if !held.contains(required).map_err(failed)? {
+                            return Err(failed(
+                                "PTY input requires the file permissions used to start it",
+                            ));
+                        }
+                    }
                 }
                 cancelled(cancellation)?;
                 let result =

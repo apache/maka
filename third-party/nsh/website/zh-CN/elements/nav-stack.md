@@ -211,6 +211,8 @@ TSX 的子函数接收路由值本身，以及一个表示它在栈中位置的 
 | `title` | `.title(..)` | `string` | 无 | iOS 和 Android：系统标题栏的标题。 |
 | `headerVisible` | `.header_visible(..)` | `boolean` | `true` | iOS 和 Android：显示系统标题栏。 |
 | `headerTransparent` | `.header_transparent(..)` | `boolean` | `false` | iOS 和 Android：内容延伸到透明的系统标题栏之下。 |
+| `headerShadowVisible` | `.header_shadow_visible(..)` | `boolean` | `true` | iOS：系统标题栏下方的细线。设为 `false` 时没有这条线，同 iOS 26 系统自带的标题栏。Android 的标题栏没有这条线。 |
+| `headerBackgroundOnScroll` | `.header_background_on_scroll(..)` | `boolean` | `false` | iOS：配合 `headerTransparent`，内容停在顶端时系统标题栏是透明的，内容滚到标题栏下面后显示标题栏的背景，同 UIKit 自带的标题栏。标题栏跟随从页面顶端开始、露出最多的那个可见滚动视图。其他平台忽略。 |
 | `headerLargeTitle` | `.header_large_title(..)` | `boolean` | `false` | iOS：大标题，随内容滚动收进标题栏；内容在标题栏之下滚动。 |
 | `headerBackTitle` | `.header_back_title(..)` | `string` | 无 | iOS 和 Android：返回到这个页面的返回按钮的文字（在 Android 上是它给屏幕阅读器的描述）。 |
 | `headerBackVisible` | `.header_back_visible(..)` | `boolean` | `true` | iOS 和 Android：显示返回按钮。 |
@@ -224,6 +226,7 @@ TSX 的子函数接收路由值本身，以及一个表示它在栈中位置的 
 | `animation` | `.animation(..)` | `"default" \| "slide" \| "fade" \| "none"` | `"default"` | 页面进入和离开的方式。 |
 | `transitionShader` | `.transition_shader(TransitionShader::new(program))` | `{ source: string; uniforms?: Record<string, ShaderUniform>; duration?: number }` | 无 | 页面通过一个 WGSL 着色器进入和离开，取代它的 `animation`：`shade(uv)` 以 `sample_from` 读取下面的页面、以 `sample_to` 读取这个页面，`nsh.progress` 在 `duration` 毫秒内（默认 350）从 0 走到 1，页面离开时从 1 回到 0。系统要求减少动态效果时，页面使用自己的 `animation`。见 [Shader](./shader.md)。 |
 | `statusBar` | `.status_bar(..)` | `{ foreground?, hidden?, animated? }` | 无 | iOS 和 Android：页面位于顶部时的状态栏。见[状态栏](../modules/nsh-base.md#status-bar)。 |
+| `ios={{ supportedOrientations }}`、`android={{ supportedOrientations }}` | `.supported_orientations(..)` | `("portrait" \| "portrait-upside-down" \| "landscape" \| "landscape-left" \| "landscape-right")[]` | 应用自身的 | 页面显示时屏幕可以采用的方向：例如应用保持竖屏，而某个查看器页面可以旋转，或者相反。在显示中的页面里，最近显示且设置了它的页面决定方向；它离开后，下面那个页面的设置重新生效。保留在未显示的标签页（`display: none`）中的页面不参与决定。iOS：由 `nsh package` 打包的应用的窗口根控制器（嵌入原生应用时为宿主的控制器，它在 `supportedInterfaceOrientations` 中返回 `NshAppView.supportedInterfaceOrientations`，见 [iOS](../docs/ios.md#nshappview)）。Android：Activity 请求的方向，没有页面设置时恢复为原来的值。在两个平台上，`landscape-left` 都是设备顺时针转动、主屏幕一侧在左边（UIKit 的 `landscapeLeft`）。 |
 | `style`、`class` | 样式方法 | | 无 | 页面的样式。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容。 |
 | `testID` | `.test_id(..)` | `string` | 无 | 在测试和 `nsh test --trace` 中找到这个页面。 |

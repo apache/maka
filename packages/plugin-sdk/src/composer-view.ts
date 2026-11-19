@@ -335,6 +335,8 @@ export interface ComposerViewInput<Element = unknown> {
   chooseWorkspace(): void;
   /** Optional product-owned directory switcher, in the existing composer location. */
   readonly workspacePicker?: Element;
+  /** Optional product-owned usage limits indicator rendered in the composer toolbar. */
+  readonly usageLimits?: Element;
   /** Opens workspace files in an established conversation, at the same slot as workspacePicker. */
   openFiles?(): void;
   filesOpener?(node: { focus(): void }): void;

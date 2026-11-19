@@ -8,6 +8,7 @@ import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.text.Layout;
+import android.text.Spanned;
 import android.text.TextWatcher;
 import android.text.method.ArrowKeyMovementMethod;
 import android.util.TypedValue;
@@ -21,6 +22,7 @@ import android.view.inputmethod.InputConnectionWrapper;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import java.text.BreakIterator;
 
 /** `<input>`: an EditText inside a container that carries the decoration. */
 @SuppressLint("ViewConstructor")
@@ -64,6 +66,8 @@ final class InputBox extends FrameLayout implements Node {
     boolean pasteInserts = true;
     /** Whether the EditText shows a vertical scroll bar of its own by default. */
     private final boolean defaultVerticalBar;
+    /** Platform hint colors before any explicit `placeholderTextColor` override. */
+    private final android.content.res.ColorStateList defaultHintColors;
     /**
      * A built-in bar replaces the scroll indicator (`InputConfig::replaced`):
      * how far the text scrolled is reported to the engine.
@@ -188,7 +192,9 @@ final class InputBox extends FrameLayout implements Node {
         // fallback fonts' taller metrics (HyperOS's sans-serif has them) would
         // put the centered text above the middle of the field.
         if (Build.VERSION.SDK_INT >= 28) edit.setFallbackLineSpacing(false);
+        if (Build.VERSION.SDK_INT >= 35) edit.setLocalePreferredLineHeightForMinimumUsed(false);
         defaultVerticalBar = edit.isVerticalScrollBarEnabled();
+        defaultHintColors = edit.getHintTextColors();
         edit.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -303,17 +309,19 @@ final class InputBox extends FrameLayout implements Node {
                    boolean secure, int keyboard, int returnKey, int capitalize, boolean autoCorrect,
                    boolean multiline, int maxLength, boolean editable, boolean autoFocus,
                    boolean hasSelectionColor, int selectionColor, boolean hasCaretColor, int caretColor,
-                   int submit) {
+                   int submit, boolean rtl, int fontVariant) {
         boolean restart = this.submit != submit && multiline && configured;
         this.multiline = multiline;
         this.submit = submit;
         edit.setTextSize(TypedValue.COMPLEX_UNIT_PX, fontSizeDp * mounter.density);
         edit.setTextColor(color);
-        if (letterSpacingDp != 0) edit.setLetterSpacing(letterSpacingDp / fontSizeDp);
-        int horizontal = align == 1 ? Gravity.CENTER_HORIZONTAL : align == 2 ? Gravity.END : Gravity.START;
+        edit.setLetterSpacing(TextLayouts.letterSpacing(letterSpacingDp, fontSizeDp));
+        edit.setFontFeatureSettings(TextLayouts.features(fontVariant));
+        int horizontal = TextLayouts.horizontalGravity(align, rtl);
         edit.setGravity(horizontal | (multiline ? Gravity.TOP : Gravity.CENTER_VERTICAL));
         edit.setHint(placeholder);
         if (hasPlaceholderColor) edit.setHintTextColor(placeholderColor);
+        else if (defaultHintColors != null) edit.setHintTextColor(defaultHintColors);
         int type;
         switch (keyboard) {
             case 1: type = InputType.TYPE_CLASS_NUMBER; break;
@@ -327,16 +335,20 @@ final class InputBox extends FrameLayout implements Node {
             case 3: type = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS; break;
             case 4: type = InputType.TYPE_CLASS_PHONE; break;
             case 5: type = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI; break;
+            case 8: type = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD; break;
             default: type = InputType.TYPE_CLASS_TEXT;
         }
         if ((type & InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT) {
-            switch (capitalize) {
+            // A visible password is typed as it is: never capitalized,
+            // suggested or corrected.
+            switch (keyboard == 8 ? 0 : capitalize) {
                 case 1: type |= InputType.TYPE_TEXT_FLAG_CAP_SENTENCES; break;
                 case 2: type |= InputType.TYPE_TEXT_FLAG_CAP_WORDS; break;
                 case 3: type |= InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS; break;
                 default: break;
             }
-            type |= autoCorrect ? InputType.TYPE_TEXT_FLAG_AUTO_CORRECT : InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+            type |= autoCorrect && keyboard != 8
+                    ? InputType.TYPE_TEXT_FLAG_AUTO_CORRECT : InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
             if (multiline) type |= InputType.TYPE_TEXT_FLAG_MULTI_LINE;
             if (secure) type = (type & ~InputType.TYPE_MASK_VARIATION) | InputType.TYPE_TEXT_VARIATION_PASSWORD;
         } else if (secure && (type & InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_NUMBER) {
@@ -361,7 +373,7 @@ final class InputBox extends FrameLayout implements Node {
             default: ime = multiline && submit == NEWLINE ? EditorInfo.IME_ACTION_NONE : EditorInfo.IME_ACTION_DONE;
         }
         edit.setImeOptions(ime);
-        edit.setFilters(maxLength >= 0 ? new InputFilter[] {new InputFilter.LengthFilter(maxLength)} : new InputFilter[0]);
+        edit.setFilters(maxLength >= 0 ? new InputFilter[] {new CharLengthFilter(maxLength)} : new InputFilter[0]);
         // `readonly` keeps focus and selection, as the docs say: the text selects as a selectable TextView's does (a
         // long press on a word, the handles, Copy) while no key listener edits it and no keyboard comes up. Disabling
         // the EditText instead, as before, took the selection away too.
@@ -371,6 +383,8 @@ final class InputBox extends FrameLayout implements Node {
         } else if (edit.isTextSelectable()) {
             edit.setTextIsSelectable(false);
             edit.setInputType(type);
+            // As above: a password type set again resets the typeface.
+            edit.setTypeface(TextLayouts.typeface(family, weight, italic));
             edit.setMovementMethod(ArrowKeyMovementMethod.getInstance());
             edit.setFocusableInTouchMode(true);
         }
@@ -478,6 +492,42 @@ final class InputBox extends FrameLayout implements Node {
         String text = pendingText;
         pendingText = null;
         setValue(text, pendingCount);
+    }
+
+    /**
+     * `maxLength`: the user's edits keep the text within {@code max} characters, counted as Unicode code points (an
+     * emoji is one, though a Java string holds two chars for it), as on every platform; `LengthFilter` counts chars.
+     * An insertion longer than the room left goes in cut between user-perceived characters, never inside one (a
+     * letter with its accent, an emoji with its skin tone), as the core's `clip_chars` cuts. The app's value is
+     * never cut, as nowhere else.
+     */
+    private final class CharLengthFilter implements InputFilter {
+        private final int max;
+
+        CharLengthFilter(int max) {
+            this.max = max;
+        }
+
+        @Override
+        public CharSequence filter(CharSequence source, int start, int end, Spanned dest, int dstart, int dend) {
+            if (applying) return null;
+            int kept = Character.codePointCount(dest, 0, dstart)
+                    + Character.codePointCount(dest, dend, dest.length());
+            int room = max - kept;
+            if (Character.codePointCount(source, start, end) <= room) return null;
+            if (room <= 0) return "";
+            BreakIterator graphemes = BreakIterator.getCharacterInstance();
+            String text = source.subSequence(start, end).toString();
+            graphemes.setText(text);
+            int cut = 0;
+            int used = 0;
+            for (int next = graphemes.next(); next != BreakIterator.DONE; next = graphemes.next()) {
+                used += text.codePointCount(cut, next);
+                if (used > room) break;
+                cut = next;
+            }
+            return source.subSequence(start, start + cut);
+        }
     }
 
     /**
@@ -758,17 +808,88 @@ final class InputBox extends FrameLayout implements Node {
     }
 
     void focus() {
-        edit.requestFocus();
+        if (edit.isShown() && edit.hasWindowFocus() && edit.getWidth() > 0) {
+            edit.requestFocus();
+            showKeyboard();
+            return;
+        }
+        // A field focused as it mounts (`autoFocus`, or `ref.focus()` from a
+        // mount effect) is not laid out yet, or its window has no focus: the
+        // focus request fails, or the IME does not serve the field and drops
+        // the keyboard request. Wait until it is shown in a focused window.
+        if (pendingFocus != null) return;
+        pendingFocus = new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                if (!edit.isShown() || !edit.hasWindowFocus() || edit.getWidth() <= 0) return;
+                cancelPendingFocus();
+                edit.requestFocus();
+                // The IME serves the field once the focus change is dispatched.
+                edit.post(InputBox.this::showKeyboard);
+            }
+        };
+        getViewTreeObserver().addOnGlobalLayoutListener(pendingFocus);
+        getViewTreeObserver().addOnWindowFocusChangeListener(pendingWindowFocus);
+        // Whoever asked (`ref.focus()` or `autoFocus`), this is now
+        // the latest request: a newer one or a blur ends the wait.
+        if (mounter != null) mounter.inputFocusWaits(this);
+    }
+
+    /** {@link #focus()} waiting for the field to be shown in a focused window. */
+    private android.view.ViewTreeObserver.OnGlobalLayoutListener pendingFocus;
+    private final android.view.ViewTreeObserver.OnWindowFocusChangeListener pendingWindowFocus = focused -> {
+        if (focused && pendingFocus != null) pendingFocus.onGlobalLayout();
+    };
+
+    /** Whether {@link #focus()} still waits for the field to be shown in a focused window. */
+    boolean focusPending() {
+        return pendingFocus != null;
+    }
+
+    /**
+     * Ends a waiting {@link #focus()}: the field is shown (it is focused
+     * next), a newer focus request or a blur took over, or it left its
+     * window. The mounter forgets the request with it.
+     */
+    void cancelPendingFocus() {
+        if (pendingFocus == null) return;
+        getViewTreeObserver().removeOnGlobalLayoutListener(pendingFocus);
+        getViewTreeObserver().removeOnWindowFocusChangeListener(pendingWindowFocus);
+        pendingFocus = null;
+        if (mounter != null) mounter.inputFocusWaitEnded(this);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        cancelPendingFocus();
+        super.onDetachedFromWindow();
+    }
+
+    /**
+     * Shows the software keyboard for this field. {@code autoFocus} and
+     * {@code focus()} after a dialog opens often run before the window can
+     * take the IME; {@link InputMethodManager#SHOW_IMPLICIT} then returns
+     * false and nothing comes up. Ask again once the view is ready, with
+     * no show flags (as React Native does), so the keyboard still rises.
+     */
+    private void showKeyboard() {
         InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        imm.showSoftInput(edit, InputMethodManager.SHOW_IMPLICIT);
+        if (imm == null) return;
+        if (imm.showSoftInput(edit, 0)) return;
+        edit.post(() -> {
+            if (!edit.hasFocus()) return;
+            InputMethodManager again = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (again != null) again.showSoftInput(edit, 0);
+        });
     }
 
     void blur() {
+        cancelPendingFocus();
         if (!edit.hasFocus()) return;
         hideKeyboard();
-        // To the (focusable) root: clearFocus() would hand focus to the first
-        // focusable view, often another field.
-        mounter.host.requestFocus();
+        // Keep focus in this window without selecting another input, and
+        // leave subsequent hardware keys on the window's dispatch path.
+        mounter.releaseFocusOf(this);
     }
 
     private void hideKeyboard() {

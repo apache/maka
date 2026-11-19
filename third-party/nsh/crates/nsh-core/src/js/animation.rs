@@ -16,7 +16,7 @@ use crate::{
         MotionSpec, NodeId, PRESETS as MOTIONS, PlaybackDirection, StaggerFrom, StepPosition,
         keyframes,
     },
-    element::TsTypes,
+    element::{Spring, TsTypes},
 };
 
 /// A curve of `Easing`: its name, its parameter (name and default) and
@@ -208,11 +208,12 @@ pub fn keyframes_composite<I: HostInput>(input: &I, node: NodeId) -> Composite {
     keyframes(node, &frames, &keyframe_timing(input))
 }
 
-/// A motion: a preset's name, or `{ keyframes, ...timing }` where
+/// A motion: a preset's name, or `{ keyframes, spring, ...timing }` where
 /// `keyframes` is an object of channels' keyframes (`{ opacity: [0, 1] }`)
 /// or a list of frames of channels (`[{ opacity: 0 }, { opacity: 1,
-/// offset: 1, easing }]`, as the Web Animations API's). Unknown channels
-/// are left out.
+/// offset: 1, easing }]`, as the Web Animations API's), and `spring` (`{
+/// stiffness, damping, mass }`, `Animated.spring`'s defaults) plays each
+/// channel on that spring. Unknown channels are left out.
 pub fn motion_spec<I: HostInput>(input: &I) -> Option<MotionSpec> {
     if let Some(name) = input.as_string() {
         return MotionPreset::parse(&name).map(MotionPreset::spec);
@@ -221,11 +222,17 @@ pub fn motion_spec<I: HostInput>(input: &I) -> Option<MotionSpec> {
         return None;
     }
     let mut spec = MotionSpec::new(keyframe_timing(input));
+    spec.spring = input
+        .field("spring")
+        .filter(|s| s.is_object())
+        .map(|s| motion_spring(&s));
     let frames = input.field("keyframes")?;
-    if frames.as_list().is_some() {
+    if let Some(list) = frames.as_list() {
         // Frames of channels: each channel's keyframes are the frames that
-        // name it, with the frame's offset and easing.
-        let items = frames.items();
+        // name it, with the frame's offset and easing. The list is taken
+        // once: reading it again could see another length, or count its
+        // items against a budget twice.
+        let items: Vec<_> = (0..list.len()).filter_map(|i| list.item(i)).collect();
         let count = items.len();
         for channel in MotionChannel::ALL {
             let mut track = Vec::new();
@@ -267,6 +274,25 @@ pub fn motion_spec<I: HostInput>(input: &I) -> Option<MotionSpec> {
     Some(spec)
 }
 
+/// A motion's `spring`: `{ stiffness, damping, mass }`, each finite or
+/// `Animated.spring`'s default.
+fn motion_spring<I: HostInput>(input: &I) -> Spring {
+    let defaults = Spring::default();
+    let number = |key, default| {
+        input
+            .field(key)
+            .and_then(|v| v.as_number())
+            .filter(|n| n.is_finite())
+            .map_or(default, |n| n as f32)
+    };
+    Spring {
+        stiffness: number("stiffness", defaults.stiffness),
+        damping: number("damping", defaults.damping),
+        mass: number("mass", defaults.mass),
+        ..defaults
+    }
+}
+
 /// Where a staggered group counts from: `"first"`, `"last"`, `"center"` or
 /// an item's index.
 pub fn stagger_from<I: HostInput>(input: &I) -> StaggerFrom {
@@ -294,6 +320,9 @@ const LAYOUT_TYPES: &[(&str, MakeLayoutCurve)] = &[
     ("easeIn", |_| LayoutCurve::EaseIn),
     ("easeOut", |_| LayoutCurve::EaseOut),
     ("keyboard", |_| LayoutCurve::Keyboard),
+    // Its control points are the phase's `bezier`; without them it eases
+    // in and out.
+    ("bezier", |_| LayoutCurve::EaseInEaseOut),
 ];
 
 /// What appearing and disappearing views animate (`property`), by name
@@ -306,6 +335,23 @@ const LAYOUT_PROPERTIES: &[(&str, LayoutProperty, bool)] = &[
 
 /// React Native's default damping of layout springs.
 const SPRING_DAMPING: f32 = 0.7;
+
+/// A `spring` phase's physics, when it names any of `stiffness`, `damping`
+/// and `mass` (the others `Animated.spring`'s defaults).
+fn physical_spring<I: HostInput>(part: &I, cx: &mut HostCx) -> Option<Spring> {
+    let [stiffness, damping, mass] =
+        ["stiffness", "damping", "mass"].map(|key| field::<f32, _>(part, key, cx));
+    if stiffness.is_none() && damping.is_none() && mass.is_none() {
+        return None;
+    }
+    let default = Spring::default();
+    Some(Spring {
+        stiffness: stiffness.unwrap_or(default.stiffness),
+        damping: damping.unwrap_or(default.damping),
+        mass: mass.unwrap_or(default.mass),
+        ..default
+    })
+}
 
 /// One phase of `{ duration, create, update, delete }`.
 fn transition<I: HostInput>(part: &I, duration: f32, cx: &mut HostCx) -> LayoutTransition {
@@ -324,20 +370,42 @@ fn transition<I: HostInput>(part: &I, duration: f32, cx: &mut HostCx) -> LayoutT
     let damping = field::<f32, _>(part, "springDamping", cx)
         .unwrap_or(SPRING_DAMPING)
         .clamp(0.01, 1.0);
-    let curve = LAYOUT_TYPES[named("type", &mut LAYOUT_TYPES.iter().map(|t| t.0))].1(damping);
+    let kind = LAYOUT_TYPES[named("type", &mut LAYOUT_TYPES.iter().map(|t| t.0))].0;
+    let spring = if kind == "spring" {
+        physical_spring(part, cx)
+    } else {
+        None
+    };
+    let curve = match (spring, part.field("bezier").and_then(|b| b.as_list())) {
+        (Some(spring), _) => LayoutCurve::Spring(spring),
+        (None, Some(list)) if kind == "bezier" && list.len() == 4 => {
+            let p = |i| list.item(i).and_then(|v| v.as_number()).unwrap_or(0.0) as f32;
+            LayoutCurve::bezier(p(0), p(1), p(2), p(3))
+        }
+        _ => LAYOUT_TYPES
+            .iter()
+            .find(|t| t.0 == kind)
+            .map_or(LayoutCurve::EaseInEaseOut, |t| t.1(damping)),
+    };
     let property =
         LAYOUT_PROPERTIES[named("property", &mut LAYOUT_PROPERTIES.iter().map(|p| p.0))].1;
+    // A physical spring times itself, as `LayoutTransition::spring`'s.
+    let duration_ms = match spring {
+        Some(spring) => spring.settle_ms(),
+        None => field(part, "duration", cx).unwrap_or(duration),
+    };
     LayoutTransition {
         curve,
         property,
-        duration_ms: field(part, "duration", cx).unwrap_or(duration),
+        duration_ms,
         delay_ms: field(part, "delay", cx).unwrap_or(0.0),
     }
 }
 
 /// `LayoutAnimation.configureNext(config)`: `{ duration, create, update,
-/// delete }`, each phase `{ type, property, duration, delay, springDamping
-/// }` (without one, that kind of change is not animated).
+/// delete }`, each phase `{ type, property, duration, delay, springDamping,
+/// stiffness, damping, mass, bezier }` (without one, that kind of change is
+/// not animated).
 impl HostValue for LayoutAnimation {
     fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
         let duration = field(input, "duration", cx).unwrap_or(300.0);
@@ -380,7 +448,16 @@ impl HostValue for LayoutAnimation {
                  type?: {curve};\n  /** What appearing and disappearing views animate. */\n  \
                  property?: {property};\n  /** Milliseconds (the config's by default). */\n  \
                  duration?: number;\n  delay?: number;\n  /** The `spring`'s damping ratio, 0..1 \
-                 ({SPRING_DAMPING} by default; 1 does not overshoot). */\n  springDamping?: number;\n}}"
+                 ({SPRING_DAMPING} by default; 1 does not overshoot), the spring fitted into `duration`. */\n  \
+                 springDamping?: number;\n  /** A physical `spring`'s stiffness `k` (170 by default). With \
+                 `stiffness`, `damping` or `mass` the `spring` moves on its physics and lasts until it \
+                 settles: `duration` and `springDamping` are not used. */\n  stiffness?: number;\n  \
+                 /** A physical `spring`'s damping coefficient `c` (26 by default; the ratio is \
+                 `c / (2 √(k m))`). */\n  damping?: number;\n  /** A physical `spring`'s mass `m` \
+                 (1 by default). */\n  mass?: number;\n  \
+                 /** The `bezier`'s control points `[x1, y1, x2, y2]`, as CSS `cubic-bezier()` \
+                 (each `x` clamped to 0..1); without them it eases in and out. */\n  \
+                 bezier?: [number, number, number, number];\n}}"
             )
         });
         types.declare("LayoutAnimationConfig", |_| {
@@ -578,6 +655,7 @@ fn easing_json(e: Easing) -> crate::JsonValue {
 pub fn tables() -> crate::JsonValue {
     use serde_json::{Map, Value, json};
     let transition = |t: &LayoutTransition| {
+        let (mut bezier, mut physics) = (None, None);
         let (kind, damping) = match t.curve {
             LayoutCurve::Linear => ("linear", None),
             LayoutCurve::EaseIn => ("easeIn", None),
@@ -585,8 +663,14 @@ pub fn tables() -> crate::JsonValue {
             LayoutCurve::EaseInEaseOut => ("easeInEaseOut", None),
             LayoutCurve::FittedSpring { damping_ratio } => ("spring", Some(damping_ratio)),
             LayoutCurve::Keyboard => ("keyboard", None),
-            // JS names no spring by its physics, and no preset is one.
-            LayoutCurve::Spring(_) => ("spring", None),
+            LayoutCurve::Spring(spring) => {
+                physics = Some(spring);
+                ("spring", None)
+            }
+            LayoutCurve::Bezier(points) => {
+                bezier = Some(points);
+                ("bezier", None)
+            }
         };
         let property = match t.property {
             LayoutProperty::Opacity => "opacity",
@@ -600,6 +684,14 @@ pub fn tables() -> crate::JsonValue {
         });
         if let Some(d) = damping {
             o["springDamping"] = json!(d);
+        }
+        if let Some(points) = bezier {
+            o["bezier"] = json!(points);
+        }
+        if let Some(spring) = physics {
+            o["stiffness"] = json!(spring.stiffness);
+            o["damping"] = json!(spring.damping);
+            o["mass"] = json!(spring.mass);
         }
         o
     };
@@ -639,4 +731,30 @@ pub fn tables() -> crate::JsonValue {
             .map(|p| (p.name.to_string(), motion_json(p)))
             .collect::<Map<String, Value>>(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::element::animated::JsonInput;
+
+    #[test]
+    fn a_motion_reads_its_spring() {
+        let motion = serde_json::json!({
+            "keyframes": { "opacity": [0, 1] },
+            "spring": { "stiffness": 620, "damping": 36 },
+        });
+        let spec = motion_spec(&JsonInput(Some(&motion))).unwrap();
+        let spring = spec.spring.unwrap();
+        assert_eq!(
+            (spring.stiffness, spring.damping, spring.mass),
+            (620.0, 36.0, 1.0)
+        );
+        let keyframes = serde_json::json!({ "keyframes": { "opacity": [0, 1] }, "spring": 1 });
+        assert_eq!(
+            motion_spec(&JsonInput(Some(&keyframes))).unwrap().spring,
+            None
+        );
+        assert_eq!(motion_spec(&JsonInput(None)), None);
+    }
 }

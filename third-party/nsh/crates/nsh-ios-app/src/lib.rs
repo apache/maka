@@ -22,12 +22,12 @@ pub fn main() {
             std::process::exit(1);
         }
     };
-    // Where the engine keeps the app's data (`SurfaceOptions::data_dir`).
-    let data_dir = options
-        .data_dir
+    // Where the engine keeps the app's data (`SurfaceOptions::support_dir`).
+    let support_dir = options
+        .support_dir
         .clone()
-        .or_else(|| nsh_platform_ios::SurfaceOptions::default().data_dir);
-    let launch = nsh_engine::updates::launch(bundle, &dir, data_dir.as_deref());
+        .or_else(|| nsh_platform_ios::SurfaceOptions::default().support_dir);
+    let launch = nsh_engine::updates::launch(bundle, &dir, support_dir.as_deref());
     options.asset_base = Some(AssetBase::Directory(launch.assets));
     run_app(AppSource::Bundle(launch.bundle), options);
 }

@@ -3,8 +3,8 @@
 // values; a trigger's press reports the next one (one item open at a time,
 // several with `multiple`). Each item is a 20-point trigger in a level-2
 // heading over a 30-point panel: the first panel kept mounted while closed,
-// the second revealed with a springing height (in the layout while closed,
-// zero high), the third item disabled. Each panel's content counts its own
+// the second revealed with a springing height on the app's spring (in the
+// layout while closed, zero high), the third item disabled. Each panel's content counts its own
 // presses, which it shows again when it reopens.
 import { Text, View, signal } from "nsh";
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
@@ -23,7 +23,7 @@ function App() {
   const open = signal<string[]>([]);
   const multiple = signal(false);
   const changes = signal(0);
-  const item = (value: string, title: string, panel: { reveal?: boolean; keepMounted?: boolean }, disabled = false) => (
+  const item = (value: string, title: string, panel: { reveal?: boolean; revealSpring?: { stiffness: number; damping: number }; keepMounted?: boolean }, disabled = false) => (
     <AccordionItem testID={`item-${value}`} value={value} disabled={disabled}>
       <AccordionHeader testID={`header-${value}`} level={2}>
         <AccordionTrigger
@@ -35,7 +35,7 @@ function App() {
           <Text>{title}</Text>
         </AccordionTrigger>
       </AccordionHeader>
-      <AccordionPanel testID={`panel-${value}`} accessibilityLabel={title} reveal={panel.reveal} keepMounted={panel.keepMounted}>
+      <AccordionPanel testID={`panel-${value}`} accessibilityLabel={title} reveal={panel.reveal} revealSpring={panel.revealSpring} keepMounted={panel.keepMounted}>
         <Details value={value} title={title} />
       </AccordionPanel>
     </AccordionItem>
@@ -52,7 +52,7 @@ function App() {
         }}
       >
         {item("a", "Shipping", { keepMounted: true })}
-        {item("b", "Returns", { reveal: true })}
+        {item("b", "Returns", { reveal: true, revealSpring: { stiffness: 64, damping: 16 } })}
         {item("c", "Billing", {}, true)}
       </Accordion>
       <View testID="multiple" style={{ height: 10 }} onPress={() => multiple.set(!multiple())} />

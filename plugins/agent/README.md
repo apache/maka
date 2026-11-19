@@ -48,7 +48,7 @@ User-controlled memory endpoints (`memories`, `memory`, `memoryHistory`, `change
 
 ## Proactive discovery
 
-The current Bot can propose a discovery plan when Bot and scheduling are enabled. A user approves the workspace, model, and selected tool groups. New plans default to read-only. The Host pins approval to the concrete tool list, then intersects it with current permissions and file exclusions for each fresh worker. An automatic one-time follow-up inherits the original authority. A broader scope needs user approval.
+The Bot can propose a discovery plan when Bot and scheduling are enabled. New plans default to read-only. The user approves the workspace, model and tool selection. The Host derives each tool's category from its bound service or built-in role. A fresh worker receives the approved names within its current tool ceiling. A one-time follow-up inherits that selection. Widening it requires user approval.
 
 One investigation occupies the shared slot through cleanup and report handoff. The worker calls `DiscoveryComplete` to settle quietly or hand findings to the Bot. The Bot decides whether to notify the user. The scheduler keeps plans, receipts, and shared investigation memory in its existing store. Recovery follows the original Run and receipt. Quoted user feedback can refer directly to the investigation record.
 

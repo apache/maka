@@ -92,7 +92,8 @@ JRSoftware.InnoSetup`). The installer needs no administrator rights: it installs
 `%LOCALAPPDATA%\Programs\<Name>`, adds a Start menu shortcut (with the app id, which the taskbar and notifications use)
 and an entry in Installed apps that uninstalls it. Its AppId is the app id, so the installer of a newer version
 upgrades the installed one in place, closing the app first; the app's data is never touched, by upgrades or by the
-uninstaller. The icon from `nsh.json` is embedded in the executable (Explorer and the taskbar show it)
+uninstaller, which removes the app's [login item](../modules/nsh-desktop.md#opening-at-login) when it starts the copy
+it uninstalls. The icon from `nsh.json` is embedded in the executable (Explorer and the taskbar show it)
 without any extra tools; packaging on another system keeps the default icon. The app id groups the app's windows in
 the taskbar. `--run` launches the app after packaging it. The executable is not signed: sign it with your own
 certificate (`signtool`) to distribute it.
@@ -151,6 +152,10 @@ only load it from your own app's files. A standalone window is `nsh_platform_win
 `AppOptions::notifications` hands the process's [notifications](../modules/nsh.md#notifications) to the app the view runs:
 its banners, presses and badge. It is off by default, so an embedded app's notifications are `unavailable` and your
 app's stay yours; `run_app` sets it.
+
+`AppOptions::login_item` gives the app `run_app` runs its [login item](../modules/nsh-desktop.md#opening-at-login): a
+value of the current user's `Run` key named by `app_id`, starting this executable. It is off by default and read by
+`run_app` alone, so an embedded app never launches at login; the runner of the apps `nsh package` builds sets it.
 
 `AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
 [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's

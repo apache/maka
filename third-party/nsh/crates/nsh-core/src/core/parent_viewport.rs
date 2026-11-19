@@ -126,7 +126,11 @@ impl<M: TextEngine> Core<M> {
             return;
         }
         let id = node.id;
-        let create = node.created.then(|| {
+        let (created, layout) = (node.created, node.layout);
+        // A list that was a component's view before it took its kind has
+        // its first `Create` among the items until they go.
+        self.drop_retagged();
+        let create = created.then(|| {
             self.mount
                 .iter()
                 .position(|m| matches!(m, MountItem::Create { id: c, .. } if *c == id))
@@ -143,7 +147,7 @@ impl<M: TextEngine> Core<M> {
             }
             return;
         }
-        let layout = node.layout.expect("list layout");
+        let layout = layout.expect("list layout");
         let list = self.nodes[key as usize].list.as_mut().expect("list");
         list.set_parent(parent);
         if parent {
@@ -377,7 +381,10 @@ impl<M: TextEngine> Core<M> {
         }
         // And its `position: sticky` views'.
         all.extend_from_slice(&scroll.view_sticky);
-        all.sort_by_key(|r| r.cell);
+        // By cell, its built-in bar last: the platforms raise the cells in
+        // this order, and the bar draws over the viewport, rows included.
+        let bar = scroll.bar.as_ref().map(|b| b.0);
+        all.sort_by_key(|r| (Some(r.cell) == bar, r.cell));
         all
     }
 
@@ -389,7 +396,7 @@ impl<M: TextEngine> Core<M> {
         views.sort_unstable();
         views.dedup();
         for view in views {
-            let Some(node) = self.nodes.get(view as usize) else {
+            let Some(node) = self.nodes.get(view as usize).filter(|node| node.created) else {
                 continue;
             };
             let Some(scroll) = node.scroll.as_ref() else {
@@ -809,7 +816,7 @@ const IGNORED: [(u16, &str, &str); 8] = [
     ),
     (
         ignored::BEHAVIOR,
-        "paging, snapping, `contentInset`, `contentOffset`, `bounces`, `scrollable` and `keyboardDismissMode`",
+        "paging, snapping, `contentInset`, `scrollbarInset`, `contentOffset`, `bounces`, `scrollsToTop`, `scrollable` and `keyboardDismissMode`",
         AROUND,
     ),
     (ignored::SCROLLBAR, "`scrollbar`", AROUND),

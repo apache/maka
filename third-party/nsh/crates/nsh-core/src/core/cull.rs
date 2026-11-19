@@ -3,10 +3,17 @@
 //! `<Each>` far from it wait as placeholders sized like the rows rendered
 //! (`Op::Placeholder`): JS renders a row once its placeholder would be
 //! made (`JsEvent::Rows`).
+//!
+//! A view whose transform moves it culls with its rectangle widened by how
+//! far the transform may take it ([`Core::reach_of`]): a static translation
+//! or one animated by values the core can bound (`animation/reach.rs`), as
+//! a section's entrance slides it a few points. A transform it cannot bound
+//! (a scale, a rotation, a gesture's or a scroll view's value) keeps the
+//! view and what it holds made with their parent.
 
 use taffy::Position;
 
-use super::{Core, Key, Kind, NO_KEY, rounded, span};
+use super::{Core, Key, Kind, NO_KEY, rounded, scroll_extent, span};
 use crate::{geometry::Bounds, mount::MountItem, ops::EventKind, text::TextEngine};
 
 /// How far around its viewport a scroll view mounts its content, in
@@ -40,6 +47,13 @@ impl<M: TextEngine> Core<M> {
             if node.list.is_some() || node.kind == Kind::Cell || node.is_layout_root() {
                 return None;
             }
+            // A view inside a text (an attachment) is laid out on its own
+            // and placed by its text, which makes it with its view:
+            // culling's walk never reaches into it, so what it holds
+            // would wait for good.
+            if node.inline && node.kind != Kind::Text && node.layout.is_some() {
+                return None;
+            }
             if node.kind == Kind::Scroll {
                 return node
                     .scroll
@@ -47,11 +61,10 @@ impl<M: TextEngine> Core<M> {
                     .is_some_and(|s| !s.behavior.zooms())
                     .then_some(key);
             }
-            // Content that moves as a whole: where its children show is not
-            // where their frames are.
-            if !node.animated.is_empty() || !node.view_style.transform.ops().is_empty() {
-                return None;
-            }
+            // Content that moves as a whole by more than can be told: where
+            // its children show is not near their frames. A translation of
+            // known reach widens their rectangles instead (`sync_culled_in`).
+            self.reach_of(key)?;
             key = node.parent;
         }
         None
@@ -67,8 +80,50 @@ impl<M: TextEngine> Core<M> {
             || node.decoration
             || node.is_overlay()
             || node.is_layout_root()
-            || !node.animated.is_empty()
-            || !node.view_style.transform.ops().is_empty()
+            || self.reach_of(key).is_none()
+    }
+
+    /// How far `key`'s transform may move it from its frame, in points
+    /// along x and along y (either way): `(0, 0)` without one; `None` when
+    /// that cannot be told, for a scale, a rotation, a skew or a
+    /// perspective, or a translation by a value without a bound (a
+    /// gesture's, a scroll view's: `animation/reach.rs`). Animated
+    /// opacity and colors move nothing.
+    pub(super) fn reach_of(&self, key: Key) -> Option<(f32, f32)> {
+        use crate::{animation::AnimationProp, transform::TransformKind};
+        let node = &self.nodes[key as usize];
+        let ops = node.view_style.transform.ops();
+        if ops.is_empty() {
+            return Some((0.0, 0.0));
+        }
+        let (mut x, mut y) = (0.0f32, 0.0f32);
+        for (i, op) in ops.iter().enumerate() {
+            let animated = node
+                .animated
+                .iter()
+                .find(|(prop, _)| *prop == AnimationProp::Transform(i as u8))
+                .map(|&(_, value)| value);
+            let (lo, hi) = match animated {
+                Some(value) => self.reach.range(value)?,
+                None => (op.value, op.value),
+            };
+            let far = lo.abs().max(hi.abs());
+            let size = node.frame.size;
+            match op.kind {
+                TransformKind::TranslateX => x += far,
+                TransformKind::TranslateY => y += far,
+                TransformKind::TranslateXFraction if size.width.0.is_finite() => {
+                    x += far * size.width.0
+                }
+                TransformKind::TranslateYFraction if size.height.0.is_finite() => {
+                    y += far * size.height.0
+                }
+                // An entry that changes nothing (a scale of 1).
+                kind if animated.is_none() && op.value == kind.identity() => {}
+                _ => return None,
+            }
+        }
+        (x.is_finite() && y.is_finite()).then_some((x, y))
     }
 
     /// Holds back `child`, about to be made in `scope`'s content, when it
@@ -130,6 +185,14 @@ impl<M: TextEngine> Core<M> {
                 l.size.width,
                 l.size.height,
             );
+            // A scroll view's content size, sent with the frame when it is
+            // made (a list's view in its parent's viewport has none).
+            let node = &mut self.nodes[key as usize];
+            if node.kind == Kind::Scroll
+                && let Some(scroll) = node.scroll.as_mut()
+            {
+                scroll.culled_content = Some(scroll_extent(&l));
+            }
             if let Some(parent) = self.nodes.get(self.nodes[key as usize].parent as usize)
                 && parent.rtl
                 && parent.kind == Kind::Scroll
@@ -195,7 +258,9 @@ impl<M: TextEngine> Core<M> {
             return;
         }
         self.culls_content = enabled;
-        if !enabled && !self.culling.is_empty() {
+        // Off: what is culled is made. On again: what went far away while
+        // it was off is given up (the scroll views stay in `culling`).
+        if !self.culling.is_empty() {
             self.cull_dirty = true;
         }
     }
@@ -262,11 +327,13 @@ impl<M: TextEngine> Core<M> {
         );
         let holders = self.view_holders();
         let mut made = false;
-        let mut left = false;
         let mut stack = std::mem::take(&mut self.cull_scratch);
         stack.clear();
-        stack.push((scope, 0.0f32, 0.0f32));
-        while let Some((parent, px, py)) = stack.pop() {
+        stack.push((scope, 0.0f32, 0.0f32, 0.0f32, 0.0f32));
+        // `ex`, `ey`: how far the transforms between the scroll view and
+        // `parent` may move what it holds; each child's rectangle is
+        // widened by them and its own (`Core::reach_of`).
+        while let Some((parent, px, py, ex, ey)) = stack.pop() {
             let mut i = 0;
             while let Some(&child) = self.nodes[parent as usize].children.get(i) {
                 i += 1;
@@ -277,19 +344,27 @@ impl<M: TextEngine> Core<M> {
                 let f = c.frame;
                 let (cx, cy) = (px + f.origin.x.0, py + f.origin.y.0);
                 let (cw, ch) = (f.size.width.0, f.size.height.0);
+                // Where its transforms may take it: without a bound, it
+                // shows wherever it is.
+                let (ox, oy) = self
+                    .reach_of(child)
+                    .unwrap_or((f32::INFINITY, f32::INFINITY));
+                let (rx, ry) = (ex + ox, ey + oy);
+                // Its rectangle widened by them (left, top, right, bottom).
+                let r = (cx - rx, cy - ry, cx + cw + rx, cy + ch + ry);
+                let meets =
+                    |w: (f32, f32, f32, f32)| r.0 < w.2 && r.1 < w.3 && r.2 > w.0 && r.3 > w.1;
+                let c = &self.nodes[child as usize];
                 if c.created {
                     // Far away, holding nothing a view keeps: given up.
-                    let away = cw > 0.0
-                        && ch > 0.0
-                        && !(cx < far.2 && cy < far.3 && cx + cw > far.0 && cy + ch > far.1);
+                    let away = cw > 0.0 && ch > 0.0 && !meets(far);
                     if away && self.culls_content && self.reclaimable(child, &holders) {
                         self.reclaim(child);
-                        left = true;
                         continue;
                     }
                     let c = &self.nodes[child as usize];
                     if c.kind.is_container() && c.kind != Kind::Scroll && c.list.is_none() {
-                        stack.push((child, cx, cy));
+                        stack.push((child, cx, cy, rx, ry));
                     }
                     continue;
                 }
@@ -298,8 +373,7 @@ impl<M: TextEngine> Core<M> {
                 }
                 // Not placed yet (NaN), empty (what it holds may overflow
                 // it), or within the window.
-                let near =
-                    cx < window.2 && cy < window.3 && cx + cw > window.0 && cy + ch > window.1;
+                let near = meets(window);
                 let shows = !self.culls_content
                     || f.origin.x.0.is_nan()
                     || cw <= 0.0
@@ -307,17 +381,15 @@ impl<M: TextEngine> Core<M> {
                     || near
                     || self.never_culled(child);
                 if !shows {
-                    left = true;
                     continue;
                 }
                 if self.nodes[child as usize].placeholder {
                     self.ask_row(child);
-                    left = true;
                     continue;
                 }
                 // In the overscan, not in sight: within the turn's budget
                 // (`pace.rs`).
-                let seen = cx < x + w && cy < y + h && cx + cw > x && cy + ch > y;
+                let seen = meets((x, y, x + w, y + h));
                 if self.culls_content
                     && !seen
                     && !f.origin.x.0.is_nan()
@@ -326,18 +398,20 @@ impl<M: TextEngine> Core<M> {
                     && !self.never_culled(child)
                     && !self.pace_overscan()
                 {
-                    left = true;
                     continue;
                 }
                 self.make_culled(parent, child);
                 made = true;
                 if self.nodes[child as usize].kind.is_container() {
-                    stack.push((child, cx, cy));
+                    stack.push((child, cx, cy, rx, ry));
                 }
             }
         }
         self.cull_scratch = stack;
-        (made, left || self.culls_content)
+        // Still to be looked at as it scrolls, though all its content is
+        // made: what is far away is given up (with culling off too, so that
+        // turned on again it gives up what went far away meanwhile).
+        (made, true)
     }
 
     /// Makes culled `child`'s native view in made `parent`'s, at its place
@@ -408,6 +482,13 @@ impl<M: TextEngine> Core<M> {
         if let Some((key, _)) = self.focus {
             holders.push(key);
         }
+        // A reveal is resolved after layout; its target must survive the
+        // culling pass until that command has its text attachment's position.
+        holders.extend(self.commands.iter().filter_map(|(id, command)| {
+            matches!(command, crate::Command::Reveal(_))
+                .then(|| self.key(*id).ok())
+                .flatten()
+        }));
         holders.extend(
             self.overlays
                 .iter()
@@ -446,6 +527,8 @@ impl<M: TextEngine> Core<M> {
                     | Kind::Stack
             ) || node.kind.is_root()
                 || node.component.is_some()
+                // Its animation bindings go with its view.
+                || !node.animated.is_empty()
                 || node.states & live != 0
                 || node.layout.is_some() && self.never_culled(k)
                 || holders.contains(&k);

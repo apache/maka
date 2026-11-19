@@ -117,10 +117,14 @@ impl HostChannel {
     /// (`host.params`, read synchronously when they start; a running app
     /// keeps the ones it started with). Later requests are events
     /// ([`HostChannel::send`]).
+    ///
+    /// Parameters alone answer no call, so they leave the channel as it
+    /// was: until a handler ([`HostChannel::handle`]) or an event
+    /// configures it, the app's calls keep going to the platform's own
+    /// host, as on the web, where the page passes parameters and answers
+    /// calls with its player's host.
     pub fn set_params(&self, params: serde_json::Map<String, JsonValue>) {
-        let mut inner = self.lock();
-        inner.params = params;
-        inner.configured = true;
+        self.lock().params = params;
     }
 
     /// The launch parameters ([`HostChannel::set_params`]).

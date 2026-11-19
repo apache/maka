@@ -117,7 +117,10 @@ pub(crate) fn compile_native(
     }
     let mut program = parsed.program;
     let destructured = crate::props::check(&program, source);
+    // The TypeScript transform needs enum members evaluated to compile an
+    // `enum` (it panics without them).
     let scoping = SemanticBuilder::new()
+        .with_enum_eval(true)
         .build(&program)
         .semantic
         .into_scoping();

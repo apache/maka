@@ -23,8 +23,11 @@ pub(crate) struct ViewKey {
     pub(crate) binding: KeyBinding,
     pub(crate) within: Option<RefTarget>,
     /// The dialog root of the window of the app's own whose tree bound
-    /// it; `None` for the main window's.
+    /// it; `None` outside one (the window is then where its owner's
+    /// component is: [`ViewKeys::bindings`]).
     pub(crate) window: Option<super::ElementRef>,
+    /// The owner it was bound under.
+    pub(crate) owner: super::Owner,
     pub(crate) text: Rc<str>,
     pub(crate) handler: KeyHandler,
 }
@@ -50,6 +53,7 @@ impl ViewKeys {
         text: Rc<str>,
         handler: KeyHandler,
         window: Option<super::ElementRef>,
+        owner: super::Owner,
     ) -> u32 {
         let id = FIRST_ID + self.next;
         self.next += 1;
@@ -62,6 +66,7 @@ impl ViewKeys {
             text,
             handler,
             window,
+            owner,
         });
         self.changed = true;
         id
@@ -81,15 +86,21 @@ impl ViewKeys {
 
     /// The bindings as the platform matches them, each in its window's
     /// root node; those of a window not mounted yet are left out (and
-    /// [`Self::unplaced`] set).
-    pub(crate) fn bindings(&mut self) -> Vec<KeyBinding> {
+    /// [`Self::unplaced`] set). One bound outside a window's own context
+    /// is in the window `window_of` gives for its owner: a component JS
+    /// placed in a window of its own sees no such context, yet its keys
+    /// are that window's.
+    pub(crate) fn bindings(
+        &mut self,
+        mut window_of: impl FnMut(super::Owner) -> crate::NodeId,
+    ) -> Vec<KeyBinding> {
         let mut unplaced = false;
         let bindings = self
             .list
             .iter()
             .filter_map(|k| {
                 let window = match k.window {
-                    None => crate::ROOT_ID,
+                    None => window_of(k.owner),
                     Some(element) => match element.node() {
                         Some(node) => node,
                         None => {

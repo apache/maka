@@ -648,7 +648,7 @@ export function Form() {
               api="url"
               testID="site"
               prefix="https://"
-              suffix=".nsh.app"
+              suffix=".nsh.dev"
               addon
               keyboardType="url"
               autoCapitalize="none"
@@ -750,6 +750,14 @@ export function Form() {
               <Meter value={notes().length / 280} tone={notes().length >= 280 ? "danger" : notes().length > 250 ? "warn" : "accent"} />
             </View>
             <AutoGrow />
+            <Field
+              label="Scrolls its text"
+              hint="The wheel scrolls the lines, then the page"
+              testID="scrolling-notes"
+              multiline
+              defaultValue={Array.from({ length: 20 }, (_, i) => `Line ${i + 1}`).join("\n")}
+              style={{ height: 120 }}
+            />
             <Field label="No caret" api="caret" caret={false} defaultValue="No caret here" />
           </Section>
         ),

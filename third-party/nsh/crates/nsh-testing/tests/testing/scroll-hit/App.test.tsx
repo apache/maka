@@ -11,3 +11,9 @@ test("a button wholely above the fold takes its press", async () => {
   await app.press("id:probe-visible");
   expect(app.shows("Pressed: visible")).toBe(true);
 });
+
+test("a button wholly below the fold is not covered by the bar", async () => {
+  const app = await open("./App.tsx");
+  await app.press("id:probe-below");
+  expect(app.shows("Pressed: below")).toBe(true);
+});

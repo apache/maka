@@ -58,6 +58,7 @@ are methods of the `Scrollable` trait, which lists share.
 | `disableIntervalMomentum` | `.disable_interval_momentum(..)` | `boolean` | `false` | A fling moves one snap point at most. |
 | `decelerationRate` | `.deceleration(rate)` | `"normal" \| "fast" \| number` | platform | How fast a fling slows down: the velocity kept per millisecond (`normal` 0.998, `fast` 0.99). |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Room around the content. |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Keeps the scroll indicator this far from the view's edges, clear of bars floating over it; the content still scrolls under them. |
 | `contentOffset` | `.content_offset(point(..))` | `{ x?, y? }` | | Where it starts. |
 | `contentStyle` | the content view's own styles | `ViewStyle` | | The style of a view around the children that scrolls with them; `flexGrow: 1` makes it at least as tall as the viewport (a centered empty state). |
 | `contentClass` | the content view's own styles | `string` | | The same as classes, e.g. `"grow justify-center p-4"`. |
@@ -199,4 +200,8 @@ changes; their children are mirrored.
 - Android zooms with NSH's own scroll view, which scales the content around its top left and scrolls both ways.
   Pinches start after Android's minimum span between the fingers (about 27 mm).
 - On Mac Catalyst (Mac idiom), NSH detects the pull and shows its spinner.
+- `scrollbarInset`: iOS adds the keyboard's room to its bottom, as it does to the content's. Touch browsers inset the
+  indicator only along the axis it scrolls, and browsers that cannot style their scroll bars (Firefox) ignore it.
+  On Android, while every edge is 0 the indicator stays within `contentInset` as before; once any edge is set, it
+  follows `scrollbarInset` alone, as on the other platforms.
 - iOS redraws texts and canvases at the zoomed resolution when a zoom ends.

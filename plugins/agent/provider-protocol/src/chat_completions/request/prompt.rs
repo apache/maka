@@ -31,6 +31,33 @@ pub struct PromptOptions {
 fn metadata<'a>(extensions: &'a Extensions, namespace: &str) -> Option<&'a Value> {
     extensions.as_ref()?.get(namespace)
 }
+fn tool_message(tool: &crate::input::ToolResult, options: &PromptOptions) -> Result<Value> {
+    let content = match &tool.output.value {
+        ToolValue::Text(value) | ToolValue::ErrorText(value) => json!(value),
+        ToolValue::Json(value) | ToolValue::ErrorJson(value) => {
+            json!(value.to_string())
+        }
+        ToolValue::Denied { reason } => {
+            json!(reason.as_deref().unwrap_or("Tool call execution denied."))
+        }
+        ToolValue::Content(parts) if options.multipart_tool_content => json!(
+            parts
+                .iter()
+                .map(|v| part(v, &options.provider_namespace))
+                .collect::<Result<Vec<_>>>()?
+        ),
+        ToolValue::Content(parts) => textual_content(parts),
+    };
+    Ok(overlay(
+        serde_json::to_value(WireMessage::Tool {
+            tool_call_id: tool.id.clone(),
+            content,
+        })
+        .expect("message"),
+        &tool.extensions,
+    ))
+}
+
 fn overlay(mut value: Value, extensions: &Extensions) -> Value {
     if let Some(fields) = metadata(extensions, "openaiCompatible").and_then(Value::as_object) {
         value
@@ -357,34 +384,16 @@ pub fn messages(messages: &[Message], options: &PromptOptions) -> Result<Vec<Val
                     wire[field.as_str()] = json!(reasoning);
                 }
                 result.push(overlay(wire, extensions));
+                for part in parts {
+                    if let AssistantPart::ToolResult(tool) = part {
+                        result.push(tool_message(tool, options)?);
+                    }
+                }
                 continue;
             }
             Message::Tool { results, .. } => {
                 for tool in results {
-                    let content = match &tool.output.value {
-                        ToolValue::Text(value) | ToolValue::ErrorText(value) => json!(value),
-                        ToolValue::Json(value) | ToolValue::ErrorJson(value) => {
-                            json!(value.to_string())
-                        }
-                        ToolValue::Denied { reason } => {
-                            json!(reason.as_deref().unwrap_or("Tool call execution denied."))
-                        }
-                        ToolValue::Content(parts) if options.multipart_tool_content => json!(
-                            parts
-                                .iter()
-                                .map(|v| part(v, &options.provider_namespace))
-                                .collect::<Result<Vec<_>>>()?
-                        ),
-                        ToolValue::Content(parts) => textual_content(parts),
-                    };
-                    result.push(overlay(
-                        serde_json::to_value(WireMessage::Tool {
-                            tool_call_id: tool.id.clone(),
-                            content,
-                        })
-                        .expect("message"),
-                        &tool.extensions,
-                    ));
+                    result.push(tool_message(tool, options)?);
                 }
                 continue;
             }

@@ -88,7 +88,7 @@ impl Frame {
                     && message.content.as_ref().is_none_or(|blocks| {
                         blocks
                             .iter()
-                            .all(|block| matches!(block, Block::ToolUse { .. }))
+                            .all(|block| wire::validate_block(block, wire::Phase::Complete))
                     })
             }
             Chunk::MessageDelta { usage, .. } => {
@@ -262,6 +262,8 @@ impl Stream {
                     Some(patch.cache_creation_input_tokens.unwrap_or(0));
                 self.usage.cache_read_input_tokens = patch.cache_read_input_tokens;
                 self.raw_usage = message.usage;
+                self.decoder.server_calls.clear();
+                self.decoder.mcp_calls.clear();
                 self.lifecycle = Lifecycle::Open(message.id.clone());
                 if let Some(reason) = message.stop_reason {
                     self.end.stop_reason = Some(reason);
@@ -283,30 +285,9 @@ impl Stream {
                         json!({"id":message.id,"model":message.model,"usage":self.raw_usage}),
                     ),
                 });
-                for block in message.content.unwrap_or_default() {
-                    if let Block::ToolUse {
-                        id,
-                        name,
-                        input,
-                        caller,
-                        ..
-                    } = block
-                    {
-                        let input = if input.is_null() { json!({}) } else { input };
-                        if let Some(call) =
-                            self.decoder.tool_call(id, name, input, caller, None, false)
-                        {
-                            events.push(tool_start(&call));
-                            events.push(Event::ToolDelta {
-                                id: call.id.clone(),
-                                text: call.input.clone(),
-                            });
-                            events.push(Event::ToolEnd {
-                                id: call.id.clone(),
-                            });
-                            events.push(Event::ToolCall(call));
-                        }
-                    }
+                for (index, block) in message.content.unwrap_or_default().into_iter().enumerate() {
+                    events.extend(self.start(index, block, next_id)?);
+                    events.extend(self.stop(index, next_id));
                 }
             }
             Chunk::MessageDelta {
@@ -478,23 +459,21 @@ impl Stream {
             } => {
                 let member = toolset_name.as_ref().map(|_| name.clone());
                 let buffered = input_string(&input);
-                if let Some(mut call) =
+                let mut call =
                     self.decoder
-                        .tool_call(id, name, json!({}), caller, toolset_name, false)
-                {
-                    call.input.clear();
-                    events.push(tool_start(&call));
-                    self.blocks.insert(
-                        index,
-                        Active::Tool(PendingTool {
-                            call,
-                            input: buffered,
-                            first_delta: false,
-                            prefix: None,
-                            member,
-                        }),
-                    );
-                }
+                        .tool_call(id, name, json!({}), caller, toolset_name, false);
+                call.input.clear();
+                events.push(tool_start(&call));
+                self.blocks.insert(
+                    index,
+                    Active::Tool(PendingTool {
+                        call,
+                        input: buffered,
+                        first_delta: false,
+                        prefix: None,
+                        member,
+                    }),
+                );
             }
             Block::ServerToolUse {
                 id,
@@ -515,24 +494,22 @@ impl Stream {
                 if name == "advisor" {
                     input = "{}".into();
                 }
-                if let Some(mut call) =
-                    self.decoder
-                        .tool_call(id, name, json!({}), caller, None, true)
-                {
-                    call.input.clear();
-                    events.push(tool_start(&call));
-                    let first_delta = input.is_empty();
-                    self.blocks.insert(
-                        index,
-                        Active::Tool(PendingTool {
-                            call,
-                            input,
-                            first_delta,
-                            prefix,
-                            member: None,
-                        }),
-                    );
-                }
+                let mut call = self
+                    .decoder
+                    .tool_call(id, name, json!({}), caller, None, true);
+                call.input.clear();
+                events.push(tool_start(&call));
+                let first_delta = input.is_empty();
+                self.blocks.insert(
+                    index,
+                    Active::Tool(PendingTool {
+                        call,
+                        input,
+                        first_delta,
+                        prefix,
+                        member: None,
+                    }),
+                );
             }
             block => {
                 for part in self.decoder.block(block, index, next_id)? {

@@ -486,7 +486,8 @@ const drafting = signal<DiffLineRange | null>(null);
 
 `class` and `style` style the view's box. `classes` takes Tailwind classes by part and `styles` inline styles by part;
 a part's classes come after its own default styles, so they win, and its `styles` win over its classes. The font is
-set with `fontFamily`, `fontSize` and `lineHeight`.
+set with `fontFamily`, `fontSize` and `lineHeight`; like every text, it grows with the user's text size (`fontScale()`),
+and the rows and sides grow with it.
 
 ```tsx
 <DiffView

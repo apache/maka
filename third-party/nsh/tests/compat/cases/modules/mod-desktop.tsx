@@ -78,6 +78,9 @@ function App() {
           stop();
           const stopRequests = Application.on("quitRequest", () => {});
           stopRequests();
+          Application.setQuitRequestOptions({ system: true, mainWindowClose: true });
+          Application.cancelQuitRequest();
+          Application.setQuitRequestOptions({});
           Application.quit();
           Application.restart();
           calls.set(`application done, quit ${typeof Application.quit}, restart ${typeof Application.restart}, stop ${typeof stop}`);

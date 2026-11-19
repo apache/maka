@@ -117,6 +117,9 @@ nsh package --target ios \
 Writes `.nsh/out/<Name>.ipa`, ready for TestFlight, App Store upload tools or direct installation (depending on the
 profile). What happens:
 
+- The executable is checked for an `arm64` slice. `UIRequiredDeviceCapabilities` defaults to `["arm64"]`;
+  `ios.infoPlist` can replace this list. Xcode and SDK build metadata is read from the active Xcode toolchain
+  and written into `Info.plist` before signing.
 - The provisioning profile is copied into the app as `embedded.mobileprovision`.
 - The entitlements come from the profile, with the app's own from `nsh.json` `ios.entitlements` checked against it
   ([below](#infoplist-keys-and-entitlements)). NSH checks that the profile's application identifier covers the app's `id`
@@ -317,6 +320,7 @@ says what to set instead:
 | iOS: `CFBundleIcons`, `CFBundleIcons~ipad`, `CFBundleIconName`; macOS: `CFBundleIconFile` | `icon` |
 | iOS: `UIUserInterfaceStyle` | `appearance` |
 | iOS: `UIStatusBarStyle`, `UIStatusBarHidden` | `statusBar` |
+| iOS: `UILaunchScreen`, when `ios.launchScreen` is set | `ios.launchScreen` ([Launch screen](#launch-screen)) |
 | macOS: `LSUIElement` | `macos.activationPolicy` ([Menu bar apps](./macos.md#menu-bar-apps)) |
 | `CFBundleExecutable`, `CFBundlePackageType`, `CFBundleSupportedPlatforms`; iOS: `LSRequiresIPhoneOS`, `UIApplicationSceneManifest`, `UIApplicationSupportsMultipleScenes`; macOS: `NSPrincipalClass` | the package itself |
 | Entitlements: `application-identifier`, `com.apple.application-identifier`, `com.apple.developer.team-identifier` | `id` and the provisioning profile |
@@ -346,9 +350,10 @@ later system, through its own [Rust crate](./rust.md) for example, raises its mi
 ```
 
 The value is a string of one to three numbers joined by dots (`"15"`, `"15.2"`, `"15.2.1"`) from NSH's minimum up:
-`"15.0"` on iOS, `"14.0"` on macOS. The package declares it as written, and the iOS app icon is compiled for it. A
-lower version, or a value of another form, is an error that names NSH's minimum, reported as soon as `nsh.json` is
-read.
+`"15.0"` on iOS, `"14.0"` on macOS. The package declares it as written, the app's Rust code (Rust and C alike) is
+built for it, and the iOS app icon is compiled for it. A deployment target set in the environment
+(`IPHONEOS_DEPLOYMENT_TARGET`, `MACOSX_DEPLOYMENT_TARGET`) is used as it is. A lower version, or a value of another
+form, is an error that names NSH's minimum, reported as soon as `nsh.json` is read.
 
 ## Icons
 
@@ -357,7 +362,8 @@ Give one square PNG, ideally 1024×1024, in `nsh.json` (`"icon": "icon.png"`) or
 - **iOS:** compiled by Xcode's `actool` into the app's asset catalog (`Assets.car`), which derives every size iOS
   needs.
 - **Android:** resized to 192×192 and used as the launcher icon (`mipmap-xxxhdpi`).
-- **macOS:** converted by `sips` to `AppIcon.icns`.
+- **macOS:** converted by `sips` to `AppIcon.icns`. `nsh run --target macos` and `nsh test --target macos` show the
+  PNG in the Dock and the app switcher.
 - **Linux:** copied as `<id>.png`, which the `.desktop` file names as its `Icon`.
 - **Windows:** resized to 16 to 64 pixels and 256 pixels and embedded in the executable as its icon, which the window,
   Explorer and the taskbar show, and written beside the bundle as `nsh\icon.ico`, which notifications show. Packaged on
@@ -382,6 +388,31 @@ Windows, Linux and Android fill it. Give `icon` an object to use a PNG per platf
 `--icon` replaces it for the target being packaged.
 
 Without an icon, the system shows its default.
+
+## Launch screen
+
+From the tap on the icon until the app's first frame, iOS shows the app's launch screen: the system's background
+color in the app's appearance unless `nsh.json` gives one. `ios.launchScreen` sets its color and an image in the
+middle of the screen, the same in both appearances or one for each:
+
+```json
+{
+  "ios": {
+    "launchScreen": {
+      "background": { "light": "#ffffff", "dark": "#131312" },
+      "image": { "light": "launch.png", "dark": "launch-dark.png" }
+    }
+  }
+}
+```
+
+- `background` is `#rrggbb` or `#rrggbbaa`, or an object with `light` and `dark`.
+- `image` is a PNG relative to `nsh.json`, or an object with `light` and `dark`. It is drawn for 3x screens: the
+  system shows it at a third of its size in pixels, so a 288×288 PNG is 96×96 points, centered.
+
+Both are compiled into the app's asset catalog with its icon and named in `UILaunchScreen`, which the app no longer
+sets in `ios.infoPlist`. A launch screen that matches the app's first frame (its background, the same image in the
+same place) makes the start look seamless. `appearance` picks which of the two the system shows.
 
 ## Camera, Bluetooth and other hardware
 

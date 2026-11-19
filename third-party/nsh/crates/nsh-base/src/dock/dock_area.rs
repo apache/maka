@@ -99,7 +99,7 @@ use super::{
     value::DockAreaLayout,
 };
 use crate::resizable::{
-    HANDLE_SIZE, HandleEdge, resizable_panel, resizable_panel_group, resize_handle,
+    HANDLE_SIZE, HandleEdge, ShowHandles, resizable_panel, resizable_panel_group, resize_handle,
 };
 
 /// Below this width of its own the area presents itself compactly.
@@ -288,7 +288,9 @@ pub struct DockAreaProps {
     /// The style of each tab group's frame.
     #[prop(default)]
     pub group_style: Prop<Style>,
-    /// The classes of each tab bar (`flex-row` for a row).
+    /// The classes of each tab bar: its height, surface and border. Its
+    /// tabs are a row in a horizontal scroll view inside it, so tabs that
+    /// do not fit scroll; space them with `tab_class`.
     pub tab_bar_class: Prop<Option<SharedString>>,
     /// The style of each tab bar.
     #[prop(default)]
@@ -544,8 +546,15 @@ impl DockAreaApi {
 /// sheet.
 #[component(methods = DockAreaApi)]
 pub fn DockArea(props: DockAreaProps, cx: Scope<DockAreaEvent>) -> impl IntoElement {
-    let a = AreaCx::new(props, cx);
+    let a = AreaCx::new(props, move |event| cx.emit(event), true);
     cx.methods(DockAreaApi { a });
+    area_view(a)
+}
+
+/// The view of area `a`: what `DockArea` renders, and what another
+/// component of `nsh/base` built on the area renders in its own view
+/// (`SplitView`), so the slots it places in the panels are its own.
+pub(crate) fn area_view(a: AreaCx) -> View {
     a.watch();
     // Its size is its parent's: what it holds never makes it bigger (no
     // minimum from its content), and what does not fit is clipped.
@@ -620,11 +629,19 @@ pub(crate) struct DockDrag {
     raw: Points,
 }
 
+/// Where an area's events go: the `DockArea`'s scope, or the component of
+/// `nsh/base` that renders the area in its own view (`SplitView`).
+pub(crate) type AreaEmit = Rc<dyn Fn(DockAreaEvent)>;
+
 /// What the area's views and listeners share (`Copy`: handles).
 #[derive(Clone, Copy)]
 pub(crate) struct AreaCx {
     pub(crate) props: DockAreaProps,
-    pub(crate) cx: Scope<DockAreaEvent>,
+    emit: Stored<AreaEmit>,
+    /// The user resizes the splits and the docks by their handles. Off for
+    /// an area whose sizes its owner keeps (`SplitView`): its splits and
+    /// docks have no handles (`ShowHandles`).
+    pub(crate) resizable: bool,
     /// The layout shown: the app's, or the area's own.
     pub(crate) area: Memo<Area>,
     own: Signal<Area>,
@@ -651,7 +668,13 @@ pub(crate) struct AreaCx {
 }
 
 impl AreaCx {
-    fn new(props: DockAreaProps, cx: Scope<DockAreaEvent>) -> Self {
+    /// An area of `props` reporting its events to `emit`; `resizable` lets
+    /// the user resize its splits and docks.
+    pub(crate) fn new(
+        props: DockAreaProps,
+        emit: impl Fn(DockAreaEvent) + 'static,
+        resizable: bool,
+    ) -> Self {
         let own = signal(untracked(|| {
             Area::from_layout(&props.default_layout.get().unwrap_or_default())
         }));
@@ -673,9 +696,11 @@ impl AreaCx {
                 width < COMPACT_WIDTH
             })
         });
+        let emit: AreaEmit = Rc::new(emit);
         Self {
             props,
-            cx,
+            emit: stored(emit),
+            resizable,
             area,
             own,
             zoomed: signal(None),
@@ -690,6 +715,14 @@ impl AreaCx {
             indicator_shown: signal(0),
             pending: stored(None),
         }
+    }
+
+    /// Reports `event` to whoever renders the area.
+    fn emit(self, event: DockAreaEvent) {
+        // Called outside the stored value's borrow: a listener may reach the
+        // area again.
+        let emit = self.emit.get();
+        emit(event);
     }
 
     /// Reads the layout the next edit builds on: the one waiting for the
@@ -766,9 +799,9 @@ impl AreaCx {
                 pending.replace(None);
             });
         }
-        self.cx.emit(DockAreaEvent::LayoutChange(next.to_layout()));
+        self.emit(DockAreaEvent::LayoutChange(next.to_layout()));
         for panel in before.removed_in(&next) {
-            self.cx.emit(DockAreaEvent::PanelRemove(panel));
+            self.emit(DockAreaEvent::PanelRemove(panel));
         }
         true
     }
@@ -889,7 +922,7 @@ impl AreaCx {
                 .with_untracked(|area| area.group(node))
                 .and_then(|group| group.active().cloned())
         });
-        self.cx.emit(DockAreaEvent::ZoomChange(panel));
+        self.emit(DockAreaEvent::ZoomChange(panel));
     }
 
     /// The effects that follow the layout: which panels are displayed
@@ -927,8 +960,7 @@ impl AreaCx {
                 untracked(|| {
                     for (ix, placement) in DockPlacement::DOCKS.into_iter().enumerate() {
                         if before[ix] != now[ix] {
-                            self.cx
-                                .emit(DockAreaEvent::DockOpenChange(placement, now[ix]));
+                            self.emit(DockAreaEvent::DockOpenChange(placement, now[ix]));
                         }
                     }
                 });
@@ -955,10 +987,10 @@ impl AreaCx {
                 });
                 told.replace(now);
                 for panel in off {
-                    self.cx.emit(DockAreaEvent::PanelActiveChange(panel, false));
+                    self.emit(DockAreaEvent::PanelActiveChange(panel, false));
                 }
                 for panel in on {
-                    self.cx.emit(DockAreaEvent::PanelActiveChange(panel, true));
+                    self.emit(DockAreaEvent::PanelActiveChange(panel, true));
                 }
             });
         });
@@ -1108,6 +1140,12 @@ fn split_view(a: AreaCx, node: NodeId) -> AnyElement {
         }
         slots
     });
+    if !a.resizable {
+        // The group made next has no handles: nothing drags, adjusts or
+        // focuses a boundary the owner keeps (it provides handles again to
+        // the panels' content).
+        provide_context(ShowHandles(false));
+    }
     let mut group = resizable_panel_group();
     // The app's style prop as it is (the setter takes typed styles).
     group.__element().__props_mut().handle_style = a.props.handle_style;
@@ -1224,53 +1262,57 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                         .min_w(px(0.0))
                         .child(region(a, placement)),
                 )
-                .child(
-                    {
-                        let mut handle = resize_handle();
-                        // The app's style prop as it is (the setter takes
-                        // typed styles).
-                        handle.__element().__props_mut().thumb_style = a.props.handle_thumb_style;
-                        handle
-                    }
-                    .axis(axis)
-                    .edge(edge)
-                    .thumb_class(a.props.handle_thumb_class)
-                    .accessibility_label(a.props.handle_accessibility_label)
-                    .on_drag_start(move || {
-                        let from = info.get_untracked().map_or(Points::ZERO, |i| i.size);
-                        a.dock_drag.set(Some(DockDrag {
-                            placement,
-                            from,
-                            raw: from,
-                        }));
-                    })
-                    .on_drag_move(move |offset: &Points| {
-                        a.dock_drag.update(|drag| {
-                            if let Some(drag) = drag {
-                                drag.raw = drag.from + *offset * sign;
-                            }
-                        });
-                    })
-                    .on_drag_end(move |offset: &Points| {
-                        let Some(drag) = a.dock_drag.get_untracked() else {
-                            return;
-                        };
-                        a.dock_drag.set(None);
-                        end_dock_drag(a, placement, drag.from + *offset * sign);
-                    })
-                    .child(
-                        // The indicator is the band's line, 1 point
-                        // across (the band stretches it along): the
-                        // app's class colors it, or makes it thicker.
-                        view()
-                            .map(|v| match axis {
-                                Axis::Horizontal => v.w(HANDLE_SIZE),
-                                Axis::Vertical => v.h(HANDLE_SIZE),
-                            })
-                            .app_class(a.props.handle_class)
-                            .inline_style(a.props.handle_style),
-                    ),
-                )
+                // An area whose sizes its owner keeps has no handle here.
+                .when(a.resizable, |v| {
+                    v.child(
+                        {
+                            let mut handle = resize_handle();
+                            // The app's style prop as it is (the setter takes
+                            // typed styles).
+                            handle.__element().__props_mut().thumb_style =
+                                a.props.handle_thumb_style;
+                            handle
+                        }
+                        .axis(axis)
+                        .edge(edge)
+                        .thumb_class(a.props.handle_thumb_class)
+                        .accessibility_label(a.props.handle_accessibility_label)
+                        .on_drag_start(move || {
+                            let from = info.get_untracked().map_or(Points::ZERO, |i| i.size);
+                            a.dock_drag.set(Some(DockDrag {
+                                placement,
+                                from,
+                                raw: from,
+                            }));
+                        })
+                        .on_drag_move(move |offset: &Points| {
+                            a.dock_drag.update(|drag| {
+                                if let Some(drag) = drag {
+                                    drag.raw = drag.from + *offset * sign;
+                                }
+                            });
+                        })
+                        .on_drag_end(move |offset: &Points| {
+                            let Some(drag) = a.dock_drag.get_untracked() else {
+                                return;
+                            };
+                            a.dock_drag.set(None);
+                            end_dock_drag(a, placement, drag.from + *offset * sign);
+                        })
+                        .child(
+                            // The indicator is the band's line, 1 point
+                            // across (the band stretches it along): the
+                            // app's class colors it, or makes it thicker.
+                            view()
+                                .map(|v| match axis {
+                                    Axis::Horizontal => v.w(HANDLE_SIZE),
+                                    Axis::Vertical => v.h(HANDLE_SIZE),
+                                })
+                                .app_class(a.props.handle_class)
+                                .inline_style(a.props.handle_style),
+                        ),
+                    )
+                })
         },
     )
     .into_element()

@@ -637,7 +637,7 @@ final class TextBox extends android.view.ViewGroup implements Node {
         android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(0, 1);
         a.setDuration((long) fx.transitionDuration);
         a.setStartDelay((long) fx.transitionDelay);
-        a.setInterpolator(Effects.interpolator(fx.transitionEasing));
+        a.setInterpolator(fx.transitionInterpolator());
         a.addUpdateListener(animation -> {
             if (colorTransition != animation) return;
             transitionColor = Mounter.lerpColor(start, end, (float) animation.getAnimatedValue());
@@ -702,7 +702,7 @@ final class TextBox extends android.view.ViewGroup implements Node {
                 float x2 = b < layout.getLineEnd(line) ? layout.getPrimaryHorizontal(b) : layout.getLineRight(line);
                 if (layout.getParagraphDirection(line) < 0 && b >= lineEnd) x2 = layout.getLineLeft(line);
                 float baseline = layout.getLineBaseline(line);
-                backgroundRect.set(Math.min(x1, x2), baseline - bg.ascentPx, Math.max(x1, x2), baseline + bg.descentPx);
+                backgroundRect.set(Math.min(x1, x2), baseline - bg.ascentPx - bg.topPx, Math.max(x1, x2), baseline + bg.descentPx + bg.bottomPx);
                 float r = Math.min(bg.radiusPx, Math.min(backgroundRect.width(), backgroundRect.height()) / 2);
                 canvas.drawRoundRect(backgroundRect, r, r, backgroundPaint);
             }

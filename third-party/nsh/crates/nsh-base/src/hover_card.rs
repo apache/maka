@@ -4,11 +4,11 @@
 //! natively: the trigger's and the card's `onMouseEnter` / `onMouseLeave`
 //! are Rust listeners and the delays one timer of the components' executor,
 //! so nothing runs in JS and nothing is sent to the platform until the card
-//! opens or closes. The keyboard focus is followed the same way: the view
-//! holding the trigger and the card's overlay hears the focus come in and
-//! leave (`ElementRef::on_focus_in` / `on_focus_out`, the core's
-//! `focus-within`), so a focus moving from the trigger into the card keeps
-//! it open.
+//! opens or closes. Like `gpui-base`'s and Radix's hover card, it follows
+//! the pointer only: the keyboard focus opens and holds nothing (a click
+//! that focuses the trigger would otherwise keep the card open after the
+//! pointer left). Put what a keyboard user needs where the focus can reach
+//! it, not only in the card.
 
 use std::time::Duration;
 
@@ -28,8 +28,7 @@ pub struct HoverCardProps {
     /// Open at first, while `open` is not set.
     #[prop(default)]
     pub default_open: Prop<bool>,
-    /// Milliseconds the pointer rests on the trigger (or the keyboard
-    /// focus stays on it) before the card opens (default 600). `Infinity`:
+    /// Milliseconds the pointer rests on the trigger before the card opens (default 600). `Infinity`:
     /// never by itself, only when the app opens it (or, on touch screens,
     /// a press on the trigger).
     #[prop(default = 600.0)]
@@ -87,7 +86,7 @@ pub struct HoverCardProps {
 /// The events of a [`HoverCard`].
 #[derive(Debug, Clone, PartialEq, Event)]
 pub enum HoverCardEvent {
-    /// It asks to open or close, with why (`"hover"`, `"focus"`,
+    /// It asks to open or close, with why (`"hover"`,
     /// `"triggerPress"`, `"pressOutside"`, `"cancel"`): set `open` to
     /// follow it.
     #[args(open, reason)]
@@ -116,31 +115,27 @@ fn delay(ms: f64) -> Option<Duration> {
     }
 }
 
-/// Where the pointer and the keyboard focus are, for the close delay:
-/// the pointer away from both parts and the focus in neither, the card
-/// closes.
+/// Where the pointer is, for the close delay: the pointer away from both
+/// parts, the card closes.
 #[derive(Debug, Clone, Copy, Default)]
 struct Over {
     trigger: bool,
     card: bool,
-    /// The focus is on the trigger, in it or in the card.
-    focus: bool,
 }
 
 impl Over {
     /// Something keeps the card open.
     fn holds(self) -> bool {
-        self.trigger || self.card || self.focus
+        self.trigger || self.card
     }
 }
 
 /// A card that previews what its trigger points at, shown on top of
 /// everything next to the trigger, as `gpui-base`'s `HoverCard`. On the
 /// desktops it opens once the pointer rested on the trigger for
-/// `openDelay` (or the keyboard focus came to it), stays open while the
-/// pointer is on the trigger or the card or the focus is on either (on the
-/// trigger, or a link or button in the card), and closes `closeDelay`
-/// after the pointer left both and the focus is in neither; Escape and a
+/// `openDelay`, stays open while the pointer is on the trigger or the
+/// card, and closes `closeDelay` after the pointer left both (the
+/// keyboard focus opens and holds nothing); Escape and a
 /// press outside close it at once. On phones and tablets, which have no
 /// pointer to rest, pressing the trigger opens and closes it and a press
 /// outside closes it. The card takes the pointer and presses (links and
@@ -216,24 +211,7 @@ pub fn HoverCard(props: HoverCardProps, cx: Scope<HoverCardEvent>) -> impl IntoE
     );
     let anchor = element_ref();
     let desktop = is_desktop();
-    // The view holding the trigger and the card's overlay: the focus in
-    // it is on the trigger, inside it or in the card (an overlay is inside
-    // the view it is in).
-    let parts = element_ref();
-    if desktop {
-        parts.on_focus_in(move || {
-            over.with(|o| o.focus = true);
-            after_delay(true, OpenChangeReason::Focus);
-        });
-        parts.on_focus_out(move || {
-            over.with(|o| o.focus = false);
-            if !over.with(|o| o.holds()) {
-                after_delay(false, OpenChangeReason::Focus);
-            }
-        });
-    }
     view()
-        .element_ref(&parts)
         .child(props.trigger.place(move |trigger| {
             let trigger = trigger.element_ref(&anchor);
             if !desktop {

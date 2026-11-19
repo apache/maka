@@ -952,8 +952,11 @@ mod tests {
             assert!(view.has_unsettled_recovery());
             let mut successor = view.spec.clone();
             successor.turn_id = uuid::Uuid::new_v4().to_string();
+            successor.trigger = Trigger::Message {
+                message_id: uuid::Uuid::new_v4().to_string(),
+            };
             let error = store
-                .admit(Admission::new(successor, at(), vec![]))
+                .admit(Admission::new(successor.clone(), at(), vec![]))
                 .await
                 .unwrap_err();
             assert!(
@@ -978,6 +981,10 @@ mod tests {
                     ..
                 })
             ));
+            witness.cleanup(OperationCleanup::Confirmed, at()).await?;
+            let sealed = store.frontier(claim.run()).await?;
+            assert!(!sealed.blocks_continuation());
+            store.admit(Admission::new(successor, at(), vec![])).await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
         .catch_unwind()

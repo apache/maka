@@ -76,6 +76,8 @@ unicode-properties.workspace = true
 [dev-dependencies]
 nsh-core.workspace = true
 rustc-hash.workspace = true
+ttf-parser.workspace = true
+log.workspace = true
 serde_json.workspace = true
 unicode-bidi.workspace = true
 unicode-properties.workspace = true

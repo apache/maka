@@ -680,7 +680,8 @@ let editor!: EditorRef;
 
 `class` and `style` style the editor's box. `classes` takes Tailwind classes by part and `styles` inline styles by
 part; a part's classes come after its own default styles, so they win, and its `styles` win over its classes. The font
-is set with `fontFamily`, `fontSize` and `lineHeight`, which the editor measures its text in.
+is set with `fontFamily`, `fontSize` and `lineHeight`, which the editor measures its text in; like every text, it grows
+with the user's text size (`fontScale()`), and the rows grow with it.
 
 ```tsx
 <Editor

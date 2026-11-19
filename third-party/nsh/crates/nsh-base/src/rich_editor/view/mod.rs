@@ -124,6 +124,13 @@ pub struct RichEditorProps {
     /// The gap between the selection and the bubble menu (default 8).
     #[prop(default = px(8.0))]
     pub bubble_menu_offset: Prop<Points>,
+    /// The app's own layer over the document, inside the box that scrolls:
+    /// what it holds moves with the text in the same frame (a block's
+    /// handle in the margin, a marker beside a node). It covers the
+    /// content box and takes no press itself; the app places its children
+    /// in the content box's points, where `nodeRect` and `coordsAtPos`
+    /// answer.
+    pub content_layer: Prop<Option<Slot>>,
 }
 
 /// A change of a `RichEditor`'s document. The document itself is read on
@@ -194,16 +201,21 @@ impl RichEditorSelection {
 
 /// The events of a [`RichEditor`].
 #[derive(Debug, Clone, PartialEq, Event)]
+#[non_exhaustive]
 pub enum RichEditorEvent {
+    /// The laid-out document's size changed (as `Input`'s
+    /// `onContentSizeChange`): its full flow extent in points, offscreen
+    /// blocks included, the `content` part's padding excluded.
+    ContentSizeChange {
+        /// The full flow extent in points.
+        content_size: Size<Points>,
+    },
     /// The document changed.
     #[args(change)]
     Change(RichEditorChange),
     /// The selection changed.
     #[args(selection)]
     SelectionChange(RichEditorSelection),
-    /// An input method started or ended composition, including cancellation.
-    #[args(composing)]
-    CompositionChange(bool),
     /// Files were pasted (images, files copied in a file manager): the
     /// selection is where the app inserts them.
     #[args(paste)]
@@ -212,6 +224,11 @@ pub enum RichEditorEvent {
     Focus,
     /// The editor lost the focus.
     Blur,
+    /// An input method started or ended composition in this view. Reports
+    /// only state transitions, after the session and composition are
+    /// updated; a cancel can end composition without a document change.
+    #[args(composing)]
+    CompositionChange(bool),
 }
 
 /// The methods of a [`RichEditor`]'s ref.

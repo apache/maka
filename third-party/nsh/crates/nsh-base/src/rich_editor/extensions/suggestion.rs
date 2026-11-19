@@ -4,7 +4,8 @@
 //! the app's class, and lets a key handler (the app's list: arrows, Enter)
 //! take keys while it is active; Escape dismisses it. The popup is the
 //! app's: it reads the state ([`suggestion_state`]), places itself with the
-//! session's `coords_at_pos` and runs [`replace_suggestion`] or
+//! session's `coords_at_pos`, says whether its list shows
+//! ([`set_suggestion_open`]) and runs [`replace_suggestion`] or
 //! [`insert_mention`] with what the user picked. Ported from
 //! `@tiptap/suggestion` (`findSuggestionMatch`, the plugin's state and
 //! props) and `@tiptap/extension-mention` ([`mention_node`],
@@ -229,7 +230,8 @@ pub struct SuggestionOptions {
     /// Keys taken while active and recorded in the state (`last_key`,
     /// `key_count`) for an app that reads them afterwards: `"ArrowUp"`,
     /// `"ArrowDown"`, `"Enter"`, `"Tab"` (the web's key names, matched
-    /// without Mod, Ctrl or Alt).
+    /// without Mod, Ctrl or Alt). Not taken while the app's list is
+    /// closed ([`set_suggestion_open`] with `false`).
     pub capture_keys: Vec<String>,
 }
 
@@ -280,11 +282,16 @@ pub struct SuggestionState {
     pub last_key: Option<String>,
     /// How many keys of `capture_keys` were taken.
     pub key_count: u64,
+    /// Whether the app's list shows for the active query, so the list
+    /// takes `capture_keys` ([`set_suggestion_open`]): `true` when a
+    /// suggestion starts or its query changes, until the app says
+    /// otherwise; `false` while inactive.
+    pub open: bool,
 }
 
 impl SuggestionState {
     /// The JSON form apps read: `{ active, range: { from, to }, query,
-    /// text, decorationId, lastKey, keyCount }`.
+    /// text, decorationId, lastKey, keyCount, open }`.
     pub fn to_json(&self) -> Value {
         json!({
             "active": self.active,
@@ -294,6 +301,7 @@ impl SuggestionState {
             "decorationId": self.decoration_id,
             "lastKey": self.last_key,
             "keyCount": self.key_count,
+            "open": self.open,
         })
     }
 }
@@ -374,6 +382,7 @@ impl PluginSpec for Suggestion {
             next.range = SuggestionRange::default();
             next.query = None;
             next.text = None;
+            next.open = false;
             next.dismissed_range = if prev.active {
                 Some(prev.range)
             } else {
@@ -445,6 +454,16 @@ impl PluginSpec for Suggestion {
             next.query = None;
             next.text = None;
         }
+        // `open` is the app's word for one query: a key pressed before the
+        // app filtered again is the list's, as before it first said.
+        if next.decoration_id != prev.decoration_id || next.query != prev.query {
+            next.open = next.active;
+        }
+        if next.active
+            && let Some(open) = meta.and_then(|m| m.get("open")).and_then(Value::as_bool)
+        {
+            next.open = open;
+        }
         Arc::new(next)
     }
 
@@ -481,7 +500,9 @@ impl PluginSpec for Suggestion {
         {
             return true;
         }
-        if !(event.mod_key || event.ctrl || event.alt || event.meta)
+        // A closed list has nothing to pick: Enter sends, Tab moves on.
+        if current.open
+            && !(event.mod_key || event.ctrl || event.alt || event.meta)
             && self.options.capture_keys.iter().any(|k| k == &event.key)
         {
             let mut tr = state.tr();
@@ -563,6 +584,36 @@ pub fn exit_suggestion(key: &str) -> BoxCommand {
         }
         if let Some(dispatch) = dispatch {
             dispatch(exit_transaction(state, &key));
+        }
+        true
+    })
+}
+
+/// Tells the plugin keyed `key` whether the app's list shows for the
+/// active query (GPUI Kit's completion menu is open while it has items):
+/// closed, `capture_keys` go on to the plugins after it and the keymap
+/// (Escape still dismisses). Say it again whenever the query changes:
+/// until then, and before the app first says, the list is open. Refused
+/// when no suggestion is active.
+pub fn set_suggestion_open(key: &str, open: bool) -> BoxCommand {
+    let key = PluginKey::new(key);
+    command(move |state, dispatch| {
+        let Some(current) = key.get_state::<SuggestionState>(state) else {
+            return false;
+        };
+        if !current.active {
+            return false;
+        }
+        // An app reporting on every `transaction` hears its own report: an
+        // unchanged state dispatches nothing.
+        if current.open != open
+            && let Some(dispatch) = dispatch
+        {
+            let mut tr = state.tr();
+            tr.set_plugin_meta(&key, json!({ "open": open }));
+            tr.set_add_to_history(false);
+            tr.set_origin(TransactionOrigin::Plugin(key.name().to_owned()));
+            dispatch(tr);
         }
         true
     })
@@ -721,9 +772,10 @@ pub fn insert_mention(name: &str, range: SuggestionRange, attrs: Attrs) -> BoxCo
     })
 }
 
-/// Registers `exitSuggestion` (`{ key? }`), `replaceSuggestion` (`{ key?,
-/// content }`, content as `insertContent` takes it) and `insertMention`
-/// (`{ range: { from, to }, id, label?, char?, name? }`) in `registry`.
+/// Registers `exitSuggestion` (`{ key? }`), `setSuggestionOpen`
+/// (`{ key?, open }`), `replaceSuggestion` (`{ key?, content }`, content
+/// as `insertContent` takes it) and `insertMention` (`{ range: { from, to },
+/// id, label?, char?, name? }`) in `registry`.
 pub fn register_commands(registry: &mut CommandRegistry) {
     fn key(args: &Value) -> &str {
         args.get("key")
@@ -731,6 +783,13 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             .unwrap_or(SUGGESTION_KEY)
     }
     registry.register("exitSuggestion", |args, _| Ok(exit_suggestion(key(args))));
+    registry.register("setSuggestionOpen", |args, _| {
+        let open = args
+            .get("open")
+            .and_then(Value::as_bool)
+            .ok_or("setSuggestionOpen: `open` is a boolean")?;
+        Ok(set_suggestion_open(key(args), open))
+    });
     registry.register("replaceSuggestion", |args, schema| {
         let content = args
             .get("content")
@@ -957,6 +1016,60 @@ mod tests {
         assert!(s.active);
         assert_eq!((s.last_key.as_deref(), s.key_count), (Some("ArrowDown"), 1));
         assert!(!plugin.handle_key_down(&state, &KeyEvent::new("a"), &mut |_| {}));
+    }
+
+    fn report(state: &EditorState, open: bool) -> EditorState {
+        let mut out = None;
+        assert!(set_suggestion_open(SUGGESTION_KEY, open)(
+            state,
+            Some(&mut |tr| out = Some(tr))
+        ));
+        out.map_or_else(|| state.clone(), |tr| state.apply(tr).unwrap())
+    }
+
+    #[test]
+    fn a_closed_list_lets_its_keys_through() {
+        let options = SuggestionOptions {
+            capture_keys: vec!["Enter".into()],
+            ..SuggestionOptions::default()
+        };
+        let state = type_text(&editor(options), "@zz");
+        let plugin = state.plugins()[0].clone();
+        let enter = KeyEvent::new("Enter");
+        // Before the app says, the list is open and Enter is its own.
+        assert!(current(&state).open);
+        assert!(plugin.handle_key_down(&state, &enter, &mut |_| {}));
+        let closed = report(&state, false);
+        assert_eq!(current(&closed).to_json()["open"], json!(false));
+        assert!(!plugin.handle_key_down(&closed, &enter, &mut |_| {}));
+        // The same state again dispatches nothing.
+        let mut dispatched = false;
+        assert!(set_suggestion_open(SUGGESTION_KEY, false)(
+            &closed,
+            Some(&mut |_| dispatched = true)
+        ));
+        assert!(!dispatched);
+        // Escape still dismisses.
+        let mut out = None;
+        assert!(
+            plugin.handle_key_down(&closed, &KeyEvent::new("Escape"), &mut |tr| out = Some(tr))
+        );
+        let exited = current(&closed.apply(out.unwrap()).unwrap());
+        assert!(!exited.active && !exited.open);
+        // An open list takes Enter again.
+        assert!(plugin.handle_key_down(&report(&closed, true), &enter, &mut |_| {}));
+        // A new query is open until the app filters again.
+        let typed = type_text(&closed, "z");
+        assert!(current(&typed).open);
+        assert!(plugin.handle_key_down(&typed, &enter, &mut |_| {}));
+        // So is a new suggestion.
+        let next = type_text(&type_text(&report(&typed, false), " "), "@a");
+        assert!(current(&next).active);
+        assert!(current(&next).open);
+        // Nothing to tell without an active suggestion, which is closed.
+        let ended = type_text(&next, " ");
+        assert!(!current(&ended).open);
+        assert!(!set_suggestion_open(SUGGESTION_KEY, false)(&ended, None));
     }
 
     #[test]

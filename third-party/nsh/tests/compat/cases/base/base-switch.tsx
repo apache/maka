@@ -6,8 +6,9 @@
 // (`checkedStyle`) and of its track and thumb (`trackClass`, `trackStyle`,
 // `thumbClass`, `thumbStyle`), whose `checked:` and `disabled:` classes
 // follow the switch, and how far outside it presses count (`hitSlop`, a
-// number for every side or some sides). The parts' widths move the label
-// after them, which is how its script sees them.
+// number for every side or some sides), and the mouse over it
+// (`onMouseEnter`, `onMouseLeave`, as over any component). The parts'
+// widths move the label after them, which is how its script sees them.
 import { Text, View, signal } from "nsh";
 import { Switch } from "nsh/base";
 
@@ -15,7 +16,7 @@ const parts = {
   class: "flex-row items-center",
   trackClass: "p-[2px] checked:pl-[12px]",
   trackStyle: { marginRight: 8 },
-  thumbClass: "w-[20px] checked:w-[30px] disabled:w-[10px]",
+  thumbClass: "w-[20px] checked:w-[30px] disabled:w-[10px] active:w-[24px]",
   thumbStyle: { height: 20 },
 };
 
@@ -25,6 +26,7 @@ function App() {
   const asked = signal("");
   const disabled = signal(true);
   const wide = signal(false);
+  const over = signal("out");
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Switch
@@ -51,7 +53,16 @@ function App() {
         <Text>Locked</Text>
       </Switch>
       <View testID="enable" onPress={() => disabled.set(!disabled())} style={{ height: 20 }} />
-      <Switch testID="mute" checked={wide()} accessibilityLabel="Mute" hitSlop={wide() ? { top: 4, left: 2 } : 12} onChange={({ checked }) => wide.set(checked)} />
+      <Switch
+        testID="mute"
+        checked={wide()}
+        accessibilityLabel="Mute"
+        hitSlop={wide() ? { top: 4, left: 2 } : 12}
+        onChange={({ checked }) => wide.set(checked)}
+        onMouseEnter={(e) => over.set(`over ${e.position.x}`)}
+        onMouseLeave={() => over.set("out")}
+      />
+      <Text>{`Mute: ${over()}`}</Text>
     </View>
   );
 }

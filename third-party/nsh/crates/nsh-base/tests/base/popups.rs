@@ -9,7 +9,9 @@
 //! one of `NaN` is none; the focus the keyboard moves to its trigger shows
 //! a tooltip in every idiom until it leaves or Escape is pressed, while a
 //! press or a tap that gives the trigger the focus leaves it to the
-//! pointer. Escape or a choice closes a menu
+//! pointer. Moving on from a trigger whose tooltip the pointer showed, the
+//! next one's shows at once within the 300 ms grace period, until a press or
+//! Escape ends it. Escape or a choice closes a menu
 //! whose `open` the app controls every time, also when the app opened it itself. On a manual clock: time moves only as the test
 //! says.
 
@@ -20,7 +22,8 @@ use std::{
 };
 
 use nsh_base::{
-    MenuEvent, PopoverEvent, TooltipEvent, button, menu, menu_item, popover, submenu, tooltip,
+    MenuEvent, PopoverEvent, TooltipElement, TooltipEvent, button, menu, menu_item, popover,
+    submenu, tooltip,
 };
 use nsh_core::{
     MountItem, NodeId, Size,
@@ -881,4 +884,173 @@ fn a_tooltip_delay_of_infinity_is_not_shown_by_the_focus_either() {
     app.app.press_key("tab").unwrap();
     app.app.run_for(Duration::from_millis(50)).unwrap();
     assert!(!app.app.shows("Tip"));
+}
+
+#[derive(Clone, PartialEq, Props)]
+struct ToolbarProps {
+    /// The last tool's tooltip's `delay`.
+    delay: f64,
+}
+
+/// A toolbar of three tools the Tab key stops at, each with a tooltip (the
+/// last one's delay as given) whose open changes are
+/// written down with their reasons, and a place away from it.
+#[component]
+fn ToolbarScreen(props: ToolbarProps) -> impl IntoElement {
+    let changes = signal(Vec::<String>::new());
+    let tool = move |id: &'static str, tip: TooltipElement| {
+        view()
+            .test_id(id)
+            .w(px(60.0))
+            .h(px(30.0))
+            .focusable(true)
+            .on_press(|| {})
+            .tooltip(tip.on_open_change(move |e: &TooltipEvent| {
+                if let TooltipEvent::OpenChange(open, reason) = e {
+                    let change = format!("{id}:{open}:{reason:?}");
+                    changes.update(|c| c.push(change));
+                }
+            }))
+            .child(text(id))
+    };
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            view()
+                .flex_row()
+                .child(tool("move", tooltip().child(text("Move tip"))))
+                .child(tool("pen", tooltip().child(text("Pen tip"))))
+                .child(tool(
+                    "type",
+                    tooltip().delay(props.delay).child(text("Type tip")),
+                )),
+        )
+        .child(view().test_id("away").h(px(200.0)).child(text("Away")))
+        .child(text(move || {
+            format!("Changes: {}", changes.get().join(" "))
+        }))
+}
+
+fn toolbar_app(delay: f64) -> Headless {
+    toolbar_app_on(delay, Os::MacOs, Idiom::Desktop)
+}
+
+fn toolbar_app_on(delay: f64, os: Os, idiom: Idiom) -> Headless {
+    let root = Root::new::<ToolbarScreen>(move || ToolbarProps { delay });
+    start_on(root, false, os, idiom).app
+}
+
+/// Rests the pointer on tool `id` until its tooltip shows (after the
+/// default half second).
+fn rest_on(app: &mut Headless, id: &str) {
+    app.hover(&format!("id:{id}")).unwrap();
+    app.run_for(Duration::from_millis(450)).unwrap();
+    assert!(!app.shows(&tip_of(id)), "not before its delay");
+    app.run_for(Duration::from_millis(100)).unwrap();
+    assert!(app.shows(&tip_of(id)), "after its delay");
+}
+
+/// What tool `id`'s tooltip says.
+fn tip_of(id: &str) -> String {
+    let mut name = id.to_owned();
+    name[..1].make_ascii_uppercase();
+    format!("{name} tip")
+}
+
+#[test]
+fn a_tooltip_shows_at_once_after_the_pointer_left_one_it_showed() {
+    let mut app = toolbar_app(500.0);
+    rest_on(&mut app, "move");
+    // On to the next tool: its tooltip shows at once, for the pointer.
+    app.hover("id:pen").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Pen tip"), "at once after one the pointer showed");
+    assert!(!app.shows("Move tip"));
+    // Off the toolbar a moment, then on the third: still at once.
+    app.hover("id:away").unwrap();
+    app.run_for(Duration::from_millis(200)).unwrap();
+    assert!(!app.shows("Pen tip"));
+    app.hover("id:type").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Type tip"), "within the grace period");
+    app.wait_for(
+        "Changes: move:true:Hover move:false:Hover pen:true:Hover pen:false:Hover type:true:Hover",
+    )
+    .unwrap();
+    // Away for longer than the grace period: the next waits its delay.
+    app.hover("id:away").unwrap();
+    app.run_for(Duration::from_millis(400)).unwrap();
+    rest_on(&mut app, "move");
+}
+
+#[test]
+fn a_tooltip_whose_delay_never_ends_shows_within_no_grace_period() {
+    let mut app = toolbar_app(f64::INFINITY);
+    rest_on(&mut app, "move");
+    app.hover("id:type").unwrap();
+    app.run_for(Duration::from_secs(5)).unwrap();
+    assert!(!app.shows("Type tip"));
+    assert!(app.shows("Changes: move:true:Hover move:false:Hover"));
+}
+
+#[test]
+fn a_press_or_escape_ends_the_tooltips_grace_period() {
+    let mut app = toolbar_app(500.0);
+    rest_on(&mut app, "move");
+    // A press on the tool hides its tooltip and ends the grace period: the
+    // next tool waits its delay.
+    app.press("id:move").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(!app.shows("Move tip"), "the press hid it");
+    app.hover("id:pen").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(!app.shows("Pen tip"), "a press ends the grace period");
+    app.run_for(Duration::from_millis(500)).unwrap();
+    assert!(app.shows("Pen tip"));
+    // Escape the same: shown at once on the next tool, hidden by Escape,
+    // and the one after waits its delay.
+    app.hover("id:type").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Type tip"));
+    app.press_key("escape").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(!app.shows("Type tip"), "Escape hides it");
+    app.hover("id:move").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(!app.shows("Move tip"), "Escape ends the grace period");
+    app.run_for(Duration::from_millis(500)).unwrap();
+    assert!(app.shows("Move tip"));
+}
+
+#[test]
+fn a_tooltip_the_keyboard_focus_shows_starts_no_grace_period() {
+    let mut app = toolbar_app(500.0);
+    // Tab to the first tool: its tooltip shows at once, for the focus.
+    app.press_key("tab").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Move tip"));
+    // The pointer coming to the second waits its delay.
+    app.hover("id:pen").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(!app.shows("Pen tip"), "the focus's tooltip starts none");
+    app.run_for(Duration::from_millis(500)).unwrap();
+    assert!(app.shows("Pen tip"));
+    assert!(app.shows("Move tip"), "the focus keeps its own");
+}
+
+#[test]
+fn a_terminals_tooltips_show_at_once_on_the_status_line_as_before() {
+    let mut app = toolbar_app_on(f64::INFINITY, Os::Linux, Idiom::Terminal);
+    app.hover("id:move").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Move tip"), "at once in a terminal");
+    // An endless delay keeps it to the app.
+    app.hover("id:type").unwrap();
+    app.run_for(Duration::from_secs(1)).unwrap();
+    assert!(!app.shows("Type tip"));
+    assert!(!app.shows("Move tip"));
+    app.hover("id:pen").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Pen tip"));
 }

@@ -35,6 +35,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(listener: &TcpListener) -> Self {
+        Self::with_tools(listener, &[]).await
+    }
+    async fn with_tools(listener: &TcpListener, extra: &[Value]) -> Self {
         let mut rig = Rig::new().unwrap();
         let base = rig.directory.path().to_path_buf();
         let boot = bootstrap_with(
@@ -60,6 +63,10 @@ impl Fixture {
                         "target":{"kind":"import","name":"files"},"method":"write"
                     }
                 ]);
+                config["tools"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend_from_slice(extra);
                 #[cfg(target_os = "macos")]
                 config["tools"].as_array_mut().unwrap().push(json!({
                     "name":"Shell","description":"Execute a workspace shell command.",
@@ -159,6 +166,20 @@ impl Fixture {
         effect: Value,
     ) -> String {
         let catalog = self.preview(&effect, None).await;
+        let catalog = match effect["selectedTools"].as_object() {
+            Some(chosen) => json!(
+                catalog
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|name| {
+                        let name = name.as_str().unwrap();
+                        name == "DiscoveryComplete" || chosen.contains_key(name)
+                    })
+                    .collect::<Vec<_>>()
+            ),
+            None => catalog,
+        };
         let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":direction,"schedule":schedule,"effect":effect,"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest","approvedTools":catalog}})).await;
         assert_eq!(result["kind"], "committed", "{result}");
         result["taskId"].as_str().unwrap().to_owned()
@@ -886,13 +907,22 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     let original = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let updated = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&original).await;
+    f.change_source(|config| config.tools = Some(vec!["Read".into()]))
+        .await;
     let stale = f.create("Approved before the endpoint changed").await;
+    f.change_source(|config| config.tools = None).await;
     f.change_model_endpoint(&updated).await;
     f.change(&stale, "trigger_now").await;
 
     let blocked = f.settled(&stale, 1).await;
     assert_requires_reapproval(&blocked, "background_model_route_changed");
     assert!(blocked["task"]["runs"][0]["runId"].is_null(), "{blocked}");
+    assert_eq!(
+        blocked["task"]["effect"]["selectedTools"],
+        json!({"Read":"read_files"})
+    );
+    let available = f.preview(&f.effect("session").await, Some(&stale)).await;
+    assert!(available.as_array().unwrap().contains(&json!("Write")));
 
     let reporting = f.create("Route changes while investigating").await;
     f.change(&reporting, "trigger_now").await;
@@ -1099,14 +1129,7 @@ async fn discovery_previews_and_enforces_the_bot_tool_ceiling() {
     let task = f.create("Investigation under the explicit ceiling").await;
     f.change(&task, "trigger_now").await;
     let (mut worker, request) = next(&listener).await;
-    let mut actual: Vec<_> = request["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["function"]["name"].as_str().unwrap())
-        .collect();
-    actual.sort_unstable();
-    assert_eq!(json!(actual), names);
+    assert_eq!(json!(model_tool_names(&request)), names);
     assert!(
         !request["messages"]
             .to_string()
@@ -1139,6 +1162,166 @@ async fn discovery_previews_and_enforces_the_bot_tool_ceiling() {
     );
     quiet(&f, &listener, &mut socket).await;
     f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::with_tools(&listener, &[
+        json!({"name":"OpenDocument","description":"Read a document.","input":"json","result":"image","confirmation":"preapproved","target":{"kind":"import","name":"files"},"method":"read"}),
+        json!({"name":"BrowseConversations","description":"List conversations.","input":"json","result":"json","confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"sessionList"}),
+        json!({"name":"SessionRead","description":"List available models.","input":"json","result":"json","confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"models"}),
+        json!({"name":"InspectSetup","description":"Read plugin settings.","result":"json","confirmation":"preapproved","target":{"kind":"import","name":"management"},"method":"readSettings"}),
+        json!({"name":"ChangeSetup","description":"Configure a plugin.","result":"json","confirmation":"preapproved","target":{"kind":"import","name":"management"},"method":"configure"}),
+    ]).await;
+    let read_only = f.preview(&f.effect("read_only").await, None).await;
+    let eligible = read_only.as_array().unwrap();
+    assert!(
+        eligible.contains(&json!("BrowseConversations"))
+            && !eligible.contains(&json!("SessionRead")),
+        "{eligible:?}"
+    );
+    let mut effect = f.effect("session").await;
+    let preview = f
+        .query(
+            "schedules",
+            json!({"kind":"preview_discovery","effect":effect}),
+        )
+        .await;
+    assert_eq!(preview["groups"]["OpenDocument"], "read_files");
+    assert_eq!(preview["groups"]["InspectSetup"], "other");
+    assert_eq!(preview["groups"]["ChangeSetup"], "plugin_management");
+    assert_eq!(preview["groups"]["DiscoveryMemory"], "history");
+    assert!(preview["groups"].get("DiscoveryComplete").is_none());
+    let schedule = json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000});
+    effect["selectedTools"] = json!({"ChangeSetup":"other"});
+    let rejected = f.query("schedule",json!({"kind":"create","input":{
+        "task":{"title":"Stale category","intentBody":"","schedule":schedule,"effect":effect},
+        "timezone":"UTC","misfire":"latest","approvedTools":["ChangeSetup","DiscoveryComplete"]
+    }})).await;
+    assert_eq!(
+        rejected["reason"], "scheduler_discovery_tools_changed",
+        "{rejected}"
+    );
+
+    effect["selectedTools"] = json!({"OpenDocument":"read_files","InspectSetup":"other"});
+    let task = f
+        .create_effect("Grouped tools", "", schedule, effect.clone())
+        .await;
+    f.reopen().await;
+    let preview = f
+        .query(
+            "schedules",
+            json!({"kind":"preview_discovery","effect":effect,"taskId":task}),
+        )
+        .await;
+    assert_eq!(
+        preview["approvedNames"],
+        json!(["DiscoveryComplete", "InspectSetup", "OpenDocument"])
+    );
+    f.change(&task, "trigger_now").await;
+    let (mut worker, request) = next(&listener).await;
+    assert_eq!(
+        model_tool_names(&request),
+        ["DiscoveryComplete", "InspectSetup", "OpenDocument"]
+    );
+    let opening = request["messages"].to_string();
+    assert!(
+        !opening.contains("recent_conversations")
+            && !opening.contains("use SessionList to find conversations")
+    );
+    tool(&mut worker, "OpenDocument", json!({"path":"discovery.txt"})).await;
+    let (mut worker, response) = next(&listener).await;
+    assert!(
+        output(&response)
+            .to_string()
+            .contains("Observed fixture evidence"),
+        "{response}"
+    );
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Checked"}),
+    )
+    .await;
+    f.settled(&task, 1).await;
+    f.change_source(|config| config.tools = Some(vec!["Read".into()]))
+        .await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, request) = next(&listener).await;
+    assert_eq!(model_tool_names(&request), ["DiscoveryComplete"]);
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Finished"}),
+    )
+    .await;
+    f.settled(&task, 2).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_preview_omits_tools_attached_only_to_the_bot_session() {
+    use maka_agent_facts::configuration::mcp::{ServerConfiguration, Transport};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let owner = f.owner();
+    let directory = f.rig.directory.path();
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mcp/tests/server.mjs");
+    let config = ServerConfiguration::new(
+        "session-demo".into(),
+        Transport::Stdio {
+            command: "node".into(),
+            args: vec![
+                script.to_str().unwrap().into(),
+                "normal".into(),
+                directory.join("mcp-events.jsonl").to_str().unwrap().into(),
+            ],
+            cwd: directory.to_str().unwrap().into(),
+            env: Default::default(),
+            pass_env: vec![],
+        },
+    );
+    let servers = Arc::new(
+        crate::mcp::Servers::open(&[config], &owner.configuration)
+            .await
+            .unwrap(),
+    );
+    let generation = crate::mcp::ClientGeneration::fresh();
+    let projects = &owner.mcp_projects;
+    projects.begin_client(&f.bot, generation).unwrap();
+    projects
+        .publish_client(&f.bot, generation, servers.clone())
+        .unwrap();
+    let client_tool = "mcp__session_demo__echo";
+    assert!(
+        projects
+            .with_client(&f.bot, projects.base.clone())
+            .unwrap()
+            .tools
+            .contains(client_tool)
+    );
+    let names = f.preview(&f.effect("session").await, None).await;
+    let names = names.as_array().unwrap();
+    assert!(
+        names.contains(&json!("Read")) && !names.contains(&json!(client_tool)),
+        "{names:?}"
+    );
+    projects.withdraw_client(&f.bot, generation);
+    servers.close().await.unwrap();
+    projects.remove_client(&f.bot, generation);
+    f.close().await;
+}
+
+fn model_tool_names(request: &Value) -> Vec<&str> {
+    let mut names: Vec<_> = request["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    names
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1392,9 +1575,9 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     f.close().await;
 }
 
-async fn report_to_bot(f: &Fixture, listener: &TcpListener, task: &str) -> TcpStream {
+async fn report_to_bot(f: &Fixture, listener: &TcpListener, task: &str) -> (TcpStream, Value) {
     f.change(task, "trigger_now").await;
-    let (mut worker, _) = next(listener).await;
+    let (mut worker, request) = next(listener).await;
     tool(
         &mut worker,
         "DiscoveryComplete",
@@ -1402,7 +1585,7 @@ async fn report_to_bot(f: &Fixture, listener: &TcpListener, task: &str) -> TcpSt
     )
     .await;
     let (bot, _) = next(listener).await;
-    bot
+    (bot, request)
 }
 
 async fn propose_followup(
@@ -1425,15 +1608,17 @@ async fn propose_followup(
 async fn discovery_report_authorizes_one_time_followup_but_not_a_recurring_or_chained_plan() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    let parent = f
-        .create_with_worker_tools(
-            "Approved release watch",
-            "Check the release date",
-            json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}),
-            Some("read_only"),
-        )
-        .await;
-    let mut bot = report_to_bot(&f, &listener, &parent).await;
+    let mut effect = f.effect("read_only").await;
+    effect["selectedTools"] = json!({"Read":"read_files"});
+    let parent = f.create_effect(
+        "Approved release watch", "Check the release date",
+        json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}), effect,
+    ).await;
+    let (mut bot, parent_request) = report_to_bot(&f, &listener, &parent).await;
+    assert_eq!(
+        model_tool_names(&parent_request),
+        ["DiscoveryComplete", "Read"]
+    );
     let at = maka_agent_authority::now() + 3_600_000;
     let once = json!({"kind":"once","runAt":at});
     let (mut bot, recurring) = propose_followup(
@@ -1487,7 +1672,11 @@ async fn discovery_report_authorizes_one_time_followup_but_not_a_recurring_or_ch
     assert_eq!(background, vec![&result["taskId"]]);
     quiet(&f, &listener, &mut bot).await;
 
-    let mut bot = report_to_bot(&f, &listener, followup).await;
+    let (mut bot, followup_request) = report_to_bot(&f, &listener, followup).await;
+    assert_eq!(
+        model_tool_names(&followup_request),
+        ["DiscoveryComplete", "Read"]
+    );
     let (mut bot, chained) =
         propose_followup(&listener, &mut bot, "Chained follow-up", once, None).await;
     assert_eq!(chained["approved"], false, "{chained}");

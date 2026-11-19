@@ -47,7 +47,7 @@ mount(() => {
     binding: { revision: 1 },
   };
   const model = { connectionId: 'sample-command-code', modelId: 'deepseek' };
-  let selectedModel = model;
+
   const replacement = { connectionId: 'replacement', modelId: 'available' };
   const page = () => ({
     kind: 'page',
@@ -55,18 +55,53 @@ mount(() => {
     tasks: detail ? [{ ...detail.task, revision: detail.revision, approved: detail.approved }] : [],
     nextCursor: null,
   });
+  const catalog = (profile: string) => {
+    const groups: Record<string, string> = { Read: 'read_files', DiscoveryMemory: 'history' };
+    if (disabledModel) groups.NewReader = 'read_files';
+    if (profile === 'session')
+      Object.assign(groups, {
+        Shell: 'commands',
+        Write: 'modify_files',
+        WebFetch: 'web',
+        mcp__sample__lookup: 'other',
+        PluginConfigure: 'plugin_management',
+      });
+    return { groups, names: ['DiscoveryComplete', ...Object.keys(groups)].sort() };
+  };
   const host = {
     async query(_endpoint: string, method: string, input: any) {
       if (method === 'observe') return { session };
-      if (method === 'resolveModel')
+      const choice = (selection: typeof model) => ({
+        selection,
+        label: selection === model ? 'DeepSeek' : 'Replacement model',
+        connectionName: selection.connectionId,
+        thinkingLevels: [],
+        defaultThinkingLevel: null,
+      });
+      if (method === 'models')
         return {
           kind: 'ready',
-          choice: { label: 'DeepSeek', connectionName: 'sample-command-code' },
+          revision: 1,
+          choices: (disabledModel ? [replacement] : [model, replacement]).map(choice),
+          defaultModel: { kind: 'none' },
+          next: null,
         };
+      if (method === 'resolveModel') {
+        const available = (disabledModel ? [replacement] : [model, replacement]).find(
+          (item) => item.connectionId === input.connectionId && item.modelId === input.modelId,
+        );
+        return available ? { kind: 'ready', choice: choice(available) } : { kind: 'unavailable' };
+      }
       if (input.kind === 'preview_discovery')
         return {
           kind: 'discovery_tools',
-          names: input.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'],
+          ...catalog(input.effect.workerTools),
+          approvedNames:
+            input.taskId &&
+            detail?.approved &&
+            input.effect.workerTools === detail.task.effect.workerTools
+              ? detail.approvedTools
+              : null,
         };
       if (input.kind === 'get') {
         if (failDetailOnce) {
@@ -108,8 +143,13 @@ mount(() => {
   const control = async (_method: string, input: any) => {
     calls.set(input.kind);
     if (input.kind === 'create' || input.kind === 'approve') {
-      const names =
-        input.input.task.effect.workerTools === 'session' ? ['Read', 'Shell'] : ['Read'];
+      const effect = input.input.task.effect;
+      const names = catalog(effect.workerTools).names.filter(
+        (name) =>
+          name === 'DiscoveryComplete' ||
+          !effect.selectedTools ||
+          Object.hasOwn(effect.selectedTools, name),
+      );
       if (JSON.stringify(input.input.approvedTools) !== JSON.stringify(names))
         return { kind: 'rejected', reason: 'Expected the displayed tool list' };
       if (input.input.task.effect.target.boundaryRevision !== session.boundaryRevision)
@@ -127,6 +167,7 @@ mount(() => {
       detail = {
         revision,
         approved: true,
+        approvedTools: input.input.approvedTools,
         pendingFire: null,
         timezone: input.input.timezone,
         task: {
@@ -162,16 +203,30 @@ mount(() => {
           lastError: null,
         };
         detail.approved = true;
-        calls.set('approved ' + detail.task.effect.model.connectionId);
+        detail.approvedTools = input.input.approvedTools;
+        calls.set(
+          'approved ' +
+            detail.task.effect.model.connectionId +
+            ' ' +
+            detail.approvedTools.join(' · '),
+        );
       }
       if (input.kind === 'update') {
+        detail.approvedTools = input.input.approvedTools;
         detail.task = {
           ...detail.task,
           ...input.input.task,
           intent: { kind: 'text', body: input.input.task.intentBody },
         };
         calls.set(
-          'update ' + detail.task.schedule.cadence + ' ' + detail.task.schedule.everySeconds,
+          [
+            'update',
+            detail.task.schedule.cadence,
+            detail.task.schedule.everySeconds,
+            detail.task.effect.model.connectionId,
+            detail.task.intent.body,
+            detail.approvedTools.join(' · '),
+          ].join(' '),
         );
       }
       if (input.kind === 'pause') detail.task.status = 'paused';
@@ -199,6 +254,8 @@ mount(() => {
     'mod+shift+b',
     () => {
       detail.task.backgroundFollowup = true;
+      // A preset-only follow-up still has a pinned list of approved names.
+      delete detail.task.effect.selectedTools;
       detail.revision = ++revision;
       publish();
     },
@@ -258,14 +315,9 @@ mount(() => {
         host={host}
         sessionId="bot"
         control={control}
-        selection={async () =>
-          disabledModel && selectedModel === model
-            ? null
-            : { model: selectedModel, thinkingLevel: null }
-        }
+        selection={async () => (disabledModel ? null : { model, thinkingLevel: null })}
         openWorker={opened.set}
         chooseModel={() => {
-          selectedModel = replacement;
           opened.set('models');
         }}
       />

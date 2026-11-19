@@ -1,19 +1,31 @@
 import { mount, platform, signal, Text, View } from "nsh";
 
-// A one-line text whose link does not fit beside the words before it: the
-// link wraps onto the line the truncation hides, and the line ends with an
-// ellipsis right where the link starts.
+// Two one-line texts whose links do not fit. The clamped line holds the rest
+// of its paragraph, cut at the box for the ellipsis: in the first the link
+// starts early enough that its first characters show; in the second the
+// words before it fill the line, so none of the link shows and the ellipsis
+// stands for it.
 function App() {
-  const pressed = signal(0);
+  const cut = signal(0);
+  const hidden = signal(0);
   return (
     <View style={{ flex: 1, padding: 24, gap: 12, backgroundColor: "white" }}>
-      <Text style={{ color: "#111" }}>{`Hidden link pressed: ${pressed()}`}</Text>
+      <Text style={{ color: "#111" }}>{`Cut link pressed: ${cut()}`}</Text>
+      <Text style={{ color: "#111" }}>{`Hidden link pressed: ${hidden()}`}</Text>
       <Text style={{ color: "#111" }}>{`Platform: ${platform.os}`}</Text>
       <View style={{ width: 200 }}>
         <Text style={{ numberOfLines: 1, fontSize: 20, color: "#111" }}>
-          ABCDEFGH
-          <Text onPress={() => pressed.set(pressed() + 1)} style={{ color: "blue" }}>
-            WWWWWWWW
+          ABCD
+          <Text onPress={() => cut.set(cut() + 1)} style={{ color: "blue" }}>
+            WWWWWWWWWW
+          </Text>
+        </Text>
+      </View>
+      <View style={{ width: 200 }}>
+        <Text style={{ numberOfLines: 1, fontSize: 20, color: "#111" }}>
+          ABCDEFGHIJKLMNOPQRST
+          <Text onPress={() => hidden.set(hidden() + 1)} style={{ color: "blue" }}>
+            MMMMMMMM
           </Text>
         </Text>
       </View>

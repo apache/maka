@@ -14,7 +14,7 @@ app's own component library, as `gpui-base` sits between `gpui` and a styled lib
 `ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), carousels (`Carousel` and its parts), documents of Markdown or HTML (`TextView`), a code editor (`Editor`) the changes between texts (`DiffView`) and tables of rows and columns (`Table` and its parts, `DataTable`), text inputs
 (`Input`), popups shown on top of everything (`Popover`, `Menu` and `ContextMenu` with their `MenuItem`,
 `MenuSeparator` and `Submenu`, `Tooltip`, `Sheet`), toasts (`Toast` in a `ToastStack`, their lifecycle in a `ToastManager`), navigation (a `NavStack` of `NavPage`s driven
-by the state you create with `createNavStack`, and `Dialog` for content presented over everything else) and the system's
+by the state you create with `createNavStack`, columns of stacks in a `SplitView`, and `Dialog` for content presented over everything else) and the system's
 alert dialogs (`AlertDialog`). Pages and dialogs also decide the status bar
 (`statusBar`).
 
@@ -32,7 +32,7 @@ use nsh_base::{
     alert_dialog, button, carousel, carousel_content, carousel_item, carousel_next,
     carousel_pagination, carousel_pagination_item, carousel_previous, checkbox, color_area, color_field, color_picker,
     color_slider, color_swatch, dialog, diff_view, dock_area, editor, hover_card, link,
-    calendar, combobox, command, date_picker, emoji_picker, h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, select, switch, tab, tabs, text_view, theme, time_field, toast, toast_stack, toggle, toggle_group, toolbar, toolbar_group, toolbar_separator, tree, v_resizable,
+    calendar, combobox, command, date_picker, emoji_picker, h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, select, split_view, switch, tab, tabs, text_view, theme, time_field, toast, toast_stack, toggle, toggle_group, toolbar, toolbar_group, toolbar_separator, tree, v_resizable,
 };
 ```
 
@@ -95,6 +95,7 @@ import {
   Sheet,
   NumberInput,
   Slider,
+  SplitView,
   Submenu,
   Switch,
   Tab,
@@ -217,6 +218,8 @@ import type {
   ScrollbarProps,
   ScrollbarTheme,
   SliderProps,
+  SplitViewProps,
+  ColumnVisibility,
   SliderScale,
   SliderValue,
   StatusBarForeground,
@@ -277,6 +280,7 @@ walkthroughs, see the [Navigation guide](../docs/navigation.md) and [Forms and k
 | [`ResizablePanelGroup`, `ResizablePanel`](../elements/resizable.md) | `h_resizable()`, `v_resizable()`, `resizable_panel()` | Panels side by side or stacked, with handles the user drags to resize them. |
 | [`DockArea`](../elements/dock.md) | `dock_area()` | A workspace of splits, tab groups and edge docks the user arranges; its layout is the app's data. |
 | [`NavStack`, `NavPage`, `createNavStack`](../elements/nav-stack.md) | `nav_stack()`, `nav_page()` | A native navigation stack and its pages. |
+| [`SplitView`](../elements/split-view.md) | `split_view()` | Columns of navigation stacks side by side (`UISplitViewController` on iOS) that show one at a time where the room is compact; the app owns `columnVisibility`. |
 | [`Dialog`](../elements/dialog.md) | `dialog()` | Content presented over everything else: sheets, full-screen flows, dialogs. |
 | [`AlertDialog`](../elements/alert-dialog.md) | `alert_dialog()` | The platform's alert or action sheet. |
 | [`TextView`](../elements/text-view.md) | `text_view()` | A document of Markdown, HTML or blocks, drawn with texts and views, for streamed AI replies. |
@@ -287,7 +291,7 @@ walkthroughs, see the [Navigation guide](../docs/navigation.md) and [Forms and k
 | [`Input`](../elements/input.md) | `nsh_base::input()` | The platform's native text input, one line or several. |
 | [`Popover`](../elements/popover.md) | `popover()` | Content anchored to a trigger, on top of everything. |
 | [`HoverCard`](../elements/hover-card.md) | `hover_card()` | A preview of what its trigger points at, while the pointer rests on it (a press on touch screens). |
-| [`Menu`, `ContextMenu`, `MenuItem`, `MenuSeparator`, `Submenu`](../elements/menu.md) | `menu()`, ... | Menus: popups with cascading submenus on desktops, sheets on phones; checkable items and choices of one. |
+| [`Menu`, `ContextMenu`, `MenuItem`, `MenuSeparator`, `Submenu`](../elements/menu.md) | `menu()`, ... | Menus: popups with cascading submenus on desktops and iPads in a regular width, sheets on phones; checkable items and choices of one. |
 | [`Tooltip`](../elements/tooltip.md) | `tooltip()` | A hint next to its trigger. |
 | [`Sheet`](../elements/sheet.md) | `sheet()` | A panel at an edge of the screen over a backdrop. |
 | [`Toast`, `ToastStack`, `ToastManager`](../elements/toast.md) | `toast()`, `toast_stack()`, `ToastManager` | Unstyled toasts: a semantic root, a stack of layers, their lifecycle. |
@@ -595,8 +599,9 @@ rows, column headers and cells. Every part takes the app's look. See [Table](../
 ### DataTable
 
 `DataTable` shows rows and columns and scrolls both ways over any number of either, making only the cells in view. Rows,
-columns or cells select; columns resize, move, stay fixed and sort (the app sorts); the app serves rows a page at a time
-and can draw cells and titles. See [DataTable](../elements/data-table.md).
+columns or cells select, and an app can keep its own selection of several cells or columns (`selectOnModifierPress`,
+`onRowPress`, `onColumnPress`, `cellClasses`). Columns resize, move, stay fixed and sort (the app sorts); the app serves
+rows a page at a time and can draw cells and titles. See [DataTable](../elements/data-table.md).
 
 ## Navigation
 
@@ -732,7 +737,7 @@ launch screen.
 
 - [Navigation guide](../docs/navigation.md).
 - [Forms and keyboard](../docs/forms-and-keyboard.md).
-- [Avatar](../elements/avatar.md), [Button](../elements/button.md), [Carousel](../elements/carousel.md), [Link](../elements/link.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Toggle](../elements/toggle.md), [Toolbar](../elements/toolbar.md), [Select](../elements/select.md), [Combobox](../elements/combobox.md), [Command](../elements/command.md), [Calendar](../elements/calendar.md), [TimeField](../elements/time-field.md), [DatePicker](../elements/date-picker.md), [Collapsible](../elements/collapsible.md), [HoverCard](../elements/hover-card.md), [Accordion](../elements/accordion.md), [Progress](../elements/progress.md), [Terminal](../elements/terminal.md), [Slider](../elements/slider.md), [ColorPicker](../elements/color-picker.md), [Scrollbar](../elements/scrollbar.md), [NumberInput](../elements/number-input.md), [OtpInput](../elements/otp-input.md), [Pagination](../elements/pagination.md), [Tree](../elements/tree.md), [Plot](../elements/plot.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md), [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md), [Editor](../elements/editor.md), [DiffView](../elements/diff-view.md), [Table](../elements/table.md), [DataTable](../elements/data-table.md), [Text](../elements/text.md) and [Input](../elements/input.md).
+- [Avatar](../elements/avatar.md), [Button](../elements/button.md), [Carousel](../elements/carousel.md), [Link](../elements/link.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Toggle](../elements/toggle.md), [Toolbar](../elements/toolbar.md), [Select](../elements/select.md), [Combobox](../elements/combobox.md), [Command](../elements/command.md), [Calendar](../elements/calendar.md), [TimeField](../elements/time-field.md), [DatePicker](../elements/date-picker.md), [Collapsible](../elements/collapsible.md), [HoverCard](../elements/hover-card.md), [Accordion](../elements/accordion.md), [Progress](../elements/progress.md), [Terminal](../elements/terminal.md), [Slider](../elements/slider.md), [ColorPicker](../elements/color-picker.md), [Scrollbar](../elements/scrollbar.md), [NumberInput](../elements/number-input.md), [OtpInput](../elements/otp-input.md), [Pagination](../elements/pagination.md), [Tree](../elements/tree.md), [Plot](../elements/plot.md), [NavStack](../elements/nav-stack.md), [SplitView](../elements/split-view.md), [Dialog](../elements/dialog.md), [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md), [Editor](../elements/editor.md), [DiffView](../elements/diff-view.md), [Table](../elements/table.md), [DataTable](../elements/data-table.md), [Text](../elements/text.md) and [Input](../elements/input.md).
   [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md), [Editor](../elements/editor.md), [DiffView](../elements/diff-view.md), [Table](../elements/table.md), [DataTable](../elements/data-table.md),
   [Text](../elements/text.md) and
   [Input](../elements/input.md).

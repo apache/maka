@@ -90,8 +90,11 @@ final class Images {
         /** Fresh bytes ({@code byte[]}), a stale copy's conditional headers ({@code String[]}), or null. */
         Object lookup(String url);
 
-        /** Ends a download (status 0: failed); the cached bytes to show, or null. */
-        byte[] complete(String url, int status, String[] headers, byte[] body);
+        /**
+         * Ends a download (status 0: failed) that was redirected to {@code redirects} (null: none); the cached
+         * bytes to show, or null.
+         */
+        byte[] complete(String url, int status, String[] headers, byte[] body, String[] redirects);
     }
 
     /** Set by the mounter; until then nothing is kept on disk. */
@@ -546,6 +549,9 @@ final class Images {
             String[] conditions = cached instanceof String[] ? (String[]) cached : null;
             HttpURLConnection c = null;
             String url = uri;
+            // The redirects followed: the disk cache keeps them with the copy
+            // and checks them again before it serves it.
+            java.util.ArrayList<String> followed = new java.util.ArrayList<>();
             try {
                 // Redirects are followed here, one hop at a time: a hop the app is
                 // not granted is never requested.
@@ -562,7 +568,7 @@ final class Images {
                         code = c.getResponseCode();
                     } catch (java.io.IOException e) {
                         // Offline: a stale copy may serve.
-                        byte[] stale = disk != null ? disk.complete(uri, 0, null, null) : null;
+                        byte[] stale = disk != null ? disk.complete(uri, 0, null, null, null) : null;
                         if (stale != null) return stale;
                         throw e;
                     }
@@ -574,14 +580,16 @@ final class Images {
                     if (next == null) {
                         // The disk cache's copy of the URL came through this
                         // redirect too: it drops it (a 3xx ends the load).
-                        if (disk != null) disk.complete(uri, code, null, null);
+                        if (disk != null) disk.complete(uri, code, null, null, null);
                         throw new java.io.IOException("redirect to " + location + " is not granted");
                     }
                     url = next;
+                    followed.add(next);
                 }
+                String[] hops = followed.isEmpty() ? null : followed.toArray(new String[0]);
                 int status = c.getResponseCode();
                 if (status == 304 || status >= 400) {
-                    byte[] served = disk != null ? disk.complete(uri, status, cacheHeaders(c), null) : null;
+                    byte[] served = disk != null ? disk.complete(uri, status, cacheHeaders(c), null, hops) : null;
                     if (served != null) return served;
                     throw new java.io.IOException("HTTP " + status);
                 }
@@ -600,13 +608,28 @@ final class Images {
                     }
                 }
                 byte[] bytes = out.toByteArray();
-                if (disk != null) disk.complete(uri, status, cacheHeaders(c), bytes);
+                if (disk != null) disk.complete(uri, status, cacheHeaders(c), bytes, hops);
                 return bytes;
             } finally {
                 if (c != null) c.disconnect();
             }
         }
-        String path = uri.startsWith("file://") ? uri.substring(7) : uri;
+        String path = uri;
+        if (path.startsWith("file:")) {
+            // A `file:` source reads the URL's decoded path, as the core
+            // checked it — never the raw string minus its scheme.
+            try {
+                java.net.URI parsed = new java.net.URI(path);
+                String host = parsed.getHost();
+                if (host != null && !host.isEmpty() && !host.equals("localhost")) {
+                    throw new java.io.FileNotFoundException(uri);
+                }
+                path = parsed.getPath();
+            } catch (java.net.URISyntaxException e) {
+                throw new java.io.IOException("malformed file URI: " + uri, e);
+            }
+            if (path == null) throw new java.io.FileNotFoundException(uri);
+        }
         try (InputStream in = new FileInputStream(path)) {
             return Net.readAll(in);
         }

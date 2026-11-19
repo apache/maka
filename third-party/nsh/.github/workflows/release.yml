@@ -137,9 +137,10 @@ jobs:
         # x86_64 Windows builds 40 to 65 minutes each.
         include:
           # The iOS runtimes and SDK need Xcode and Apple silicon; the macOS
-          # runtime is built for this machine.
+          # runtime is built for this machine. Xcode's iOS 26+ SDK opts apps
+          # into the system's Liquid Glass appearance (deployment stays 15).
           - name: macos-arm64
-            os: macos-15
+            os: macos-26
             embed: ios
           - name: macos-x86_64
             os: macos-15-intel
@@ -158,11 +159,26 @@ jobs:
             os: windows-11-arm
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # A release run builds the tag, never the branch it was started on;
           # the nightly builds the commit of main the plan saw.
           ref: ${{ needs.plan.outputs.ref }}
+
+      - name: Check the Apple SDKs
+        if: matrix.embed == 'ios'
+        run: |
+          xcodebuild -version
+          # Catalyst uses the macOS SDK's iOSSupport. Check all three before
+          # spending time building, even if the runner's default Xcode changes.
+          for sdk in iphoneos iphonesimulator macosx; do
+            version=$(xcrun --sdk "$sdk" --show-sdk-version)
+            echo "$sdk SDK: $version ($(xcrun --sdk "$sdk" --show-sdk-path))"
+            if (( ${version%%.*} < 26 )); then
+              echo "::error::$sdk SDK 26 or newer is required for the iOS distribution"
+              exit 1
+            fi
+          done
 
       - name: Check the version
         if: env.TAG != ''
@@ -306,7 +322,13 @@ jobs:
           NSH_CHANNEL: ${{ env.NIGHTLY == 'true' && 'nightly' || 'stable' }}
           NSH_DIST_NO_ANDROID: ${{ !matrix.shared && '1' || '' }}
           NSH_DIST_NO_WEB: ${{ !matrix.shared && '1' || '' }}
-        run: cargo xtask dist -v
+        # `--locked` for xtask's own run, which resolves the main workspace;
+        # xtask's builds pass it on themselves (crates/xtask/src/cargo.rs).
+        run: cargo --locked xtask dist -v
+
+      - name: Check the iOS runtime build versions
+        if: matrix.embed == 'ios'
+        run: python3 .github/ci/ios-build-versions.py dist/nsh/runtime/ios
 
       # The packaged CLI makes and bundles a new app.
       - name: Smoke test
@@ -381,7 +403,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.TAG }}
 

@@ -31,7 +31,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     commands::{RichCommand, attrs_of, resolve},
-    json::{AttrsJson, StateJson, TransactionJson},
+    json::{AttrsJson, SliceJson, StateJson, TransactionJson},
 };
 use crate::rich_editor::{
     commands::{BoxCommand, base_keymap, command},
@@ -94,6 +94,8 @@ pub(crate) struct Hooks {
     pub(crate) append: Option<AppendHook>,
     pub(crate) keys: Option<Callback<String>>,
     pub(crate) dispatch: Option<Callback<TransactionJson>>,
+    /// The paste hooks (`transformPasted`, `handlePaste`).
+    pub(crate) paste: PasteHooks,
 }
 
 thread_local! {
@@ -157,6 +159,41 @@ impl Drop for HookRef {
             });
         }
     }
+}
+
+// --- Paste hooks ---------------------------------------------------------------
+
+/// What the clipboard held, for `handlePaste` (what ProseMirror's paste
+/// event carries).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub(crate) struct RichClipboardContent {
+    /// Its plain text (empty when it had none).
+    pub(crate) text: String,
+    /// Its HTML (empty when it had none).
+    pub(crate) html: String,
+}
+
+/// A JS plugin's paste hooks: the app's functions ProseMirror's
+/// `EditorProps` of the same names are.
+#[derive(Default, Clone)]
+pub(crate) struct PasteHooks {
+    pub(crate) transform: Option<Callback<SliceJson, SliceJson>>,
+    pub(crate) handle: Option<Callback<(SliceJson, RichClipboardContent), bool>>,
+}
+
+impl PasteHooks {
+    /// Whether it has any.
+    pub(crate) fn any(&self) -> bool {
+        self.transform.is_some() || self.handle.is_some()
+    }
+}
+
+/// The paste hooks of `plugin`, when it is a JS plugin with some (on the
+/// thread that made them).
+pub(crate) fn paste_hooks(plugin: &Plugin) -> Option<PasteHooks> {
+    let hooks = plugin.__js_hooks()?.downcast::<HookRef>().ok()?;
+    hooks.get().map(|h| h.paste).filter(PasteHooks::any)
 }
 
 // --- Transactions as JSON -----------------------------------------------------
@@ -708,6 +745,10 @@ impl PluginSpec for JsPlugin {
         self.key.clone()
     }
 
+    fn __js_hooks(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        Some(self.hooks.clone())
+    }
+
     fn init_state(
         &self,
         _config: &crate::rich_editor::state::EditorStateConfig,
@@ -940,6 +981,28 @@ impl RichEditorPlugin {
         >,
     ) -> Instance<Self> {
         this.with(|p| p.hooks.update(|h| h.append = Some(hook)));
+        this
+    }
+
+    /// Changes pasted content before it is inserted (ProseMirror's
+    /// `transformPasted`): each plugin's in turn. A paste through a JS
+    /// hook goes in once the hooks answered, a JS turn later.
+    pub(crate) fn transform_pasted(
+        this: Instance<Self>,
+        #[args(slice)] hook: Callback<SliceJson, SliceJson>,
+    ) -> Instance<Self> {
+        this.with(|p| p.hooks.update(|h| h.paste.transform = Some(hook)));
+        this
+    }
+
+    /// Asks `hook` to handle a paste itself (ProseMirror's `handlePaste`):
+    /// `true` when it did (the editor inserts nothing), with what the
+    /// clipboard held.
+    pub(crate) fn handle_paste(
+        this: Instance<Self>,
+        #[args(slice, clipboard)] hook: Callback<(SliceJson, RichClipboardContent), bool>,
+    ) -> Instance<Self> {
+        this.with(|p| p.hooks.update(|h| h.paste.handle = Some(hook)));
         this
     }
 

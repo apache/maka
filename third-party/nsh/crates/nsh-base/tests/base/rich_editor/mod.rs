@@ -5,8 +5,11 @@
 //! back, and lists' items show their markers.
 
 mod commands;
+mod composition;
+mod content_size;
 mod extensions;
 mod marks_clipboard_history;
+mod node_view_presses;
 mod selection;
 mod sizing;
 mod structure;
@@ -20,7 +23,7 @@ use std::{sync::Arc, time::Duration};
 use nsh_base::rich_editor::{
     extensions::{markdown::markdown, starter, suggestion::mention_node},
     model::{Node, NodeSpec, Schema},
-    state::{EditorState, EditorStateConfig},
+    state::{EditorState, EditorStateConfig, NodeSelection},
     view::{EditorSession, NodeView, NodeViewCx, NodeViews, rich_editor},
 };
 use nsh_core::{
@@ -47,7 +50,33 @@ impl NodeView for StockCard {
     }
 }
 
-/// The starter schema with a block atom `stock` and Tiptap's `mention`.
+/// Renders inline `tag` nodes as their position and whether a node
+/// selection holds them; a press selects the node.
+struct TagView;
+
+impl NodeView for TagView {
+    fn create(&self, cx: &NodeViewCx, _node: &Node) -> AnyElement {
+        let (get_pos, selected) = (cx.get_pos(), cx.selected());
+        let (press_pos, session) = (cx.get_pos(), cx.session.clone());
+        view()
+            .test_id("tag")
+            .on_press(move || {
+                let Some(pos) = press_pos() else { return };
+                let state = session.state();
+                let mut tr = state.tr();
+                tr.set_selection(NodeSelection::create(state.doc(), pos));
+                session.dispatch(tr).unwrap();
+            })
+            .child(text(move || {
+                let selected = selected.get();
+                format!("Tag {:?} {selected}", get_pos())
+            }))
+            .into_element()
+    }
+}
+
+/// The starter schema with a block atom `stock`, an inline atom `tag` and
+/// Tiptap's `mention`.
 fn schema() -> Schema {
     let mut spec = starter::schema_spec();
     let mut stock = NodeSpec::default();
@@ -57,6 +86,11 @@ fn schema() -> Schema {
     symbol.default = Some(json!(""));
     stock.attrs = vec![("symbol".into(), symbol)];
     spec.nodes.push(("stock".into(), stock));
+    let mut tag = NodeSpec::default();
+    tag.group = Some("inline".into());
+    tag.inline = true;
+    tag.atom = true;
+    spec.nodes.push(("tag".into(), tag));
     spec.nodes.push(mention_node("mention", "@"));
     Schema::new(spec).unwrap()
 }
@@ -68,7 +102,12 @@ fn session(doc: Value) -> EditorSession {
     let doc = schema.node_from_json(&doc).unwrap();
     let state =
         EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins)).unwrap();
-    EditorSession::new(state, NodeViews::new().with("stock", Arc::new(StockCard)))
+    EditorSession::new(
+        state,
+        NodeViews::new()
+            .with("stock", Arc::new(StockCard))
+            .with("tag", Arc::new(TagView)),
+    )
 }
 
 #[derive(Clone, PartialEq, Props)]
@@ -400,6 +439,21 @@ fn a_node_view_renders_an_atom() {
     app.type_text("id:editor", "").unwrap();
     keys(&mut app, &["end", "right"]);
     see(&mut app, "Sel 8-9");
+}
+
+#[test]
+fn an_inline_node_view_follows_its_position_and_selection() {
+    let mut app = start(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "ab"}]},
+        {"type": "paragraph", "content": [{"type": "text", "text": "x"}, {"type": "tag"}]}
+    ]}));
+    see(&mut app, "Tag Some(6) false");
+    // Typing in the block before moves the tag without drawing it again.
+    app.type_text("id:editor", "c").unwrap();
+    see(&mut app, &doc("cab|x@"));
+    app.press("id:tag").unwrap();
+    see(&mut app, "Sel 7-8");
+    see(&mut app, "Tag Some(7) true");
 }
 
 #[test]

@@ -14,6 +14,8 @@ mod compile;
 mod hot;
 mod jsx;
 #[cfg(feature = "bundle")]
+mod link;
+#[cfg(feature = "bundle")]
 mod minify;
 #[cfg(feature = "bundle")]
 mod natives;
@@ -27,6 +29,8 @@ mod types;
 
 #[cfg(feature = "bundle")]
 pub use bundle::*;
+#[cfg(feature = "bundle")]
+pub use link::rewrite_imports;
 #[cfg(feature = "bundle")]
 pub use minify::minify_module;
 #[cfg(feature = "bundle")]
@@ -75,6 +79,33 @@ mod tests {
         assert!(code.contains("from \"nsh/base\""), "{code}");
         assert!(!code.contains(": number"), "types are removed: {code}");
         assert!(!code.contains("<View"), "JSX is compiled: {code}");
+    }
+
+    #[test]
+    fn compile_module_compiles_enums() {
+        let code = super::compile_module(
+            "App.ts",
+            "enum Side { Buy, Sell = 4 }\n\
+             const enum Trend { Up = 1, Down }\n\
+             export const values = [Side.Sell, Side[0], Trend.Down];\n",
+            &[],
+        )
+        .unwrap();
+        assert!(!code.contains("enum "), "enums are compiled: {code}");
+        // Each member gets its value and its reverse mapping (`Side[0]`):
+        // the first is 0, an explicit value is kept, and the next one counts
+        // on from the member before it.
+        assert!(code.contains(r#"Side[Side["Buy"] = 0] = "Buy""#), "{code}");
+        assert!(
+            code.contains(r#"Side[Side["Sell"] = 4] = "Sell""#),
+            "{code}"
+        );
+        // A `const enum` is compiled as an object too (oxc does not inline its
+        // members here), with `Down` counted on from `Up = 1`.
+        assert!(
+            code.contains(r#"Trend[Trend["Down"] = 2] = "Down""#),
+            "{code}"
+        );
     }
 
     #[test]

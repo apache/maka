@@ -650,6 +650,9 @@ fn quotes() -> impl IntoElement {
 - `DataTableRows` is by column, each of one type. `key` joins a column to its field; a wrong key is an empty column.
 - Sorting is yours. `on_sort_change` reports the request; sort your data and set `.sort(..)` and `.data(..)`.
 - Lines, colors and selection feedback come from `.classes(..)` and `.styles(..)`; with none, the table has no dividers.
+- Several cells or columns are the app's. `.select_on_modifier_press(false)` leaves the table's selection when Shift
+  or the command key is held. `.on_row_press` and `.on_column_press` report the press, `.cell_classes(..)` paints
+  cells, and a column's `header_class` / `cell_class` paints that column. The table's own selection stays one item.
 - A table's own width: `table_cell` and `table_head` take the widths. A static table does not virtualize or scroll by
   itself; put it in a `scroll().horizontal()` when it can overflow.
 - `.render_cell(|cell: &DataTableCell| ..)` runs per visible cell. Keep it light.

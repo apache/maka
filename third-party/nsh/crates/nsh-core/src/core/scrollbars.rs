@@ -19,7 +19,9 @@
 use std::sync::Arc;
 
 use super::{Core, Key, Kind, NO_KEY, dirty, list::StickyRange};
-use crate::{NodeId, ScrollbarSetting, element::BuiltInScrollbar, text::TextEngine};
+use crate::{
+    NodeId, ScrollbarSetting, element::BuiltInScrollbar, geometry::Points, text::TextEngine,
+};
 
 /// How far a bar's sticky range reaches: past any content.
 const BAR_RANGE: f32 = 1.0e9;
@@ -205,14 +207,33 @@ impl<M: TextEngine> Core<M> {
             if !node.created || size.width.0.is_nan() || size.height.0.is_nan() {
                 continue;
             }
+            // A scroll view's bar keeps within its `scrollbar_inset`, clear of
+            // the bars floating over the view (an input's has none).
+            let inset = (node.scroll.as_ref())
+                .filter(|_| node.kind != Kind::Input)
+                .map(|s| s.behavior.scrollbar_inset.map(|v| v.0.max(0.0)))
+                .unwrap_or_default();
+            let size = crate::geometry::size(
+                Points((size.width.0 - inset.left - inset.right).max(0.0)),
+                Points((size.height.0 - inset.top - inset.bottom).max(0.0)),
+            );
+            let position = taffy::Rect {
+                top: taffy::LengthPercentageAuto::length(inset.top),
+                left: taffy::LengthPercentageAuto::length(inset.left),
+                right: taffy::LengthPercentageAuto::auto(),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            };
             let mut style = self.layout.style(layout).clone();
             let want = taffy::Size {
                 width: taffy::Dimension::length(size.width.0),
                 height: taffy::Dimension::length(size.height.0),
             };
-            let restyled = style.size != want || style.position != taffy::Position::Relative;
+            let restyled = style.size != want
+                || style.position != taffy::Position::Relative
+                || style.inset != position;
             if restyled {
                 style.size = want;
+                style.inset = position;
                 style.position = taffy::Position::Relative;
                 self.layout.set_style(layout, style);
             }

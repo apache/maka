@@ -124,6 +124,7 @@ interface ViewabilityConfig {
 | `disableIntervalMomentum` | `boolean` | `false` | 一次快速滑动最多移动一个停靠点。 |
 | `decelerationRate` | `"normal" \| "fast" \| number` | 平台默认 | 快速滑动的减速快慢（`0.998` / `0.99`，或每毫秒保留的速度比例）。 |
 | `contentInset` | `Partial<Edges>` | | 内容四周的留白。 |
+| `scrollbarInset` | `Partial<Edges>` | | 滚动指示条与视图各边保持的距离。 |
 | `contentOffset` | `{ x?, y? }` | | 初始滚动位置。 |
 | `keyboardShouldPersistTaps` | `"never" \| "always" \| "handled" \| boolean` | `"never"` | 点击是否收起键盘（`"never"`：这次点击只用来收起键盘）。 |
 | `keyboardDismissMode` | `"none" \| "on-drag" \| "interactive"` | `"none"` | 拖动时是否收起键盘。 |

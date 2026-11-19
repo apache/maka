@@ -97,3 +97,33 @@ expect Tray clicks: 1180 0 32 24
 tray click
 expect Tray clicks: 1180 0 32 24, null
 covers [nsh/desktop] Tray
+# home-dir-access
+tap id:case-home-dir-access
+expect Home: Error ERR_ACCESS_DENIED homeDir ""
+covers [os] homedir
+# launch-at-login
+tap id:case-launch-at-login
+# A run that cannot launch at login (headless, as a view embedded in another
+# app and `nsh run`): reading it is false, turning it on rejects, and so does
+# a wrong use, with a TypeError.
+expect Launch at login: boolean false
+tap id:enable
+expect Set: true ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+tap id:misuse
+expect Misuse: TypeError
+covers [nsh/desktop] Application
+
+# Hover tracks pass presses through while the content fits, and start
+# receiving the pointer once it grows beyond the viewport on their axis.
+tap id:case-scrollbar-hover
+expect Grow
+style label:"Vertical hover bar" pointerEvents none
+style label:"Horizontal hover bar" pointerEvents none
+tap id:resize-content
+expect Shrink
+style label:"Vertical hover bar" pointerEvents auto
+style label:"Horizontal hover bar" pointerEvents auto
+tap id:resize-content
+expect Grow
+style label:"Vertical hover bar" pointerEvents none
+style label:"Horizontal hover bar" pointerEvents none

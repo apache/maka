@@ -25,6 +25,8 @@ pub(crate) enum IconName {
     Nav,
     /// Two fields.
     Form,
+    /// A keyboard.
+    Keyboard,
     /// A phone.
     Mobile,
     /// Squares and a circle.
@@ -134,6 +136,21 @@ impl IconName {
                 let c = rect(c, 3.0, 11.0, 14.0, 5.0, 2.0);
                 let c = line(c, &[6.0, 6.5, 6.0, 6.5]);
                 line(c, &[5.5, 13.5, 9.0, 13.5])
+            }
+            IconName::Keyboard => {
+                let c = rect(c, 2.5, 5.0, 15.0, 10.0, 2.5);
+                let keys: [(f32, f32); 6] = [
+                    (5.8, 8.2),
+                    (8.4, 8.2),
+                    (11.0, 8.2),
+                    (13.6, 8.2),
+                    (5.8, 11.0),
+                    (13.6, 11.0),
+                ];
+                let c = keys
+                    .into_iter()
+                    .fold(c, |c, (x, y)| circle(c, x, y, 0.8, true));
+                line(c, &[8.0, 13.6, 12.0, 13.6])
             }
             IconName::Mobile => {
                 let c = rect(c, 5.5, 2.5, 9.0, 15.0, 2.5);

@@ -6,7 +6,7 @@ use std::{
 };
 
 use super::*;
-use crate::ByteSize;
+use crate::{ByteSize, access::Capabilities};
 
 /// A fresh directory under the system's temporary one, removed on drop.
 struct TempDir(PathBuf);
@@ -60,28 +60,35 @@ fn fresh(lookup: Lookup) -> Option<Vec<u8>> {
 fn stores_and_serves_fresh_entries() {
     let dir = TempDir::new();
     let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
-    assert!(matches!(cache.lookup_at(URL, T0), Lookup::Miss));
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0),
+        Lookup::Miss
+    ));
     let shown = cache
         .complete_at(
             URL,
+            &Access::all(),
             ok(&[("Cache-Control", "public, max-age=600")], b"png"),
             T0,
         )
         .unwrap();
     assert_eq!(&*shown, b"png");
     assert_eq!(
-        fresh(cache.lookup_at(URL, T0 + 599)).as_deref(),
+        fresh(cache.lookup_at(URL, &Access::all(), T0 + 599)).as_deref(),
         Some(&b"png"[..])
     );
     // Another handle on the directory (another surface) sees it.
     let other = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
     assert_eq!(
-        fresh(other.lookup_at(URL, T0 + 1)).as_deref(),
+        fresh(other.lookup_at(URL, &Access::all(), T0 + 1)).as_deref(),
         Some(&b"png"[..])
     );
-    assert!(matches!(cache.lookup_at(URL, T0 + 600), Lookup::Stale(_)));
     assert!(matches!(
-        cache.lookup_at("https://img.example.com/other.png", T0),
+        cache.lookup_at(URL, &Access::all(), T0 + 600),
+        Lookup::Stale(_)
+    ));
+    assert!(matches!(
+        cache.lookup_at("https://img.example.com/other.png", &Access::all(), T0),
         Lookup::Miss
     ));
 }
@@ -160,22 +167,43 @@ fn honors_no_store() {
     let dir = TempDir::new();
     let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
     cache
-        .complete_at(URL, ok(&[("Cache-Control", "max-age=60")], b"old"), T0)
+        .complete_at(
+            URL,
+            &Access::all(),
+            ok(&[("Cache-Control", "max-age=60")], b"old"),
+            T0,
+        )
         .unwrap();
     // A later `no-store` response is shown and drops what was kept.
     let shown = cache
-        .complete_at(URL, ok(&[("Cache-Control", "no-store")], b"new"), T0 + 61)
+        .complete_at(
+            URL,
+            &Access::all(),
+            ok(&[("Cache-Control", "no-store")], b"new"),
+            T0 + 61,
+        )
         .unwrap();
     assert_eq!(&*shown, b"new");
-    assert!(matches!(cache.lookup_at(URL, T0 + 61), Lookup::Miss));
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0 + 61),
+        Lookup::Miss
+    ));
     // Neither are other statuses kept.
     let partial = Fetched::new(
         206,
         headers(&[("Cache-Control", "max-age=60")]),
         b"pa".to_vec(),
     );
-    assert_eq!(&*cache.complete_at(URL, Ok(partial), T0).unwrap(), b"pa");
-    assert!(matches!(cache.lookup_at(URL, T0), Lookup::Miss));
+    assert_eq!(
+        &*cache
+            .complete_at(URL, &Access::all(), Ok(partial), T0)
+            .unwrap(),
+        b"pa"
+    );
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0),
+        Lookup::Miss
+    ));
 }
 
 #[test]
@@ -190,8 +218,10 @@ fn revalidates_stale_entries() {
         ],
         b"png",
     );
-    cache.complete_at(URL, response, T0).unwrap();
-    let lookup = cache.lookup_at(URL, T0 + 61);
+    cache
+        .complete_at(URL, &Access::all(), response, T0)
+        .unwrap();
+    let lookup = cache.lookup_at(URL, &Access::all(), T0 + 61);
     let Lookup::Stale(validators) = &lookup else {
         panic!("stale");
     };
@@ -205,16 +235,19 @@ fn revalidates_stale_entries() {
     );
     // 304: the copy serves again, fresh by the stored `max-age` from now
     // (the 304 says nothing new).
-    let shown = cache.complete_at(URL, status(304, &[]), T0 + 61).unwrap();
+    let shown = cache
+        .complete_at(URL, &Access::all(), status(304, &[]), T0 + 61)
+        .unwrap();
     assert_eq!(&*shown, b"png");
     assert_eq!(
-        fresh(cache.lookup_at(URL, T0 + 120)).as_deref(),
+        fresh(cache.lookup_at(URL, &Access::all(), T0 + 120)).as_deref(),
         Some(&b"png"[..])
     );
     // A 304's headers win over the stored ones.
     cache
         .complete_at(
             URL,
+            &Access::all(),
             status(
                 304,
                 &[("Cache-Control", "max-age=3600"), ("ETag", "\"v2\"")],
@@ -222,8 +255,8 @@ fn revalidates_stale_entries() {
             T0 + 200,
         )
         .unwrap();
-    assert!(fresh(cache.lookup_at(URL, T0 + 3000)).is_some());
-    let Lookup::Stale(validators) = cache.lookup_at(URL, T0 + 4000) else {
+    assert!(fresh(cache.lookup_at(URL, &Access::all(), T0 + 3000)).is_some());
+    let Lookup::Stale(validators) = cache.lookup_at(URL, &Access::all(), T0 + 4000) else {
         panic!("stale");
     };
     assert_eq!(validators.etag.as_deref(), Some("\"v2\""));
@@ -231,44 +264,54 @@ fn revalidates_stale_entries() {
     cache
         .complete_at(
             URL,
+            &Access::all(),
             ok(&[("Cache-Control", "max-age=60")], b"new"),
             T0 + 4000,
         )
         .unwrap();
     assert_eq!(
-        fresh(cache.lookup_at(URL, T0 + 4001)).as_deref(),
+        fresh(cache.lookup_at(URL, &Access::all(), T0 + 4001)).as_deref(),
         Some(&b"new"[..])
     );
     // A 304 for an entry that went away is an error, not empty bytes.
     cache.remove(URL);
-    assert!(cache.complete_at(URL, status(304, &[]), T0).is_err());
+    assert!(
+        cache
+            .complete_at(URL, &Access::all(), status(304, &[]), T0)
+            .is_err()
+    );
 }
 
 #[test]
 fn serves_stale_copies_when_offline() {
     let dir = TempDir::new();
     let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
-    cache.complete_at(URL, ok(&[], b"png"), T0).unwrap();
+    cache
+        .complete_at(URL, &Access::all(), ok(&[], b"png"), T0)
+        .unwrap();
     // Nothing said about freshness: stale, without validators.
-    let Lookup::Stale(validators) = cache.lookup_at(URL, T0) else {
+    let Lookup::Stale(validators) = cache.lookup_at(URL, &Access::all(), T0) else {
         panic!("stale");
     };
     assert_eq!(validators, Validators::default());
-    let offline = cache.complete_at(URL, Err("offline".into()), T0 + 1);
+    let offline = cache.complete_at(URL, &Access::all(), Err("offline".into()), T0 + 1);
     assert_eq!(&*offline.unwrap(), b"png");
-    let unavailable = cache.complete_at(URL, status(503, &[]), T0 + 1);
+    let unavailable = cache.complete_at(URL, &Access::all(), status(503, &[]), T0 + 1);
     assert_eq!(&*unavailable.unwrap(), b"png");
     // Gone (404): dropped.
     assert_eq!(
         cache
-            .complete_at(URL, status(404, &[]), T0 + 2)
+            .complete_at(URL, &Access::all(), status(404, &[]), T0 + 2)
             .unwrap_err(),
         "HTTP 404"
     );
-    assert!(matches!(cache.lookup_at(URL, T0 + 2), Lookup::Miss));
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0 + 2),
+        Lookup::Miss
+    ));
     assert_eq!(
         cache
-            .complete_at(URL, Err("offline".into()), T0 + 3)
+            .complete_at(URL, &Access::all(), Err("offline".into()), T0 + 3)
             .unwrap_err(),
         "offline"
     );
@@ -276,25 +319,26 @@ fn serves_stale_copies_when_offline() {
     cache
         .complete_at(
             URL,
+            &Access::all(),
             ok(&[("Cache-Control", "max-age=1, must-revalidate")], b"png"),
             T0,
         )
         .unwrap();
     assert_eq!(
         cache
-            .complete_at(URL, Err("offline".into()), T0 + 5)
+            .complete_at(URL, &Access::all(), Err("offline".into()), T0 + 5)
             .unwrap_err(),
         "offline"
     );
     assert_eq!(
         cache
-            .complete_at(URL, status(502, &[]), T0 + 5)
+            .complete_at(URL, &Access::all(), status(502, &[]), T0 + 5)
             .unwrap_err(),
         "HTTP 502"
     );
     assert!(
         cache
-            .complete_at(URL, status(302, &[]), T0)
+            .complete_at(URL, &Access::all(), status(302, &[]), T0)
             .unwrap_err()
             .contains("302")
     );
@@ -320,14 +364,24 @@ fn a_refused_redirect_drops_the_cached_copy() {
         let dir = TempDir::new();
         let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
         // A copy with nothing said about freshness: served stale when offline.
-        cache.complete_at(URL, ok(&[], b"png"), T0).unwrap();
-        assert!(matches!(cache.lookup_at(URL, T0), Lookup::Stale(_)));
-        let error = cache.complete_at(URL, refused, T0 + 1).unwrap_err();
+        cache
+            .complete_at(URL, &Access::all(), ok(&[], b"png"), T0)
+            .unwrap();
+        assert!(matches!(
+            cache.lookup_at(URL, &Access::all(), T0),
+            Lookup::Stale(_)
+        ));
+        let error = cache
+            .complete_at(URL, &Access::all(), refused, T0 + 1)
+            .unwrap_err();
         assert!(error.contains(says), "{error}");
-        assert!(matches!(cache.lookup_at(URL, T0 + 1), Lookup::Miss));
+        assert!(matches!(
+            cache.lookup_at(URL, &Access::all(), T0 + 1),
+            Lookup::Miss
+        ));
         assert_eq!(
             cache
-                .complete_at(URL, Err("offline".into()), T0 + 2)
+                .complete_at(URL, &Access::all(), Err("offline".into()), T0 + 2)
                 .unwrap_err(),
             "offline"
         );
@@ -342,6 +396,7 @@ fn drops_corrupt_entries() {
         cache
             .complete_at(
                 URL,
+                &Access::all(),
                 ok(&[("Cache-Control", "max-age=600")], b"0123456789"),
                 T0,
             )
@@ -372,28 +427,43 @@ fn drops_corrupt_entries() {
         let mut bytes = fs::read(&path).unwrap();
         damage(&mut bytes);
         fs::write(&path, &bytes).unwrap();
-        assert!(fresh(cache.lookup_at(URL, T0)).is_none());
+        assert!(fresh(cache.lookup_at(URL, &Access::all(), T0)).is_none());
         assert!(!path.exists(), "a corrupt entry is deleted");
     }
     // An empty file, and a file of another URL under this name (a digest
     // collision, or a renamed file), are misses.
     fs::write(&path, b"").unwrap();
-    assert!(matches!(cache.lookup_at(URL, T0), Lookup::Miss));
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0),
+        Lookup::Miss
+    ));
     store();
     fs::rename(&path, cache.path("https://other.example/a.png")).unwrap();
     assert!(matches!(
-        cache.lookup_at("https://other.example/a.png", T0),
+        cache.lookup_at("https://other.example/a.png", &Access::all(), T0),
         Lookup::Miss
     ));
     // A stale entry's damaged body fails its 304, not silently.
     cache
-        .complete_at(URL, ok(&[("ETag", "\"e\"")], b"0123456789"), T0)
+        .complete_at(
+            URL,
+            &Access::all(),
+            ok(&[("ETag", "\"e\"")], b"0123456789"),
+            T0,
+        )
         .unwrap();
     let mut bytes = fs::read(&path).unwrap();
     bytes.pop();
     fs::write(&path, &bytes).unwrap();
-    assert!(matches!(cache.lookup_at(URL, T0), Lookup::Stale(_)));
-    assert!(cache.complete_at(URL, status(304, &[]), T0).is_err());
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0),
+        Lookup::Stale(_)
+    ));
+    assert!(
+        cache
+            .complete_at(URL, &Access::all(), status(304, &[]), T0)
+            .is_err()
+    );
 }
 
 #[test]
@@ -413,20 +483,30 @@ fn evicts_the_least_recently_used() {
     };
     for i in 0..10 {
         cache
-            .complete_at(&url(i), ok(&[("Cache-Control", "max-age=600")], &body), T0)
+            .complete_at(
+                &url(i),
+                &Access::all(),
+                ok(&[("Cache-Control", "max-age=600")], &body),
+                T0,
+            )
             .unwrap();
         // Older first: entry 0 was used longest ago...
         age(i, 10_000 - i as u64 * 100);
     }
     // ...but a hit makes it the most recent.
-    assert!(fresh(cache.lookup_at(&url(0), T0)).is_some());
+    assert!(fresh(cache.lookup_at(&url(0), &Access::all(), T0)).is_some());
     for i in 10..13 {
         cache
-            .complete_at(&url(i), ok(&[("Cache-Control", "max-age=600")], &body), T0)
+            .complete_at(
+                &url(i),
+                &Access::all(),
+                ok(&[("Cache-Control", "max-age=600")], &body),
+                T0,
+            )
             .unwrap();
     }
     let kept: Vec<usize> = (0..13)
-        .filter(|&i| fresh(cache.lookup_at(&url(i), T0)).is_some())
+        .filter(|&i| fresh(cache.lookup_at(&url(i), &Access::all(), T0)).is_some())
         .collect();
     let total: u64 = fs::read_dir(&dir.0)
         .unwrap()
@@ -442,14 +522,22 @@ fn evicts_the_least_recently_used() {
     // Bodies over an eighth of the cache are not kept.
     let big = vec![0u8; 2000];
     cache
-        .complete_at("https://img.example.com/big.png", ok(&[], &big), T0)
+        .complete_at(
+            "https://img.example.com/big.png",
+            &Access::all(),
+            ok(&[], &big),
+            T0,
+        )
         .unwrap();
     assert!(matches!(
-        cache.lookup_at("https://img.example.com/big.png", T0),
+        cache.lookup_at("https://img.example.com/big.png", &Access::all(), T0),
         Lookup::Miss
     ));
     cache.clear();
-    assert!(matches!(cache.lookup_at(&url(12), T0), Lookup::Miss));
+    assert!(matches!(
+        cache.lookup_at(&url(12), &Access::all(), T0),
+        Lookup::Miss
+    ));
 }
 
 #[test]
@@ -465,7 +553,9 @@ fn trims_what_dead_writers_left() {
     let fresh_tmp = dir.0.join(".tmp-1-2-4");
     fs::write(&fresh_tmp, b"busy").unwrap();
     // The first write scans.
-    cache.complete_at(URL, ok(&[], b"png"), T0).unwrap();
+    cache
+        .complete_at(URL, &Access::all(), ok(&[], b"png"), T0)
+        .unwrap();
     assert!(!left.exists());
     assert!(fresh_tmp.exists(), "a writer may still be writing it");
 }
@@ -483,7 +573,7 @@ fn surfaces_share_a_directory_safely() {
                 for round in 0..40 {
                     let i = (worker + round) % 24;
                     let url = format!("https://img.example.com/{i}.png");
-                    match cache.lookup_at(&url, T0) {
+                    match cache.lookup_at(&url, &Access::all(), T0) {
                         // Whatever is read back is whole: one writer's
                         // body for this URL.
                         Lookup::Fresh(bytes) => {
@@ -492,7 +582,9 @@ fn surfaces_share_a_directory_safely() {
                         }
                         Lookup::Stale(_) | Lookup::Miss => {
                             let response = ok(&[("Cache-Control", "max-age=600")], &body(i, round));
-                            let shown = cache.complete_at(&url, response, T0).unwrap();
+                            let shown = cache
+                                .complete_at(&url, &Access::all(), response, T0)
+                                .unwrap();
                             assert_eq!(shown.len(), 600 + i * 10);
                         }
                     }
@@ -529,10 +621,10 @@ fn loads_through_a_fetch() {
         }
         ok(&[("Cache-Control", "max-age=0"), ("ETag", "\"a\"")], b"png")
     };
-    assert_eq!(&*cache.load(URL, &mut get).unwrap(), b"png");
+    assert_eq!(&*cache.load(URL, &Access::all(), &mut get).unwrap(), b"png");
     // Stale at once: revalidated, then fresh for ten minutes.
-    assert_eq!(&*cache.load(URL, &mut get).unwrap(), b"png");
-    assert_eq!(&*cache.load(URL, &mut get).unwrap(), b"png");
+    assert_eq!(&*cache.load(URL, &Access::all(), &mut get).unwrap(), b"png");
+    assert_eq!(&*cache.load(URL, &Access::all(), &mut get).unwrap(), b"png");
     assert_eq!(requests, 2);
 }
 
@@ -549,4 +641,316 @@ fn reads_headers_in_any_case() {
     let h = CacheHeaders::from_lookup(|name| (name == "last-modified").then(|| date(T0)));
     assert_eq!(h.last_modified, Some(date(T0)));
     assert_eq!(h.cache_control, None);
+}
+
+const CDN: &str = "https://cdn.example.net/42.png";
+const ORIGIN: &str = "https://origin.example.org/42.png";
+
+/// An app that may load from `hosts` only.
+fn only(hosts: &[&str]) -> Access {
+    let http: Vec<_> = hosts
+        .iter()
+        .map(|host| serde_json::json!({ "host": host }))
+        .collect();
+    Access {
+        declared: Capabilities::from_json(&serde_json::json!({ "network": { "http": http } }))
+            .unwrap(),
+        granted: None,
+    }
+}
+
+fn via(pairs: &[(&str, &str)], body: &[u8], redirects: &[&str]) -> Result<Fetched, String> {
+    let redirects = redirects.iter().map(|hop| (*hop).to_owned()).collect();
+    Ok(Fetched::new(200, headers(pairs), body.to_vec()).redirected(redirects))
+}
+
+/// A fresh copy is served without a request, so nothing checks where it
+/// came from but the cache: it keeps the redirects of the download and
+/// drops the copy when the app may no longer follow one of them.
+#[test]
+fn a_fresh_copy_is_served_only_while_its_redirects_are_granted() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    let store = || {
+        cache
+            .complete_at(
+                URL,
+                &Access::all(),
+                via(&[("Cache-Control", "max-age=600")], b"png", &[CDN, ORIGIN]),
+                T0,
+            )
+            .unwrap();
+    };
+    store();
+    let everywhere = only(&["img.example.com", "cdn.example.net", "origin.example.org"]);
+    for access in [Access::all(), everywhere] {
+        assert_eq!(
+            fresh(cache.lookup_at(URL, &access, T0 + 1)).as_deref(),
+            Some(&b"png"[..])
+        );
+    }
+    // Refused at the first hop, or at a later one: the copy is dropped, so
+    // nothing of it is left for a later lookup, whatever it may load.
+    for hosts in [
+        &["img.example.com"][..],
+        &["img.example.com", "cdn.example.net"],
+        &["img.example.com", "origin.example.org"],
+    ] {
+        store();
+        assert!(matches!(
+            cache.lookup_at(URL, &only(hosts), T0 + 1),
+            Lookup::Miss
+        ));
+        assert!(!cache.path(URL).exists(), "{hosts:?}");
+        assert!(matches!(
+            cache.lookup_at(URL, &Access::all(), T0 + 1),
+            Lookup::Miss
+        ));
+    }
+    // A copy that came straight from its URL has nothing to check.
+    cache
+        .complete_at(
+            URL,
+            &Access::all(),
+            ok(&[("Cache-Control", "max-age=600")], b"png"),
+            T0,
+        )
+        .unwrap();
+    assert!(fresh(cache.lookup_at(URL, &only(&["img.example.com"]), T0 + 1)).is_some());
+}
+
+/// A stale copy is not revalidated when a redirect it came through is
+/// refused (a `304` would serve its body), nor served when the request
+/// fails.
+#[test]
+fn a_stale_copy_is_served_only_while_its_redirects_are_granted() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    let narrow = only(&["img.example.com"]);
+    let store = || {
+        cache
+            .complete_at(
+                URL,
+                &Access::all(),
+                via(&[("ETag", "\"v1\"")], b"png", &[CDN]),
+                T0,
+            )
+            .unwrap();
+    };
+    store();
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0),
+        Lookup::Stale(_)
+    ));
+    assert!(matches!(cache.lookup_at(URL, &narrow, T0), Lookup::Miss));
+    assert!(!cache.path(URL).exists());
+    // The access narrowed between the lookup and the request's failure.
+    for failure in [Err("offline".to_owned()), status(503, &[])] {
+        store();
+        let served = cache.complete_at(URL, &Access::all(), failure.clone(), T0 + 1);
+        assert_eq!(&*served.unwrap(), b"png");
+        let error = cache
+            .complete_at(URL, &narrow, failure, T0 + 1)
+            .unwrap_err();
+        assert!(error == "offline" || error == "HTTP 503", "{error}");
+        assert!(!cache.path(URL).exists());
+    }
+}
+
+/// A revalidation's redirects replace the stored ones: the copy is checked
+/// against the way it was last reached.
+#[test]
+fn a_revalidation_keeps_its_own_redirects() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    cache
+        .complete_at(
+            URL,
+            &Access::all(),
+            via(&[("ETag", "\"v1\"")], b"png", &[CDN]),
+            T0,
+        )
+        .unwrap();
+    let not_modified = Fetched::new(
+        304,
+        headers(&[("Cache-Control", "max-age=600")]),
+        Vec::new(),
+    )
+    .redirected(vec![ORIGIN.to_owned()]);
+    cache
+        .complete_at(URL, &Access::all(), Ok(not_modified), T0 + 1)
+        .unwrap();
+    let origin = only(&["img.example.com", "origin.example.org"]);
+    assert!(fresh(cache.lookup_at(URL, &origin, T0 + 2)).is_some());
+    let cdn = only(&["img.example.com", "cdn.example.net"]);
+    assert!(matches!(cache.lookup_at(URL, &cdn, T0 + 2), Lookup::Miss));
+}
+
+/// Entries of the format before redirects were kept say nothing of where
+/// they came from: they are an unknown format, deleted when read.
+#[test]
+fn drops_entries_that_kept_no_redirects() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    cache
+        .complete_at(
+            URL,
+            &Access::all(),
+            ok(&[("Cache-Control", "max-age=600")], b"png"),
+            T0,
+        )
+        .unwrap();
+    let path = cache.path(URL);
+    let mut bytes = fs::read(&path).unwrap();
+    assert_eq!(&bytes[..8], b"NSHIMG2\n");
+    // The same entry as version 1 wrote it (a header without `via` lines
+    // is the same in both).
+    bytes[..8].copy_from_slice(b"NSHIMG1\n");
+    fs::write(&path, &bytes).unwrap();
+    assert!(matches!(
+        cache.lookup_at(URL, &Access::all(), T0),
+        Lookup::Miss
+    ));
+    assert!(!path.exists());
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        cache
+            .complete_at(URL, &Access::all(), Err("offline".into()), T0)
+            .unwrap_err(),
+        "offline"
+    );
+    assert!(!path.exists());
+}
+
+/// A copy whose redirects cannot all be kept (a hop that would not read
+/// back as written, a header too long to read back) is not stored, and
+/// replaces nothing: the entry it would have replaced goes.
+#[test]
+fn stores_nothing_reached_through_redirects_it_cannot_keep() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    let long: Vec<String> = (0..20)
+        .map(|i| format!("https://cdn.example.net/{i}/{}", "a".repeat(4 << 10)))
+        .collect();
+    let long: Vec<&str> = long.iter().map(String::as_str).collect();
+    let unkept: [&[&str]; 4] = [
+        &["https://cdn.example.net/a\tb.png"],
+        &[
+            CDN,
+            "https://cdn.example.net/a\nvia\thttps://img.example.com/",
+        ],
+        &["https://cdn.example.net/a.png\r"],
+        &long,
+    ];
+    for redirects in unkept {
+        cache
+            .complete_at(
+                URL,
+                &Access::all(),
+                ok(&[("Cache-Control", "max-age=600")], b"old"),
+                T0,
+            )
+            .unwrap();
+        assert!(cache.path(URL).exists());
+        let shown = cache
+            .complete_at(
+                URL,
+                &Access::all(),
+                via(&[("Cache-Control", "max-age=600")], b"png", redirects),
+                T0,
+            )
+            .unwrap();
+        assert_eq!(&*shown, b"png");
+        assert!(!cache.path(URL).exists());
+        assert!(matches!(
+            cache.lookup_at(URL, &Access::all(), T0),
+            Lookup::Miss
+        ));
+    }
+}
+
+/// A `304` answers for the copy on disk when it arrives, which another
+/// handle on the directory may have stored since the lookup: it is served
+/// only if it came a way this app may load.
+#[test]
+fn a_304_serves_no_copy_that_came_through_a_refused_redirect() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    cache
+        .complete_at(
+            URL,
+            &Access::all(),
+            via(&[("ETag", "\"v1\"")], b"png", &[CDN]),
+            T0,
+        )
+        .unwrap();
+    let error = cache
+        .complete_at(
+            URL,
+            &only(&["img.example.com"]),
+            status(304, &[("Cache-Control", "max-age=600")]),
+            T0 + 1,
+        )
+        .unwrap_err();
+    assert!(error.contains("is not granted"), "{error}");
+    assert!(!cache.path(URL).exists());
+}
+
+/// What the embedding app grants narrows what the app may load as its own
+/// declaration does.
+#[test]
+fn an_embedders_grant_that_narrows_drops_the_copy() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    let granted = |hosts: &[&str]| Access {
+        declared: Capabilities::all(),
+        granted: Some(only(hosts).declared),
+    };
+    cache
+        .complete_at(
+            URL,
+            &Access::all(),
+            via(&[("Cache-Control", "max-age=600")], b"png", &[CDN]),
+            T0,
+        )
+        .unwrap();
+    let wide = granted(&["img.example.com", "cdn.example.net"]);
+    assert!(fresh(cache.lookup_at(URL, &wide, T0 + 1)).is_some());
+    let narrow = granted(&["img.example.com"]);
+    assert!(matches!(
+        cache.lookup_at(URL, &narrow, T0 + 1),
+        Lookup::Miss
+    ));
+    assert!(!cache.path(URL).exists());
+}
+
+/// `load` asks for a refused copy's URL as a first request would: no
+/// conditions, so no `304` can answer for the copy, and the response is
+/// what is shown and kept.
+#[test]
+fn a_load_requests_a_refused_copy_in_full() {
+    let dir = TempDir::new();
+    let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+    cache
+        .complete_at(
+            URL,
+            &Access::all(),
+            via(&[("ETag", "\"v1\"")], b"old", &[CDN]),
+            T0,
+        )
+        .unwrap();
+    let narrow = only(&["img.example.com"]);
+    let mut sent = None;
+    let shown = cache
+        .load(URL, &narrow, |headers| {
+            sent = Some(headers.to_vec());
+            ok(&[("Cache-Control", "max-age=600")], b"new")
+        })
+        .unwrap();
+    assert_eq!(&*shown, b"new");
+    assert_eq!(sent, Some(Vec::new()));
+    assert_eq!(
+        fresh(cache.lookup(URL, &narrow)).as_deref(),
+        Some(&b"new"[..])
+    );
 }

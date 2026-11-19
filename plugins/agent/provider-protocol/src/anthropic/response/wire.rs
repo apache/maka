@@ -82,6 +82,14 @@ pub enum Block {
         from: Endpoint,
         to: Endpoint,
     },
+    #[serde(untagged)]
+    ServerResult {
+        #[serde(rename = "type")]
+        kind: String,
+        tool_use_id: String,
+        content: Value,
+        is_error: Option<bool>,
+    },
 }
 #[derive(Debug, Deserialize, serde::Serialize)]
 pub struct Endpoint {

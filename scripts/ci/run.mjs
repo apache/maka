@@ -645,6 +645,8 @@ export function executor(
     } else if (id === 'linux-nsh') {
       await run('xvfb-run', [
         '-a',
+        'dbus-run-session',
+        '--',
         'cargo',
         'nextest',
         'run',

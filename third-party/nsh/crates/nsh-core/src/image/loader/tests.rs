@@ -398,6 +398,7 @@ fn a_refused_redirect_is_not_answered_from_the_disk_cache() {
     // A copy from before, with nothing said about freshness: stale.
     disk.complete(
         url,
+        &Access::all(),
         Ok(crate::image::Fetched::new(
             200,
             Default::default(),
@@ -412,7 +413,10 @@ fn a_refused_redirect_is_not_answered_from_the_disk_cache() {
     };
     let error = fetch(url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
     assert!(error.contains("is not granted"), "{error}");
-    assert!(matches!(disk.lookup(url), crate::image::Lookup::Miss));
+    assert!(matches!(
+        disk.lookup(url, &Access::all()),
+        crate::image::Lookup::Miss
+    ));
     // Without a disk cache, the refusal is the error too.
     let bare = Context {
         transport: Some(Arc::new(Refusing)),
@@ -911,6 +915,7 @@ fn ureq_downloads_end_at_a_refused_redirect() {
     let url = format!("http://127.0.0.1:{port}/public/a.png");
     disk.complete(
         &url,
+        &Access::all(),
         Ok(crate::image::Fetched::new(
             200,
             Default::default(),
@@ -927,8 +932,98 @@ fn ureq_downloads_end_at_a_refused_redirect() {
     server.join().unwrap();
     assert!(error.contains("is not granted"), "{error}");
     assert_eq!(*requested.lock().unwrap(), ["GET /public/a.png HTTP/1.1"]);
-    assert!(matches!(disk.lookup(&url), crate::image::Lookup::Miss));
+    assert!(matches!(
+        disk.lookup(&url, &Access::all()),
+        crate::image::Lookup::Miss
+    ));
     // The server is gone: the network fails, and nothing stale is served.
     fetch(&url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
-    assert!(matches!(disk.lookup(&url), crate::image::Lookup::Miss));
+    assert!(matches!(
+        disk.lookup(&url, &Access::all()),
+        crate::image::Lookup::Miss
+    ));
+}
+
+/// A copy the disk cache holds fresh is served without a request, so the
+/// cache checks the redirects it came through: a server on this machine
+/// redirects a URL to a path the app is granted at first, then no longer.
+#[cfg(feature = "loader")]
+#[test]
+fn a_cached_copy_is_not_served_past_a_redirect_no_longer_granted() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requested = Arc::new(Mutex::new(Vec::new()));
+    let server = std::thread::spawn({
+        let requested = requested.clone();
+        move || {
+            // The URL, where it redirects to, then the URL again.
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let line = line.trim().to_owned();
+                let reply: &[u8] = if line.starts_with("GET /public/") {
+                    b"HTTP/1.1 302 Found\r\nLocation: /cdn/b.png\r\n\
+                      Content-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\n\
+                      Content-Length: 3\r\nConnection: close\r\n\r\npng"
+                };
+                requested.lock().unwrap().push(line);
+                stream.write_all(reply).unwrap();
+            }
+        }
+    });
+    let granted = |prefixes: &[&str]| {
+        let http: Vec<_> = prefixes
+            .iter()
+            .map(|prefix| serde_json::json!({ "host": "127.0.0.1", "pathPrefix": prefix }))
+            .collect();
+        Arc::new(Access {
+            declared: crate::access::Capabilities::from_json(
+                &serde_json::json!({ "network": { "http": http } }),
+            )
+            .unwrap(),
+            granted: None,
+        })
+    };
+    let dir = TempDir::new("ureq-recheck");
+    let disk = DiskCache::open(&dir.0, crate::ByteSize::from_bytes(1 << 20)).unwrap();
+    let url = format!("http://127.0.0.1:{port}/public/a.png");
+    let context = |access: Arc<Access>| Context {
+        access,
+        disk: Some(disk.clone()),
+        ..Context::default()
+    };
+    let load = |context: &Context| {
+        fetch(&url, context, &AtomicBool::new(false), &mut |_, _| {}).map(|bytes| bytes.to_vec())
+    };
+    let wide = context(granted(&["/public", "/cdn"]));
+    assert_eq!(load(&wide), Ok(b"png".to_vec()));
+    // Fresh: served again without a request.
+    assert_eq!(load(&wide), Ok(b"png".to_vec()));
+    assert_eq!(requested.lock().unwrap().len(), 2);
+    // The app may no longer load where the copy came from: it is asked for
+    // again, and the redirect is refused as a first request's is.
+    let narrow = context(granted(&["/public"]));
+    let error = load(&narrow).unwrap_err();
+    server.join().unwrap();
+    assert!(error.contains("is not granted"), "{error}");
+    assert_eq!(
+        *requested.lock().unwrap(),
+        [
+            "GET /public/a.png HTTP/1.1",
+            "GET /cdn/b.png HTTP/1.1",
+            "GET /public/a.png HTTP/1.1"
+        ]
+    );
+    // Dropped: nothing for the app that may load it either.
+    assert!(matches!(
+        disk.lookup(&url, &wide.access),
+        crate::image::Lookup::Miss
+    ));
 }

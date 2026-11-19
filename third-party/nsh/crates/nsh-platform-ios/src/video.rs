@@ -303,6 +303,18 @@ impl VideoHost {
             }
             // SAFETY: AVPlayer's documented API.
             unsafe {
+                // AVPlayer's automatic policy may pause video even with a
+                // playback audio session. The app also needs audio in its
+                // UIBackgroundModes. Apply on every configure so replacement
+                // players and changes back to Default get the right policy.
+                let background_policy: isize = match p.audio_session {
+                    // AVPlayerAudiovisualBackgroundPlaybackPolicyAutomatic
+                    AudioSession::Default => 1,
+                    // AVPlayerAudiovisualBackgroundPlaybackPolicyContinuesIfPossible
+                    AudioSession::Playback | AudioSession::MixWithOthers => 3,
+                };
+                let _: () =
+                    msg_send![player, setAudiovisualBackgroundPlaybackPolicy: background_policy];
                 let _: () = msg_send![player, setMuted: Bool::new(p.muted)];
                 let _: () = msg_send![player, setVolume: p.volume];
                 if p.paused {

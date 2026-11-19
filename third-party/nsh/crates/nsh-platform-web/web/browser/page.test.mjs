@@ -83,6 +83,19 @@ test("a later head wins for what it sets, the ones before it for the rest", asyn
   assert.equal(document.head.children.some(el => el.tag === "script"), false);
 });
 
+test("a canonical path starts at the site's base where a strict base-uri leaves the page at its route", async () => {
+  globalThis.document = fakeDocument();
+  // `base-uri 'none'`: the document's base is the route's address; the
+  // player's is the site's (its `<base href>`).
+  document.baseURI = "https://notes.example.com/app/notes/q3";
+  const reactive = fakeReactive();
+  const { exports } = createWebPage(reactive, { addressBase: () => "https://notes.example.com/app/" });
+  reactive.own(() => exports.Head({ canonical: "/notes/q4" }));
+  await settle();
+  const canonical = document.head.children.find(el => el.tag === "link");
+  assert.equal(canonical.attributes.get("href"), "https://notes.example.com/app/notes/q4");
+});
+
 test("the app's own Open Graph title wins over the head's title", async () => {
   globalThis.document = fakeDocument();
   const reactive = fakeReactive();
@@ -96,4 +109,19 @@ test("the app's own Open Graph title wins over the head's title", async () => {
   assert.equal(document.title, "Site");
   assert.equal(document.documentElement.lang, "");
   assert.deepEqual(document.head.children, []);
+});
+
+test("the heads' title goes to the player, which keeps it above the main window's title", async () => {
+  globalThis.document = fakeDocument();
+  const reactive = fakeReactive();
+  const titles = [];
+  const { exports } = createWebPage(reactive, { setHeadTitle: title => titles.push(title) });
+  reactive.own(() => exports.Head({ description: "All notes" }));
+  const page = reactive.own(() => exports.Head({ title: "Q3 earnings" }));
+  await settle();
+  // The player writes the document's title: the heads leave it alone.
+  assert.equal(document.title, "Site");
+  page();
+  await settle();
+  assert.deepEqual(titles, ["Q3 earnings", null]);
 });

@@ -10,6 +10,7 @@ import LayoutDirection from "./layout-direction";
 import LayoutFlex from "./layout-flex";
 import LayoutGrid from "./layout-grid";
 import LayoutTailwind from "./layout-tailwind";
+import LayoutSiblingClasses from "./layout-sibling-classes";
 import LayoutSticky from "./layout-sticky";
 
 const cases: Record<string, () => JSX.Element> = {
@@ -20,6 +21,7 @@ const cases: Record<string, () => JSX.Element> = {
   "layout-flex": LayoutFlex,
   "layout-grid": LayoutGrid,
   "layout-tailwind": LayoutTailwind,
+  "layout-sibling-classes": LayoutSiblingClasses,
   "layout-sticky": LayoutSticky,
 };
 const shown = signal("");

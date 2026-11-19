@@ -5,16 +5,20 @@
 //! `ERR_ACCESS_DENIED` (checked here, in the call; the core also refuses
 //! the commands, for Rust components' calls, which then get nothing).
 //! Images are checked here too: where the platform has no images on the
-//! clipboard (Android, whose backend reads and writes text only)
+//! clipboard (Android, whose backend reads and writes text only, and
+//! platforms built outside NSH without images:
+//! [`crate::platform::Environment::clipboard_images`])
 //! `writeImage` and `readImage` reject with
 //! `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` and `hasImage` answers `false`
 //! without asking the platform; an image over
 //! [`crate::platform::clipboard::MAX_IMAGE_BYTES`] rejects `readImage`
-//! with `ERR_NSH_QUOTA_EXCEEDED`.
+//! with `ERR_NSH_QUOTA_EXCEEDED`. A read the person refuses (iOS's paste
+//! prompt) rejects `readText` with `ERR_ACCESS_DENIED`, as a missing
+//! capability does.
 
 use crate::{
-    element::{ClipboardImage, JsError, System, codes, module},
-    platform::{Os, clipboard::MAX_IMAGE_BYTES},
+    element::{ClipboardImage, ClipboardItem, JsError, System, codes, module},
+    platform::clipboard::MAX_IMAGE_BYTES,
 };
 
 /// Whether the app may use the clipboard: why not when it may not.
@@ -30,9 +34,12 @@ fn granted(sys: &System) -> Result<(), JsError> {
 }
 
 /// Whether the platform puts images on the clipboard and reads them back:
-/// every backend but Android's.
+/// what a platform built outside NSH says, otherwise every OS but Android,
+/// whose backend holds text only
+/// ([`crate::platform::Environment::clipboard_images`]).
 fn has_images(sys: &System) -> bool {
-    sys.os != Os::Android
+    sys.clipboard_images
+        .unwrap_or(sys.os != crate::platform::Os::Android)
 }
 
 /// Why `call` cannot run where the platform has no clipboard images.
@@ -45,6 +52,17 @@ fn images_available(sys: &System, call: &str) -> Result<(), JsError> {
         sys.os.name()
     ))
     .with_code(codes::UNAVAILABLE))
+}
+
+/// The rejection of a text read the person refused (iOS's paste prompt
+/// answered with Don't Allow Paste, or pasting from other apps denied in
+/// Settings).
+fn refused() -> JsError {
+    JsError::access_denied(
+        "Clipboard.readText: the person did not allow the paste",
+        "clipboard",
+        "",
+    )
 }
 
 /// The rejection of an image over [`MAX_IMAGE_BYTES`] (`bytes` encoded).
@@ -71,11 +89,25 @@ impl Clipboard {
         Ok(())
     }
 
+    /// Puts `item` on the clipboard, replacing what it holds: its
+    /// `text` as plain text and its `html`, when given, as the platform's
+    /// HTML type, which apps that read formatting (mail, documents, rich
+    /// text editors) paste. Where the platform has no HTML on the clipboard
+    /// (a terminal) the text only.
+    pub(crate) async fn write(item: ClipboardItem, sys: System) -> Result<(), JsError> {
+        granted(&sys)?;
+        crate::prelude::set_clipboard_item(item);
+        Ok(())
+    }
+
     /// The clipboard's text, `""` when it holds none. On iOS, reading it
-    /// may show the system's paste notice.
+    /// may show the system's paste prompt; when the person refuses, it
+    /// rejects with `ERR_ACCESS_DENIED`.
     pub(crate) async fn read_text(sys: System) -> Result<String, JsError> {
         granted(&sys)?;
-        Ok(crate::prelude::clipboard_string().await)
+        crate::element::clipboard_checked_string()
+            .await
+            .ok_or_else(refused)
     }
 
     /// Whether the clipboard holds text, without reading it (no paste

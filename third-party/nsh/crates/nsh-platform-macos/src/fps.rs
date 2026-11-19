@@ -21,8 +21,15 @@
 //! - The trace: the last 120 frames' main-thread cost, against the frame
 //!   budget (the line), green within half of it, amber within it, red over.
 //!
-//! The panel lets the mouse through. It measures nothing while hidden: the
-//! surface's monitor is removed with it.
+//! A click on the panel collapses it to a pill with the frame rate alone,
+//! green, amber or red as the frames' 95th percentile cost is within half
+//! the frame budget, within it, or over it (as the trace colors frames);
+//! another click expands it again. The panel takes only its own clicks:
+//! the rest of the view gets the mouse as without it. The app sets how it
+//! shows (`setFpsMode`, [`crate::AppView::set_fps_mode`], `NSH_FPS=collapsed`
+//! or `hidden` at launch): `hidden` shows nothing and measures and logs all
+//! the same. It measures nothing while turned off: the surface's monitor is
+//! removed with it.
 //!
 //! While it shows it also logs one `nsh::fps` line a second, in the shape
 //! of the Linux backend's (`examples/gallery/tools/perf.py` reads both):
@@ -48,11 +55,14 @@ use std::{
     time::Duration,
 };
 
+use nsh_core::FpsMode;
 use nsh_engine::perf::{PerfMonitor, PerfSnapshot, ProcessSampler, Stat};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
+use objc2::{
+    DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, rc::Retained,
+};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSColor, NSFont, NSFontWeightRegular, NSGraphicsContext,
-    NSResponder, NSTextField, NSView,
+    NSAccessibility, NSAccessibilityButtonRole, NSAutoresizingMaskOptions, NSColor, NSFont,
+    NSFontWeightRegular, NSFontWeightSemibold, NSGraphicsContext, NSResponder, NSTextField, NSView,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGContext;
@@ -68,6 +78,9 @@ const WIDTH: CGFloat = 262.0;
 const MARGIN: CGFloat = 10.0;
 const PADDING: CGFloat = 8.0;
 const GRAPH_HEIGHT: CGFloat = 36.0;
+/// The collapsed pill's padding around its text (points).
+const PILL_PADDING_X: CGFloat = 10.0;
+const PILL_PADDING_Y: CGFloat = 4.0;
 
 thread_local! {
     /// The HUDs of this (main) thread by key: the timer finds its HUD by
@@ -118,21 +131,61 @@ pub(crate) fn drew_canvas(cost: Duration) {
 static NEXT_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 define_class!(
-    /// The panel: lets the pointer through to the app.
+    /// The panel: takes the clicks on it (a click collapses or expands
+    /// it), lets the rest of the pointer through to the app.
     #[unsafe(super(NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
+    #[ivars = Cell<u64>]
     #[name = "NshFpsPanel"]
     struct Panel;
 
     unsafe impl NSObjectProtocol for Panel {}
 
     impl Panel {
+        /// Itself where it shows (`point` is in its superview's
+        /// coordinates), nothing elsewhere: its label and trace take no
+        /// clicks of their own.
         #[unsafe(method_id(hitTest:))]
-        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
-            None
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            let frame = self.frame();
+            let inside = point.x >= frame.origin.x
+                && point.x < frame.origin.x + frame.size.width
+                && point.y >= frame.origin.y
+                && point.y < frame.origin.y + frame.size.height;
+            (inside && !self.isHidden()).then(|| Retained::into_super(self.retain()))
+        }
+
+        /// A click in a window that is not key acts at once.
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&objc2_app_kit::NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, _event: &objc2_app_kit::NSEvent) {
+            toggle(self.ivars().get());
+        }
+
+        /// VoiceOver's press: as a click.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_press(&self) -> bool {
+            toggle(self.ivars().get());
+            true
         }
     }
 );
+
+/// Collapses or expands HUD `key`'s panel (a click on it).
+fn toggle(key: u64) {
+    let Some(hud) = HUDS.with(|h| h.borrow().get(&key).and_then(Weak::upgrade)) else {
+        return;
+    };
+    hud.mode.set(match hud.mode.get() {
+        FpsMode::Collapsed => FpsMode::Expanded,
+        _ => FpsMode::Collapsed,
+    });
+    hud.update();
+}
 
 /// What the trace draws: frame costs (ms) and the budget (ms).
 #[derive(Default)]
@@ -225,18 +278,28 @@ pub(crate) struct Hud {
     gpu: RefCell<Option<crate::gpu::GpuProbe>>,
     /// How many updates ran (every second one logs a line).
     updates: std::cell::Cell<u64>,
+    /// How it shows: its view's ([`crate::AppView::set_fps_mode`]), which a
+    /// click on the panel switches.
+    mode: Rc<Cell<FpsMode>>,
 }
 
 impl Hud {
     /// Shows a HUD over `view` and starts measuring its surface.
-    pub(crate) fn show(view: &AppView) -> Rc<Hud> {
+    pub(crate) fn show(view: &AppView, mode: Rc<Cell<FpsMode>>) -> Rc<Hud> {
         let mtm = MainThreadMarker::new().expect("main thread");
         let surface = view.surface();
         let monitor = Arc::new(PerfMonitor::new());
+        let key = NEXT_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let panel = mtm.alloc::<Panel>().set_ivars(Cell::new(key));
         // SAFETY: NSView's designated initializer.
         let panel: Retained<Panel> =
-            unsafe { msg_send![Panel::alloc(mtm), initWithFrame: NSRect::ZERO] };
+            unsafe { msg_send![super(panel), initWithFrame: NSRect::ZERO] };
         let panel: Retained<NSView> = Retained::into_super(panel);
+        // A button to VoiceOver: what it reads, and a press switches it.
+        panel.setAccessibilityElement(true);
+        // SAFETY: an immutable AppKit constant.
+        panel.setAccessibilityRole(Some(unsafe { NSAccessibilityButtonRole }));
+        panel.setAccessibilityLabel(Some(&NSString::from_str("Performance monitor")));
         panel.setWantsLayer(true);
         if let Some(layer) = panel.layer() {
             let fill = NSColor::colorWithSRGBRed_green_blue_alpha(0.07, 0.07, 0.08, 0.86);
@@ -263,7 +326,7 @@ impl Hud {
             NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
         );
         let hud = Rc::new(Hud {
-            key: NEXT_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            key,
             surface: Rc::downgrade(surface),
             monitor: monitor.clone(),
             panel,
@@ -272,6 +335,7 @@ impl Hud {
             process: RefCell::new(ProcessSampler::new()),
             gpu: RefCell::new(crate::gpu::GpuProbe::new()),
             updates: std::cell::Cell::new(0),
+            mode,
         });
         HUDS.with(|h| h.borrow_mut().insert(hud.key, Rc::downgrade(&hud)));
         MEASURING.set(MEASURING.get() + 1);
@@ -286,8 +350,8 @@ impl Hud {
         &self.monitor
     }
 
-    /// Samples the process and redraws the readings.
-    fn update(&self) {
+    /// Samples the process and redraws the readings, as its mode shows them.
+    pub(crate) fn update(&self) {
         let mut process = self.process.borrow_mut().sample();
         process.gpu = self.gpu.borrow_mut().as_mut().and_then(|g| g.sample());
         self.monitor.set_process(process);
@@ -304,6 +368,32 @@ impl Hud {
             });
             log::info!(target: nsh_engine::perf::LOG_TARGET, "{}", log_line(&snapshot, &phases));
         }
+        let mode = self.mode.get();
+        self.panel.setHidden(mode == FpsMode::Hidden);
+        if mode == FpsMode::Hidden {
+            return;
+        }
+        let pill = pill_text(&snapshot);
+        // SAFETY: a string, which a button's value is.
+        unsafe {
+            self.panel
+                .setAccessibilityValue(Some(&NSString::from_str(&pill)))
+        };
+        if mode == FpsMode::Collapsed {
+            self.show_pill(&pill, budget_tone(&snapshot));
+            return;
+        }
+        self.trace.setHidden(false);
+        // SAFETY: AppKit's font weight constant.
+        let weight = unsafe { NSFontWeightRegular };
+        self.label
+            .setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+                10.5, weight,
+            )));
+        self.label
+            .setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+                0.92, 0.93, 0.95, 1.0,
+            )));
         self.label
             .setStringValue(&NSString::from_str(&readings(&snapshot)));
         let budget = 1000.0 / snapshot.refresh_rate.unwrap_or(60.0);
@@ -317,6 +407,47 @@ impl Hud {
         };
         self.layout();
         self.trace.setNeedsDisplay(true);
+    }
+
+    /// Collapsed: the frame rate alone on a pill, in the color of `tone`, at
+    /// the top right of its superview.
+    fn show_pill(&self, text: &str, tone: Tone) {
+        self.trace.setHidden(true);
+        // SAFETY: AppKit's font weight constant.
+        let weight = unsafe { NSFontWeightSemibold };
+        self.label
+            .setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+                12.0, weight,
+            )));
+        let (r, g, b) = tone.rgb();
+        self.label
+            .setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+                r, g, b, 1.0,
+            )));
+        self.label.setStringValue(&NSString::from_str(text));
+        let Some(parent) = crate::view::superview(&self.panel) else {
+            return;
+        };
+        let fit = self.label.fittingSize();
+        let (width, height) = (
+            (fit.width + 2.0 * PILL_PADDING_X).ceil(),
+            (fit.height + 2.0 * PILL_PADDING_Y).ceil(),
+        );
+        let bounds = parent.bounds();
+        self.panel.setFrame(NSRect::new(
+            NSPoint::new(
+                bounds.size.width - width - MARGIN,
+                bounds.size.height - height - MARGIN,
+            ),
+            NSSize::new(width, height),
+        ));
+        if let Some(layer) = self.panel.layer() {
+            layer.setCornerRadius(height / 2.0);
+        }
+        self.label.setFrame(NSRect::new(
+            NSPoint::new(PILL_PADDING_X, PILL_PADDING_Y),
+            NSSize::new(width - 2.0 * PILL_PADDING_X, fit.height),
+        ));
     }
 
     /// Sizes the panel to its text, at the top right of its superview (not
@@ -335,6 +466,9 @@ impl Hud {
             ),
             NSSize::new(WIDTH, height),
         ));
+        if let Some(layer) = self.panel.layer() {
+            layer.setCornerRadius(8.0);
+        }
         self.trace.setFrame(NSRect::new(
             NSPoint::new(PADDING, PADDING),
             NSSize::new(WIDTH - 2.0 * PADDING, GRAPH_HEIGHT),
@@ -452,6 +586,46 @@ fn count(n: u64) -> String {
     }
 }
 
+/// The collapsed pill's text: the frame rate.
+fn pill_text(s: &PerfSnapshot) -> String {
+    format!("{:.0} FPS", s.fps)
+}
+
+/// How the frames fit the frame budget (one refresh): the trace's colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    /// Within half of it.
+    Good,
+    /// Within it.
+    Tight,
+    /// Over it.
+    Over,
+}
+
+impl Tone {
+    fn rgb(self) -> (CGFloat, CGFloat, CGFloat) {
+        match self {
+            Tone::Good => (0.30, 0.85, 0.45),
+            Tone::Tight => (0.98, 0.75, 0.25),
+            Tone::Over => (0.98, 0.35, 0.33),
+        }
+    }
+}
+
+/// How the frames' 95th percentile main-thread cost fits the budget of
+/// one refresh (60 Hz when the rate is not known).
+fn budget_tone(s: &PerfSnapshot) -> Tone {
+    let budget = 1000.0 / s.refresh_rate.unwrap_or(60.0);
+    let p95 = ms(s.frame.p95);
+    if p95 <= budget / 2.0 {
+        Tone::Good
+    } else if p95 <= budget {
+        Tone::Tight
+    } else {
+        Tone::Over
+    }
+}
+
 /// The panel's text.
 fn readings(s: &PerfSnapshot) -> String {
     let rate = s
@@ -505,6 +679,36 @@ fn readings(s: &PerfSnapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_collapsed_pill_says_the_frame_rate() {
+        let snapshot = PerfSnapshot {
+            fps: 59.6,
+            ..PerfSnapshot::default()
+        };
+        assert_eq!(pill_text(&snapshot), "60 FPS");
+        assert_eq!(pill_text(&PerfSnapshot::default()), "0 FPS");
+    }
+
+    #[test]
+    fn the_pill_is_colored_by_the_frame_budget() {
+        let at = |rate: Option<f32>, p95_ms: u64| PerfSnapshot {
+            refresh_rate: rate,
+            frame: Stat {
+                p95: Duration::from_millis(p95_ms),
+                ..Stat::default()
+            },
+            ..PerfSnapshot::default()
+        };
+        // 60 Hz: a budget of 16.7 ms.
+        assert_eq!(budget_tone(&at(Some(60.0), 4)), Tone::Good);
+        assert_eq!(budget_tone(&at(Some(60.0), 12)), Tone::Tight);
+        assert_eq!(budget_tone(&at(Some(60.0), 20)), Tone::Over);
+        // 120 Hz halves it: 12 ms is over.
+        assert_eq!(budget_tone(&at(Some(120.0), 12)), Tone::Over);
+        // An unknown rate counts as 60 Hz.
+        assert_eq!(budget_tone(&at(None, 12)), Tone::Tight);
+    }
 
     #[test]
     fn readings_of_an_empty_snapshot() {

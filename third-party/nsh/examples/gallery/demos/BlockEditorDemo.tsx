@@ -14,6 +14,7 @@ import {
   insertContentAt,
   liftListItem,
   setNode,
+  setNodeAttribute,
   setNodeSelection,
   setTextSelection,
   sinkListItem,
@@ -113,6 +114,16 @@ const BLOCKS: Block[] = [
       if (row) editor.run(setTextSelection(row.start + 3));
     },
   },
+  {
+    id: "toggle", group: "Insert", title: "Toggle", hint: "Hide and show what is inside", icon: "chevron-right", keywords: "collapse fold details expand",
+    // A title and a body of one paragraph, the caret in the title (past the toggle's and the title's starts).
+    apply: (editor) => {
+      editor.run(insertContent({ type: "toggle", content: [{ type: "toggleTitle" }, { type: "toggleBody", content: [{ type: "paragraph" }] }] }));
+      const head = editor.selection.head;
+      const toggle = head == null ? undefined : blocksAround(editor, head).find((b) => b.type === "toggle");
+      if (toggle) editor.run(setTextSelection(toggle.start + 2));
+    },
+  },
   { id: "table", group: "Insert", title: "Table", hint: "Rows and columns", icon: "table", keywords: "grid", apply: command("insertTable", { rows: 3, cols: 3, withHeaderRow: true }) },
 ];
 
@@ -160,6 +171,29 @@ const TEXT_COLORS: { name: string; label: string; class: string }[] = [
   { name: "blue", label: "Blue", class: "text-sky-500" },
   { name: "purple", label: "Purple", class: "text-violet-500" },
 ];
+
+/**
+ * A toggle, as Notion's: a title and a body that hides. The body carries `open` (a class per value hides it); the
+ * arrow that turns it is the app's, in the editor's layer over the document.
+ */
+const toggle = defineExtension({
+  name: "toggle",
+  node: { content: "toggleTitle toggleBody", group: "block", defining: true, parseDOM: [{ tag: "div[data-toggle]" }], toDOM: ["div", { "data-toggle": "" }, 0] },
+});
+const toggleTitle = defineExtension({
+  name: "toggleTitle",
+  node: { content: "inline*", defining: true, parseDOM: [{ tag: "div[data-toggle-title]" }], toDOM: ["div", { "data-toggle-title": "" }, 0] },
+});
+const toggleBody = defineExtension({
+  name: "toggleBody",
+  node: {
+    content: "block+",
+    defining: true,
+    attrs: { open: { default: true } },
+    parseDOM: [{ tag: "div[data-toggle-body]" }],
+    toDOM: ["div", { "data-toggle-body": "" }, 0],
+  },
+});
 
 /** `/` opens the blocks: Tiptap's Suggestion with its own keys. It ranks above the keymap, so Enter picks before it splits a paragraph. */
 const slash = defineExtension({
@@ -240,6 +274,30 @@ function nodeSize(node: DocNode): number {
 }
 
 const LISTS = new Set(["bulletList", "orderedList", "taskList"]);
+
+/** Where each run of text with mark `mark` starts and ends in the document. */
+function markRuns(doc: DocNode, mark: string): { from: number; to: number }[] {
+  const runs: { from: number; to: number }[] = [];
+  const walk = (node: DocNode & { marks?: { type?: string }[] | null }, pos: number) => {
+    if (node.text != null) {
+      if (node.marks?.some((m) => m.type === mark)) {
+        const last = runs[runs.length - 1];
+        // Text split by another mark (bold inside code) is one run.
+        if (last && last.to === pos) last.to = pos + node.text.length;
+        else runs.push({ from: pos, to: pos + node.text.length });
+      }
+      return;
+    }
+    let at = pos + 1;
+    for (const child of node.content ?? []) {
+      walk(child, at);
+      at += nodeSize(child);
+    }
+  };
+  // The document's own start is before position 0.
+  walk(doc, -1);
+  return runs;
+}
 
 /**
  * Two lists of one kind that came to stand next to each other (a block turned into a list beside one, an item
@@ -390,6 +448,19 @@ function Sample(props: { id: string }) {
           </View>
         </View>
       );
+    case "toggle":
+      return (
+        <View style={{ gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <LucideIcon name="chevron-right" size={12} tint={colors.muted} />
+            <Bar width={110} strong />
+          </View>
+          <View style={{ paddingLeft: 20, gap: 8 }}>
+            <Bar width={130} />
+            <Bar width={96} />
+          </View>
+        </View>
+      );
     case "divider":
       return (
         <View style={{ gap: 10 }}>
@@ -533,7 +604,7 @@ function MenuRow(props: { icon: LucideIconName; label: string; tone?: string; on
 
 // --- The editor ----------------------------------------------------------------
 
-/** A block's handle: `x` is the editor's margin it stands in, `y` the block's first line; `left` and `width` the block's own box. */
+/** A block's handle, in the content box's points (it is in the editor's layer over the document, so it scrolls with its block): `x` is the margin it stands in, `y` the block's first line; `left` and `width` the block's own box. */
 type Handle = { start: number; x: number; y: number; left: number; width: number };
 
 export function BlockEditorDemo() {
@@ -544,10 +615,15 @@ export function BlockEditorDemo() {
   // A run of whole blocks, as Notion selects them: Escape starts it at the caret's block and Shift-Up / Down grow
   // it over the siblings; Backspace deletes the run. Its keys are taken only while a run is selected, so
   // Shift-arrows select text the rest of the time.
+  // Inline code stands off its neighbors: text takes a background but no padding, so a sliver of the same fill
+  // goes before and after each run of code (widgets, which take no position in the document).
+  const codePads = new RichEditorPlugin("codePads");
   const rangeKeys = new RichEditorPlugin("blockRange");
-  const blockRange = defineExtension({ name: "blockRange", priority: 950, addProseMirrorPlugins: () => [rangeKeys] });
+  const blockRange = defineExtension({ name: "blockRange", priority: 950, addProseMirrorPlugins: () => [rangeKeys, codePads] });
   const range = signal<{ anchor: number; head: number } | null>(null);
-  const editor = createRichEditor({ extensions: [StarterKit, TableKit, callout, columns, column, slash, blockRange, blockKeys], content: DOC, format: "markdown" });
+  // While the run itself is being moved or copied: the change keeps it selected.
+  let moving = false;
+  const editor = createRichEditor({ extensions: [StarterKit, TableKit, callout, columns, column, toggle, toggleTitle, toggleBody, slash, blockRange, blockKeys], content: DOC, format: "markdown" });
   // What the parts read: the revision follows every change of the document and the selection.
   const revision = signal(editor.revision);
 
@@ -610,7 +686,7 @@ export function BlockEditorDemo() {
   const menu = signal<Handle | null>(null);
   const dragging = signal(false);
   // The block being carried: a preview of it follows the pointer.
-  const ghost = signal<{ x: number; y: number; text: string } | null>(null);
+  const ghost = signal<{ x: number; y: number; text: string; nest: -1 | 0 | 1; item: boolean } | null>(null);
 
   // The floating toolbar's selection: a range of text.
   const selected = signal(false);
@@ -660,6 +736,16 @@ export function BlockEditorDemo() {
     selected.set((sel.type === "all" || (sel.type === "text" && sel.anchor !== sel.head)) && !editor.isActive("codeBlock"));
   };
   editor.on("revision", sync);
+  const padCode = () =>
+    editor.setDecorations(
+      "codePads",
+      markRuns(editor.doc as DocNode, "code").flatMap((run) => [
+        { from: run.from, kind: "widget" as const, side: -1, spec: { class: "w-1 h-[16.5px] translate-y-[3.5px] bg-muted rounded-l" } },
+        { from: run.to, kind: "widget" as const, side: 1, spec: { class: "w-1 h-[16.5px] translate-y-[3.5px] bg-muted rounded-r" } },
+      ]),
+    );
+  padCode();
+  editor.on("update", padCode);
   // A change of the document moves the blocks: the handle and its menu go until the pointer finds a block again.
   // Lists that came to stand next to each other join, however it happened (typed `1. `, a drop, a block turned
   // into a list). An undo is left alone, so the join itself can be undone.
@@ -674,24 +760,11 @@ export function BlockEditorDemo() {
       joining = false;
       depth = editor.undoDepth;
     }
-    if (range()) selectRange(null);
+    if (range() && !moving) selectRange(null);
     if (dragging()) return;
     handle.set(null);
     menu.set(null);
   });
-
-  // The handle is placed in page points, so it does not move with the document. While one shows, its block is
-  // watched: once it has moved (a scroll by wheel, keys or the bar), the handle goes to the block that is now
-  // under the pointer, as a hover does in a browser; with the pointer elsewhere it goes away.
-  const watch = setInterval(() => {
-    const h = handle();
-    if (!h || dragging() || menu()) return;
-    const rect = editor.pageNodeRect(h.start) as Rect | null;
-    if (rect && rect.y === h.y) return;
-    handle.set(null);
-    if (lastPointer.x >= 0) place(lastPointer);
-  }, 32);
-  cleanup(() => clearInterval(watch));
 
   /** The pointer over the editor: the handle goes to the block under it (a list's item, else the top-level block). */
   const onMove = (e: { pagePosition: { x: number; y: number } }) => {
@@ -706,8 +779,8 @@ export function BlockEditorDemo() {
     if (pos === null) return;
     const target = handleTarget(editor, pos);
     if (!target) return;
-    const rect = editor.pageNodeRect(target.start) as Rect | null;
-    const top = (target.top === target.start ? rect : (editor.pageNodeRect(target.top) as Rect | null)) ?? rect;
+    const rect = editor.nodeRect(target.start) as Rect | null;
+    const top = (target.top === target.start ? rect : (editor.nodeRect(target.top) as Rect | null)) ?? rect;
     if (!rect || !top) return;
     const now = handle();
     if (!now || now.start !== target.start || now.y !== rect.y || now.x !== top.x) handle.set({ start: target.start, x: top.x, y: rect.y, left: rect.x, width: rect.width });
@@ -715,25 +788,53 @@ export function BlockEditorDemo() {
 
   // The grip: a press that stays put opens the block's menu (`onPress`); a move past a few points takes the block
   // and the pointer carries it (the responder is claimed only then, so a tap keeps its press).
+  // How far across the drag went: a list item dropped well to the right of where it was taken goes under the
+  // item above it, and well to the left comes out a level, as dragging an item across does in Notion.
+  let across = 0;
+  const INDENT = 32;
+  /** The caret into the block at `start`'s first line. */
+  const caretInto = (start: number) => {
+    let inside = start + 1;
+    for (let node = editor.nodeAt(start) as DocNode | null; node?.content?.[0] && node.content[0].text == null; node = node.content[0]) inside += 1;
+    editor.run(setTextSelection(inside));
+  };
+  const nestDropped = () => {
+    const sel = editor.selection;
+    let start = sel.type === "node" ? (sel.anchor ?? null) : null;
+    let node = start == null ? null : (editor.nodeAt(start) as DocNode | null);
+    // A list's only item is carried as its list: the item is what moves across.
+    if (start != null && node && LISTS.has(node.type ?? "") && node.content?.length === 1) {
+      start += 1;
+      node = node.content[0];
+    }
+    if (start == null || !node || !ITEMS.has(node.type ?? "") || Math.abs(across) < INDENT) return;
+    caretInto(start);
+    editor.run(across > 0 ? sinkListItem(node.type!) : liftListItem(node.type!));
+  };
   const grip = (h: Handle) => ({
     onMoveShouldSetResponder: (_: unknown, g: { dx: number; dy: number }) => Math.hypot(g.dx, g.dy) > 4,
     onResponderTerminationRequest: () => false,
     onResponderGrant: (e: { pageX: number; pageY: number }) => {
+      across = -e.pageX;
       dragging.set(true);
       const node = editor.nodeAt(h.start);
       const text = node ? plainText(node) : "";
-      ghost.set({ x: e.pageX, y: e.pageY, text: text.length > 80 ? `${text.slice(0, 80)}…` : text });
+      ghost.set({ x: e.pageX, y: e.pageY, text: text.length > 80 ? `${text.slice(0, 80)}…` : text, nest: 0, item: !!node && ITEMS.has(node.type ?? "") });
       editor.dragBlock(h.start, { x: e.pageX, y: e.pageY });
       return true;
     },
     onResponderMove: (e: { pageX: number; pageY: number }) => {
       const g = ghost();
-      if (g) ghost.set({ ...g, x: e.pageX, y: e.pageY });
+      // How far across it has gone says, while it is carried, whether the drop will nest it or take it out.
+      const moved = across + e.pageX;
+      if (g) ghost.set({ ...g, x: e.pageX, y: e.pageY, nest: !g.item || Math.abs(moved) < INDENT ? 0 : moved > 0 ? 1 : -1 });
       editor.dragTo({ x: e.pageX, y: e.pageY });
     },
     // The drop changes the document, and with it the handle goes.
-    onResponderRelease: () => {
+    onResponderRelease: (e: { pageX: number }) => {
+      across += e.pageX;
       editor.endDrag();
+      nestDropped();
       dragging.set(false);
       ghost.set(null);
     },
@@ -776,9 +877,49 @@ export function BlockEditorDemo() {
     }
     editor.setDecorations("blockRange", tints);
   };
-  rangeKeys.captureKeys(["Shift-ArrowDown", "Shift-ArrowUp", "Backspace", "Delete"], (key) => {
+  /** The blocks of the run `r`, in order. */
+  const runNodes = (r: { anchor: number; head: number }) => {
+    const { from, to } = span(r);
+    const nodes: DocNode[] = [];
+    for (let pos = from; pos < to; ) {
+      const node = editor.nodeAt(pos) as DocNode | null;
+      if (!node) break;
+      nodes.push(node);
+      pos += nodeSize(node);
+    }
+    return nodes;
+  };
+  rangeKeys.captureKeys(["Shift-ArrowDown", "Shift-ArrowUp", "Backspace", "Delete", "Mod-d", "Mod-Shift-ArrowUp", "Mod-Shift-ArrowDown"], (key) => {
     const r = range();
     if (!r) return;
+    // The run is duplicated below itself, or moved past the sibling before or after it; it stays selected.
+    if (key === "Mod-d" || key === "Mod-Shift-ArrowUp" || key === "Mod-Shift-ArrowDown") {
+      const { from, to } = span(r);
+      const nodes = runNodes(r);
+      const first = Math.min(r.anchor, r.head);
+      const last = Math.max(r.anchor, r.head);
+      let at: number | null;
+      let done: boolean;
+      moving = true;
+      if (key === "Mod-d") {
+        at = to;
+        done = editor.run(insertContentAt(to, nodes));
+      } else {
+        const up = key === "Mod-Shift-ArrowUp";
+        const edge = neighbors(editor, up ? first : last);
+        at = !edge ? null : up ? edge.before : edge.after === null ? null : from + edge.after;
+        if (at === null) return void (moving = false);
+        done = editor.run(chain([deleteRange({ from, to }), insertContentAt(at, nodes)]));
+      }
+      // The change's `update` comes after this: the run is kept until it has.
+      setTimeout(() => (moving = false), 60);
+      if (!done || at === null) return;
+      // The same blocks, where they are now.
+      const lastStart = at + nodes.slice(0, -1).reduce((sum, n) => sum + nodeSize(n), 0);
+      editor.run(setNodeSelection(at));
+      selectRange(r.anchor <= r.head ? { anchor: at, head: lastStart } : { anchor: lastStart, head: at });
+      return;
+    }
     if (key === "Backspace" || key === "Delete") {
       const { from, to } = span(r);
       selectRange(null);
@@ -828,9 +969,8 @@ export function BlockEditorDemo() {
   };
   const turnInto = (h: Handle, block: Block) => {
     menu.set(null);
-    // The caret goes into the block's first line (a point just inside it), then the block turns.
-    const inside = editor.posAtPageCoords({ x: h.left + Math.min(32, h.width / 2), y: h.y + 8 });
-    if (inside !== null) editor.run(setTextSelection(inside));
+    // The caret goes into the block's first line (past the starts of the blocks around it), then the block turns.
+    caretInto(h.start);
     convert(block);
     editor.focus();
   };
@@ -869,6 +1009,94 @@ export function BlockEditorDemo() {
     { icon: "redo-2", label: "Redo", run: () => void editor.run(command("redo")) },
   ];
 
+  // The toggles of the document's top level, where each is in the content box: their arrows stand in the layer.
+  // Read again a moment after each change, once the document is laid out anew.
+  const settled = signal(0);
+  editor.on("update", () => void setTimeout(() => settled.set(settled() + 1), 48));
+  const toggles = () => {
+    revision();
+    settled();
+    const found: { pos: number; body: number; open: boolean; x: number; y: number }[] = [];
+    // Every toggle, wherever it is nested (in a callout, a column, another toggle's body).
+    const walk = (node: DocNode & { attrs?: { open?: boolean } }, pos: number) => {
+      if (node.type === "toggle" && node.content?.[1]) {
+        const rect = editor.nodeRect(pos) as Rect | null;
+        const body = node.content[1] as DocNode & { attrs?: { open?: boolean } };
+        if (rect) found.push({ pos, body: pos + 1 + nodeSize(node.content[0]), open: body.attrs?.open !== false, x: rect.x, y: rect.y });
+      }
+      if (node.text != null) return;
+      let at = pos + 1;
+      for (const child of node.content ?? []) {
+        if (child.text == null) walk(child, at);
+        at += nodeSize(child);
+      }
+    };
+    walk(editor.doc as DocNode, -1);
+    return found;
+  };
+  const flip = (t: { body: number; open: boolean }) => {
+    editor.run(setNodeAttribute(t.body, "open", !t.open));
+  };
+
+  /** The editor's layer over the document: the toggles' arrows, and the handle of the block under the pointer in the margin beside it. */
+  const layer = () => (
+    <>
+      <Each of={toggles()}>
+        {(t) => (
+          <Button
+            accessibilityLabel={t().open ? "Collapse" : "Expand"}
+            onPress={() => flip(t())}
+            {...feedback()}
+            style={{ position: "absolute", left: t().x, top: t().y + 2, width: 22, height: 22, borderRadius: 5, alignItems: "center", justifyContent: "center" }}
+          >
+            <View style={{ transform: [{ rotate: t().open ? "90deg" : "0deg" }], transitionProperty: "transform", transitionDuration: 150 }}>
+              <LucideIcon name="chevron-right" size={14} tint={colors.muted} />
+            </View>
+          </Button>
+        )}
+      </Each>
+      {handleLayer()}
+    </>
+  );
+  const handleLayer = () => {
+    const h = handle();
+    if (!pointer || !h || open() || selected()) return undefined;
+    return (
+      <View style={{ position: "absolute", left: h.x - 58, top: h.y }}>
+        <PopIn side="right">
+          <View testID="block-handle" style={{ flexDirection: "row", alignItems: "center", gap: 2, height: 28 }}>
+            <Button
+              accessibilityLabel="Add a block below"
+              onPress={() => addBelow(h)}
+              {...feedback()}
+              style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}
+            >
+              <LucideIcon name="plus" size={16} tint={colors.faint} />
+            </Button>
+            <View
+              role="button"
+              accessibilityLabel="Drag to move, press for the menu"
+              onPress={() => openMenu(h)}
+              {...feedback()}
+              style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center", cursor: "grab" }}
+              {...grip(h)}
+            >
+              <LucideIcon name="grip-vertical" size={16} tint={colors.faint} />
+            </View>
+          </View>
+        </PopIn>
+      </View>
+    );
+  };
+  /** Opens the block's menu under its handle: where the block is on the page now. */
+  const openMenu = (h: Handle) => {
+    const page = editor.pageNodeRect(h.start) as Rect | null;
+    if (page) menu.set({ ...h, x: page.x - (h.left - h.x), y: page.y });
+  };
+
+  /** Whether the window is wide enough for the toolbar's blocks beside its marks. */
+  const roomy = () => windowSize().width >= 640;
+
   /** What floats by the caret or the selection: the `/` menu, else the toolbar. */
   const bubble = () => {
     if (open()) return <SlashMenu shift={shift()} items={items()} index={Math.min(index(), Math.max(items().length - 1, 0))} onPick={pick} onHover={(i, at) => {
@@ -885,8 +1113,8 @@ export function BlockEditorDemo() {
           when={coloring()}
           else={
             <>
-              {/* A phone's toolbar holds the marks alone: its width has no room for the blocks, which the `/` menu has. */}
-              <Each of={pointer ? BAR_BLOCKS : []}>
+              {/* A narrow window's toolbar (a phone, a small browser window) holds the marks alone: the blocks are in the `/` menu. */}
+              <Each of={roomy() ? BAR_BLOCKS : []}>
                 {(block) => (
                   <BarButton
                     icon={block().icon}
@@ -899,7 +1127,7 @@ export function BlockEditorDemo() {
                   />
                 )}
               </Each>
-              <If when={pointer}>
+              <If when={roomy()}>
                 <BarRule />
               </If>
               <Each of={MARKS}>
@@ -967,15 +1195,20 @@ export function BlockEditorDemo() {
             marks: {
               ...richEditorClasses.marks,
               highlight: "bg-primary/30 rounded",
+              // Square: its ends are the slivers beside it (`codePads`).
+              code: "font-mono text-sm bg-muted",
               ...Object.fromEntries(TEXT_COLORS.map((c) => [`textStyle[color=${c.name}]`, c.class])),
             },
-            nodes: { ...richEditorClasses.nodes, horizontalRule: "h-px bg-border my-1", callout: "gap-2 rounded-lg border border-primary/25 bg-primary/10 px-4 py-3", columns: "flex-row gap-6", column: "flex-1 min-w-0 gap-3" },
+            nodes: { ...richEditorClasses.nodes, horizontalRule: "h-px bg-border my-1", callout: "gap-2 rounded-lg border border-primary/25 bg-primary/10 px-4 py-3", columns: "flex-row gap-6", column: "flex-1 min-w-0 gap-3",
+              // A toggle leaves room for its arrow; a closed body is not shown.
+              toggle: "gap-1 pl-7", toggleTitle: "leading-relaxed font-medium", toggleBody: "gap-3", "toggleBody[open=false]": "hidden" },
             selectedNode: "bg-primary/10 rounded-md",
             dropCursor: "bg-primary rounded-full",
           }}
           bubbleMenu={bubble()}
           bubbleMenuPlacement={open() ? "bottom" : "top"}
           bubbleMenuOffset={6}
+          contentLayer={layer()}
         />
         <If when={!pointer}>
           <View testID="block-bar" role="toolbar" accessibilityLabel="Block" style={{ borderTopWidth: 1, borderColor: colors.line }}>
@@ -997,42 +1230,17 @@ export function BlockEditorDemo() {
             </Scroll>
           </View>
         </If>
-        <If when={pointer && handle() && !open() && !selected()}>
-          {(() => {
-            const h = () => handle()!;
-            return (
-              <Overlay anchor={{ x: h().x, y: h().y }} placement="left" align="start" offset={6}>
-                <PopIn side="right">
-                <View testID="block-handle" style={{ flexDirection: "row", alignItems: "center", gap: 2, height: 28 }}>
-                  <Button
-                    accessibilityLabel="Add a block below"
-                    onPress={() => addBelow(h())}
-                    {...feedback()}
-                    style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}
-                  >
-                    <LucideIcon name="plus" size={16} tint={colors.faint} />
-                  </Button>
-                  <View
-                    role="button"
-                    accessibilityLabel="Drag to move, press for the menu"
-                    onPress={() => menu.set(h())}
-                    {...feedback()}
-                    style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center", cursor: "grab" }}
-                    {...grip(h())}
-                  >
-                    <LucideIcon name="grip-vertical" size={16} tint={colors.faint} />
-                  </View>
-                </View>
-                </PopIn>
-              </Overlay>
-            );
-          })()}
-        </If>
         <If when={ghost()}>
           {(g) => (
             <Overlay anchor={{ x: g().x, y: g().y }} placement="right" align="start" offset={14} style={{ pointerEvents: "none" }}>
               <View testID="block-ghost" style={{ ...popupSurface(), maxWidth: 360, paddingHorizontal: 12, paddingVertical: 8, opacity: 0.92 }}>
                 <Text style={{ fontSize: 14, color: colors.text }}>{g().text || "Block"}</Text>
+                <If when={g().nest !== 0}>
+                  <View testID="block-ghost-nest" style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6 }}>
+                    <LucideIcon name={g().nest > 0 ? "list-indent-increase" : "list-indent-decrease"} size={14} tint={colors.accent} />
+                    <Text style={{ fontSize: 12, fontWeight: "600", color: colors.accent }}>{g().nest > 0 ? "Drop to indent" : "Drop to outdent"}</Text>
+                  </View>
+                </If>
               </View>
             </Overlay>
           )}

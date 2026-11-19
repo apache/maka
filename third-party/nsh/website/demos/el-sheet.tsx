@@ -66,6 +66,7 @@ function App() {
         open={open()}
         closeOnSwipe
         side={side()}
+        accessibilityLabel="Filters"
         onOpenChange={({ open: next, reason }) => {
           open.set(next);
           log(`onOpenChange · ${next ? "opened" : "closed"} · ${reason}`);

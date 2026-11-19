@@ -17,6 +17,9 @@ function App() {
     iterations: 2,
     direction: "alternate",
   });
+  const sprung = createMotion({ enter: "fadeInUp", spring: { stiffness: 620, damping: 36, mass: 1 } });
+  const leave = sprung.play("fadeOutDown", { spring: { stiffness: 992, damping: 45 } });
+  const settle = createMotion().play({ keyframes: { translateY: [24, 0] }, spring: {}, delay: 20 });
   const keyed = value.keyframes([0, { value: 1, offset: 0.25 }, 0], { duration: 400, easing: Easing.steps(4, "jump-start") });
   const ripple = Animated.stagger(30, [0, 1, 2].map(() => Animated.keyframes(value, { keyframes: [0, 1], iterations: "infinite" })), { from: "center" });
   const wave = Animated.stagger(40, [card, plain].map((m) => m.animation("popIn")), { from: "last" });
@@ -33,8 +36,10 @@ function App() {
       <Text>Transform steps: {card.style.transform.length}</Text>
       <Text>Bound: {String(card.style.opacity === card.opacity)}</Text>
       <Text>Started: {[shake, own, keyed].every((p) => p instanceof Promise) ? "yes" : "no"}</Text>
+      <Text>Sprung: {[leave, settle].every((p) => p instanceof Promise) ? "yes" : "no"}</Text>
       <Text>Staggered: {typeof ripple.start} {typeof wave.start}</Text>
       <View testID="card" style={{ width: 40, height: 40, ...card.style }} />
+      <View testID="sprung" style={{ width: 40, height: 40, ...sprung.style }} />
       <View testID="spread" style={{ width: 40, height: 40, opacity: plain.opacity, transform: [{ perspective: 600 }, ...plain.transform] }} />
     </View>
   );

@@ -7,16 +7,16 @@ use std::cell::RefCell;
 
 use block2::RcBlock;
 use nsh_core::{
-    Accessibility, AccessibilityCurrent, AccessibilityRole, Checked, EventKind, EventPayload,
-    NodeId, PayloadValue, PointerEvents, ViewProps,
+    Accessibility, AccessibilityCurrent, AccessibilityRole, Checked, EventKind, EventMask,
+    EventPayload, NodeId, PayloadValue, PointerEvents, ViewProps, keymap::Keystroke,
 };
 use nsh_engine::EngineControl;
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
-    rc::Retained,
+    rc::{Retained, Weak},
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSArray, NSObject, NSString};
+use objc2_foundation::{NSArray, NSObject, NSSet, NSString};
 use objc2_ui_kit::{
     NSLayoutConstraint, UIAccessibilityContainerType, UIAccessibilityCustomAction,
     UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
@@ -24,14 +24,27 @@ use objc2_ui_kit::{
     UIAccessibilityTraitNone, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSearchField,
     UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
     UIAccessibilityTraitSummaryElement, UIAccessibilityTraitUpdatesFrequently,
-    UIAccessibilityTraits, UIEvent, UIResponder, UIView,
+    UIAccessibilityTraits, UIEvent, UIFocusAnimationCoordinator, UIFocusUpdateContext,
+    UIGestureRecognizer, UIGestureRecognizerState, UIKeyCommand, UIPress, UIPressesEvent,
+    UIResponder, UITapGestureRecognizer, UITouch, UIView,
 };
+
+use crate::target::EventTarget;
 
 #[derive(Default)]
 pub(crate) struct NshViewIvars {
     props: RefCell<ViewProps>,
     /// Where accessibility actions are reported (set once the view is mounted).
     control: RefCell<Option<EngineControl>>,
+    /// The surface's target, for raw keys and focus (set once mounted). A
+    /// weak reference: the target's mounter owns this view.
+    target: RefCell<Option<Weak<EventTarget>>>,
+    /// The events the app listens to, which key handling reads without the
+    /// mounter (`key_capture` and `on_key_down` / `on_key_up`).
+    events: std::cell::Cell<EventMask>,
+    /// A tap that focuses this view when it is `focusable` without taking
+    /// presses (it neither claims nor cancels touches).
+    focus_tap: RefCell<Option<Retained<FocusTap>>>,
     /// The view handles presses: an accessibility element by default, and
     /// "activate" presses it.
     pressable: std::cell::Cell<bool>,
@@ -111,11 +124,7 @@ define_class!(
 
         #[unsafe(method(accessibilityContainerType))]
         fn accessibility_container_type(&self) -> UIAccessibilityContainerType {
-            if is_container(&self.ivars().props.borrow().accessibility) {
-                UIAccessibilityContainerType::SemanticGroup
-            } else {
-                UIAccessibilityContainerType::None
-            }
+            container_type(&self.ivars().props.borrow().accessibility)
         }
 
         #[unsafe(method(accessibilityElementsHidden))]
@@ -147,8 +156,191 @@ define_class!(
         fn accessibility_decrement(&self) {
             self.standard_action("decrement");
         }
+
+        /// A `focusable` view is a stop of the keyboard focus (`focusable`,
+        /// or taking presses), as Tab and `ref.focus()` move it there.
+        #[unsafe(method(canBecomeFirstResponder))]
+        fn can_become_first_responder(&self) -> bool {
+            self.is_focus_stop() && crate::keyboard::visible(self)
+        }
+
+        /// The same stop is a UIKit focus item, so the system's own Tab
+        /// traversal reaches it from the window's initial focus (where
+        /// available) and the focus engine stays on the responder.
+        #[unsafe(method(canBecomeFocused))]
+        fn can_become_focused(&self) -> bool {
+            self.is_focus_stop() && crate::keyboard::visible(self)
+        }
+
+        /// UIKit focus entered or left this item: the first responder
+        /// follows, so hardware keys go to the view the system focused.
+        #[allow(deprecated)]
+        #[unsafe(method(didUpdateFocusInContext:withAnimationCoordinator:))]
+        fn did_update_focus(
+            &self,
+            context: &UIFocusUpdateContext,
+            coordinator: &UIFocusAnimationCoordinator,
+        ) {
+            // SAFETY: calling the superclass implementation.
+            let _: () = unsafe {
+                msg_send![
+                    super(self),
+                    didUpdateFocusInContext: context,
+                    withAnimationCoordinator: coordinator
+                ]
+            };
+            crate::keyboard::adopt_focus(context);
+        }
+
+        /// Key commands of a focused stop: a Tab an app shortcut binds or a
+        /// mounted capture takes gets a `UIKeyCommand` with priority, so
+        /// UIKit's focus traversal does not take it first. A normal
+        /// (unbound, uncaptured) Tab gets none and follows the focus engine.
+        #[unsafe(method_id(keyCommands))]
+        fn key_commands(&self) -> Option<Retained<NSArray<UIKeyCommand>>> {
+            // SAFETY: calling the superclass implementation.
+            let inherited: Option<Retained<NSArray<UIKeyCommand>>> =
+                unsafe { msg_send![super(self), keyCommands] };
+            if self.isFirstResponder() && self.is_focus_stop() {
+                crate::keyboard::tab_key_commands(self, inherited)
+            } else {
+                inherited
+            }
+        }
+
+        /// `nshTabKeyCommand:`: a bound or captured Tab delivered with
+        /// priority.
+        #[unsafe(method(nshTabKeyCommand:))]
+        fn nsh_tab_key_command(&self, command: &UIKeyCommand) {
+            crate::keyboard::tab_command(self, command);
+        }
+
+        /// The keyboard focus moved to the view: its `focus:` styles and
+        /// `onFocus` report it, as an input's do.
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            let was = self.isFirstResponder();
+            // SAFETY: calling the superclass implementation.
+            let accepted: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            if accepted && !was {
+                self.focus_changed(true);
+            }
+            accepted
+        }
+
+        /// The keyboard focus left the view: no key release is invented for
+        /// the keys it held, and its `onBlur` reports the move.
+        #[unsafe(method(resignFirstResponder))]
+        fn resign_first_responder(&self) -> bool {
+            // SAFETY: calling the superclass implementation.
+            let resigned: bool = unsafe { msg_send![super(self), resignFirstResponder] };
+            if resigned {
+                self.focus_changed(false);
+                if let Some(target) = self.keyboard_target() {
+                    // On the next turn the root takes the keys back only if
+                    // nothing (an input, a hosted view, another custom view)
+                    // took the focus meanwhile.
+                    target.restore_root_focus_for(self);
+                }
+            }
+            resigned
+        }
+
+        /// Hardware keys on a focused view: the app's shortcuts, then the
+        /// raw notifications and the capture rules
+        /// ([`crate::keyboard::began`]).
+        #[unsafe(method(pressesBegan:withEvent:))]
+        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if !crate::keyboard::began(self, presses) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
+            }
+        }
+
+        /// UIKit reports no keyboard transition through it: the press goes
+        /// on unchanged (`crate::keyboard::changed`).
+        #[unsafe(method(pressesChanged:withEvent:))]
+        fn presses_changed(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if !crate::keyboard::changed(self, presses) {
+                // SAFETY: calling the superclass implementation.
+                let _: () =
+                    unsafe { msg_send![super(self), pressesChanged: presses, withEvent: event] };
+            }
+        }
+
+        /// A key's release, if this view has the keyboard focus now.
+        #[unsafe(method(pressesEnded:withEvent:))]
+        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if !crate::keyboard::ended(self, presses) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            }
+        }
+
+        /// A key's press was cancelled: no release is synthesized.
+        #[unsafe(method(pressesCancelled:withEvent:))]
+        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if !crate::keyboard::cancelled(self, presses) {
+                // SAFETY: calling the superclass implementation.
+                let _: () =
+                    unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
+            }
+        }
     }
 );
+
+define_class!(
+    /// The tap that gives a `focusable` view without press handlers the
+    /// keyboard focus ([`NshView::update_focus_tap`]). It only watches the
+    /// touch: a tap recognizer otherwise claims it on release, before the
+    /// press of a pressable view inside the focusable one ends, and that
+    /// press never arrives.
+    #[unsafe(super(UITapGestureRecognizer, UIGestureRecognizer, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    pub(crate) struct FocusTap;
+
+    impl FocusTap {
+        /// A touch on a stop inside the view is that stop's: its own press
+        /// or tap focuses it, and an input focuses itself.
+        #[unsafe(method(touchesBegan:withEvent:))]
+        fn touches_began(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
+            if let (Some(view), Some(touch)) = (self.view(), touches.anyObject())
+                && crate::keyboard::stop_inside(&touch, &view)
+            {
+                // SAFETY: `setState:` is the subclass API of
+                // UIGestureRecognizer.
+                let _: () = unsafe { msg_send![self, setState: UIGestureRecognizerState::Failed] };
+                return;
+            }
+            // SAFETY: calling the superclass implementation.
+            let _: () = unsafe { msg_send![super(self), touchesBegan: touches, withEvent: event] };
+        }
+
+        /// The recognizers of the views inside (a press, another gesture)
+        /// recognize the same touch.
+        #[unsafe(method(canPreventGestureRecognizer:))]
+        fn can_prevent(&self, _other: &UIGestureRecognizer) -> bool {
+            false
+        }
+    }
+);
+
+impl FocusTap {
+    fn new(mtm: MainThreadMarker, target: &EventTarget) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: the designated initializer; `handleFocusTap:` is
+        // implemented by `EventTarget`, which the mounter keeps alive as
+        // long as the recognizer's view.
+        let this: Retained<Self> = unsafe {
+            msg_send![super(this), initWithTarget: target, action: objc2::sel!(handleFocusTap:)]
+        };
+        // The view's own press handlers still hear the touches.
+        this.setCancelsTouchesInView(false);
+        this.setDelaysTouchesBegan(false);
+        this.setDelaysTouchesEnded(false);
+        this
+    }
+}
 
 impl NshView {
     /// `pointerEvents`.
@@ -228,14 +420,10 @@ impl NshView {
     }
 
     fn a11y_element(&self) -> bool {
-        let props = self.ivars().props.borrow();
-        let a = &props.accessibility;
-        // A container's label names the group VoiceOver enters, not one
-        // element that would hide what is inside it.
-        !a.hidden
-            && a.accessible.unwrap_or_else(|| {
-                self.ivars().pressable.get() || (a.label.is_some() && !is_container(a))
-            })
+        is_element(
+            &self.ivars().props.borrow().accessibility,
+            self.ivars().pressable.get(),
+        )
     }
 
     fn a11y_label(&self) -> Option<Retained<NSString>> {
@@ -243,8 +431,9 @@ impl NshView {
         if let Some(label) = &props.accessibility.label {
             return Some(NSString::from_str(label));
         }
-        // A group's elements read their own text.
-        if is_container(&props.accessibility) {
+        // A group's elements read their own text, unless the group was
+        // made one element.
+        if is_container(&props.accessibility) && props.accessibility.accessible != Some(true) {
             return None;
         }
         drop(props);
@@ -364,6 +553,94 @@ impl NshView {
         }
     }
 
+    /// Remembers the surface's target, for raw keys and focus. Weak: the
+    /// target's mounter owns this view, so a strong reference would keep
+    /// both alive.
+    pub(crate) fn set_target(&self, target: &EventTarget) {
+        *self.ivars().target.borrow_mut() = Some(Weak::new(target));
+    }
+
+    /// The events the app listens to (`MountItem::Events`).
+    pub(crate) fn set_events(&self, events: EventMask) {
+        self.ivars().events.set(events);
+    }
+
+    /// A `focusable` view that takes no presses has no `PressRecognizer` to
+    /// focus it: a tap recognizer that neither claims nor cancels touches
+    /// gives it the keyboard focus. It is removed once the view stops being
+    /// such a stop (or starts taking presses, which focuses it already).
+    pub(crate) fn update_focus_tap(&self, target: &EventTarget) {
+        let wants = self.is_focus_stop() && !self.takes_presses();
+        let mut kept = self.ivars().focus_tap.borrow_mut();
+        match (&*kept, wants) {
+            (Some(_), true) | (None, false) => {}
+            (None, true) => {
+                let tap = FocusTap::new(self.mtm(), target);
+                self.addGestureRecognizer(&tap);
+                *kept = Some(tap);
+            }
+            (Some(tap), false) => {
+                self.removeGestureRecognizer(tap);
+                *kept = None;
+            }
+        }
+    }
+
+    /// The events the app listens to.
+    pub(crate) fn events(&self) -> EventMask {
+        self.ivars().events.get()
+    }
+
+    /// The view handles presses (`onPress`), so Return and Space press it
+    /// and, unless `focusable` says otherwise, Tab stops at it.
+    pub(crate) fn takes_presses(&self) -> bool {
+        self.ivars().pressable.get()
+    }
+
+    /// Whether the view is a stop of the keyboard focus
+    /// ([`ViewProps::focus_stop`]): it shows, is not disabled and is
+    /// `focusable` or takes presses.
+    pub(crate) fn is_focus_stop(&self) -> bool {
+        let props = self.ivars().props.borrow();
+        props.focus_stop(self.ivars().pressable.get())
+    }
+
+    /// Whether this view's ancestry needs raw key notifications: a
+    /// `on_key_down` / `on_key_up` listener or a capture rule.
+    pub(crate) fn listens_key(&self) -> bool {
+        let events = self.ivars().events.get();
+        events.contains(EventKind::KeyDown)
+            || events.contains(EventKind::KeyUp)
+            || !self.ivars().props.borrow().key_capture.is_none()
+    }
+
+    /// Whether this view's mounted capture rule captures `stroke` (`None`
+    /// for a key no keystroke names: only `KeyCapture::All` captures it).
+    pub(crate) fn captures_key(&self, stroke: Option<&Keystroke>) -> bool {
+        let props = self.ivars().props.borrow();
+        !props.accessibility.state.disabled && props.key_capture.captures_key(stroke)
+    }
+
+    /// The surface's target, once the view is mounted.
+    pub(crate) fn keyboard_target(&self) -> Option<Retained<EventTarget>> {
+        self.ivars().target.borrow().as_ref().and_then(Weak::load)
+    }
+
+    /// The node id the view stands for.
+    pub(crate) fn id(&self) -> NodeId {
+        self.tag() as NodeId
+    }
+
+    /// The keyboard focus entered or left the view: its `focus:` styles and
+    /// `onFocus` / `onBlur` follow, and a loss clears the keys held (no
+    /// release is invented).
+    fn focus_changed(&self, focused: bool) {
+        let Some(target) = self.keyboard_target() else {
+            return;
+        };
+        target.view_focused(self.id(), focused, self.events());
+    }
+
     /// The value an `increment` / `decrement` led to, when it arrives after
     /// VoiceOver read the element's value (the action is answered on the
     /// engine thread, so it usually does): VoiceOver reads the value right
@@ -387,6 +664,11 @@ impl NshView {
     /// The view is a selectable view (`ViewProps::selectable_view`).
     pub(crate) fn is_selectable_view(&self) -> bool {
         self.ivars().props.borrow().selectable_view
+    }
+
+    /// The app's items of the view's selection menu (`selectionMenu`).
+    pub(crate) fn selection_menu(&self) -> std::sync::Arc<[nsh_core::desktop::MenuItem]> {
+        self.ivars().props.borrow().selection_menu.clone()
     }
 
     /// The view is a text that continues the one before it
@@ -462,22 +744,45 @@ fn steps(a: &Accessibility) -> bool {
         .any(|x| matches!(&*x.name, "increment" | "decrement"))
 }
 
+/// Whether a view is one element for VoiceOver, which then does not move
+/// into it. A container's label names the group VoiceOver enters, not one
+/// element that would hide what is inside it.
+fn is_element(a: &Accessibility, pressable: bool) -> bool {
+    !a.hidden
+        && a.accessible
+            .unwrap_or_else(|| pressable || (a.label.is_some() && !is_container(a)))
+}
+
 /// Roles of groups whose elements stay VoiceOver's own: a semantic
 /// group, which VoiceOver names by its label as it moves into it. A
 /// dialog is one (UIKit has no dialog trait): its title is said as the
-/// focus enters it, and its controls stay reachable.
+/// focus enters it, and its controls stay reachable. So is a list: a
+/// labelled list names its items, which are reached one by one.
 fn is_container(a: &Accessibility) -> bool {
     matches!(
         a.role,
-        AccessibilityRole::Group
+        AccessibilityRole::List
+            | AccessibilityRole::Listbox
+            | AccessibilityRole::Group
             | AccessibilityRole::Region
             | AccessibilityRole::Navigation
             | AccessibilityRole::Tree
             | AccessibilityRole::Toolbar
             | AccessibilityRole::Radiogroup
+            | AccessibilityRole::Tablist
             | AccessibilityRole::Dialog
             | AccessibilityRole::AlertDialog
     )
+}
+
+/// How VoiceOver presents a container: a list as a list (it says where
+/// the list starts and ends), the other containers as semantic groups.
+fn container_type(a: &Accessibility) -> UIAccessibilityContainerType {
+    match a.role {
+        AccessibilityRole::List | AccessibilityRole::Listbox => UIAccessibilityContainerType::List,
+        _ if is_container(a) => UIAccessibilityContainerType::SemanticGroup,
+        _ => UIAccessibilityContainerType::None,
+    }
 }
 
 /// The traits of `props`' role, state and actions.
@@ -703,6 +1008,10 @@ mod tests {
         assert!(is_container(
             &props(AccessibilityRole::Radiogroup, &[]).accessibility
         ));
+        // A labelled tab list names the list, its tabs still reached.
+        assert!(is_container(
+            &props(AccessibilityRole::Tablist, &[]).accessibility
+        ));
         // A labelled dialog names what VoiceOver enters, never hiding it.
         assert!(is_container(
             &props(AccessibilityRole::Dialog, &[]).accessibility
@@ -713,5 +1022,39 @@ mod tests {
         assert!(!is_container(
             &props(AccessibilityRole::Button, &[]).accessibility
         ));
+    }
+
+    /// A labelled list is a list VoiceOver moves into, not one element
+    /// that hides its items; other containers stay semantic groups.
+    #[test]
+    fn labelled_lists_are_list_containers() {
+        let labelled = |role| {
+            let mut props = props(role, &[]);
+            props.accessibility.label = Some(Arc::from("Ideas"));
+            props.accessibility
+        };
+        for role in [AccessibilityRole::List, AccessibilityRole::Listbox] {
+            assert!(!is_element(&labelled(role), false), "{role:?}");
+            // Made one element, or pressed as a whole, it stays one.
+            let mut one = labelled(role);
+            one.accessible = Some(true);
+            assert!(is_element(&one, false), "{role:?}");
+            assert!(is_element(&labelled(role), true), "{role:?}");
+            assert_eq!(
+                container_type(&labelled(role)),
+                UIAccessibilityContainerType::List,
+                "{role:?}"
+            );
+        }
+        // A labelled view that is not a container is still one element.
+        assert!(is_element(&labelled(AccessibilityRole::Image), false));
+        assert_eq!(
+            container_type(&labelled(AccessibilityRole::Group)),
+            UIAccessibilityContainerType::SemanticGroup
+        );
+        assert_eq!(
+            container_type(&labelled(AccessibilityRole::Button)),
+            UIAccessibilityContainerType::None
+        );
     }
 }

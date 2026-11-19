@@ -16,11 +16,16 @@
 //!   },
 //!   "webview": { "hosts": ["*.example.com"], "input": true },
 //!   "statusBar": true,
+//!   "application": true,
+//!   "homeDir": true,
 //!   "host": ["getUserInfo", "bridge.*"],
 //!   "openUrl": { "schemes": ["https", "mailto"] }
 //! }
 //! ```
 //!
+//! `share` lets the app show the system's share sheet (`Share` of `nsh`,
+//! [`crate::share`]): what it shares leaves the app where the user sends
+//! it, and the files it shares are also checked against `fs.read`.
 //! `openUrl` lets the app open URLs outside it (`openUrl` of `nsh/device`,
 //! [`crate::open_url`]: the browser, the mail or phone app, other apps'
 //! schemes): `true` for every scheme, `{ "schemes": [...] }` for those
@@ -39,11 +44,17 @@
 //! the functions of the embedding app `nsh/host` may call: names (1 to 128
 //! of `[A-Za-z0-9_.:-]`, without `..`; the core refuses calls of any other
 //! name), or prefixes of them ending in `*` (`true`: all of them); the
-//! host's events need no grant, the host sends them. An app without
-//! `"capabilities"` (a standalone app, its developer's own) retains
-//! unrestricted HTTP, web views, the status bar, the clipboard, the picker,
-//! speech recognition and opening URLs; raw sockets, processes, the filesystem and the host's
-//! functions always require an explicit declaration.
+//! host's events need no grant, the host sends them. `application` lets
+//! the app act on the application as a whole (`nsh/desktop`'s main window,
+//! application menu, tray, global shortcuts, `Application.quit`, `restart`
+//! and `setLaunchAtLogin`; context menus, shown in the app's own view, and
+//! the windows `windows` grants need none); `homeDir` lets `os.homedir()` tell the
+//! user's home directory. An app without `"capabilities"` (a standalone
+//! app, its developer's own) retains unrestricted HTTP, web views, the
+//! status bar, the clipboard, the picker, the share sheet, speech
+//! recognition, opening URLs, the application and the home directory; raw sockets, processes, the
+//! filesystem and the host's functions always require an explicit
+//! declaration.
 
 //! A `network.http` rule names a `host` (a pattern, as in `hosts`); every
 //! other key narrows it and is optional: `methods` (any when left out),
@@ -392,14 +403,13 @@ pub(crate) fn in_root(path: &Path, (expanded, canonical): &(PathBuf, PathBuf)) -
 }
 
 /// Whether apps have the native file system here that `capabilities.fs`
-/// grants (`fs/promises`, local media files): on the desktops (macOS,
-/// Windows, Linux), never on iOS, Android or the web.
+/// grants (`fs/promises`, local media files, shared files): on every
+/// native OS (the desktops, iOS, Android — the capability confines each
+/// call to the roots the app declares, whatever the sandbox around
+/// them), never on the web, whose `fs/promises` works on the host's
+/// private virtual file system and whose pages name no local file.
 pub fn native_files(os: crate::platform::Os) -> bool {
-    cfg!(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows"
-    )) && os.is_desktop()
+    cfg!(not(target_arch = "wasm32")) && os != crate::platform::Os::Web
 }
 
 /// The `capabilities.fs.read` roots local media files are read under, as
@@ -421,7 +431,7 @@ pub struct MediaFiles {
 impl MediaFiles {
     /// `access`'s read roots, expanded against `data_dir` and `paths`.
     /// Where the platform has no file system for apps (`available`
-    /// false: iOS, Android, as for `fs/promises`), none.
+    /// false: the web, as for `fs/promises`), none.
     pub fn new(
         access: &Access,
         data_dir: Option<&Path>,
@@ -639,6 +649,10 @@ pub struct Capabilities {
     /// The app may show the system's picker (`nsh/picker`): the files the
     /// user picks in it reach the app.
     pub picker: bool,
+    /// The app may show the system's share sheet (`Share` of `nsh`): the
+    /// text, links and files it shares leave the app where the user sends
+    /// them.
+    pub share: bool,
     /// The app may recognize the user's speech (`Speech` of `nsh`): the
     /// microphone listens while a session runs, and the transcript reaches
     /// the app.
@@ -648,6 +662,12 @@ pub struct Capabilities {
     pub notifications: bool,
     /// The app may play sound (`Sound` and `AudioPlayer` of `nsh`).
     pub audio: bool,
+    /// The app may act on the application as a whole (`nsh/desktop`): the
+    /// main window, the application menu, the tray, global shortcuts,
+    /// quitting, restarting and launching at login.
+    pub application: bool,
+    /// `os.homedir()` may tell the user's home directory.
+    pub home_dir: bool,
     /// The functions of the embedding app `nsh/host` may call: names, or
     /// prefixes ending in `*` (`"*"`: all); empty: none, also for apps
     /// without a declaration ([`Capabilities::all`]).
@@ -789,7 +809,8 @@ const RELATIVE_ADVICE: &str = "a relative path names no file in a native app: na
 const ASSET_ADVICE: &str = "bundled files are named by a path inside the app's files";
 
 /// [`media_grant_advice`] for a local file.
-const LOCAL_FILE_ADVICE: &str = "a local file is read under capabilities.fs.read in nsh.json: add a root that holds it (desktop apps)";
+const LOCAL_FILE_ADVICE: &str =
+    "a local file is read under capabilities.fs.read in nsh.json: add a root that holds it";
 
 /// [`media_grant_advice`] for a protocol-relative source without a base.
 const NO_SCHEME_ADVICE: &str =
@@ -916,8 +937,12 @@ fn local_file(uri: &str) -> Option<Option<PathBuf>> {
     (drive || rooted).then(|| Some(PathBuf::from(uri)))
 }
 
-/// The path `file:` URL `uri` names. The web has no local files to name.
-fn file_url_path(uri: &str) -> Option<PathBuf> {
+/// The path `file:` URL `uri` names, decoded as a URL is (percent
+/// encoding included). What [`media_url`] checks is what the platforms'
+/// loaders read: they resolve `file:` sources with this, never by
+/// stripping the prefix. The web has no local files to name.
+#[doc(hidden)]
+pub fn file_url_path(uri: &str) -> Option<PathBuf> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = uri;
@@ -1047,6 +1072,17 @@ fn read_url(url: &str) -> Result<UrlParts<'_>, Unread> {
     })
 }
 
+/// The origin a `blob:` URL embeds (`blob:<origin>/<id>`, as
+/// `URL.createObjectURL` writes it), when `url` is one. A blob's origin is
+/// its creator's: a browser only makes a blob URL in the origin of the
+/// document that made it, so checking the embedded origin checks the page.
+fn blob_origin(url: &str) -> Option<&str> {
+    url.get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("blob:"))
+        .then(|| &url[5..])
+        .filter(|origin| !origin.is_empty())
+}
+
 impl Capabilities {
     /// Legacy unrestricted APIs for apps without a declaration. Socket,
     /// process, filesystem and host function grants stay empty and always
@@ -1063,9 +1099,12 @@ impl Capabilities {
             status_bar: true,
             clipboard: true,
             picker: true,
+            share: true,
             speech: true,
             notifications: true,
             audio: true,
+            application: true,
+            home_dir: true,
             open_url: Some(OpenUrlGrant::default()),
             // Every kind and level, but no overlays or capture protection.
             windows: Some(WindowsGrant::default()),
@@ -1120,16 +1159,19 @@ impl Capabilities {
     /// `dropped`: lenient, recording what unknown keys dropped; `None`:
     /// strict.
     fn parse(value: &Value, mut dropped: Option<&mut Vec<String>>) -> Result<Self, String> {
-        const KNOWN: [&str; 13] = [
+        const KNOWN: [&str; 16] = [
             "windows",
             "network",
             "webview",
             "statusBar",
             "clipboard",
             "picker",
+            "share",
             "speech",
             "notifications",
             "audio",
+            "application",
+            "homeDir",
             "openUrl",
             "process",
             "fs",
@@ -1266,6 +1308,11 @@ impl Capabilities {
                 .as_bool()
                 .ok_or("capabilities.picker must be a boolean")?;
         }
+        if let Some(share) = obj.get("share") {
+            caps.share = share
+                .as_bool()
+                .ok_or("capabilities.share must be a boolean")?;
+        }
         if let Some(speech) = obj.get("speech") {
             caps.speech = speech
                 .as_bool()
@@ -1280,6 +1327,16 @@ impl Capabilities {
             caps.audio = audio
                 .as_bool()
                 .ok_or("capabilities.audio must be a boolean")?;
+        }
+        if let Some(application) = obj.get("application") {
+            caps.application = application
+                .as_bool()
+                .ok_or("capabilities.application must be a boolean")?;
+        }
+        if let Some(home_dir) = obj.get("homeDir") {
+            caps.home_dir = home_dir
+                .as_bool()
+                .ok_or("capabilities.homeDir must be a boolean")?;
         }
         if let Some(open_url) = obj.get("openUrl") {
             match open_url {
@@ -1524,6 +1581,9 @@ impl Capabilities {
         obj.insert("clipboard".into(), self.clipboard.into());
         obj.insert("picker".into(), self.picker.into());
         // Only when granted: older runtimes read what newer signers write.
+        if self.share {
+            obj.insert("share".into(), true.into());
+        }
         if self.speech {
             obj.insert("speech".into(), true.into());
         }
@@ -1532,6 +1592,12 @@ impl Capabilities {
         }
         if self.audio {
             obj.insert("audio".into(), true.into());
+        }
+        if self.application {
+            obj.insert("application".into(), true.into());
+        }
+        if self.home_dir {
+            obj.insert("homeDir".into(), true.into());
         }
         if !self.host.is_empty() {
             obj.insert("host".into(), self.host.clone().into());
@@ -2273,11 +2339,16 @@ impl Access {
     }
 
     /// Whether a web view may show (or navigate to) `url`; `about:blank`
-    /// whenever web views are granted.
+    /// whenever web views are granted. A `blob:` URL is the blob's
+    /// creator's: it is granted when the origin it embeds is, so a page may
+    /// show and download its own blobs, and a blob of a host it may not
+    /// show is not granted. An opaque blob (`blob:null/…`) names no origin
+    /// and is not granted.
     pub fn allows_webview(&self, url: &str) -> bool {
         if url == "about:blank" {
             return self.allows_webviews();
         }
+        let url = blob_origin(url).unwrap_or(url);
         match read_url(url) {
             Ok(parts) => self.each(|c| c.allows_webview(&parts)),
             Err(Unread::Ambiguous(scheme)) => self.each(|c| c.allows_webview_anywhere(&scheme)),
@@ -2385,6 +2456,12 @@ impl Access {
         self.each(|c| c.status_bar)
     }
 
+    /// Whether the app may show the system's share sheet (`Share` of
+    /// `nsh`).
+    pub fn allows_share(&self) -> bool {
+        self.each(|c| c.share)
+    }
+
     /// Whether the app may read and write the system clipboard.
     pub fn allows_clipboard(&self) -> bool {
         self.each(|c| c.clipboard)
@@ -2409,6 +2486,18 @@ impl Access {
     /// Whether the app may play sound (`Sound` and `AudioPlayer` of `nsh`).
     pub fn allows_audio(&self) -> bool {
         self.each(|c| c.audio)
+    }
+
+    /// Whether the app may act on the application as a whole: the main
+    /// window, the application menu, the tray, global shortcuts, quitting,
+    /// restarting and launching at login (`nsh/desktop`).
+    pub fn allows_application(&self) -> bool {
+        self.each(|c| c.application)
+    }
+
+    /// Whether `os.homedir()` may tell the user's home directory.
+    pub fn allows_home_dir(&self) -> bool {
+        self.each(|c| c.home_dir)
     }
 
     /// Whether `nsh/host` may call the embedding app's function `name`.
@@ -2975,6 +3064,31 @@ mod tests {
     }
 
     #[test]
+    fn the_share_sheet_is_granted_by_both_sides() {
+        let declared = caps(r#"{ "share": true }"#);
+        assert!(declared.share);
+        assert_eq!(declared.to_json()["share"], serde_json::json!(true));
+        assert!(
+            Access {
+                declared: declared.clone(),
+                granted: None,
+            }
+            .allows_share()
+        );
+        // The embedding app grants less.
+        assert!(
+            !Access {
+                declared,
+                granted: Some(caps("{}")),
+            }
+            .allows_share()
+        );
+        // Apps without a declaration keep it.
+        assert!(Access::all().allows_share());
+        assert!(Capabilities::from_json(&serde_json::json!({ "share": "yes" })).is_err());
+    }
+
+    #[test]
     fn denies_unless_listed() {
         let access = Access {
             declared: caps("{}"),
@@ -2994,10 +3108,42 @@ mod tests {
         assert!(!access.allows_status_bar());
         assert!(!access.allows_clipboard());
         assert!(!access.allows_picker());
+        assert!(!access.allows_share());
         assert!(!access.allows_speech());
         assert!(!access.allows_audio());
+        assert!(!access.allows_application());
+        assert!(!access.allows_home_dir());
         assert!(!access.allows_host("getUserInfo"));
         assert!(Access::all().is_unrestricted());
+    }
+
+    #[test]
+    fn the_application_and_the_home_directory_are_capabilities() {
+        // Undeclared: granted, as they always were.
+        let all = Access::all();
+        assert!(all.allows_application() && all.allows_home_dir());
+        // Declared: only when listed, and the embedder may take them away.
+        let access = |declared: &str, granted: Option<&str>| Access {
+            declared: caps(declared),
+            granted: granted.map(caps),
+        };
+        let listed = access(r#"{ "application": true, "homeDir": true }"#, None);
+        assert!(listed.allows_application() && listed.allows_home_dir());
+        let application = access(r#"{ "application": true }"#, None);
+        assert!(application.allows_application() && !application.allows_home_dir());
+        let narrowed = access(
+            r#"{ "application": true, "homeDir": true }"#,
+            Some(r#"{ "homeDir": true }"#),
+        );
+        assert!(!narrowed.allows_application() && narrowed.allows_home_dir());
+        assert!(!access(r#"{ "application": false }"#, None).allows_application());
+        assert!(Capabilities::from_json(&serde_json::json!({ "application": "yes" })).is_err());
+        assert!(Capabilities::from_json(&serde_json::json!({ "homeDir": 1 })).is_err());
+        // Written only when granted, read back the same.
+        let both = caps(r#"{ "application": true, "homeDir": true }"#);
+        assert_eq!(Capabilities::from_json(&both.to_json()).unwrap(), both);
+        let none = Capabilities::default().to_json();
+        assert!(none.get("application").is_none() && none.get("homeDir").is_none());
     }
 
     #[test]
@@ -3078,6 +3224,74 @@ mod tests {
             granted: Some(caps(r#"{ "webview": { "hosts": ["*"] } }"#)),
         };
         assert!(!narrowed.allows_web_media(WebMedia::Microphone));
+    }
+
+    /// A page's `URL.createObjectURL` blob URL embeds its creator's origin:
+    /// a web view may show and download it when that origin is a granted
+    /// host, and never a blob of a host it may not show, an opaque one, or
+    /// any without a `webview` grant.
+    #[test]
+    fn page_owned_blob_urls_follow_the_origin_they_embed() {
+        let a = Access {
+            declared: caps(
+                r#"{ "webview": { "hosts": ["app.example.com", "*.app.example.com"] } }"#,
+            ),
+            granted: None,
+        };
+        for url in [
+            "blob:https://app.example.com/uuid",
+            "blob:http://app.example.com:6711/uuid",
+            "blob:https://docs.app.example.com/uuid",
+            "BLOB:HTTPS://APP.EXAMPLE.COM/uuid",
+        ] {
+            assert!(a.allows_webview(url), "{url}");
+        }
+        for url in [
+            "blob:https://bank.example/uuid",
+            "blob:https://app.example.com.evil.example/uuid",
+            "blob:https://app.example.com@bank.example/uuid",
+            "blob:null/uuid",
+            "blob:data:text/html,hi",
+            "blob:file:///etc/passwd",
+            "blob:",
+            "blob:https://",
+        ] {
+            assert!(!a.allows_webview(url), "{url}");
+        }
+        // Without a `webview` grant, a blob naming a host is still refused.
+        let denied = Access {
+            declared: caps("{}"),
+            granted: None,
+        };
+        assert!(!denied.allows_webview("blob:https://app.example.com/uuid"));
+        // The embedding app may narrow the hosts: both must grant the origin.
+        let narrowed = Access {
+            granted: Some(caps(r#"{ "webview": { "hosts": ["app.example.com"] } }"#)),
+            ..a.clone()
+        };
+        assert!(narrowed.allows_webview("blob:https://app.example.com/uuid"));
+        assert!(!narrowed.allows_webview("blob:https://docs.app.example.com/uuid"));
+        // The shape WebKit reports for a page at a granted loopback host.
+        let local = Access {
+            declared: caps(r#"{ "webview": { "hosts": ["127.0.0.1"] } }"#),
+            granted: None,
+        };
+        assert!(
+            local.allows_webview("blob:http://127.0.0.1:6711/6f3c2f0e-8a1d-4c5e-9b7a-0d2e4f6a8b1c")
+        );
+        // HTTP(S) pages are checked as before: the origin either matches or
+        // it does not.
+        assert!(a.allows_webview("https://app.example.com/page"));
+        assert!(!a.allows_webview("https://bank.example/page"));
+        // A blob whose embedded origin parsers read differently is covered
+        // only by a grant of every host, as any ambiguous URL is.
+        let ambiguous = "blob:https://app.example.com\\@bank.example/uuid";
+        assert!(!a.allows_webview(ambiguous));
+        let any = Access {
+            declared: caps(r#"{ "webview": { "hosts": ["*"] } }"#),
+            granted: None,
+        };
+        assert!(any.allows_webview(ambiguous));
     }
 
     #[test]
@@ -4052,6 +4266,36 @@ mod tests {
             assert_eq!(again(&path(&data.join("link/b.png"))), None);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `capabilities.fs` roots gate the file system every native OS has —
+    /// the desktops', iOS's, Android's; the web has none to gate.
+    #[test]
+    fn every_native_os_has_the_files_the_capability_gates() {
+        use crate::platform::Os;
+        for os in [Os::MacOs, Os::Windows, Os::Linux, Os::Ios, Os::Android] {
+            assert!(native_files(os), "{os:?}");
+        }
+        assert!(!native_files(Os::Web));
+    }
+
+    /// A `file:` URL's path is the URL's decoded path: `%20` is a space,
+    /// `file://localhost/` names no host that refuses.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_urls_name_their_decoded_path() {
+        assert_eq!(
+            file_url_path("file:///tmp/a%20b.png"),
+            Some(PathBuf::from("/tmp/a b.png"))
+        );
+        assert_eq!(
+            file_url_path("file://localhost/tmp/a.png"),
+            Some(PathBuf::from("/tmp/a.png"))
+        );
+        #[cfg(unix)]
+        assert_eq!(file_url_path("file://host/tmp/a.png"), None);
+        assert_eq!(file_url_path("not a url"), None);
+        assert_eq!(file_url_path("https://a/b"), None);
     }
 
     /// A refused source's advice names the host it resolves to, as the

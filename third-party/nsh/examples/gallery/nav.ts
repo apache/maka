@@ -7,6 +7,9 @@ export interface DemoEntry {
   name: string;
   detail: string;
   icon: IconName;
+  /** The demo shows pages of its own, with their headers and the way back:
+   * on a phone it takes the whole page, without the gallery's header. */
+  fill?: boolean;
   screen: () => JSX.Element;
 }
 

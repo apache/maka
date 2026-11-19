@@ -1,7 +1,9 @@
 package com.longbridge.nsh;
 
+import android.annotation.TargetApi;
 import android.graphics.Paint;
 import android.graphics.Typeface;
+import android.graphics.text.LineBreaker;
 import android.text.Layout;
 import android.text.PrecomputedText;
 import android.text.SpannableString;
@@ -18,6 +20,7 @@ import android.text.TextDirectionHeuristics;
 import android.text.style.AlignmentSpan;
 import android.text.style.StrikethroughSpan;
 import android.text.style.UnderlineSpan;
+import android.view.Gravity;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.util.ArrayList;
@@ -29,6 +32,9 @@ import java.util.List;
  * Sizes cross the boundary in dp; layouts are made in px for drawing.
  */
 final class TextLayouts {
+    /** Encoded alignment values shared with `text.rs` (`encode_align`). */
+    static final int ALIGN_AUTO = 0, ALIGN_LEFT = 1, ALIGN_CENTER = 2, ALIGN_RIGHT = 3, ALIGN_JUSTIFY = 4;
+
     private TextLayouts() {}
 
     /** Where registered font files are written (set by NshView). */
@@ -138,9 +144,10 @@ final class TextLayouts {
                 if (typeface != null && !typeface.equals(Typeface.DEFAULT)) return typeface;
             }
         }
-        int style = (weight >= 600 && baseWeight < 600 ? Typeface.BOLD : 0)
-                | (italic && !baseItalic ? Typeface.ITALIC : 0);
-        return style == 0 ? base : Typeface.create(base, style);
+        boolean bold = weight >= 600 && baseWeight < 600;
+        boolean slanted = italic && !baseItalic;
+        if (!bold && !slanted) return base;
+        return Typeface.create(base, bold ? (slanted ? Typeface.BOLD_ITALIC : Typeface.BOLD) : Typeface.ITALIC);
     }
 
     /**
@@ -159,9 +166,10 @@ final class TextLayouts {
 
     /**
      * The families of a `fontFamily` list, trimmed and unquoted, in order: a
-     * quoted name runs to its closing quote, commas and all (`'ACME, Inc'`),
-     * as `nsh_core::font_families` reads it. A quoted name is always a
-     * family's name, never a generic family (`"serif"`), as in CSS.
+     * quoted name runs to its closing quote, commas and `\` escapes included
+     * (`'ACME, Inc'`, `"A\"B"`), as `nsh_core::font_families` reads it. A
+     * quoted name is always a family's name, never a generic family
+     * (`"serif"`), as in CSS.
      */
     private static List<Family> families(String list) {
         List<Family> out = new ArrayList<>();
@@ -175,12 +183,30 @@ final class TextLayouts {
             int comma;
             boolean quoted = c == '"' || c == '\'';
             if (quoted) {
-                // To the closing quote (or the end, unclosed); what follows it
-                // up to the next comma is not part of the name.
-                int end = list.indexOf(c, i + 1);
-                if (end < 0) end = n;
-                name = list.substring(i + 1, end).trim();
-                comma = list.indexOf(',', Math.min(end + 1, n));
+                // To the unescaped closing quote (or the end, unclosed); what
+                // follows it up to the next comma is not part of the name.
+                StringBuilder decoded = new StringBuilder();
+                int p = i + 1;
+                while (p < n) {
+                    char ch = list.charAt(p);
+                    if (ch == '\\') {
+                        p++;
+                        if (p < n) {
+                            decoded.append(list.charAt(p));
+                            p++;
+                        } else {
+                            decoded.append('\\');
+                        }
+                    } else if (ch == c) {
+                        p++;
+                        break;
+                    } else {
+                        decoded.append(ch);
+                        p++;
+                    }
+                }
+                name = decoded.toString().trim();
+                comma = list.indexOf(',', p);
             } else {
                 comma = list.indexOf(',', i);
                 name = list.substring(i, comma < 0 ? n : comma).trim();
@@ -281,6 +307,7 @@ final class TextLayouts {
     }
 
     /** A registered face as a font family of one font (Android 10+). */
+    @TargetApi(29)
     private static android.graphics.fonts.FontFamily fontFamily(Face face) throws java.io.IOException {
         android.graphics.fonts.Font font = new android.graphics.fonts.Font.Builder(face.file)
                 .setWeight(clamp(face.weight))
@@ -299,7 +326,7 @@ final class TextLayouts {
     // node. Floats: size, line height, letter spacing, decoration thickness,
     // underline offset, background radius.
     private static final int SPAN_INTS = 11;
-    private static final int SPAN_FLOATS = 6;
+    private static final int SPAN_FLOATS = 8;
     private static final int ITALIC = 1;
     private static final int UNDERLINE = 2;
     private static final int STRIKE = 4;
@@ -376,15 +403,25 @@ final class TextLayouts {
             widthPx = Math.max(0, widthPx);
             for (StaticLayout l : layouts) if (l != null && l.getWidth() == widthPx) return l;
             // Break strategy and hyphenation match the PrecomputedText params,
-            // so the builder reuses its glyph measurements.
+            // so the builder reuses its glyph measurements. LineBreaker's
+            // constants are the setters' type (Android Lint) and equal
+            // Layout's; javac inlines them, so API 26-28 never load the class.
             StaticLayout.Builder b = StaticLayout.Builder.obtain(text, 0, text.length(), paint, widthPx)
                     .setAlignment(alignment)
                     .setTextDirection(direction)
                     .setIncludePad(false)
                     .setLineSpacing(0f, 1f)
-                    .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+                    .setBreakStrategy(LineBreaker.BREAK_STRATEGY_SIMPLE)
                     .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE);
-            if (justify) b.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
+            if (android.os.Build.VERSION.SDK_INT >= 35) {
+                // `obtain` hands out pooled builders and does not reset these
+                // two: a TextView in an app targeting 35 or later leaves them
+                // on, and lines would then break by the glyphs' ink, wider
+                // than the advances the text was measured by ("Wor" / "k").
+                b.setUseBoundsForWidth(false);
+                b.setShiftDrawingOffsetForStartOverhang(false);
+            }
+            if (justify) b.setJustificationMode(LineBreaker.JUSTIFICATION_MODE_INTER_WORD);
             if (maxLines > 0) {
                 b.setMaxLines(maxLines);
                 if (ellipsize != null) b.setEllipsize(ellipsize);
@@ -446,25 +483,30 @@ final class TextLayouts {
                 measure.setTextSize(size);
                 measure.getFontMetrics(metrics);
                 float radius = floats[i * SPAN_FLOATS + 5] * density;
-                if (background != null && background.same(ints[o + 9], ints[o + 10], radius) && backgroundEnd == start) {
+                float top = floats[i * SPAN_FLOATS + 6] * density;
+                float bottom = floats[i * SPAN_FLOATS + 7] * density;
+                if (background != null && background.same(ints[o + 9], ints[o + 10], radius, top, bottom) && backgroundEnd == start) {
                     background.ascentPx = Math.max(background.ascentPx, -metrics.ascent);
                     background.descentPx = Math.max(background.descentPx, metrics.descent);
                 } else {
                     if (background != null) s.setSpan(background, backgroundStart, backgroundEnd, f);
-                    background = new Background(ints[o + 9], ints[o + 10], radius, -metrics.ascent, metrics.descent);
+                    background = new Background(ints[o + 9], ints[o + 10], radius, top, bottom, -metrics.ascent, metrics.descent);
                     backgroundStart = start;
                 }
                 backgroundEnd = end;
             }
         }
         if (background != null) s.setSpan(background, backgroundStart, backgroundEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        // Attachments (offset, width, height in dp, vertical alignment):
+        // Attachments (offset, width, height in dp, vertical alignment, how
+        // far below its top its own baseline is in dp or a negative number):
         // placeholders of their size, placed in their line.
-        for (int i = 0; i + 3 < attachments.length; i += 4) {
+        for (int i = 0; i + 4 < attachments.length; i += 5) {
             int at = (int) attachments[i];
             if (at < 0 || at >= text.length()) continue;
+            float baseline = attachments[i + 4];
             s.setSpan(new Attachment(Math.round(attachments[i + 1] * density), Math.round(attachments[i + 2] * density),
-                    (int) attachments[i + 3]), at, at + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    (int) attachments[i + 3], baseline < 0 ? -1 : Math.round(baseline * density)), at, at + 1,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         // `encode` packs the writing direction and the layout direction in.
         int writing = (align >> 4) & 3;
@@ -474,10 +516,10 @@ final class TextLayouts {
                 : writing == 2 ? TextDirectionHeuristics.RTL
                 : rtlLayout ? TextDirectionHeuristics.FIRSTSTRONG_RTL : TextDirectionHeuristics.FIRSTSTRONG_LTR;
         // `auto` is the right side right to left (as on iOS).
-        if (align == 0 && rtlLayout) align = 3;
-        Layout.Alignment alignment = align == 2 ? Layout.Alignment.ALIGN_CENTER : Layout.Alignment.ALIGN_NORMAL;
+        if (align == ALIGN_AUTO && rtlLayout) align = ALIGN_RIGHT;
+        Layout.Alignment alignment = align == ALIGN_CENTER ? Layout.Alignment.ALIGN_CENTER : Layout.Alignment.ALIGN_NORMAL;
         boolean endAligned = false;
-        if (align == 1 || align == 3) {
+        if (align == ALIGN_LEFT || align == ALIGN_RIGHT) {
             // Left and right are absolute, while Android's alignments follow
             // each paragraph's direction: align each paragraph by its own.
             int start = 0;
@@ -485,7 +527,7 @@ final class TextLayouts {
                 int end = text.indexOf('\n', start);
                 if (end < 0) end = text.length();
                 boolean rtl = direction.isRtl(text, start, end - start);
-                boolean normal = (align == 1) != rtl;
+                boolean normal = (align == ALIGN_LEFT) != rtl;
                 endAligned |= !normal;
                 int spanEnd = Math.min(end + 1, text.length());
                 if (spanEnd > start) {
@@ -508,13 +550,13 @@ final class TextLayouts {
         CharSequence measured = s;
         if (android.os.Build.VERSION.SDK_INT >= 28) {
             PrecomputedText.Params params = new PrecomputedText.Params.Builder(paint)
-                    .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+                    .setBreakStrategy(LineBreaker.BREAK_STRATEGY_SIMPLE)
                     .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
                     .setTextDirection(direction)
                     .build();
             measured = PrecomputedText.create(s, params);
         }
-        return new Prepared(measured, paint, alignment, align == 4, endAligned, maxLines, truncate, density,
+        return new Prepared(measured, paint, alignment, align == ALIGN_JUSTIFY, endAligned, maxLines, truncate, density,
                 direction);
     }
 
@@ -935,7 +977,7 @@ final class TextLayouts {
 
     /**
      * An attachment's placeholder: its size, placed in its line by its
-     * `verticalAlign` (as `TextAttachment::ascent` in nsh-core places it, with
+     * `verticalAlign` (as `AttachmentAlignments::ascent` in nsh-core places it, with
      * the run's font metrics); the line grows to hold it. Draws nothing.
      */
     static final class Attachment extends android.text.style.ReplacementSpan {
@@ -947,11 +989,16 @@ final class TextLayouts {
         /** The ascent and descent of the font around it (px, as {@link Paint.FontMetricsInt}), set by {@link #getSize}. */
         int fontAscent, fontDescent;
 
-        Attachment(int width, int height, int align) {
+        /**
+         * `baseline`: how far below its top its own baseline is (px), which
+         * stands on the line's (the first baseline of the text in it); negative: it has none, and
+         * stands on its bottom edge.
+         */
+        Attachment(int width, int height, int align, int baseline) {
             this.width = width;
             this.height = height;
             this.align = align;
-            this.ascent = height;
+            this.ascent = baseline < 0 ? height : Math.min(baseline, height);
         }
 
         @Override
@@ -1019,24 +1066,49 @@ final class TextLayouts {
 
     /** A span background (`backgroundColor` on a nested text), drawn by
      * {@code TextBox} behind each line's part of its characters, as tall as
-     * its fonts. One covers the neighboring runs of one span. */
+     * its fonts and the span's vertical padding. One covers the neighboring
+     * runs of one span. */
     static final class Background {
         final int color;
         /** The span that set it: neighbors that look the same stay apart. */
         final int node;
         final float radiusPx;
+        /** Room above the fonts' ascent and below their descent. */
+        final float topPx, bottomPx;
         float ascentPx, descentPx;
 
-        Background(int color, int node, float radiusPx, float ascentPx, float descentPx) {
+        Background(int color, int node, float radiusPx, float topPx, float bottomPx, float ascentPx, float descentPx) {
             this.color = color;
             this.node = node;
             this.radiusPx = radiusPx;
+            this.topPx = topPx;
+            this.bottomPx = bottomPx;
             this.ascentPx = ascentPx;
             this.descentPx = descentPx;
         }
 
-        boolean same(int color, int node, float radiusPx) {
-            return this.color == color && this.node == node && this.radiusPx == radiusPx;
+        boolean same(int color, int node, float radiusPx, float topPx, float bottomPx) {
+            return this.color == color && this.node == node && this.radiusPx == radiusPx
+                    && this.topPx == topPx && this.bottomPx == bottomPx;
+        }
+    }
+
+    /** Android `letterSpacing` (em) for `spacing` and `fontSize` in matching units. */
+    static float letterSpacing(float spacing, float fontSize) {
+        return fontSize > 0f && spacing != 0f ? spacing / fontSize : 0f;
+    }
+
+    /** Horizontal {@link Gravity} for encoded `align` (`ALIGN_*`) and layout RTL flag. */
+    static int horizontalGravity(int align, boolean rtl) {
+        switch (align) {
+            case ALIGN_LEFT:
+                return Gravity.LEFT;
+            case ALIGN_CENTER:
+                return Gravity.CENTER_HORIZONTAL;
+            case ALIGN_RIGHT:
+                return Gravity.RIGHT;
+            default:
+                return rtl ? Gravity.RIGHT : Gravity.START;
         }
     }
 
@@ -1066,8 +1138,8 @@ final class TextLayouts {
 
         private void apply(TextPaint paint) {
             paint.setTypeface(typeface);
-            if (spacingPx != 0 && paint.getTextSize() > 0) paint.setLetterSpacing(spacingPx / paint.getTextSize());
-            if (features != null) paint.setFontFeatureSettings(features);
+            paint.setLetterSpacing(letterSpacing(spacingPx, paint.getTextSize()));
+            paint.setFontFeatureSettings(features);
         }
 
         @Override

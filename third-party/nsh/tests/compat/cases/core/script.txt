@@ -59,6 +59,11 @@ frame id:faded 0 302 40 40
 frame id:box 0 359 50 20
 tap id:grow
 frame id:box 0 359 150 20
+# A physical spring animates the next commit, and one view's change.
+tap id:spring
+expect Laid out: sprung 150
+tap id:scoped
+expect Laid out: scoped 150
 covers [nsh] Animated
 covers [nsh] AnimatedNode
 covers [nsh] AnimatedValue
@@ -151,6 +156,13 @@ style id:spinner animationName spin
 style id:spinner animationFrameRate 30
 nostyle id:uncapped animationFrameRate
 covers [styles] animationFrameRate
+# core-offscreen-canvas
+tap id:case-core-offscreen-canvas
+expect Offscreen 120x80
+expect Context kept true, other kinds null true
+expect Measured true
+expect Render failed ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+covers [nsh] OffscreenCanvas
 # core-list
 tap id:case-core-list
 expect Fruits
@@ -436,6 +448,10 @@ expect Steps: 0 0.25 0.5 0.75 1
 expect Transform steps: 7
 expect Bound: true
 expect Started: yes
+expect Sprung: yes
+# The exit interrupts the entrance and springs on from there to its end.
+animated id:sprung opacity 0
+animated id:sprung transform.1 24
 expect Staggered: function function
 covers [nsh] createMotion
 covers [nsh] motions

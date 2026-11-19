@@ -41,6 +41,8 @@ bundle 中只有应用自己的代码：响应式图、渲染器以及应用导�
 **时间按调用计算，而不是按应用计算。** 一次“调用”是运行时让 JS 做的一件事：处理一个事件（包括它引起的渲染）、绑定
 一个列表行、运行一个定时器、运行一帧的 `requestAnimationFrame` 回调、清空微任务队列。长时间运行的应用不会累积时间
 而触及限制；只有某一次没能按时返回的调用才会被中断。嵌套在另一次调用中的调用共享外层调用的预算。
+一次调用按它实际运行的时间计：在 Linux、Android、macOS 和 iOS 上是其线程的 CPU 时间，在 Windows 和 Web 上是单调时钟时间。
+系统把应用冻结或挂起在后台的时间、等待 CPU 的时间，都不算在这次调用里。
 
 被中断的调用会以一个任何 `catch` 都无法吞掉的异常结束，报告的错误中会写明超出的预算：
 
@@ -53,6 +55,14 @@ VM 会继续运行：下一个事件、定时器或帧照常执行。
 **内存耗尽或超出配额会停止 VM。** 错误只报告一次（报告给宿主应用的错误处理器，在开发构建中还会显示在应用上方），此后
 不再运行任何 JS，视图保持原样。之所以有节点和操作配额，是因为原生视图和排队的变更位于原生内存中，不受 JS 堆限制约束：
 如果没有这些配额，应用就可能通过 UI 耗尽设备内存。
+
+**NSH 在原生代码中读取的数组最多 2^20（1 048 576）项，所有应用都是如此。** 子节点（嵌套的数组合计）、`<Each>` 的
+项、菜单（子菜单合计）、托盘的标题、`Animated.sequence` / `parallel` / `stagger`、`split` 的键、导航栈的路由、原生组件的
+`props`、`events` 和传给它的值、平移手势的 `touches`、画布调用的参数、样式（连同嵌套的样式、阴影和变换）、属性里的列表、
+动画的范围和缓动以及组合动画运行的动画（各自合计）都在原生代码中读取，调用预算管不到那里；而数组的长度就是它声称的长度，
+不论是否为空（`new Array(2 ** 32 - 1)`）。更长的数组会抛出应用可以捕获的错误：`RangeError`，菜单和托盘则是 `TypeError`；
+动画的 `start` 会让它的 Promise 被拒绝；画布调用会忽略它并给出警告。导航栈最多容纳同样多的页面：超出后 `push` 会抛出
+`RangeError`。子节点、子菜单和样式嵌套超过 64 层会抛出 `TypeError`。`<List>` 的 `each` 行数不受此限。
 
 > [!TIP]
 > 对普通应用来说，这些限制相当宽松。如果你触到了 2 s 的调用预算，说明这项工作本来就不该放在一个事件里：它会让应用的
@@ -107,9 +117,12 @@ release 构建（所有并非从开发服务器加载的代码）在加载时会
     "statusBar": true,
     "clipboard": true,
     "picker": true,
+    "share": true,
     "speech": true,
     "notifications": true,
     "audio": true,
+    "application": true,
+    "homeDir": true,
     "host": ["getUserInfo", "bridge.*"],
     "openUrl": { "schemes": ["https", "mailto"] },
     "windows": { "kinds": ["normal", "dialog", "panel"], "max": 4 }
@@ -168,7 +181,7 @@ Web 上它沿用页面的协议，按补全后的 URL 检查；原生应用没�
 并按原样加载（在原生应用中，这样以 `//` 开头的源不会加载任何内容）。
 
 媒体源中的本地文件（`file:` URL，或原生应用中的绝对路径，例如 `/Users/a/x.png`、`C:\pictures\x.png`）和
-`fs/promises` 读文件一样，按 [`fs`](../modules/standard-modules.md) 能力的 `read` 根目录检查，因此只在桌面上可用。设置源时
+`fs/promises` 读文件一样，按 [`fs`](../modules/standard-modules.md) 能力的 `read` 根目录检查，在每个原生平台上都可用。设置源时
 会先解析其中的符号链接，平台加载的也是解析后的路径，所以这时授权根目录里的链接不会把加载引到根目录之外；之后在那里新建的
 链接，在该源保持设置期间会被跟随。在 Web 上，
 `/x.png` 是页面自己的路径。没有声明 `capabilities` 的应用照旧加载本地文件。
@@ -185,6 +198,10 @@ web view 内的顶层导航也会在加载前由平台的导航代理检查。�
 不做检查。`about:blank` 和内联 HTML（`html`）只要求 web view 被授予即可：`"webview": { "hosts": [] }`
 允许它们，但不允许任何远程页面。在原生 web view 中，`baseUrl` 让内联 HTML 获得该 URL 的源，
 所以基准 URL 需要与该地址的页面相同的授权：它的主机在 `hosts` 中。
+
+页面可以显示和下载它自己创建的 `blob:` URL（`URL.createObjectURL`、`<a download>` 链接）：blob URL
+内嵌创建它的文档的源，因此只有当该源是 `hosts` 中的主机时才允许；页面不能显示的主机的 blob，以及不透明
+blob（`blob:null/…`），都不允许。所有平台的检查方式相同。
 
 `input` 与 `hosts` 分开，是因为可信输入带有用户激活，而 `injectJavaScript` 永远得不到它：页面因此可以打开窗口、写入剪贴板、
 打开系统的文件面板、发起 WebAuthn 或权限提示，以及按下任何检查 `isTrusted` 的按钮。没有它时，核心会丢弃 `sendInput`
@@ -212,6 +229,10 @@ web view 内的顶层导航也会在加载前由平台的导航代理检查。�
 
 `"picker": true` 允许应用显示系统的照片选择器（[`Picker`](../modules/nsh.md#picker)）：由用户决定哪些内容交给应用。
 
+### `share`
+
+`"share": true` 允许应用显示系统的分享面板（[`Share`](../modules/nsh.md#share)）：由用户决定内容发往哪里。分享的文件还需要能在 `fs.read` 下读取。
+
 ### `speech`
 
 `"speech": true` 允许应用识别用户说的话（[`Speech`](../modules/nsh.md#speech)）：使用麦克风和系统的语音识别器，转写文本交给应用。系统仍会向用户请求一次权限。
@@ -223,6 +244,14 @@ web view 内的顶层导航也会在加载前由平台的导航代理检查。�
 ### `notifications`
 
 `"notifications": true` 允许应用显示系统通知并设置应用图标的角标（[`Notifications`](../modules/nsh.md#notifications)）。需要询问的系统仍会向用户请求一次权限。
+
+### `application`
+
+`"application": true` 允许应用在桌面上作用于整个应用（[`nsh/desktop`](../modules/nsh-desktop.md)）：主窗口（任何 `<Window>` 之外的 `currentWindow()`、`Window.get("main")`：它的标题、标题栏、模式、位置与大小、层级、置于最前、关闭）、应用菜单（`Menu.setApplicationMenu`）、托盘、全局快捷键、`Application.quit()`、`Application.restart()` 和 `Application.setLaunchAtLogin()`。没有这项能力时它们什么也不做，`Application.launchAtLogin()` 返回 `false`，`setLaunchAtLogin` 以 `ERR_ACCESS_DENIED`（`permission` 为 `"application"`）拒绝。右键菜单（`Menu.popup`）显示在应用自己的视图中，应用打开的窗口由 [`windows`](#windows) 授权，两者都不需要这项能力。
+
+### `homeDir`
+
+`"homeDir": true` 允许 [`os.homedir()`](../modules/standard-modules.md) 返回用户的主目录；没有这项能力时调用会抛出 `code` 为 `ERR_ACCESS_DENIED` 的错误。这个路径只是名称：在那里读写文件仍需要 `fs` 授权。
 
 ### `openUrl`
 
@@ -279,6 +308,7 @@ if (host.available()) {
 | 状态栏修改、画布图片 | 不修改也不绘制任何东西；拒绝会记录在日志中。 |
 | 剪贴板 | `Clipboard` 的每个函数都以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"clipboard"`，`resource` 为 `""`；不会访问系统剪贴板。 |
 | 选择器 | `pickImages` 和 `pickFiles` 不显示任何内容，以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"picker"`，`resource` 为 `""`。 |
+| 分享 | `Share.available()` resolve 为 `false`，`Share.show` 不显示任何内容，以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"share"`，`resource` 为 `""`。 |
 | 声音 | `Sound.load` reject、`new AudioPlayer` 抛出 `ERR_ACCESS_DENIED`，`permission` 为 `"audio"`，`resource` 为音源；不读取也不播放任何内容。 |
 | 语音 | `Speech.start` 抛出 `ERR_ACCESS_DENIED`，`permission` 为 `"speech"`，`resource` 为 `""`；麦克风不会打开。 |
 | 通知 | `Notifications` 的函数 reject 或抛出 `ERR_ACCESS_DENIED`，`permission` 为 `"notifications"`，`resource` 为 `""`；不会显示任何东西。 |

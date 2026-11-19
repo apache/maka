@@ -24,6 +24,7 @@ import type {
   AgentScheduledTarget,
   AgentSchedules,
   AgentScheduledSummary,
+  DiscoveryToolGroup,
   IntervalCadence,
   ModelSelection,
   Schedule,
@@ -38,6 +39,38 @@ export type DiscoveryApproval = {
 type DiscoveryEffect = Extract<AgentScheduledEffect, { kind: 'discovery' }>;
 export type DiscoveryWorkerTools = NonNullable<DiscoveryEffect['workerTools']>;
 
+export type DiscoveryToolSelection = NonNullable<DiscoveryEffect['selectedTools']>;
+export type DiscoveryToolPreview = Extract<AgentSchedules, { kind: 'discovery_tools' }>;
+
+// Preserve the actual choices when a catalog changes, including the category of each alias.
+export function selectedDiscoveryTools(
+  preview: DiscoveryToolPreview,
+  requested?: DiscoveryToolSelection | null,
+  approvedNames?: string[] | null,
+  draftGroups?: ReadonlyMap<DiscoveryToolGroup, ReadonlySet<string>>,
+): DiscoveryToolSelection {
+  const approved = approvedNames ? new Set(approvedNames) : null;
+  return Object.fromEntries(
+    Object.entries(preview.groups).filter(([name, group]) => {
+      if (approved && !approved.has(name)) return false;
+      const explicitNames = group && draftGroups?.get(group);
+      if (explicitNames) return explicitNames.has(name);
+      if (requested) return Object.hasOwn(requested, name) && requested[name] === group;
+      // An exact grant from a preset-only plan can include plugin management.
+      return approved !== null || group !== 'plugin_management';
+    }),
+  );
+}
+
+export function approvedDiscoveryNames(
+  preview: DiscoveryToolPreview,
+  selection: DiscoveryToolSelection,
+) {
+  return preview.names.filter(
+    (name) => !Object.hasOwn(preview.groups, name) || Object.hasOwn(selection, name),
+  );
+}
+
 export function discoveryWorkerTools(
   effect: AgentScheduledEffect | undefined,
 ): DiscoveryWorkerTools {
@@ -46,6 +79,16 @@ export function discoveryWorkerTools(
 
 export function discoveryCadence(schedule?: Schedule): IntervalCadence {
   return schedule?.kind === 'interval' ? (schedule.cadence ?? 'fixed') : 'after_completion';
+}
+
+export function discoveryIntervalError(minutes: number, original?: Schedule) {
+  if (original && original.kind !== 'interval') return null;
+  const previous = original?.everySeconds;
+  const keepSeconds = previous !== undefined && minutes === previous / 60;
+  if (!keepSeconds && !Number.isSafeInteger(minutes)) return 'invalid';
+  const seconds = keepSeconds ? previous : minutes * 60;
+  if (seconds < 1) return 'invalid';
+  return seconds > 0xffffffff ? 'too_long' : null;
 }
 
 export function discoveryInput(
@@ -68,13 +111,7 @@ export function discoveryInput(
   const preserve = original && (!originalInterval || (sameMinutes && cadence === originalCadence));
   const interval = sameMinutes ? originalInterval.everySeconds : minutes * 60;
   const start = now + interval * 1000;
-  if (
-    !preserve &&
-    ((!sameMinutes && !Number.isSafeInteger(minutes)) ||
-      interval < 1 ||
-      interval > 0xffffffff ||
-      !Number.isSafeInteger(start))
-  )
+  if (!preserve && (discoveryIntervalError(minutes, original) || !Number.isSafeInteger(start)))
     throw new Error('invalid_discovery_settings');
   return {
     task: {

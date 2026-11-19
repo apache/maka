@@ -199,6 +199,7 @@ struct Rig {
     socket_directory: TestDirectory,
     model_listener: std::net::TcpListener,
     model_overrides: Value,
+    model_idle_timeout: Option<Duration>,
     native_grants: Vec<NativeGrant>,
     store: Option<Arc<RootStore>>,
     host: Option<Arc<Host>>,
@@ -235,6 +236,7 @@ impl Rig {
             socket_directory: TestDirectory::Owned(socket_directory),
             model_listener,
             model_overrides: json!({}),
+            model_idle_timeout: None,
             native_grants: vec![],
             store: None,
             host: None,
@@ -402,6 +404,7 @@ impl Rig {
             .input
             .instances["agent"]
             .key;
+        let model_idle_timeout = self.model_idle_timeout;
         let capture = self.captured.clone();
         let completion_gate = self.completion_gate.clone();
         let helper = std::env::current_exe()?;
@@ -417,7 +420,15 @@ impl Rig {
                 let completion_gate = completion_gate.clone();
                 Box::pin(async move {
                     match Owner::open(context, configuration, catalog, state, helper, None).await {
-                        Ok(owner) => {
+                        Ok(mut owner) => {
+                            if let Some(timeout) = model_idle_timeout {
+                                let owner = Arc::get_mut(&mut owner).unwrap();
+                                owner.credentials.executor = maka_model::ModelExecutor::for_source(
+                                    timeout,
+                                    owner.revision.clone(),
+                                )
+                                .unwrap();
+                            }
                             let owner = match observation {
                                 Some(observe) => owner.with_model_observation(observe),
                                 None => owner,
@@ -806,6 +817,7 @@ impl Rig {
                 approval: maka_sandbox::Approval::Never,
             },
             network_approval_ceiling: None,
+            filesystem_approval_ceiling: None,
             backend: match &external_backend {
                 Some(external) => BackendSpec::Executor {
                     selection: external.accepted.selection.clone(),
@@ -3288,11 +3300,13 @@ mod model_recovery {
             .remove("memoryTestPeer")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let with_processes = configuration["tools"].as_array().is_some_and(|tools| {
-            tools
-                .iter()
-                .any(|tool| tool["target"]["name"] == "processes")
-        });
+        let uses_target = |name: &str| {
+            configuration["tools"]
+                .as_array()
+                .is_some_and(|tools| tools.iter().any(|tool| tool["target"]["name"] == name))
+        };
+        let with_processes = uses_target("processes");
+        let with_management = uses_target("management");
 
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
@@ -3329,6 +3343,16 @@ mod model_recovery {
                     "processes".into(),
                     Import {
                         contract: maka_workspace_api::processes::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                )
+            }))
+            .chain(with_management.then(|| {
+                (
+                    "management".into(),
+                    Import {
+                        contract:
+                            maka_plugin_core::deployment::management::deployment_manager_contract(),
                         cardinality: Cardinality::One,
                     },
                 )
@@ -3431,12 +3455,14 @@ mod model_recovery {
                         ["files", "web"]
                             .into_iter()
                             .chain(with_processes.then_some("processes"))
-                            .map(|name| {
+                            .map(|name| (name, name))
+                            .chain(with_management.then_some(("management", "Management")))
+                            .map(|(name, export)| {
                                 (
                                     name.into(),
                                     vec![Target::Instance {
                                         path: vec![name.into()],
-                                        export: name.into(),
+                                        export: export.into(),
                                     }],
                                 )
                             })
@@ -3505,6 +3531,23 @@ mod model_recovery {
             );
         }
         let mut packages = vec![agent, settings, client, files, web, receipts];
+        if with_management {
+            let manager = package(
+                "maka.tests.deployment-manager",
+                maka_host_runtime::application::management::native(),
+                BTreeMap::new(),
+            )?;
+            input.instances.insert(
+                "management".into(),
+                node(
+                    Uuid::new_v4(),
+                    manager.application_ref(),
+                    json!({}),
+                    BTreeMap::new(),
+                ),
+            );
+            packages.push(manager);
+        }
         if with_processes {
             let processes = package(
                 "maka.tests.processes",
@@ -3678,6 +3721,7 @@ mod model_recovery {
             .capabilities
             .get_or_insert_default()
             .native_compaction = Some(false);
+        model.info.capabilities.as_mut().unwrap().web_search = Some(true);
         let source = binding.model == "llama3.2";
         ModelRequestContext {
             operation: ModelOperation::Inference,
@@ -3706,6 +3750,13 @@ mod model_recovery {
             "summary":[{"type":"summary_text","text":"visible summary"}]})
     }
 
+    #[derive(Clone, Copy, PartialEq)]
+    enum FirstResponse {
+        Hold,
+        StartSearch,
+        Reasoning,
+    }
+
     /// Main Responses conversations use the WebSocket transport: each
     /// `response.create` text frame is one physical request.
     async fn serve_replay(
@@ -3713,7 +3764,7 @@ mod model_recovery {
         posts: Arc<std::sync::atomic::AtomicUsize>,
         requests: tokio::sync::mpsc::Sender<Vec<u8>>,
         stop: CancellationToken,
-        hold_first: bool,
+        first: FirstResponse,
     ) -> TestResult<()> {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::{
@@ -3751,10 +3802,15 @@ mod model_recovery {
                     };
                     let index = posts.fetch_add(1, Ordering::SeqCst);
                     requests.send(bytes).await?;
-                    if hold_first && index == 0 {
+                    if index == 0 && first != FirstResponse::Reasoning {
+                        if first == FirstResponse::StartSearch {
+                            socket.send(Message::text(json!({"type":"response.output_item.added",
+                                "item":{"type":"web_search_call","id":"ws_original","status":"in_progress"}
+                            }).to_string())).await?;
+                        }
                         continue;
                     }
-                    let events = if !hold_first && index == 1 {
+                    let events = if first == FirstResponse::Reasoning && index == 1 {
                         vec![json!({"type":"error","status":429,"error":{
                             "type":"rate_limit_error","code":"rate_limit_exceeded","message":"retry fixture"}})]
                     } else {
@@ -4245,7 +4301,7 @@ mod model_recovery {
             Arc::default(),
             requests,
             stop.clone(),
-            true,
+            FirstResponse::Hold,
         ));
         let driver = rig.driver.as_ref().ok_or("test driver missing")?.clone();
         let run = driver.access.execution().run_id;
@@ -4368,7 +4424,7 @@ mod model_recovery {
                 let mut boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
                 boot.replay = true;
                 wire = Some(tokio::spawn(serve_replay(
-                    listener, posts.clone(), requests_tx, stop.clone(), false,
+                    listener, posts.clone(), requests_tx, stop.clone(), FirstResponse::Reasoning,
                 )));
                 let path = base.join("boot.json");
                 tokio::fs::write(&path, serde_json::to_vec(&boot)?).await?;

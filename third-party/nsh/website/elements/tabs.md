@@ -117,6 +117,7 @@ the typed style methods and `.child(..)` for their content.
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No presses and no press feedback; `disabled:` styles apply, and screen readers say it is dimmed. |
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The tab's style while selected and not disabled, as `selected:` classes. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say: the tab's name, when its children have no text that says it (an icon). |
+| `accessibilityDescription` | `.accessibility_description(..)` | `string` | none | More about the tab than its name, which screen readers read after it: what it can do that its name does not say (Delete closes it). |
 | `children` | `.child(..)` | `JSX.Element` | none | The app's label, icon or badge, which screen readers say. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The tab itself: the surface around its label. |
 | `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle` | `.active(\|s\| ..)`, `.hover(..)`, `.focus(..)`, `.disabled_style(..)` | `StyleProp<ViewStyle>` | none | The tab's style while pressed, hovered, focused or disabled, as the `<state>:` classes. |
@@ -127,6 +128,7 @@ the typed style methods and `.child(..)` for their content.
 |---|---|---|---|---|
 | `indicatorClass` | `.indicator_class(..)` | `string` | none | The Tailwind classes of the indicator on the selected tab: its look and its place across the list (`bottom-0 h-0.5` for an underline in a row, `inset-y-1` for a pill). Along the list it spans the selected tab, inside its own margins on that axis. With `indicatorClass` or `indicatorStyle` the list has an indicator. |
 | `indicatorStyle` | `.indicator_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The style of the indicator, over `indicatorClass`. |
+| `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | The name of the list ("Sections", "Views"), which screen readers say as they enter it. |
 | `children` | `.child(..)` | `JSX.Element` | none | The tabs of the list, and whatever the app lays out between them. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The list's layout and look: a column by default, `flex-row` for a row. |
 
@@ -199,9 +201,10 @@ A disabled tab takes no presses, and screen readers announce it as dimmed. Its `
 ## Accessibility
 
 - A tab is one element for screen readers, with the role `"tab"` and its selected state. Its label is the text of its
-  children, or `accessibilityLabel`.
+  children, or `accessibilityLabel`. Its `accessibilityDescription` is read after the name, so the name stays the
+  tab's title: say there what the tab can do beyond being selected (a closable tab that Delete closes).
 - `Tabs` has the role `"tablist"`: screen readers hear the tabs inside it as one set, each still an element of its
-  own.
+  own. Its `accessibilityLabel` names the list; give one wherever no text next to the list says what its tabs switch.
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
 - On macOS and the web the list is one stop of the keyboard focus, and the arrow keys move between its tabs (below).

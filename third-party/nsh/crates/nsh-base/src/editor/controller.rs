@@ -135,11 +135,14 @@ pub(crate) struct Ed {
 
 impl Ed {
     pub(crate) fn new(props: EditorProps, cx: Scope<EditorEvent>) -> Ed {
-        let font = Font {
-            family: font_family(props.font_family.get_untracked()),
-            size: props.font_size.get_untracked(),
-            line_height: crate::terminal::row_height(props.line_height.get_untracked()),
-        };
+        // Untracked as the props: the font effect measures again on a change.
+        let font = untracked(|| {
+            drawn_font(
+                font_family(props.font_family.get_untracked()),
+                props.font_size.get_untracked(),
+                props.line_height.get_untracked(),
+            )
+        });
         let measure = measurer(&font);
         let text = props
             .value
@@ -298,11 +301,12 @@ impl Ed {
         });
         let ed = self.clone();
         effect(move || {
-            let font = Font {
-                family: font_family(ed.props.font_family.get()),
-                size: ed.props.font_size.get(),
-                line_height: crate::terminal::row_height(ed.props.line_height.get()),
-            };
+            // The user's text size (`fontScale`) too: the texts grow with it.
+            let font = drawn_font(
+                font_family(ed.props.font_family.get()),
+                ed.props.font_size.get(),
+                ed.props.line_height.get(),
+            );
             let mut st = ed.st.borrow_mut();
             st.display.set_cells(crate::terminal::is_terminal());
             if st.font != font {
@@ -1661,6 +1665,22 @@ pub(crate) fn font_family(family: Option<SharedString>) -> SharedString {
     family
         .or_else(|| crate::theme().font_mono.clone())
         .unwrap_or_else(|| SharedString::from("monospace"))
+}
+
+/// The font as the platform draws a code view's texts: the app's size and
+/// row height grown by the user's text size, as the core grows every
+/// text's (`fontScale`; a terminal's Cells stay as they are). Columns, rows
+/// and widths are measured in it, so a line fits where it is drawn.
+pub(crate) fn drawn_font(family: SharedString, size: Points, line_height: Points) -> Font {
+    let scale = match crate::terminal::is_terminal() {
+        true => 1.0,
+        false => nsh_core::element::font_scale(),
+    };
+    Font {
+        family,
+        size: size * scale,
+        line_height: crate::terminal::row_height(line_height * scale),
+    }
 }
 
 /// The width of a string in `font`, by the platform's text engine.

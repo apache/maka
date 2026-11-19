@@ -104,6 +104,8 @@ nsh package --target ios \
 
 写出 `.nsh/out/<Name>.ipa`，可用于 TestFlight、App Store 上传工具或直接安装（取决于描述文件）。具体过程如下：
 
+- 检查可执行文件包含 `arm64` 架构。`UIRequiredDeviceCapabilities` 默认为 `["arm64"]`，可通过
+  `ios.infoPlist` 替换。签名前，从当前 Xcode 工具链读取 Xcode 和 SDK 构建信息并写入 `Info.plist`。
 - 描述文件以 `embedded.mobileprovision` 的名称复制进应用。
 - entitlements 取自描述文件，加上 `nsh.json` `ios.entitlements` 中应用自己的项，并对照描述文件检查（见[下文](#infoplist-键与-entitlements)）。NSH 会检查描述文件的 application identifier 是否覆盖应用的 `id`（`TEAMID.*` 或
   `TEAMID.com.example.*` 这样的通配描述文件也可以），不覆盖则报错退出。
@@ -284,6 +286,7 @@ NSH 根据 `nsh.json` 其他键设置的键、以及打包后的应用所依赖�
 | iOS：`CFBundleIcons`、`CFBundleIcons~ipad`、`CFBundleIconName`；macOS：`CFBundleIconFile` | `icon` |
 | iOS：`UIUserInterfaceStyle` | `appearance` |
 | iOS：`UIStatusBarStyle`、`UIStatusBarHidden` | `statusBar` |
+| iOS：`UILaunchScreen`（设置了 `ios.launchScreen` 时） | `ios.launchScreen`（[启动画面](#启动画面)） |
 | macOS：`LSUIElement` | `macos.activationPolicy`（见[菜单栏应用](./macos.md#菜单栏应用)） |
 | `CFBundleExecutable`、`CFBundlePackageType`、`CFBundleSupportedPlatforms`；iOS：`LSRequiresIPhoneOS`、`UIApplicationSceneManifest`、`UIApplicationSupportsMultipleScenes`；macOS：`NSPrincipalClass` | 包本身 |
 | entitlements：`application-identifier`、`com.apple.application-identifier`、`com.apple.developer.team-identifier` | `id` 和描述文件 |
@@ -311,7 +314,8 @@ entitlements：
 ```
 
 值是由一到三个数字以点连接而成的字符串（`"15"`、`"15.2"`、`"15.2.1"`），不低于 NSH 在该平台的最低版本：iOS 为 `"15.0"`，macOS 为
-`"14.0"`。包按应用写的原样声明它，iOS 的应用图标也按它编译。更低的版本或其他形式的值会在读取 `nsh.json` 时报错，错误信息给出 NSH 的最低版本。
+`"14.0"`。包按应用写的原样声明它，应用的 Rust 代码（Rust 与 C 一样）按它构建，iOS 的应用图标也按它编译。环境里设了部署版本
+（`IPHONEOS_DEPLOYMENT_TARGET`、`MACOSX_DEPLOYMENT_TARGET`）时按环境里的值构建。更低的版本或其他形式的值会在读取 `nsh.json` 时报错，错误信息给出 NSH 的最低版本。
 
 ## 图标
 
@@ -319,7 +323,7 @@ entitlements：
 
 - **iOS：** 由 Xcode 的 `actool` 编译进应用的资源目录（`Assets.car`），iOS 所需的各种尺寸都由它生成。
 - **Android：** 缩放到 192×192，用作启动器图标（`mipmap-xxxhdpi`）。
-- **macOS：** 由 `sips` 转换为 `AppIcon.icns`。
+- **macOS：** 由 `sips` 转换为 `AppIcon.icns`。`nsh run --target macos` 和 `nsh test --target macos` 会在程序坞和应用切换器里显示这张 PNG。
 - **Linux：** 复制为 `<id>.png`，`.desktop` 文件以它作为 `Icon`。
 - **Windows：** 缩放为 16 到 64 像素以及 256 像素，作为图标嵌入可执行文件，窗口、资源管理器和任务栏都会显示它；同时写到 bundle 旁的 `nsh\icon.ico`，通知会显示它。在 macOS 或 Linux 上打包时，可执行文件在资源管理器里保持默认图标，窗口和任务栏显示 `icon.ico`。`nsh run --target windows` 和 `nsh test --target windows` 也会显示它。
 - **Web：** 缩放为 32 像素（favicon）、180 像素（`apple-touch-icon`）以及 192 和 512 像素（Web 应用清单）。
@@ -339,6 +343,26 @@ entitlements：
 `--icon` 会替换它，用于本次打包的目标。
 
 没有图标时，系统显示默认图标。
+
+## 启动画面
+
+从点下图标到应用画出第一帧，iOS 显示应用的启动画面：`nsh.json` 没给时，是系统在应用外观下的背景色。`ios.launchScreen` 设置它的颜色和屏幕中央的一张图，浅色、深色外观可以共用一个，也可以各给一个：
+
+```json
+{
+  "ios": {
+    "launchScreen": {
+      "background": { "light": "#ffffff", "dark": "#131312" },
+      "image": { "light": "launch.png", "dark": "launch-dark.png" }
+    }
+  }
+}
+```
+
+- `background` 是 `#rrggbb` 或 `#rrggbbaa`，或带 `light` 和 `dark` 的对象。
+- `image` 是相对 `nsh.json` 的 PNG，或带 `light` 和 `dark` 的对象。它按 3 倍屏绘制：系统按像素尺寸的三分之一显示，所以 288×288 的 PNG 是 96×96 点，居中。
+
+两者和图标一起编译进应用的资源目录，并写进 `UILaunchScreen`，应用就不再在 `ios.infoPlist` 里设置它。启动画面与应用第一帧一致（同样的背景、同一张图在同一位置）时，启动看起来没有跳变。系统显示哪一套由 `appearance` 决定。
 
 ## 相机、蓝牙和其他硬件
 

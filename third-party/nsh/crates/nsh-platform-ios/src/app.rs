@@ -6,11 +6,12 @@ use objc2::{
     runtime::AnyObject,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSObject, NSObjectProtocol, NSSet, NSString, NSURL};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSSet, NSString, NSURL, NSUserActivity};
 use objc2_ui_kit::{
-    UIApplication, UIApplicationDelegate, UIResponder, UIScene, UISceneConfiguration,
-    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIViewController, UIWindow,
-    UIWindowScene, UIWindowSceneDelegate, UIWindowSceneSessionRoleApplication,
+    UIApplication, UIApplicationDelegate, UIInterfaceOrientationMask, UIResponder, UIScene,
+    UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate, UISceneSession,
+    UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIWindowSceneSessionRoleApplication,
 };
 
 use crate::{image::AssetBase, surface::SurfaceOptions, view::AppView};
@@ -46,10 +47,10 @@ pub struct AppOptions {
     /// Where bundled image assets are (for [`AppSource::Bundle`]); dev
     /// servers serve them themselves.
     pub asset_base: Option<AssetBase>,
-    /// Where the apps keep their data, each in `<data_dir>/<app id>`:
+    /// Where the apps keep their data, each in `<support_dir>/<app id>`:
     /// `None` uses the app's own data directory
-    /// ([`SurfaceOptions::data_dir`]'s default).
-    pub data_dir: Option<std::path::PathBuf>,
+    /// ([`SurfaceOptions::support_dir`]'s default).
+    pub support_dir: Option<std::path::PathBuf>,
     /// Where the apps keep their caches (the images they downloaded) and
     /// how much each keeps ([`SurfaceOptions::cache`]).
     pub cache: nsh_engine::CacheOptions,
@@ -154,6 +155,15 @@ define_class!(
             if let Some(contexts) = contexts {
                 url_schemes(&contexts);
             }
+            // An address continued from another device (Handoff) that
+            // launched the app.
+            // SAFETY: a documented property, a set of `NSUserActivity`; read
+            // as nullable, as `URLContexts` above.
+            let activities: Option<Retained<NSSet<NSUserActivity>>> =
+                unsafe { msg_send![options, userActivities] };
+            for activity in activities.iter().flat_map(|set| set.iter()) {
+                continue_activity(&activity);
+            }
         }
 
         // Links of the schemes the app claims (`CFBundleURLTypes`) while it
@@ -162,16 +172,23 @@ define_class!(
         fn open_url_contexts(&self, _scene: &UIScene, contexts: &NSSet<AnyObject>) {
             url_schemes(contexts);
         }
+
+        // An address continued while the app runs (`SurfaceOptions::handoff`).
+        #[unsafe(method(scene:continueUserActivity:))]
+        fn continue_user_activity(&self, _scene: &UIScene, activity: &NSUserActivity) {
+            continue_activity(activity);
+        }
     }
 
     unsafe impl UIWindowSceneDelegate for SceneDelegate {}
 );
 
 define_class!(
-    /// The window's root controller: shows the status bar the app sets.
+    /// The window's root controller: shows the status bar the app sets,
+    /// and takes the orientations of the page shown.
     #[unsafe(super(UIViewController, UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
-    struct RootController;
+    pub(crate) struct RootController;
 
     impl RootController {
         #[unsafe(method(preferredStatusBarStyle))]
@@ -188,6 +205,15 @@ define_class!(
         fn preferred_status_bar_update_animation(&self) -> objc2_ui_kit::UIStatusBarAnimation {
             crate::system::status_bar_animation()
         }
+
+        #[unsafe(method(supportedInterfaceOrientations))]
+        fn supported_interface_orientations(&self) -> UIInterfaceOrientationMask {
+            if let Some(mask) = crate::system::page_orientations() {
+                return mask;
+            }
+            // SAFETY: calling the superclass implementation.
+            unsafe { msg_send![super(self), supportedInterfaceOrientations] }
+        }
     }
 );
 
@@ -196,6 +222,18 @@ impl RootController {
         // SAFETY: UIViewController's designated initializer.
         unsafe { msg_send![Self::alloc(mtm), init] }
     }
+}
+
+/// Hands the address `activity` carries ([`nsh_platform_apple::handoff`])
+/// to the app as a link.
+fn continue_activity(activity: &NSUserActivity) {
+    let Some(url) = nsh_platform_apple::handoff::continued_url(activity) else {
+        return;
+    };
+    APP.with(|app| match &*app.borrow() {
+        Some(app) => app.view.url_scheme(url),
+        None => log::warn!("link dropped: no app runs"),
+    });
 }
 
 /// Hands the URLs of `contexts` (`UIOpenURLContext`s) to the app.
@@ -238,13 +276,14 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
             trace: options.trace,
             fps: options.fps,
             asset_base: options.asset_base,
-            data_dir: options
-                .data_dir
-                .or_else(|| SurfaceOptions::default().data_dir),
+            support_dir: options
+                .support_dir
+                .or_else(|| SurfaceOptions::default().support_dir),
             cache: options.cache,
             // An app on its own (the development host, the release runner),
             // not a module embedded in another app.
             limits: nsh_engine::Limits::standalone(),
+            handoff: nsh_platform_apple::handoff::declared(),
             ..SurfaceOptions::default()
         },
     );

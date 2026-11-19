@@ -372,10 +372,169 @@ fn copy_writes_markdown() {
     ]}));
     focus(&mut app);
     keys(&mut app, &["mod+a", "mod+c"]);
-    app.wait(Duration::from_millis(50)).unwrap();
+    let _ = app.wait_until("the copy", Duration::from_secs(5), |s| {
+        s.clipboard().is_some()
+    });
     assert_eq!(
         app.screen().clipboard(),
         Some("## Head\n\nsome **bold** text")
+    );
+}
+
+/// Copies the selection: the clipboard's text and HTML.
+fn copied(app: &mut Headless) -> (String, String) {
+    keys(app, &["mod+c"]);
+    let _ = app.wait_until("the copy", Duration::from_secs(5), |s| {
+        s.clipboard_item()
+            .and_then(|item| item.html.as_deref())
+            .is_some()
+    });
+    (
+        app.screen().clipboard().expect("copied text").to_owned(),
+        app.screen()
+            .clipboard_item()
+            .and_then(|item| item.html.as_deref())
+            .expect("copied HTML")
+            .to_owned(),
+    )
+}
+
+#[test]
+fn copy_writes_html_with_its_slice() {
+    let mut app = start_any(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "some "},
+            {"type": "text", "text": "bold", "marks": [{"type": "bold"}]},
+            {"type": "text", "text": " text"}
+        ]}
+    ]}));
+    focus(&mut app);
+    select_right(&mut app, 9);
+    let (text, html) = copied(&mut app);
+    assert_eq!(text, "some **bold**");
+    // ProseMirror's: open in the paragraph on both sides, no context.
+    assert_eq!(
+        html,
+        r#"<p data-pm-slice="1 1 []">some <strong>bold</strong></p>"#
+    );
+}
+
+#[test]
+fn a_cut_writes_html_and_pastes_back_as_it_was() {
+    let mut app = start_any(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "some "},
+            {"type": "text", "text": "bold", "marks": [{"type": "bold"}]}
+        ]},
+        {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+    ]}));
+    focus(&mut app);
+    keys(&mut app, &["right", "right", "right", "right", "right"]);
+    select_right(&mut app, 4);
+    keys(&mut app, &["mod+x"]);
+    let _ = app.wait_until("the cut", Duration::from_secs(5), |s| {
+        s.clipboard_item()
+            .and_then(|item| item.html.as_deref())
+            .is_some()
+    });
+    assert_eq!(
+        app.screen()
+            .clipboard_item()
+            .and_then(|item| item.html.as_deref()),
+        Some(r#"<p data-pm-slice="1 1 []"><strong>bold</strong></p>"#)
+    );
+    tree(&mut app, r#"doc(paragraph("some "), paragraph("x"))"#);
+    let text = app.screen().clipboard().expect("cut text").to_owned();
+    let html = app
+        .screen()
+        .clipboard_item()
+        .and_then(|item| item.html.as_deref())
+        .expect("cut HTML")
+        .to_owned();
+    paste_html(&mut app, &text, &html);
+    tree(
+        &mut app,
+        r#"doc(paragraph("some ", bold("bold")), paragraph("x"))"#,
+    );
+}
+
+#[test]
+fn a_copied_mention_pastes_as_a_mention() {
+    let mut app = start_any(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "hi "},
+            {"type": "mention", "attrs": {"id": "a", "label": "Alice"}},
+            {"type": "text", "text": " x"}
+        ]},
+        {"type": "paragraph"}
+    ]}));
+    focus(&mut app);
+    select_right(&mut app, 4);
+    let (text, html) = copied(&mut app);
+    keys(&mut app, &["ctrl+end"]);
+    paste_html(&mut app, &text, &html);
+    tree(
+        &mut app,
+        r#"doc(paragraph("hi ", mention, " x"), paragraph("hi ", mention))"#,
+    );
+}
+
+#[test]
+fn text_copied_from_the_editor_keeps_its_spaces() {
+    let mut app = start_any(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "a  b"}]},
+        {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+    ]}));
+    focus(&mut app);
+    select_right(&mut app, 4);
+    let (text, html) = copied(&mut app);
+    keys(&mut app, &["ctrl+end"]);
+    // HTML an editor copied keeps its whitespace (ProseMirror's
+    // `preserveWhitespace` for a `data-pm-slice`); other HTML collapses it.
+    paste_html(&mut app, &text, &html);
+    tree(&mut app, r#"doc(paragraph("a  b"), paragraph("xa  b"))"#);
+}
+
+#[test]
+fn part_of_two_list_items_pastes_back_as_it_was() {
+    let doc = json!({"type": "doc", "content": [
+        {"type": "bulletList", "content": [item("ab", None), item("cd", None)]}
+    ]});
+    let mut app = start(doc);
+    focus(&mut app);
+    keys(&mut app, &["right"]);
+    // From after `a` to after `c`, across the items.
+    select_right(&mut app, 3);
+    let (text, html) = copied(&mut app);
+    // A paste over the same selection leaves the document as it was:
+    // the slice comes back with its open depths, no list around the list.
+    paste_html(&mut app, &text, &html);
+    tree(
+        &mut app,
+        r#"doc(bulletList(listItem(paragraph("ab")), listItem(paragraph("cd"))), paragraph)"#,
+    );
+}
+
+#[test]
+fn text_copied_in_a_list_item_pastes_inline() {
+    let mut app = start(json!({"type": "doc", "content": [
+        {"type": "bulletList", "content": [item("abc", None)]},
+        {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+    ]}));
+    focus(&mut app);
+    keys(&mut app, &["right"]);
+    select_right(&mut app, 1);
+    let (_, html) = copied(&mut app);
+    // The list and its item are the slice's context, not its content.
+    assert_eq!(
+        html,
+        r#"<p data-pm-slice="1 1 [&quot;bulletList&quot;,null,&quot;listItem&quot;,null]">b</p>"#
+    );
+    keys(&mut app, &["ctrl+end"]);
+    paste_html(&mut app, "b", &html);
+    tree(
+        &mut app,
+        r#"doc(bulletList(listItem(paragraph("abc"))), paragraph("xb"))"#,
     );
 }
 

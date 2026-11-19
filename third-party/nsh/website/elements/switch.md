@@ -100,13 +100,31 @@ A disabled switch reports nothing.
 | Part | Inside | Styled with | States |
 |---|---|---|---|
 | The switch | | `class`, `style` | `checked:`, `disabled:`, `active:`, `hover:`, `focus:` (or `checkedStyle`, `disabledStyle`, ...) |
-| The track | the switch, first | `trackClass`, `trackStyle` | `checked:`, `disabled:` follow the switch |
-| The thumb | the track | `thumbClass`, `thumbStyle` | `checked:`, `disabled:` follow the switch |
+| The track | the switch, first | `trackClass`, `trackStyle` | `checked:`, `disabled:`, `active:` follow the switch |
+| The thumb | the track | `thumbClass`, `thumbStyle` | `checked:`, `disabled:`, `active:` follow the switch |
 | The label | the switch, after the track | its own elements (`children`) | `group-checked:` and the other `group-*:` variants with `group` on the switch's `class` |
 
 The thumb moves by its own `checked:` styles: a translation (`checked:translate-x-5`), or a margin or the track's
 alignment (`checked:justify-end` on the track). A `transition-*` class animates the change natively. To place the
 label before the track, reverse the row: `class="flex-row-reverse justify-between"`.
+
+## Held down
+
+While a pointer or a finger holds the switch down, wherever on it the press went down (the label included), the
+`active:` classes of the track and the thumb apply, as the switch's own do, until the press is released or cancelled.
+They change as for any other state: a transform, colors and opacity animate with `transition-*`, and layout such as
+a width (`active:w-5`) changes at once. A thumb stretches smoothly, as a macOS switch's does, by scaling: from its
+left edge when off and from its right edge when on, so it grows back toward the middle, with `transition-transform`
+animating it natively:
+
+```tsx
+<Switch
+  checked={on()}
+  onChange={({ checked }) => on.set(checked)}
+  trackClass="w-[38px] rounded-full bg-muted p-0.5 checked:bg-primary"
+  thumbClass="size-4 rounded-full bg-background transition-transform origin-left active:scale-x-125 checked:translate-x-[18px] checked:origin-right"
+/>
+```
 
 ## Disabled
 

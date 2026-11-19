@@ -2,10 +2,19 @@
 //! rather than linked, so apps without web views do not pay for it at
 //! launch.
 
-use std::{ffi::CStr, rc::Rc, sync::OnceLock};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::CStr,
+    rc::Rc,
+    sync::OnceLock,
+};
 
-use nsh_core::{EventKind, EventPayload, NodeId, PayloadValue, WebProps, WebSource};
+use nsh_core::{
+    EventKind, EventMask, EventPayload, JsonValue, NodeId, PayloadValue, WebProps, WebSource,
+    webview::{WebViewOperation, WebViewRequest},
+};
 use nsh_engine::EngineControl;
+use nsh_platform_apple::web_download;
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::{Allocated, Retained},
@@ -14,6 +23,7 @@ use objc2::{
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_ui_kit::{UIView, UIViewAutoresizing};
+use rustc_hash::FxHashSet;
 
 use crate::native_view::NshView;
 
@@ -42,6 +52,16 @@ pub(crate) struct WebIvars {
     control: EngineControl,
     /// What the app may show (its `webview` capability).
     access: std::sync::Arc<nsh_engine::Access>,
+    /// WebKit's transfers, reported to and directed by the core (which
+    /// owns their destinations and lifecycle).
+    download: Rc<web_download::Transport>,
+    /// The view listens for `Download` or `DownloadPending`.
+    events_downloads: Cell<bool>,
+    /// The core asked the view to hold downloads (`defer_downloads`).
+    defer_downloads: Cell<bool>,
+    navigation: Cell<Option<usize>>,
+    /// Only these navigations may report an expected policy interruption.
+    downloading: RefCell<FxHashSet<usize>>,
     evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
 }
 
@@ -92,7 +112,46 @@ define_class!(
                     ]),
                 );
             }
-            decide.call((allowed as isize,));
+            // WKNavigationActionPolicyCancel = 0, Allow = 1, Download = 2.
+            // A `download` link becomes a download when the app asks for
+            // downloads (WebKit knows `shouldPerformDownload` on iOS 14.5
+            // and later).
+            let download = allowed && self.wants_download() && web_download::should_download(action);
+            decide.call((if download { 2 } else { allowed as isize },));
+        }
+
+        /// What the page cannot show, or the server sends as an attachment,
+        /// is downloaded when the app asks for downloads.
+        #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
+        fn decide_response(
+            &self,
+            _web: &AnyObject,
+            response: &AnyObject,
+            decide: &block2::Block<dyn Fn(isize)>,
+        ) {
+            let download = self.wants_download() && web_download::is_download(response);
+            if download && let Some(navigation) = self.ivars().navigation.get() {
+                self.ivars().downloading.borrow_mut().insert(navigation);
+            }
+            // SAFETY: WKNavigationResponse's documented MIME support flag.
+            let shows: Bool = unsafe { msg_send![response, canShowMIMEType] };
+            // WKNavigationResponsePolicyCancel = 0, Allow = 1, Download = 2.
+            decide.call((if download { 2 } else { shows.as_bool() as isize },));
+        }
+
+        #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
+        fn action_download(&self, _web: &AnyObject, _action: &AnyObject, download: &AnyObject) {
+            self.ivars().download.adopt(download);
+        }
+
+        #[unsafe(method(webView:navigationResponse:didBecomeDownload:))]
+        fn response_download(
+            &self,
+            _web: &AnyObject,
+            _response: &AnyObject,
+            download: &AnyObject,
+        ) {
+            self.ivars().download.adopt(download);
         }
 
         /// The page's `getUserMedia` gets what the app's `webview.media`
@@ -122,8 +181,9 @@ define_class!(
         }
 
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
-        fn did_start(&self, web: &AnyObject, _navigation: Option<&AnyObject>) {
+        fn did_start(&self, web: &AnyObject, navigation: Option<&AnyObject>) {
             self.ivars().evaluations.navigated();
+            self.ivars().navigation.set(navigation.map(navigation_key));
             let state = navigation_state(web, true);
             self.send(EventKind::LoadStart, state.clone());
             self.send(EventKind::NavigationStateChange, state);
@@ -149,20 +209,23 @@ define_class!(
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]
-        fn did_finish(&self, web: &AnyObject, _navigation: Option<&AnyObject>) {
+        fn did_finish(&self, web: &AnyObject, navigation: Option<&AnyObject>) {
+            if let Some(navigation) = navigation {
+                self.ivars().downloading.borrow_mut().remove(&navigation_key(navigation));
+            }
             let state = navigation_state(web, false);
             self.send(EventKind::Load, state.clone());
             self.send(EventKind::NavigationStateChange, state);
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
-        fn did_fail(&self, _web: &AnyObject, _navigation: Option<&AnyObject>, error: &AnyObject) {
-            self.failed(error);
+        fn did_fail(&self, _web: &AnyObject, navigation: Option<&AnyObject>, error: &AnyObject) {
+            self.failed(navigation, error);
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
-        fn did_fail_provisional(&self, _web: &AnyObject, _navigation: Option<&AnyObject>, error: &AnyObject) {
-            self.failed(error);
+        fn did_fail_provisional(&self, _web: &AnyObject, navigation: Option<&AnyObject>, error: &AnyObject) {
+            self.failed(navigation, error);
         }
     }
 );
@@ -173,12 +236,18 @@ impl WebHandler {
         id: NodeId,
         control: EngineControl,
         access: std::sync::Arc<nsh_engine::Access>,
+        download: Rc<web_download::Transport>,
         evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(WebIvars {
             id,
             control,
             access,
+            download,
+            events_downloads: Cell::new(false),
+            defer_downloads: Cell::new(false),
+            navigation: Cell::default(),
+            downloading: RefCell::default(),
             evaluations,
         });
         // SAFETY: NSObject's designated initializer.
@@ -190,7 +259,92 @@ impl WebHandler {
         ivars.control.dispatch_event(ivars.id, event, payload);
     }
 
-    fn failed(&self, error: &AnyObject) {
+    /// Whether this web view holds downloads for the core: the core asked
+    /// it to (`defer_downloads`, from the Rust builders) or the app listens
+    /// (`onDownload`, `onDownloadPending`). Otherwise the navigations stay
+    /// as they were.
+    fn wants_download(&self) -> bool {
+        let ivars = self.ivars();
+        ivars.events_downloads.get() || ivars.defer_downloads.get()
+    }
+
+    /// The events the app listens to changed.
+    pub(crate) fn set_events(&self, events: EventMask) {
+        self.ivars().events_downloads.set(
+            events.contains(EventKind::Download) || events.contains(EventKind::DownloadPending),
+        );
+    }
+
+    /// The core asked (or stopped asking) this view to hold downloads.
+    pub(crate) fn set_defer_downloads(&self, defer: bool) {
+        self.ivars().defer_downloads.set(defer);
+    }
+
+    /// The host is going: WebKit stops writing its transfers.
+    pub(crate) fn cancel_downloads(&self) {
+        self.ivars().download.cancel_all();
+    }
+
+    /// Answers a [`WebViewOperation`] through `EventKind::WebViewReply`.
+    pub(crate) fn web_request(&self, request: &WebViewRequest) {
+        let ivars = self.ivars();
+        let download = ivars.download.clone();
+        match &request.operation {
+            WebViewOperation::StartDownload { id, staging } => match download.start(id, staging) {
+                // WebKit accepted the destination; the core publishes the
+                // app's `started` and reports the completion as a
+                // `DownloadEnd`.
+                Ok(()) => self.reply(request.id, Ok(JsonValue::Null)),
+                Err(error) => self.reply(request.id, Err(error)),
+            },
+            WebViewOperation::CancelDownload { id } => {
+                // The reply is the core's permission to clean the staging
+                // directory: it comes only once WebKit has stopped writing,
+                // also after the view is released (the core's teardown
+                // needs it).
+                let control = ivars.control.clone();
+                let node = ivars.id;
+                let request_id = request.id;
+                let result = download.cancel(id, move || {
+                    control.dispatch_event(
+                        node,
+                        EventKind::WebViewReply,
+                        nsh_core::webview::reply(request_id, Ok(JsonValue::Null)),
+                    );
+                });
+                if let Err(error) = result {
+                    self.reply(request.id, Err(error));
+                }
+            }
+            // A newer core's operation: answer it rather than leave it
+            // pending.
+            _ => self.reply(
+                request.id,
+                Err("this iOS backend does not know the web view operation".into()),
+            ),
+        }
+    }
+
+    fn reply(&self, request: u64, result: Result<JsonValue, String>) {
+        self.send(
+            EventKind::WebViewReply,
+            nsh_core::webview::reply(request, result),
+        );
+    }
+
+    fn failed(&self, navigation: Option<&AnyObject>, error: &AnyObject) {
+        let downloading = navigation.is_some_and(|navigation| {
+            self.ivars()
+                .downloading
+                .borrow_mut()
+                .remove(&navigation_key(navigation))
+        });
+        // SAFETY: NSError's documented domain and code, as on macOS.
+        let (domain, code): (Retained<NSString>, isize) =
+            unsafe { (msg_send![error, domain], msg_send![error, code]) };
+        if downloading && domain.to_string() == "WebKitErrorDomain" && code == 102 {
+            return;
+        }
         // SAFETY: `localizedDescription` of an NSError.
         let message: Retained<NSString> = unsafe { msg_send![error, localizedDescription] };
         self.send(
@@ -198,6 +352,10 @@ impl WebHandler {
             EventPayload::Map(vec![("message", PayloadValue::Str(message.to_string()))]),
         );
     }
+}
+
+fn navigation_key(navigation: &AnyObject) -> usize {
+    navigation as *const AnyObject as usize
 }
 
 /// `{ url, title, loading, canGoBack, canGoForward }` of a WKWebView.
@@ -283,7 +441,16 @@ impl WebHost {
                 Box::new(move |id, kind, payload| control.dispatch_event(id, kind, payload)),
             )
         };
-        let handler = WebHandler::new(mtm, id, control, access, evaluations.clone());
+        // The transport's events are internal (the sink is the core): they
+        // go to the node whether or not the app listens for them, and they
+        // outlive this view (the engine handle keeps working after the host
+        // is gone; the core's teardown needs them).
+        let emit_control = control.clone();
+        let emit: web_download::Emit = Rc::new(move |kind, payload| {
+            emit_control.dispatch_event(id, kind, payload);
+        });
+        let download = web_download::Transport::new(mtm, emit);
+        let handler = WebHandler::new(mtm, id, control, access, download, evaluations.clone());
         Self {
             view,
             web: None,
@@ -352,6 +519,7 @@ impl WebHost {
     }
 
     pub(crate) fn configure(&mut self, p: WebProps) {
+        self.handler.set_defer_downloads(p.defer_downloads);
         if !self.made {
             // The core keeps `incognito` and the URL schemes from changing
             // once it is made.
@@ -429,6 +597,10 @@ impl WebHost {
     /// `reload()`, `goBack()`, `goForward()`, `stopLoading()`,
     /// `injectJavaScript()`, `postMessage()` and `load()`.
     pub(crate) fn command(&self, command: &nsh_core::Command) {
+        if let nsh_core::Command::WebViewRequest(request) = command {
+            self.handler.web_request(request);
+            return;
+        }
         match command {
             nsh_core::Command::Evaluate { request, script } => {
                 self.evaluations
@@ -495,10 +667,24 @@ impl WebHost {
             }
         }
     }
+    /// The events the app listens to changed: downloads are held for the
+    /// core while it listens for either download event.
+    pub(crate) fn set_events(&self, events: EventMask) {
+        self.handler.set_events(events);
+    }
+
+    /// Carries out a web view request the core asked this view for.
+    pub(crate) fn web_request(&self, request: &WebViewRequest) {
+        self.handler.web_request(request);
+    }
 }
 
 impl Drop for WebHost {
     fn drop(&mut self) {
+        // A transfer still writing keeps the transport (and its events)
+        // alive until WebKit confirms it stopped, so the core can clean its
+        // staging directory afterwards.
+        self.handler.cancel_downloads();
         self.evaluations.dispose();
         let Some(web) = &self.web else { return };
         // SAFETY: breaks the cycle web view -> controller -> handler.

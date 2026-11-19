@@ -1233,7 +1233,6 @@ pub(crate) fn Chat(cx: Scope<NoEvent>) -> impl IntoElement {
             .py(px(9.0))
             .rounded(px(radius::CONTROL))
             .gap(px(2.0))
-            .cursor_pointer()
             .child(
                 text(label)
                     .number_of_lines(1)
@@ -1268,7 +1267,6 @@ pub(crate) fn Chat(cx: Scope<NoEvent>) -> impl IntoElement {
                     .finish(Finish::Raised)
                     .border_1()
                     .border_color(colors::BORDER)
-                    .cursor_pointer()
                     .child(icon().name(IconName::Plus).size(15.0).tint(colors::TEXT))
                     .child(
                         text("New chat")
@@ -1570,8 +1568,13 @@ impl ChatState {
             .gap_3()
             .child(reply_header(model, stopped))
             .child(when(reasoned, move || {
-                view()
+                // A reveal: at the end of the conversation the list keeps
+                // its place while the reasoning slides open below (#2218).
+                nsh_base::collapsible()
+                    .open(open)
+                    .reveal(true)
                     .gap_2()
+                    .content(reasoning_text(reason))
                     .child(
                         press()
                             .scale(0.98)
@@ -1584,7 +1587,6 @@ impl ChatState {
                             })
                             .child(reasoning_toggle(label, thinking_now, open)),
                     )
-                    .child(when(open, move || reasoning_text(reason)))
             }))
             .child(each(
                 move || {

@@ -423,8 +423,9 @@ impl Owner {
                     .map_err(|error| error.to_string())?
                 && request
                     .spec
-                    .network_approval_ceiling()
-                    .contains(view.spec.network_approval_ceiling())
+                    .approval_ceiling()
+                    .contains(&view.spec.approval_ceiling())
+                    .map_err(|error| error.to_string())?
                 && view
                     .spec
                     .permission_ceiling

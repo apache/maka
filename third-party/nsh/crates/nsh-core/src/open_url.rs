@@ -38,7 +38,9 @@ const REFUSED_SCHEMES: &[&str] = &[
 /// Checks a URL an app asks to open: absolute (a scheme), at most
 /// [`MAX_URL_LEN`] bytes, no whitespace or control characters, and of a
 /// scheme that opens another app (not `javascript:`, `data:`, `blob:`,
-/// `file:`, `about:` or `asset:`). The error says what is wrong.
+/// `file:`, `about:` or `asset:`, and not one letter long: that is a
+/// Windows path, `C:/…`, which names a file or a program to run). The error
+/// says what is wrong.
 pub fn check_url(url: &str) -> Result<(), String> {
     if url.len() > MAX_URL_LEN {
         return Err(format!(
@@ -51,6 +53,15 @@ pub fn check_url(url: &str) -> Result<(), String> {
     }
     let parsed = url::Url::parse(url).map_err(|e| format!("openUrl: not a URL: {e} ({url})"))?;
     let scheme = parsed.scheme();
+    // A Windows path (`C:/Windows/notepad.exe`, `d:tool.cmd`) parses as a
+    // URL of scheme `c`, which a grant of every scheme takes, and Windows
+    // opens what such a "URL" names as the path it is: it runs the program
+    // or the script. No scheme is one letter long.
+    if scheme.len() == 1 {
+        return Err(format!(
+            "openUrl: not a URL: `{scheme}:` begins a file's path, and files are not opened ({url})"
+        ));
+    }
     if REFUSED_SCHEMES.contains(&scheme) {
         return Err(format!("openUrl: `{scheme}:` URLs are not opened"));
     }
@@ -500,6 +511,10 @@ mod tests {
             "asset:/logo.png",
             "https://exa mple.com",
             "https://example.com/\n",
+            // Windows paths: a drive's letter reads as a scheme.
+            "c:/windows/system32/cmd.exe",
+            r"C:\Users\ada\Downloads\setup.exe",
+            "d:tool.cmd",
         ] {
             assert!(check_url(url).is_err(), "{url}");
         }

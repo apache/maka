@@ -10,6 +10,7 @@
         "popup"
       ],
       "max": 3
-    }
+    },
+    "application": true
   }
 }

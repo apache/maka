@@ -171,11 +171,27 @@ pub(crate) fn update(
 }
 
 pub(crate) fn perform(surface: &Surface, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-    let Some(destination) = target(surface, sender) else {
+    if !sender
+        .draggingSourceOperationMask()
+        .contains(NSDragOperation::Copy)
+    {
+        clear(surface);
+        return false;
+    }
+    let point = input::event_root(surface)
+        .ns()
+        .convertPoint_fromView(sender.draggingLocation(), None);
+    drop_uris(surface, point.x as f32, point.y as f32, read_uris(sender))
+}
+
+/// Drops `uris` at `x`, `y` (the event root's coordinates) on the view
+/// there that listens: whether one took them. The test agent's `dropFiles`
+/// comes here too.
+pub(crate) fn drop_uris(surface: &Surface, x: f32, y: f32, uris: Vec<String>) -> bool {
+    let Some(destination) = input::file_drop_target(surface, x, y) else {
         clear(surface);
         return false;
     };
-    let uris = read_uris(sender);
     if uris.is_empty() {
         clear(surface);
         return false;

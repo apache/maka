@@ -73,6 +73,19 @@ Keyboard: `NshView` scrolls focused inputs clear of the keyboard itself.
 Leave `android:windowSoftInputMode` unset or use `adjustResize`; with
 `adjustPan` the system moves the whole window instead.
 
+Touch-mode embedding keeps the host's scroll position when a surface attaches or a
+host dialog closes. The first hardware key establishes an empty keyboard focus
+path; an already focused native input keeps ownership of its keys.
+
+The native embedding regression uses a partly visible surface in a scrolling
+activity, a host dialog and a native input. With an API 35 SDK and a connected
+device (select one with `ANDROID_SERIAL`), run from the checkout:
+
+```sh
+cargo xtask android --dev
+python3 crates/nsh-platform-android/tests/embedding-focus/run.py
+```
+
 The view reports the safe area and keyboard as the parts of the system bars
 and the keyboard that overlap it, so an app embedded below other views gets
 no top inset.

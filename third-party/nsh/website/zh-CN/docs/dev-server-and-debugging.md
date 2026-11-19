@@ -196,6 +196,53 @@ Mac 应用还会把日志写到它的标准错误所指向的地方：启动它�
 Android 应用写入 logcat（`adb logcat -s nsh`），Windows 应用写入调试器输出（`OutputDebugString`，DebugView 和 Visual
 Studio 会显示），Linux 应用写入标准错误。
 
+#### 桌面上的日志文件和级别
+
+打包后的 macOS、Windows、Linux 应用除了写入平台日志，还把日志写到它数据目录下的文件 `logs/app.log`：
+
+| 平台 | 日志文件 |
+|---|---|
+| macOS | `~/Library/Application Support/<应用 id>/logs/app.log` |
+| Windows | `%APPDATA%\<应用 id>\logs\app.log` |
+| Linux | `$XDG_DATA_HOME/<应用 id>/logs/app.log`（`~/.local/share/<应用 id>/logs/app.log`） |
+
+每一行依次是 UTC 时间、级别、target 和消息：`2026-11-12T08:30:05.123Z INFO  js: signed in`。文件到 5 MB 时改名为
+`app.1.log`，再开始新的 `app.log`；保留之前的三个文件（`app.1.log` 到 `app.3.log`）。文件写不进去时，应用照常运行。
+
+Rust 中的 `log_file()`、TSX 中的 `process.logFile` 给出这个文件的路径，应用可以把它附进诊断报告，或者提供“打开日志文件夹”；
+日志只写入平台日志时（开发宿主、嵌入应用、移动端、Web）为 `None`（`null`）。
+
+```rust tabs
+use nsh_core::prelude::*;
+
+// The log file shown selected in Finder, File Explorer or the file manager.
+if let Some(file) = log_file() {
+    spawn(async move {
+        let _ = reveal_path(file).await;
+    });
+}
+```
+
+```tsx tabs
+import process from "process";
+
+const report = { logFile: process.logFile, version: "1.4.0" };
+```
+
+默认情况下，打包应用记录它的警告、错误和 `js` 日志（`nsh run` 下记录 info 及以上的所有日志）。环境变量 `RUST_LOG`
+可以改为指定级别，语法与 `env_logger` 相同，对日志文件和平台日志同样生效：
+
+```sh
+RUST_LOG=info ./notes                                  # info 及以上的所有日志
+RUST_LOG=warn,notes=debug,js=info ./notes              # 应用自己的 crate 记录得更详细
+```
+
+在 Windows 上，可以在 PowerShell 中为一次运行设置（`$env:RUST_LOG="info"; .\Notes.exe`），或者在系统的环境变量中为当前用户设置。
+
+Rust 代码 panic 时，无论级别怎么设，文件里都会记下它：一行 `ERROR panic:`，后面是 Rust 打印的同一段话（线程、位置和消息），
+`RUST_BACKTRACE=1` 时还附上调用栈。打包应用的标准错误常常无处可看（Windows 的 GUI 程序、从 Finder 打开的 Mac 应用），
+应用崩溃的原因就在这个文件里。
+
 ## 错误浮层
 
 以下错误会在宿主上的应用上方显示红色浮层，包含错误信息和调用栈：

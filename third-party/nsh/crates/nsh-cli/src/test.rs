@@ -119,11 +119,11 @@ pub(crate) fn test(
     if device.is_some() && target != Some(crate::run::Target::Ios) {
         bail!("--device goes with --target ios");
     }
-    if display.is_some() && target != Some(crate::run::Target::Macos) {
-        bail!("--display goes with --target macos");
+    if display.is_some() && !target.is_some_and(crate::test_host::opens_on_a_display) {
+        bail!("{}", crate::test_host::DISPLAY_TARGETS);
     }
-    if foreground && target != Some(crate::run::Target::Macos) {
-        bail!("--foreground goes with --target macos");
+    if foreground && !target.is_some_and(crate::test_host::runs_in_background) {
+        bail!("{}", crate::test_host::FOREGROUND_TARGETS);
     }
     if web_host.is_some() && target.is_some() {
         bail!(

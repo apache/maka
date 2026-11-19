@@ -206,13 +206,15 @@ impl Owner {
         )
         .await?;
         let permission_basis = configuration.permission_basis();
-        if let RunInput::Message {
-            source_messages, ..
-        } = &input
-            && source_messages.iter().any(|source| {
+        let recovery = match &input {
+            RunInput::Message {
+                source_messages, ..
+            } => source_messages.iter().any(|source| {
                 super::external_recovery::is_recovery_message(&source.message, session_id)
-            })
-        {
+            }),
+            _ => false,
+        };
+        if recovery {
             configuration.permissions.access = WorkspaceAccess::ReadOnly;
             configuration.permissions.request_permissions = false;
         }
@@ -229,6 +231,22 @@ impl Owner {
         let inherited_network = parent.sandbox_floor().network();
         let network_approval_ceiling = (inherited_network != permission_ceiling.sandbox.network())
             .then(|| inherited_network.clone());
+        let inherited_filesystem = match parent.sandbox_floor() {
+            maka_sandbox::Sandbox::Managed { filesystem, .. } => Some(filesystem.clone()),
+            maka_sandbox::Sandbox::Disabled => Some(maka_sandbox::filesystem::Policy::uniform(
+                maka_sandbox::filesystem::Access::Write,
+            )),
+            maka_sandbox::Sandbox::External { .. } => None,
+        };
+        // Like network, a file grant can reach what the caller holds, including a
+        // session grant kept after requests are turned off. A recovery Run only
+        // inspects state, so earlier write grants stay out of it.
+        let filesystem_approval_ceiling = match &permission_ceiling.sandbox {
+            maka_sandbox::Sandbox::Managed { filesystem, .. } if !recovery => {
+                inherited_filesystem.filter(|inherited| inherited != filesystem)
+            }
+            _ => None,
+        };
         let system_prompt = basis.behavior.clone();
         if let Some(prompt) = &system_prompt {
             prompt.validate().map_err(|e| e.to_string())?;
@@ -306,6 +324,7 @@ impl Owner {
             permission_basis,
             permission_ceiling,
             network_approval_ceiling,
+            filesystem_approval_ceiling,
             backend,
             collaboration: basis.collaboration_mode,
             language: basis.language,

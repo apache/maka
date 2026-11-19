@@ -1,4 +1,4 @@
-import { Canvas, cleanup, computed, createAnimatedValue, Easing, effect, Image, type JSX, LayoutAnimation, Path2D, platform, reduceMotion, signal, Text, View, type ViewStyle } from "nsh";
+import { Canvas, cleanup, computed, createAnimatedValue, Easing, effect, Image, type JSX, LayoutAnimation, keymap, Path2D, platform, reduceMotion, signal, Text, View, type ViewStyle } from "nsh";
 import { Button as BaseButton, Link, Menu, MenuItem, MenuSeparator, Popover, Slider, Toggle, ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
 import { alpha, Badge, Caption, Card, chart, colors, DemoPage, finish, focusRing, hovered, menuIndicator, menuItemGlyph, menuItemLabel, menuItemLook, menuItemSize, MenuMark, menuSeparator, motion, photoUrl, PopIn, popoverLook, sliderFill, sliderLook, terminal, TERMINAL_GAP, Tip, toggleGlyph, toggleLabel, toggleLook, type ToggleLookOptions, toggleSizes, toolbarRule, toolbarTrack, LastEvent, LabeledToggle, menuPopup } from "../ui";
 import { Field } from "./OverlayUi";
@@ -170,10 +170,10 @@ function AlignGlyph(props: { align: Align; tint: string }) {
 }
 
 const MARKS: { value: string; icon: LucideIconName; label: string; short?: string; shortcut: string }[] = [
-  { value: "bold", icon: "bold", label: "Bold", shortcut: "⌘B" },
-  { value: "italic", icon: "italic", label: "Italic", shortcut: "⌘I" },
-  { value: "underline", icon: "underline", label: "Underline", shortcut: "⌘U" },
-  { value: "strike", icon: "strikethrough", label: "Strikethrough", short: "Strike", shortcut: "⌘⇧X" },
+  { value: "bold", icon: "bold", label: "Bold", shortcut: keymap.label("mod+b") },
+  { value: "italic", icon: "italic", label: "Italic", shortcut: keymap.label("mod+i") },
+  { value: "underline", icon: "underline", label: "Underline", shortcut: keymap.label("mod+u") },
+  { value: "strike", icon: "strikethrough", label: "Strikethrough", short: "Strike", shortcut: keymap.label("mod+shift+x") },
 ];
 const ALIGNS: { value: Align; label: string; short?: string }[] = [
   { value: "left", label: "Align left", short: "Left" },
@@ -303,9 +303,9 @@ export function ToolbarDemo() {
         <Toolbar accessibilityLabel="Formatting" style={track()} onLayout={({ bounds }) => width.set(bounds.size.width)}>
           <If when={!folded("undo")}>
             <ToolbarGroup accessibilityLabel="History" style={{ gap: GAP }}>
-              <Command icon="undo-2" label="Undo" shortcut="⌘Z" disabled={past().length === 0} onPress={undo} />
+              <Command icon="undo-2" label="Undo" shortcut={keymap.label("mod+z")} disabled={past().length === 0} onPress={undo} />
               <If when={!folded("redo")}>
-                <Command icon="redo-2" label="Redo" shortcut="⌘⇧Z" disabled={future().length === 0} onPress={redo} />
+                <Command icon="redo-2" label="Redo" shortcut={keymap.label("mod+shift+z")} disabled={future().length === 0} onPress={redo} />
               </If>
             </ToolbarGroup>
             <Rule />
@@ -370,7 +370,7 @@ export function ToolbarDemo() {
             offset={6}
             margin={8}
             trigger={
-              <Trigger label="Link" tip={<Tip label="Link" shortcut="⌘K" />} open={linkOpen() || !!state().link}>
+              <Trigger label="Link" tip={<Tip label="Link" shortcut={keymap.label("mod+k")} />} open={linkOpen() || !!state().link}>
                 <ToolIcon icon="link" label="Link" tint={state().link ? colors.accent : colors.muted} />
               </Trigger>
             }

@@ -355,6 +355,12 @@ impl Dialogs {
         self.shown.clear();
     }
 
+    /// Takes back the dialog shown as `id` (`Command::CloseDialog`): the
+    /// core answered it already.
+    pub(crate) fn close(&mut self, id: u32) {
+        self.shown.retain(|shown| shown.dialog.id != id);
+    }
+
     /// Hands a key to the top dialog; `None` when none is shown.
     pub(crate) fn key(&mut self, name: &str, modifiers: Modifiers) -> Option<Outcome> {
         let outcome = self.shown.first_mut()?.key(name, modifiers);
@@ -551,6 +557,7 @@ mod tests {
             ],
             cancelable: false,
             sheet,
+            input: None,
         }
     }
 
@@ -586,6 +593,16 @@ mod tests {
                 .modifier
                 .contains(Modifier::REVERSED)
         );
+    }
+
+    #[test]
+    fn the_app_takes_a_dialog_back() {
+        let mut dialogs = Dialogs::default();
+        dialogs.show(dialog(false));
+        dialogs.close(8);
+        assert!(dialogs.is_shown(), "another dialog's id");
+        dialogs.close(7);
+        assert!(!dialogs.is_shown());
     }
 
     #[test]

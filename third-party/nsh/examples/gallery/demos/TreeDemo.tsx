@@ -136,7 +136,7 @@ export function TreeDemo() {
     return (
       <Card
         title="Files"
-        subtitle={`${pointer ? "A double click" : "A double tap"} opens a file`}
+        subtitle={`${pointer ? "A double click" : "A double tap"} opens a file; a long press reports the row`}
         right={desktop() ? actions() : undefined}
       >
         {desktop() ? null : actions()}
@@ -165,7 +165,14 @@ export function TreeDemo() {
             opened.set(id);
             last.set(`Opened ${id}`);
           }}
-          renderItem={(entry) => <TreeRow entry={entry} detail={entry.disabled ? "excluded" : sizes[entry.id]} />}
+          // A row's own long press (its menu on a touchscreen) keeps the
+          // tree's taps: a view that listens only to `onLongPress` leaves
+          // them to the row around it.
+          renderItem={(entry) => (
+            <View onLongPress={() => last.set(`Long pressed ${entry.id}`)}>
+              <TreeRow entry={entry} detail={entry.disabled ? "excluded" : sizes[entry.id]} />
+            </View>
+          )}
         />
         <Caption
           label={`Selected: ${selected() ?? "none"}`}

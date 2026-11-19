@@ -1,0 +1,19 @@
+/* The packaged page's own styles (the loading and error screens), a file
+   of the site, so a strict `style-src` ('self') applies them. */
+html, body { margin: 0; height: 100%; overflow: hidden; }
+{{colors}}
+#app { position: fixed; inset: 0; }
+#status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; padding: 24px; box-sizing: border-box; text-align: center;
+  font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; pointer-events: none; }
+#status[hidden] { display: none; }
+#nojs { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  font: 15px system-ui, sans-serif; }
+/* Shown only when loading takes a while: no flash on a fast load. */
+.spinner { width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(128,128,128,.25);
+  border-top-color: rgba(128,128,128,.85); animation: spin .8s linear infinite, appear .2s .4s both; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes appear { from { opacity: 0; } }
+#status.failed { pointer-events: auto; }
+#status pre { margin: 0; max-width: 640px; max-height: 50vh; overflow: auto; text-align: left; white-space: pre-wrap;
+  font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; opacity: .7; -webkit-user-select: text; user-select: text; }

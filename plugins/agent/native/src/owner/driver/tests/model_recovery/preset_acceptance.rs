@@ -163,6 +163,94 @@ fn text_messages(request: &Value) -> String {
         .join("\n")
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_provider_search_continues_without_replaying_the_call() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    rig.model_idle_timeout = Some(Duration::from_millis(600));
+    let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+    let mut boot = bootstrap_deployment(rig.directory.path(), format!("http://{}/v1", listener.local_addr()?), true, |cfg| {
+        cfg["tools"] = json!([{"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},
+            "method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}]);
+    }).await?;
+    boot.replay = true;
+    attach(&mut rig, &boot).await?;
+    let (requests, mut received) = tokio::sync::mpsc::channel(4);
+    let stop = CancellationToken::new();
+    let wire = tokio::spawn(serve_replay(
+        listener,
+        Arc::default(),
+        requests,
+        stop.clone(),
+        FirstResponse::StartSearch,
+    ));
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &boot.base_url, false).await?;
+        let session = create(client, rig.directory.path(), &model, None).await?;
+        let id = &session["id"];
+        let sent = call(
+            client,
+            "agent",
+            "send",
+            json!({"sessionId":id,"message":"Check once, then continue."}),
+        )
+        .await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let target = json!({"kind":"message","messageId":sent["messageId"]});
+        let work = loop {
+            let work = call(
+                client,
+                "agent",
+                "work",
+                json!({"sessionId":id,"target":target}),
+            )
+            .await?;
+            match work["execution"]["state"]["kind"].as_str() {
+                Some("completed" | "cancelled" | "failed") => break work,
+                _ => tokio::time::sleep(Duration::from_millis(30)).await,
+            }
+        };
+        let first = received
+            .try_recv()
+            .map_err(|e| format!("original request missing ({e}): {work}"))?;
+        let first: Value = serde_json::from_slice(&first)?;
+        assert!(
+            first["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["type"] == "web_search"),
+            "{first}"
+        );
+        assert_eq!(work["execution"]["state"]["kind"], "completed", "{work}");
+        let next: Value = serde_json::from_slice(&received.try_recv()?)?;
+        assert!(next.get("previous_response_id").is_none(), "{next}");
+        let input = next["input"].as_array().unwrap();
+        assert!(
+            input
+                .iter()
+                .any(|item| item["content"].to_string().contains("ws_original")
+                    && item["content"].to_string().contains("outcome is unknown")),
+            "{next}"
+        );
+        assert!(!input.iter().any(|item| matches!(
+            item["type"].as_str(),
+            Some("web_search_call" | "function_call_output")
+        )));
+        assert!(received.try_recv().is_err());
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    wire.await??;
+    assert!(rig.finish().await.is_empty());
+    match outcome {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 #[test]
 fn truncated_cell_image_terminates_the_run() -> TestResult<()> {
     tokio::runtime::Builder::new_multi_thread()
@@ -310,8 +398,9 @@ async fn tool_round(
     approved_round(rig, provider, session, code, name, input, "run").await
 }
 
-/// When the Session may request permissions, a Web call and a Shell call with
-/// additional permissions must raise a request, which this approves at `scope`.
+/// When the Session may request permissions, a Web call, a Shell call with
+/// additional permissions and a file write in a read-only Session must raise a
+/// request, which this approves at `scope`.
 async fn approved_round(
     rig: &Rig,
     provider: &mut Provider,
@@ -351,14 +440,16 @@ async fn approved_round(
     );
     let owner = rig.captured.lock().unwrap().clone().unwrap();
     let tool = name;
+    let permissions = owner
+        .mutable_session(session)
+        .await?
+        .configuration
+        .permissions;
     let approve = (matches!(name, "WebFetch" | "WebSearch")
-        || (name == "Shell" && input.get("additional_permissions").is_some()))
-        && owner
-            .mutable_session(session)
-            .await?
-            .configuration
-            .permissions
-            .request_permissions;
+        || (name == "Shell" && input.get("additional_permissions").is_some())
+        || (name == "Write"
+            && permissions.access == maka_agent_api::contract::WorkspaceAccess::ReadOnly))
+        && permissions.request_permissions;
     let (name, input) = if code {
         (
             "exec",
@@ -597,7 +688,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                     assert!(mcp.contains("mcp-acceptance-marker"),"{mcp}");
                 } else {
                     for (output,reason) in [
-                        (&write,"Workspace metadata or Host-private files cannot be granted"),
+                        (&write,"Workspace policy does not allow requesting additional permissions"),
                         (&web,"HTTP call authority is retired or denied"),
                         (&mcp,"IsolationUnavailable: this MCP server cannot prove compatibility with the Run's sandbox floor"),
                     ] {assert!(output.contains(reason),"{output}");}
@@ -722,6 +813,196 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
     for server in servers {
         server.abort();
     }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    Ok(())
+}
+
+/// Read only stops writes until the user approves them, so a Session that may ask
+/// raises a request for each write instead of failing it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_only_writes_ask_for_permission() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+            config["tools"] = json!([
+                {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"ProcessInput","description":"Write to a background process","target":{"kind":"import","name":"processes"},"method":"writeStdin","nestable":true,"result":"json","confirmation":"preapproved"}
+            ]);
+        }).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let revision = owner.mutable_session(id).await?.revision;
+        let changed = call(client, "agent", "metadata", json!({
+            "sessionId":id,"expectedRevision":revision,"title":"Read only writes","labels":[],
+            "permissions":{"settings":{"access":"read_only","requestPermissions":true},"revokeGrants":true}
+        })).await?;
+        assert_eq!(changed["kind"], "committed", "{changed}");
+        let workspace = std::fs::canonicalize(base.join("workspace"))?;
+
+        let write = approved_round(&rig, &mut provider, id, false, "Write",
+            json!({"path":"notes.md","content":"approved"}), "once").await?;
+        let notes = std::fs::read_to_string(workspace.join("notes.md"))
+            .map_err(|error| format!("read notes.md: {error}; Write result: {write}"))?;
+        assert_eq!(notes, "approved", "{write}");
+
+        // On Linux the sandbox must mount an existing target for an exact writable path.
+        let shell_file = workspace.join("shell.txt");
+        std::fs::File::create(&shell_file)?;
+        let shell = approved_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":"echo approved > shell.txt","login":false,
+            "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
+            "justification":"Record the result"
+        }), "once").await?;
+        let contents = std::fs::read_to_string(&shell_file)
+            .map_err(|error| format!("read shell.txt: {error}; Shell result: {shell}"))?;
+        assert_eq!(contents, "approved\n", "{shell}");
+
+        let launched = approved_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":"read line; echo got-$line","login":false,"pty":true,"run_in_background":true,
+            "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
+            "justification":"Start an interactive Shell with access to the fixture"
+        }), "session").await?;
+        let result = launched.replace('\\', "");
+        let (_, result) = result.split_once(r#""ref":""#)
+            .ok_or_else(|| format!("process ref missing: {launched}"))?;
+        let (reference, _) = result.split_once('"').ok_or("incomplete process ref")?;
+        let input = tool_round(&rig, &mut provider, id, false, "ProcessInput",
+            json!({"ref":reference,"input":"ready\n"})).await?;
+        assert!(input.contains(r#"\"acceptedBytes\":6"#), "{input}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    Ok(())
+}
+
+/// A session grant stays usable after the user turns permission requests off,
+/// as a Web grant does.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_only_session_write_grant_outlasts_disabled_requests() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+            config["tools"] = json!([
+                {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"}
+            ]);
+        }).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let workspace = std::fs::canonicalize(base.join("workspace"))?;
+        for (requests, revoke) in [(true, true), (false, false)] {
+            let revision = owner.mutable_session(id).await?.revision;
+            let changed = call(client, "agent", "metadata", json!({
+                "sessionId":id,"expectedRevision":revision,"title":"Kept write grant","labels":[],
+                "permissions":{"settings":{"access":"read_only","requestPermissions":requests},"revokeGrants":revoke}
+            })).await?;
+            assert_eq!(changed["kind"], "committed", "{changed}");
+            let content = if requests { "approved" } else { "kept" };
+            let write = approved_round(&rig, &mut provider, id, false, "Write",
+                json!({"path":"notes.md","content":content}), "session").await?;
+            assert_eq!(std::fs::read_to_string(workspace.join("notes.md"))?, content, "{write}");
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    Ok(())
+}
+
+/// A conversation that may ask still cannot be granted a write its caller does
+/// not hold: a read-only conversation that sends it work keeps it read-only.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_write_approval_stays_within_its_caller() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+            config["tools"] = json!([
+                {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"SessionSend","description":"Send a message","target":{"kind":"export","name":"agent"},"method":"sessionSend","nestable":true,"result":"json","confirmation":"preapproved"}
+            ]);
+        }).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let mut ids = Vec::new();
+        for (title, requests) in [("Read-only caller", false), ("Worker that may ask", true)] {
+            let session = create(client, &base, &model, None).await?;
+            let id = session["id"].as_str().unwrap().to_owned();
+            let revision = owner.mutable_session(&id).await?.revision;
+            let changed = call(client, "agent", "metadata", json!({
+                "sessionId":id,"expectedRevision":revision,"title":title,"labels":[],
+                "permissions":{"settings":{"access":"read_only","requestPermissions":requests},"revokeGrants":true}
+            })).await?;
+            assert_eq!(changed["kind"], "committed", "{changed}");
+            ids.push(id);
+        }
+        let (caller, worker) = (&ids[0], &ids[1]);
+        let sent = call(client, "agent", "send", json!({"sessionId":caller,"message":"caller-marker"})).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let (_, reply) = provider.next().await?;
+        reply.send(tool_response("SessionSend", json!({
+            "sessionId":worker,"message":"worker-marker","onComplete":"none"
+        }))).map_err(|_| "caller response lost")?;
+        // The caller's follow-up and the worker's requests arrive in either order.
+        let mut output = None;
+        let mut caller_done = false;
+        while output.is_none() || !caller_done {
+            let (request, reply) = provider.next().await.map_err(|error| {
+                format!("worker write was not settled: {error}")
+            })?;
+            let messages = request["messages"].as_array().unwrap();
+            let tool = messages.iter().rposition(|message| message["role"] == "tool");
+            let response = if text_messages(&request).contains("caller-marker") {
+                caller_done = tool.is_some();
+                completion(json!({"role":"assistant","content":"Sent."}), "stop")
+            } else if let Some(tool) = tool {
+                output = Some(serde_json::to_string(&messages[tool..])?);
+                completion(json!({"role":"assistant","content":"Done."}), "stop")
+            } else {
+                tool_response("Write", json!({"path":"notes.md","content":"worker"}))
+            };
+            reply.send(response).map_err(|_| "model response lost")?;
+        }
+        let output = output.unwrap();
+        assert!(output.contains("beyond what this conversation's caller can write"), "{output}");
+        let pending = call(client, "agent", "pendingInteractions", json!({"sessionId":worker})).await?;
+        assert!(pending["entries"].as_array().unwrap().is_empty(), "{pending}");
+        assert!(!base.join("workspace/notes.md").exists(), "{output}");
+        quiescent_message(client, caller, &sent["messageId"]).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     match outcome {
         Ok(result) => result??,

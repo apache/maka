@@ -398,7 +398,7 @@ view()
 | `transition-none` | 无过渡 |
 | `duration-<ms>`、`duration-[<time>]` | `transitionDuration`：`duration-300`、`duration-[0.4s]` |
 | `delay-<ms>`、`delay-[<time>]` | `transitionDelay` |
-| `ease-linear`、`ease-in`、`ease-out`、`ease-in-out`、`ease-initial`、`ease-[cubic-bezier(...)]` | `transitionTimingFunction` |
+| `ease-linear`、`ease-in`、`ease-out`、`ease-in-out`、`ease-initial`、`ease-[cubic-bezier(...)]`、`ease-spring-[stiffness,damping]` / `ease-spring-[stiffness,damping,mass]`（NSH 扩展：自己决定时长的弹簧） | `transitionTimingFunction` |
 | `animate-spin`、`animate-ping`、`animate-pulse`、`animate-bounce` | 原生关键帧动画，无限循环 |
 | `animate-none` | 停止动画 |
 

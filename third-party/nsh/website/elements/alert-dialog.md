@@ -179,4 +179,9 @@ const { action } = await AlertDialog.show({
   button, the one before it the negative button, and the one before that the neutral button. An action sheet is a
   list of the actions in a dialog, with a tap outside or the back button in place of its cancel action (`action` is
   then `null`). The list dialog shows the `title`, or the `description` when the sheet has no title.
+- **macOS**: an `NSAlert`, a sheet of the window the user is in. While that window is out of sight (a tray app's
+  hidden main window, the app hidden, the window minimized or off every screen), the alert shows on its own in front
+  of every window and takes the app's input until it is answered; the app goes on running meanwhile. Escape chooses
+  the `"cancel"` action.
+  See [macOS](../docs/macos.md).
 - **Windows, Linux, GPUI and the web**: NSH draws the alert or action sheet in the platform's dialog look.
