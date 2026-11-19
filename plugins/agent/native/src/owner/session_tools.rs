@@ -526,9 +526,7 @@ impl Owner {
                         .or_else(|| serde_json::to_string(f).ok())
                 });
                 if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
-                    error = self
-                        .history_run_snippet(&session_id, latest_id, &Terminal::Failed)
-                        .await;
+                    error = self.history_result(&session_id, latest_id).await.failure;
                 }
                 run_overview = Some(SessionRunOverview {
                     run_id: latest_id,

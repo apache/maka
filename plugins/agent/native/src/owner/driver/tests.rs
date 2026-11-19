@@ -5947,6 +5947,38 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
     result.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_that_did_not_fail_reports_no_failure_reason() {
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let run = rig.driver.as_ref().unwrap().access.execution().run_id;
+        // A stopped Run whose executor was replaced ends on a diagnostic row.
+        let diagnostic = "The external executor changed while the run was interrupted";
+        rig.append(
+            vec![Fact::RunTerminated {
+                terminal: Terminal::Cancelled,
+                diagnostic: Some(diagnostic.into()),
+            }],
+            vec![],
+        )
+        .await?;
+        assert_eq!(
+            owner.history_result(&session, run).await.failure.as_deref(),
+            Some(diagnostic)
+        );
+        let result = owner.run_result(&session, run, &Terminal::Cancelled).await;
+        assert_eq!(result.failure, None);
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}
+
 #[tokio::test]
 async fn pending_completion_subscription_allows_idle_host_exit() {
     let mut rig = Rig::new().unwrap();

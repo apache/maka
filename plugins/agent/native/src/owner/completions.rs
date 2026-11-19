@@ -32,10 +32,38 @@ pub(super) struct CompletionRequest {
     workspace: Workspace,
     binding: maka_sandbox::workspace::BindingStamp,
 }
+/// What the recipient of a finished run needs to decide its next step: the last
+/// thing the worker said, and why the run failed when it did.
+#[derive(Default)]
+pub(super) struct RunResult {
+    pub reply: Option<String>,
+    pub failure: Option<String>,
+}
+impl RunResult {
+    pub(super) fn inline(&self) -> String {
+        let block = |tag: &str, body: &Option<String>| {
+            body.as_deref()
+                .map(|body| format!("\n\n<{tag}>\n{body}\n</{tag}>"))
+                .unwrap_or_default()
+        };
+        block("worker_result", &self.reply) + block("failure_reason", &self.failure).as_str()
+    }
+}
+fn excerpt(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut out: String = trimmed.chars().take(1600).collect();
+    if trimmed.chars().count() > 1600 {
+        out.push_str("\n… [truncated]");
+    }
+    Some(out)
+}
 enum Notice<'a> {
     Finished {
         terminal: Terminal,
-        snippet: Option<String>,
+        result: RunResult,
     },
     Unavailable,
     Attention {
@@ -65,20 +93,16 @@ impl Notice<'_> {
             "Read({})",
             serde_json::json!({"path": format!("maka://session/{}", task.session_id)})
         );
-        let (status, snippet) = match self {
-            Self::Finished {
-                terminal: Terminal::Completed,
-                snippet,
-            } => ("completed", snippet.as_deref()),
-            Self::Finished {
-                terminal: Terminal::Failed,
-                snippet,
-            } => ("failed", snippet.as_deref()),
-            Self::Finished {
-                terminal: Terminal::Cancelled,
-                snippet,
-            } => ("cancelled", snippet.as_deref()),
-            Self::Unavailable => ("unavailable", None),
+        let (status, inline_result) = match self {
+            Self::Finished { terminal, result } => (
+                match terminal {
+                    Terminal::Completed => "completed",
+                    Terminal::Failed => "failed",
+                    Terminal::Cancelled => "cancelled",
+                },
+                result.inline(),
+            ),
+            Self::Unavailable => ("unavailable", String::new()),
             Self::Attention { reason, .. } => {
                 let status_only = format!(
                     "SessionRead({})",
@@ -112,9 +136,6 @@ impl Notice<'_> {
                 };
             }
         };
-        let inline_result = snippet
-            .map(|body| format!("\n\n<worker_result>\n{body}\n</worker_result>"))
-            .unwrap_or_default();
         match language {
             Language::ZhCn => format!(
                 "你派发的任务（messageId: {}）已结束，状态：{status}。如需完整记录可调用 {read_uri} 或 {session_read}。{inline_result}",
@@ -133,79 +154,24 @@ impl Notice<'_> {
 }
 
 impl Owner {
-    pub(super) async fn history_run_snippet(
+    /// The result of a finished run: its last assistant message, and for a failed
+    /// run the failure recorded after that message. A stopped or completed run has
+    /// no failure to report; rows it shows (an interrupted step, a retried error)
+    /// are not why it ended.
+    pub(super) async fn run_result(
         &self,
         session_id: &str,
         run: RunId,
         terminal: &Terminal,
-    ) -> Option<String> {
-        use maka_agent_ports::session::history as wire;
-        let native_scope = maka_capabilities::call::Issuer::default()
-            .issue(maka_capabilities::call::Identity::Native, self.stop.clone())
-            .ok()?;
-        let page = crate::service::history_read_for_tool(
-            self,
-            &native_scope,
-            crate::contract::History {
-                session_id: session_id.to_owned(),
-                through: None,
-                position: wire::Position::Tail,
-                include_thinking: false,
-                view: wire::HistoryView::Conversation,
-            },
-        )
-        .await
-        .ok()?;
-        let crate::contract::HistoryPage::Ready { chunks, .. } = page else {
-            return None;
-        };
-        let target_role = if matches!(terminal, Terminal::Failed) {
-            wire::Role::Failure
-        } else {
-            wire::Role::Assistant
-        };
-        let mut messages: Vec<(
-            Option<String>,
-            maka_agent_facts::history::HistoryRowAddress,
-            String,
-        )> = Vec::new();
-        for chunk in chunks {
-            if chunk.run_id == Some(run)
-                && chunk.field == wire::HistoryField::Body
-                && chunk.role == target_role
-                && !chunk.text.is_empty()
-            {
-                if let Some((last_id, last_pos, last_text)) = messages.last_mut()
-                    && ((chunk.message_id.is_some() && *last_id == chunk.message_id)
-                        || *last_pos == chunk.position)
-                {
-                    last_text.push_str(&chunk.text);
-                } else {
-                    messages.push((chunk.message_id, chunk.position, chunk.text));
-                }
-            }
-        }
-        let mut combined = if matches!(terminal, Terminal::Failed) {
-            messages
-                .into_iter()
-                .map(|(_, _, text)| text)
-                .filter(|t| !t.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            messages
-                .into_iter()
-                .rev()
-                .map(|(_, _, text)| text)
-                .find(|t| !t.trim().is_empty())
-                .unwrap_or_default()
-        };
-        if combined.trim().is_empty()
-            && matches!(terminal, Terminal::Failed)
+    ) -> RunResult {
+        let mut result = self.history_result(session_id, run).await;
+        if *terminal != Terminal::Failed {
+            result.failure = None;
+        } else if result.failure.is_none()
             && let Ok(Some(view)) = self.session_run(session_id, run).await
             && let Some(failure) = view.recovery_failure()
         {
-            combined = serde_json::to_value(failure)
+            result.failure = serde_json::to_value(failure)
                 .ok()
                 .and_then(|v| {
                     v.get("diagnostic")
@@ -213,17 +179,111 @@ impl Owner {
                         .map(str::to_owned)
                 })
                 .or_else(|| serde_json::to_string(failure).ok())
-                .unwrap_or_default();
+                .as_deref()
+                .and_then(excerpt);
         }
-        let trimmed = combined.trim();
-        if trimmed.is_empty() {
+        // The history tail no longer reaches a run that later runs have pushed out;
+        // the end of its answer is the closest to what it said last.
+        if result.reply.is_none() {
+            result.reply = self.answer_tail(session_id, run).await;
+        }
+        result
+    }
+
+    /// The run's last assistant message on the history tail page, and the failure
+    /// rows recorded after it.
+    pub(super) async fn history_result(&self, session_id: &str, run: RunId) -> RunResult {
+        use maka_agent_ports::session::history as wire;
+        let mut reply: Option<(
+            Option<String>,
+            maka_agent_facts::history::HistoryRowAddress,
+            String,
+        )> = None;
+        let mut failures: Vec<(maka_agent_facts::history::HistoryRowAddress, String)> = Vec::new();
+        let page = match maka_capabilities::call::Issuer::default()
+            .issue(maka_capabilities::call::Identity::Native, self.stop.clone())
+        {
+            Ok(scope) => crate::service::history_read_for_tool(
+                self,
+                &scope,
+                crate::contract::History {
+                    session_id: session_id.to_owned(),
+                    through: None,
+                    position: wire::Position::Tail,
+                    include_thinking: false,
+                    view: wire::HistoryView::Conversation,
+                },
+            )
+            .await
+            .ok(),
+            Err(_) => None,
+        };
+        if let Some(crate::contract::HistoryPage::Ready { chunks, .. }) = page {
+            for chunk in chunks {
+                if chunk.run_id != Some(run)
+                    || chunk.field != wire::HistoryField::Body
+                    || chunk.text.trim().is_empty()
+                {
+                    continue;
+                }
+                match chunk.role {
+                    wire::Role::Assistant => {
+                        if let Some((id, position, text)) = &mut reply
+                            && ((chunk.message_id.is_some() && *id == chunk.message_id)
+                                || *position == chunk.position)
+                        {
+                            text.push_str(&chunk.text);
+                        } else {
+                            reply = Some((chunk.message_id, chunk.position, chunk.text));
+                            failures.clear();
+                        }
+                    }
+                    wire::Role::Failure => match failures.last_mut() {
+                        Some((position, text)) if *position == chunk.position => {
+                            text.push_str(&chunk.text);
+                        }
+                        Some((_, text)) if *text == chunk.text => {}
+                        _ => failures.push((chunk.position, chunk.text)),
+                    },
+                    _ => {}
+                }
+            }
+        }
+        RunResult {
+            reply: reply.and_then(|(_, _, text)| excerpt(&text)),
+            failure: excerpt(
+                &failures
+                    .into_iter()
+                    .map(|(_, text)| text)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        }
+    }
+
+    async fn answer_tail(&self, session_id: &str, run: RunId) -> Option<String> {
+        const TAIL: u64 = 4096;
+        let head = self.durable.work(run, 0, 4).await.ok().flatten()?;
+        if head.view.spec.session_id != session_id {
             return None;
         }
-        let mut out: String = trimmed.chars().take(1600).collect();
-        if trimmed.chars().count() > 1600 {
-            out.push_str("\n… [truncated]");
+        let start = head.answer.high_water.saturating_sub(TAIL);
+        // A cut inside a UTF-8 character is refused; the next boundary is at most 3 bytes on.
+        for offset in start..(start + 4).min(head.answer.high_water) {
+            if let Ok(Some(work)) = self.durable.work(run, offset, TAIL as u32).await {
+                let text = work.answer.text.trim();
+                let kept: Vec<char> = text.chars().rev().take(1600).collect();
+                if kept.is_empty() {
+                    return None;
+                }
+                let mut tail: String = kept.into_iter().rev().collect();
+                if offset > 0 || text.chars().count() > 1600 {
+                    tail.insert_str(0, "[truncated] …\n");
+                }
+                return Some(tail);
+            }
         }
-        Some(out)
+        None
     }
 
     pub(super) async fn completion_request(
@@ -411,7 +471,7 @@ impl Owner {
                 match resolution {
                     MessageResolution::Cancelled => Notice::Finished {
                         terminal: Terminal::Cancelled,
-                        snippet: None,
+                        result: RunResult::default(),
                     },
                     MessageResolution::Delivered { run, .. } => {
                         let state = states
@@ -421,14 +481,12 @@ impl Owner {
                         match (&state.terminal, &state.attention) {
                             (Some(terminal), _) => {
                                 // The worker may have handed off since the batch read its resolution.
-                                let (latest, work) = self
+                                let latest = self
                                     .durable
                                     .queue()
-                                    .message_work(
+                                    .resolve_message(
                                         entry.session_id.clone(),
                                         entry.message_id.clone(),
-                                        Some((run, 0)),
-                                        4096,
                                     )
                                     .await
                                     .map_err(|error| error.to_string())?;
@@ -436,28 +494,9 @@ impl Owner {
                                 {
                                     return Ok(());
                                 }
-                                let mut snippet = work
-                                    .filter(|w| {
-                                        w.view.spec.session_id == entry.session_id
-                                            && !w.answer.text.trim().is_empty()
-                                    })
-                                    .map(|w| {
-                                        let trimmed = w.answer.text.trim();
-                                        let mut out: String = trimmed.chars().take(1600).collect();
-                                        if w.answer.next.is_some() || trimmed.chars().count() > 1600
-                                        {
-                                            out.push_str("\n… [truncated]");
-                                        }
-                                        out
-                                    });
-                                if snippet.is_none() {
-                                    snippet = self
-                                        .history_run_snippet(&entry.session_id, run, terminal)
-                                        .await;
-                                }
                                 Notice::Finished {
                                     terminal: terminal.clone(),
-                                    snippet,
+                                    result: self.run_result(&entry.session_id, run, terminal).await,
                                 }
                             }
                             (None, Some(reason)) if !state.stopped => {
