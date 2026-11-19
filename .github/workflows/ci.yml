@@ -237,7 +237,7 @@ jobs:
             ${{ runner.temp }}/maka-ui-artifacts
           if-no-files-found: error
       - uses: ./.github/actions/ci-cache
-        if: ${{ !cancelled() && matrix.compile && matrix.saveCache != false && steps.compile.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.compile && matrix.saveCache && steps.compile.outcome == 'success' }}
         env:
           MAKA_CI_ROLE: ${{ matrix.id }}
         with:

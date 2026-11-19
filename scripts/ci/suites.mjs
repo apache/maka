@@ -440,6 +440,7 @@ export const workers = [
     dependencies: '',
     javascript: false,
     compile: true,
+    saveCache: true,
   },
   {
     id: 'nsh',
@@ -449,6 +450,7 @@ export const workers = [
     dependencies: 'headless',
     javascript: false,
     compile: true,
+    saveCache: true,
   },
   {
     id: 'macos-nsh',
@@ -458,6 +460,7 @@ export const workers = [
     dependencies: '',
     javascript: false,
     compile: true,
+    saveCache: true,
   },
   {
     id: 'windows-nsh',
@@ -467,6 +470,7 @@ export const workers = [
     dependencies: '',
     javascript: false,
     compile: true,
+    saveCache: true,
   },
   {
     id: 'native-macos',
@@ -491,6 +495,7 @@ export const workers = [
     dependencies: '',
     javascript: true,
     compile: true,
+    saveCache: true,
   },
   {
     id: 'native-macos-agent',
@@ -558,6 +563,7 @@ export const workers = [
     dependencies: '',
     javascript: true,
     compile: true,
+    saveCache: true,
   },
   {
     id: 'native-windows-desktop-2',

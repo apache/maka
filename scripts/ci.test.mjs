@@ -759,6 +759,9 @@ test('Linux consolidates root verification workers and reuses the root compiler 
   assert.equal(worker.javascript, true);
   assert.equal(worker.cacheRole, 'root');
   assert.equal(worker.saveCache, false);
+  for (const entry of plan.workers) {
+    assert.equal(typeof entry.saveCache, 'boolean', entry.id);
+  }
   const nshWorker = plan.workers.find((worker) => worker.id === 'nsh');
   assert.deepEqual(nshWorker.suites, ['nsh', 'linux-nsh']);
 });
