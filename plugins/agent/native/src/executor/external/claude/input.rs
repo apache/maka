@@ -190,7 +190,7 @@ pub(super) async fn submit(
     images: &[Value],
     bridge: &mcp::Bridge,
     start: &mut Start,
-) -> Result<String, Error> {
+) -> Result<Submitted, Error> {
     let mut mark = 0;
     let ready = async {
         loop {
@@ -226,6 +226,12 @@ pub(super) async fn submit(
     send(io, screen, prompt, images, start).await
 }
 
+/// What `send` put into the composer: the image markers, then the prompt.
+pub(super) struct Submitted {
+    pub markers: String,
+    pub prompt: String,
+    pub images: usize,
+}
 // Enter keeps Claude's native busy-input semantics; it is not the send-now shortcut.
 pub(super) async fn send(
     io: &mut (impl AsyncWrite + Unpin),
@@ -233,7 +239,7 @@ pub(super) async fn send(
     prompt: &str,
     images: &[Value],
     start: &mut Start,
-) -> Result<String, Error> {
+) -> Result<Submitted, Error> {
     let mut markers = Vec::with_capacity(images.len());
     for (index, image) in images.iter().enumerate() {
         let path = runtime::string(image, "/path")?;
@@ -283,7 +289,11 @@ pub(super) async fn send(
     *start = Start::Submitted;
     // Enter is sent only after every attachment and the text have been acknowledged.
     write(io, b"\r").await?;
-    Ok(format!("{}{prompt}", markers.join(" ")))
+    Ok(Submitted {
+        markers: markers.join(" "),
+        prompt: prompt.into(),
+        images: images.len(),
+    })
 }
 
 fn image_marker(text: &str) -> Option<String> {
