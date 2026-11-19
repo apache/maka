@@ -71,7 +71,120 @@ fn timing(page: &Value) -> wire::TurnTiming {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn recovery_failure_shows_original_tool_diagnostic() {
+async fn history_preserves_citation_targets_and_legacy_sources() -> TestResult<()> {
+    use maka_agent_facts::model::{CitationAnchor, ModelSource, TextKind};
+
+    let mut rig = Rig::new()?;
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let label = "A [source]";
+        let url = "https://example.com/a(b)";
+        let parts = [
+            ModelPart::Text {
+                text_kind: TextKind::Text,
+                text: "🦀资料".into(),
+                provider_options: None,
+            },
+            ModelPart::Source {
+                source: ModelSource::Url {
+                    id: "url".into(),
+                    url: url.into(),
+                    title: Some(label.into()),
+                    provider_options: None,
+                },
+                anchor: Some(CitationAnchor::Range {
+                    part: 0,
+                    start: 1,
+                    end: 3,
+                }),
+            },
+            serde_json::from_value(json!({
+                "kind": "source",
+                "source": {
+                    "kind": "document", "id": "doc", "media_type": "text/plain",
+                    "title": "Report", "filename": "report.txt"
+                }
+            }))?,
+        ];
+        let facts = parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| Fact::ModelObserved {
+                attempt,
+                index: index as u64,
+                part,
+                continuation: None,
+            })
+            .collect();
+        rig.append(facts, vec![]).await?;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let history = rig
+            .driver
+            .as_ref()
+            .unwrap()
+            .state
+            .session_history(owner.run_owner(), session);
+        let stop = CancellationToken::new();
+        let frozen = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                stop.clone(),
+            )
+            .await?;
+        let snapshot = crate::service::history::snapshot_page(
+            &frozen,
+            wire::Position::Tail,
+            true,
+            wire::HistoryView::Conversation,
+            &stop,
+        )
+        .await?;
+        for page in [page, serde_json::to_value(snapshot)?] {
+            let rows = page["chunks"].as_array().unwrap();
+            let text = rows.iter().find(|r| r["text"] == "🦀资料").unwrap();
+            assert!(text.get("citation").is_none());
+            let sources: Vec<_> = rows
+                .iter()
+                .filter(|r| r["sourceCitation"] == true)
+                .collect();
+            assert_eq!(sources.len(), 2);
+            assert_eq!(
+                sources[0]["citation"],
+                json!({"kind":"url","url":url,"title":label})
+            );
+            assert_eq!(
+                sources[0]["citationAnchor"],
+                json!({"kind":"range","part":text["modelPart"]["ordinal"],"start":1,"end":3})
+            );
+            assert_eq!(
+                sources[0]["modelPart"]["attemptId"],
+                text["modelPart"]["attemptId"]
+            );
+            assert_eq!(
+                sources[1]["citation"],
+                json!({"kind":"document","title":"Report","filename":"report.txt"})
+            );
+            assert!(sources[1].get("citationAnchor").is_none());
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    result.expect("citation projection assertion failed")?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
     use maka_plugin_core::operation::{Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef};
 
     let mut rig = Rig::new().unwrap();
@@ -80,6 +193,7 @@ async fn recovery_failure_shows_original_tool_diagnostic() {
         rig.assemble(&session).await?;
         let attempt = rig.attempt().await?;
         let (tool, _) = rig.tool(attempt, "Computer", "click", json!({})).await?;
+        rig.finish_model_request(attempt, None).await?;
         let driver = rig.driver.as_ref().unwrap();
         let run = driver.access.execution().run_id;
         let owner = driver.state.frontier(run).await?.spec.owner;
@@ -107,7 +221,17 @@ async fn recovery_failure_shows_original_tool_diagnostic() {
             tool: tool.clone(),
             reference: reference.clone(),
         };
-        let diagnostic = "The app started, but its window never appeared.";
+        let diagnostic = "paste did not produce an observable change";
+        let observed = |cleanup| Fact::OperationObserved {
+            tool: tool.clone(),
+            reply: maka_agent_facts::operation::RecordedOperationReply {
+                reference: reference.clone(),
+                receipt: Receipt::Recorded {
+                    outcome: OperationOutcome::Unknown { diagnostic: diagnostic.into() },
+                    cleanup,
+                },
+            },
+        };
         let committed = rig
             .append(
                 vec![
@@ -115,18 +239,7 @@ async fn recovery_failure_shows_original_tool_diagnostic() {
                         tool: tool.clone(),
                         reference: reference.clone(),
                     },
-                    Fact::OperationObserved {
-                        tool,
-                        reply: maka_agent_facts::operation::RecordedOperationReply {
-                            reference,
-                            receipt: Receipt::Recorded {
-                                outcome: OperationOutcome::Unknown {
-                                    diagnostic: diagnostic.into(),
-                                },
-                                cleanup: OperationCleanup::Confirmed,
-                            },
-                        },
-                    },
+                    observed(OperationCleanup::Unconfirmed),
                     Fact::Blocked {
                         blocker: BlockerId::new(),
                         reason: reason.clone(),
@@ -150,7 +263,7 @@ async fn recovery_failure_shows_original_tool_diagnostic() {
             .collect();
         assert_eq!(failures, [diagnostic]);
 
-        let history = driver.state.session_history(owner, session);
+        let history = driver.state.session_history(owner, session.clone());
         let cut = history.capture().await?;
         let sequence = history
             .fact_sequence(&cut, run, committed.facts.last().unwrap().id)
@@ -175,6 +288,43 @@ async fn recovery_failure_shows_original_tool_diagnostic() {
             archived.recovery_failure_at(&termination).await?.as_deref(),
             Some(diagnostic)
         );
+        let BackendSpec::Model { binding, .. } = driver.state.frontier(run).await?.spec.backend
+        else {
+            return Err("fixture model binding missing".into());
+        };
+        let client = rig.client.as_ref().unwrap();
+        let message = json!({
+            "sessionId": session, "message": "What happened?",
+            "backend": {"kind":"model", "connectionId": binding.connection_id, "modelId": binding.model},
+            "delivery": "queue",
+        });
+        let blocked = model_recovery::call(client, "agent", "send", message.clone()).await?;
+        assert_eq!(blocked["reason"], "original_operation_unsettled", "{blocked}");
+
+        driver.state.observe(
+            run,
+            vec![Change::new(observed(OperationCleanup::Confirmed), at())],
+            vec![],
+        ).await?;
+        let continued = model_recovery::call(client, "agent", "continueRun", json!({
+            "sessionId": session, "sourceRunId": run, "sourceHighWater": driver.state.frontier(run).await?.revision,
+            "model": {"connectionId": binding.connection_id, "modelId": binding.model},
+        })).await?;
+        assert_eq!(continued["reason"], "safety_check_failed", "{continued}");
+        let sent = model_recovery::call(client, "agent", "send", message).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let successor = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let work = model_recovery::call(client, "agent", "work", json!({
+                    "sessionId": session, "target": {"kind": "message", "messageId": sent["messageId"]},
+                })).await?;
+                if let Some(id) = work["execution"]["runId"].as_str() {
+                    return Ok::<RunId, Box<dyn Error + Send + Sync>>(serde_json::from_value(Value::String(id.into()))?);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.map_err(|_| "queued follow-up did not start")??;
+        assert_ne!(successor, run);
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })
     .catch_unwind()

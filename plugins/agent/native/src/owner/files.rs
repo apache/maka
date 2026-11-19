@@ -183,6 +183,29 @@ impl Owner {
         .await
     }
 
+    pub async fn resolve_file_link(
+        &self,
+        input: FileLinkRead,
+        scope: &Scope,
+    ) -> Result<FileReadPath, String> {
+        let (original, directory) = self.file_directory(&input.session_id, None, scope).await?;
+        let sandbox = self
+            .capture_sandbox(&original, scope.sandbox_floor())
+            .await?;
+        let selected = worktrees::blocking(scope, &self.stop, move |_| {
+            let bytes = STANDARD
+                .decode(&input.path_bytes)
+                .map_err(|_| "agent_files_invalid_path")?;
+            directory
+                .resolve_link(bytes, read_policy(&sandbox)?.as_ref())
+                .map_err(file_failure)
+        })
+        .await?;
+        self.check_file_session(&input.session_id, &original, scope)
+            .await?;
+        Ok(selected)
+    }
+
     pub async fn read_file(
         self: &Arc<Self>,
         input: FileRead,
@@ -194,10 +217,24 @@ impl Owner {
                 let (original, directory) = owner
                     .file_directory(&input.session_id, None, &scope)
                     .await?;
+                let sandbox = owner
+                    .capture_sandbox(&original, scope.sandbox_floor())
+                    .await?;
                 let capture = worktrees::blocking(&scope, &owner.stop, move |cancel| {
-                    directory
-                        .read_file(&input.path, input.expected_version.as_deref(), &cancel)
-                        .map_err(file_failure)
+                    let policy = read_policy(&sandbox)?;
+                    let version = input.expected_version.as_deref();
+                    match &input.path {
+                        FileReadPath::Workspace(path) => {
+                            directory.read_permitted_file(path, version, policy.as_ref(), &cancel)
+                        }
+                        FileReadPath::External { absolute } => directory.read_external_image(
+                            Path::new(absolute),
+                            policy.as_ref(),
+                            version,
+                            &cancel,
+                        ),
+                    }
+                    .map_err(file_failure)
                 })
                 .await;
                 owner
@@ -519,7 +556,7 @@ impl Owner {
         if let Some(path) = &path {
             path.validate().map_err(|_| "agent_files_invalid_path")?;
         }
-        let original = self.session(session).await?.configuration;
+        let original = self.scoped_session(scope, session).await?.configuration;
         self.check_file_session(session, &original, scope).await?;
         let root = self
             .store
@@ -742,6 +779,20 @@ fn next_file_scan(elapsed: std::time::Duration) -> tokio::time::Instant {
     // consuming a core continuously; native hints remain active between scans.
     let pause = std::time::Duration::from_secs(1).max(elapsed.saturating_mul(9));
     tokio::time::Instant::now() + pause
+}
+
+fn read_policy(
+    sandbox: &maka_sandbox::Sandbox,
+) -> Result<Option<maka_sandbox::filesystem::Compiled>, String> {
+    match sandbox {
+        maka_sandbox::Sandbox::Managed { filesystem, .. } => {
+            filesystem.compile().map(Some).map_err(|e| e.to_string())
+        }
+        maka_sandbox::Sandbox::Disabled => Ok(None),
+        maka_sandbox::Sandbox::External { .. } => {
+            Err("File preview requires a local workspace.".into())
+        }
+    }
 }
 
 // Only backend-owned static causes cross the service boundary. OS paths and

@@ -1024,6 +1024,14 @@ export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency =
 export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
 /**
+ * A file selected for reading. Only workspace paths are accepted by editing APIs.
+ */
+export type AgentReadFileInput_FileReadPath =
+  | AgentReadFileInput_WorkspacePath
+  | {
+      absolute: string;
+    };
+/**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
  */
@@ -1250,6 +1258,7 @@ export type AgentRestoreSessionCheckpointInput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentRestoreSessionCheckpointInput_ThinkingLevel | null;
     }
   | {
@@ -1303,6 +1312,7 @@ export type AgentSessionCheckpointRestoreReceiptInput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentSessionCheckpointRestoreReceiptInput_ThinkingLevel | null;
     }
   | {
@@ -1414,6 +1424,7 @@ export type AgentSessionCreateInput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentSessionCreateInput_ThinkingLevel | null;
     }
   | {
@@ -1447,6 +1458,7 @@ export type AgentSessionListOutput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentSessionListOutput_ThinkingLevel | null;
     }
   | {
@@ -1548,6 +1560,7 @@ export type AgentSessionManageOutput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentSessionManageOutput_ThinkingLevel | null;
     }
   | {
@@ -1820,6 +1833,7 @@ export type AgentSessionReadOutput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentSessionReadOutput_ThinkingLevel | null;
     }
   | {
@@ -2199,6 +2213,7 @@ export type AgentSessionSendInput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentSessionSendInput_ThinkingLevel | null;
     }
   | {
@@ -3726,7 +3741,7 @@ export interface ServiceMethods {
        */
       input: {
         sessionId: string;
-        path: Runtime.WorkspacePath;
+        path: AgentReadFileInput_FileReadPath;
         expectedVersion?: string | null;
       };
       output: AgentReadFileOutput_AgentFileReadPart | null;
@@ -3799,6 +3814,24 @@ export interface ServiceMethods {
         grants: AgentRequestSystemPermissionOutput_AgentSystemPermissionState[];
         requestable: boolean;
       };
+    };
+    resolveFileLink: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        /**
+         * Exact percent-decoded Markdown path bytes.
+         */
+        pathBytes: string;
+      };
+      /**
+       * A file selected for reading. Only workspace paths are accepted by editing APIs.
+       */
+      output:
+        | Runtime.WorkspacePath
+        | {
+            absolute: string;
+          };
     };
     respond: {
       mode: 'mutation';
@@ -5080,6 +5113,43 @@ export interface ServiceMethods {
       output: Runtime.SkillLibraryChangeResult;
     };
   };
+  workspaceComputer: {
+    evaluate: {
+      mode: 'mutation';
+      input: Runtime.ComputerEvaluate;
+      output: Runtime.ComputerResult;
+    };
+    presentTarget: {
+      mode: 'mutation';
+      input: Runtime.ComputerPresentTarget;
+      output: Runtime.ComputerPresentationResult;
+    };
+    readFrame: {
+      mode: 'query';
+      input: Runtime.ComputerReadFrame;
+      output: Runtime.ComputerFrameResult;
+    };
+    reset: {
+      mode: 'mutation';
+      input: {};
+      output: Runtime.ComputerResult;
+    };
+    state: {
+      mode: 'query';
+      input: {};
+      output: Runtime.ComputerReplState;
+    };
+    watchFrames: {
+      mode: 'subscription';
+      input: Runtime.ComputerWatchFrames;
+      output: Runtime.ComputerFrameNotice;
+    };
+    watchStage: {
+      mode: 'subscription';
+      input: Runtime.ComputerWatchStage;
+      output: Runtime.ComputerStageSnapshot;
+    };
+  };
   workspaceWeb: {
     capture: {
       mode: 'query';
@@ -5196,9 +5266,10 @@ export interface AgentChangeMemoryInput_MemoryResolution {
   model: AgentChangeMemoryInput_ModelSelection;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentChangeMemoryInput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -5437,9 +5508,10 @@ export interface AgentCreatePresetOutput_Preset {
   enabled: boolean;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentCreatePresetOutput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -5460,9 +5532,10 @@ export interface AgentDeletePresetOutput_Preset {
   enabled: boolean;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentDeletePresetOutput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -6031,9 +6104,10 @@ export interface AgentPresetOutput_Preset {
   enabled: boolean;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentPresetOutput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -6049,9 +6123,10 @@ export interface AgentPresetsOutput_PresetSummary {
   availability: AgentPresetsOutput_PresetAvailability;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentPresetsOutput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -6083,6 +6158,9 @@ export interface AgentPublishCheckpointOutput_AgentHistoryCheckpointObject {
 export interface AgentPublishCheckpointOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning;
+}
+export interface AgentReadFileInput_WorkspacePath {
+  bytesBase64: string;
 }
 export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;
@@ -6145,9 +6223,10 @@ export interface AgentReconcileMemoriesInput_MemoryResolution {
   model: AgentReconcileMemoriesInput_ModelSelection;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentReconcileMemoriesInput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -6364,9 +6443,10 @@ export interface AgentSessionListOutput_AgentWorkspacePermissions {
   requestPermissions: boolean;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentSessionManageInput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -6668,9 +6748,10 @@ export interface AgentSystemPermissionStatusOutput_AgentSystemPermissionState {
   effective: boolean;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentUpdatePresetInput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -6686,9 +6767,10 @@ export interface AgentUpdatePresetOutput_Preset {
   enabled: boolean;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface AgentUpdatePresetOutput_ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;

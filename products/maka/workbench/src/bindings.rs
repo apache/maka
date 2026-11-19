@@ -270,6 +270,7 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 pub fn ui_registry() -> Registry {
     let mut registry = Registry::ui_set("maka/host");
     registry.register::<crate::composer_input::ComposerInput>();
+    registry.register::<crate::live_image::LiveImage>();
     registry.register::<crate::composer_input::file::MarkdownFileEditor>();
     registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
@@ -515,13 +516,8 @@ impl ApplicationHost {
         Ok(())
     }
 
-    /// Resolve the original Markdown target once. Workspace bytes remain with
-    /// the Host; HTTP(S) images use NSH's native loader and bundle permissions.
-    pub fn markdown_image_source(
-        &self,
-        target: String,
-    ) -> Result<links::MarkdownImageSource, String> {
-        links::markdown_image(&target)
+    pub fn markdown_link(&self, target: String) -> Result<links::MarkdownLink, String> {
+        links::markdown_link(&target)
     }
 
     /// Convert diagram labels to paths locally; NSH keeps its existing SVG loader.
@@ -536,16 +532,10 @@ impl ApplicationHost {
         .await
     }
 
-    /// Hand an HTTP(S) link to this client's system browser, or return an exact
-    /// workspace-relative path and parent for the original session's reader.
-    /// This does not read files or execute anything on the connected Host.
-    pub async fn open_link(
-        this: Instance<Self>,
-        target: String,
-    ) -> Result<Option<links::WorkspaceLink>, String> {
+    pub async fn open_browser(this: Instance<Self>, target: String) -> Result<(), String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        links::open(owner, target).await
+        links::open_browser(owner, target).await
     }
 
     /// Display only. Keep the original opaque WorkspacePath for every Host call.

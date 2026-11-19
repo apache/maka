@@ -17,6 +17,7 @@
 //! (`incremental.rs`); a long text is read in parts the same way. Both are
 //! held to [`parse_whole`], which reads a whole text in one parse.
 
+mod anchors;
 mod autolink;
 mod cjk;
 mod container;
@@ -408,6 +409,7 @@ struct Converter<'a> {
     /// The complete rewritten source, before container slices and appended definitions.
     document_source: &'a Source,
     mapped: bool,
+    anchors: anchors::Anchors<'a>,
     quote: u32,
     /// Link and image definitions by identifier.
     definitions: HashMap<&'a str, &'a mdast::Definition>,
@@ -429,11 +431,13 @@ impl<'a> Converter<'a> {
         trees: &'a [Tree],
         mapped: bool,
     ) -> Self {
+        let anchors = anchors::Anchors::new(&parser.extensions);
         let mut converter = Self {
             parser,
             source: document_source,
             document_source,
-            mapped,
+            mapped: mapped || !anchors.is_empty(),
+            anchors,
             quote: 0,
             definitions: HashMap::new(),
             footnote_definitions: HashMap::new(),
@@ -644,6 +648,19 @@ impl<'a> Converter<'a> {
                 continue;
             } else {
                 self.convert_block(&nodes[i], out);
+            }
+            if !self.anchors.is_empty() && out.len() > before {
+                let range = node_range(&nodes[first]).start..node_range(&nodes[i]).end;
+                let markers = self.anchors.take(self.source, range);
+                if !markers.is_empty() {
+                    let markers = markers.into_iter().map(|(_, node)| node);
+                    match out.last_mut() {
+                        Some(Block::Paragraph { content } | Block::Heading { content, .. }) => {
+                            content.extend(markers)
+                        }
+                        _ => out.push(Block::paragraph(markers.collect())),
+                    }
+                }
             }
             if let Some(rows) = rows.as_deref_mut() {
                 let mut ranges = Vec::new();
@@ -1091,6 +1108,12 @@ impl<'a> Converter<'a> {
         let mut i = 0;
         while i < nodes.len() {
             let node = &nodes[i];
+            // Keep pressable children out of an existing Markdown link.
+            let mut markers = if matches!(node, Node::Link(_) | Node::LinkReference(_)) {
+                self.anchors.take(self.source, node_range(node))
+            } else {
+                Vec::new()
+            };
             if let Some(inline) = self.offer_inline(node) {
                 push(&mut out, inline);
             } else if let Some((close, fragment)) = self.inline_element(nodes, i) {
@@ -1107,6 +1130,13 @@ impl<'a> Converter<'a> {
             } else {
                 self.convert_inline(node, &mut out);
             }
+            if !self.anchors.is_empty() {
+                markers.extend(self.anchors.take(
+                    self.source,
+                    node_range(node).start..node_range(&nodes[i]).end,
+                ));
+            }
+            out.extend(markers.into_iter().map(|(_, marker)| marker));
             i += 1;
         }
         out
@@ -1330,10 +1360,15 @@ impl<'a> Converter<'a> {
                 }]),
             }
             .expect("Markdown inline provenance");
-            out.push(Inline::Source {
-                content,
-                segments: self.source.project(&rendered, segments),
-            });
+            let segments = self.source.project(&rendered, segments);
+            if matches!(node, Node::Text(_)) && !self.anchors.is_empty() {
+                let markers = self.anchors.take(self.source, node_range(node));
+                if !markers.is_empty() {
+                    anchors::split_text(&rendered, segments, markers, out);
+                    return;
+                }
+            }
+            out.push(Inline::Source { content, segments });
         }
     }
 

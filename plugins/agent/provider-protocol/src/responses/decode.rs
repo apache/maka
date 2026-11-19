@@ -56,6 +56,8 @@ enum Event {
     #[serde(rename = "response.output_text.annotation.added")]
     Annotation {
         item_id: String,
+        #[serde(default)]
+        content_index: usize,
         annotation_index: u64,
         annotation: Annotation,
     },
@@ -218,6 +220,7 @@ struct Part {
     text: String,
     summary_index: Option<usize>,
     summary_breaks: Vec<usize>,
+    annotations: BTreeMap<(usize, u64), Annotation>,
 }
 pub struct Decoder {
     reasoning: ReasoningMode,
@@ -383,6 +386,7 @@ impl Decoder {
                 text: String::new(),
                 summary_index: None,
                 summary_breaks: Vec::new(),
+                annotations: BTreeMap::new(),
             },
         );
         out.push(OutputEvent::PartStarted {
@@ -458,10 +462,14 @@ impl Decoder {
     }
     fn citation(
         &mut self,
-        id: String,
+        item_id: &str,
+        content_index: usize,
+        annotation_index: u64,
         annotation: Annotation,
+        span: Option<&std::ops::Range<u64>>,
         out: &mut Vec<OutputEvent>,
-    ) -> Result<()> {
+    ) {
+        let id = format!("{item_id}:{content_index}:{annotation_index}");
         if let Annotation::Url {
             url,
             title,
@@ -471,15 +479,64 @@ impl Decoder {
             && self.citations.insert(id.clone())
         {
             self.replay_safe = false;
+            let anchor = span.and_then(|span| {
+                let (start, end) = start_index.zip(end_index)?;
+                (start < end && end <= span.end - span.start).then(|| {
+                    crate::output::CitationAnchor::Range {
+                        part: item_id.to_owned(),
+                        start: span.start + start,
+                        end: span.start + end,
+                    }
+                })
+            });
             out.push(OutputEvent::Citation(Citation {
                 id,
+                item_id: item_id.to_owned(),
+                content_index,
+                anchor,
                 url,
                 title,
                 start_index,
                 end_index,
             }));
         }
-        Ok(())
+    }
+    fn message_citations(
+        &mut self,
+        id: &str,
+        content: Vec<Text>,
+        mut annotations: BTreeMap<(usize, u64), Annotation>,
+        out: &mut Vec<OutputEvent>,
+    ) {
+        if annotations.is_empty() && content.iter().all(|part| part.annotations.is_empty()) {
+            return;
+        }
+        let mut offset = 0;
+        let spans: Vec<_> = content
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| {
+                let start = offset;
+                offset += part.text.chars().count() as u64;
+                annotations.extend(
+                    part.annotations
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, annotation)| ((index, i as u64), annotation)),
+                );
+                start..offset
+            })
+            .collect();
+        for ((content_index, annotation_index), annotation) in annotations {
+            self.citation(
+                id,
+                content_index,
+                annotation_index,
+                annotation,
+                spans.get(content_index),
+                out,
+            );
+        }
     }
     fn final_item(
         &mut self,
@@ -499,18 +556,17 @@ impl Decoder {
         match item {
             Item::Message { id, phase, content } => {
                 let mut text = String::new();
-                for (index, part) in content.into_iter().enumerate() {
+                for part in &content {
                     if !matches!(part.r#type.as_str(), "output_text" | "refusal") {
                         return Err(Self::invalid("unsupported Responses message content"));
                     }
                     text.push_str(&part.text);
-                    for (annotation_index, annotation) in part.annotations.into_iter().enumerate() {
-                        self.citation(format!("{id}:{index}:{annotation_index}"), annotation, out)?;
-                    }
                 }
-                if self.done.contains(&id) {
-                    return Ok(());
-                }
+                let annotations = self
+                    .open
+                    .get_mut(&id)
+                    .map(|part| std::mem::take(&mut part.annotations))
+                    .unwrap_or_default();
                 let item = metadata(&id);
                 let metadata = match phase {
                     Some(phase @ (MessagePhase::Commentary | MessagePhase::FinalAnswer)) => {
@@ -518,7 +574,8 @@ impl Decoder {
                     }
                     _ => PartMetadata::Item(item),
                 };
-                self.finish_part(id, text, TextKind::Text, Some(metadata), out)?;
+                self.finish_part(id.clone(), text, TextKind::Text, Some(metadata), out)?;
+                self.message_citations(&id, content, annotations, out);
             }
             Item::Reasoning {
                 id,
@@ -747,13 +804,27 @@ impl Decoder {
             }
             Event::Annotation {
                 item_id,
+                content_index,
                 annotation_index,
                 annotation,
-            } => self.citation(
-                format!("{item_id}:0:{annotation_index}"),
-                annotation,
-                &mut out,
-            )?,
+            } => {
+                if let Some(part) = self.open.get_mut(&item_id) {
+                    if matches!(annotation, Annotation::Url { .. }) {
+                        self.replay_safe = false;
+                        part.annotations
+                            .insert((content_index, annotation_index), annotation);
+                    }
+                } else {
+                    self.citation(
+                        &item_id,
+                        content_index,
+                        annotation_index,
+                        annotation,
+                        None,
+                        &mut out,
+                    );
+                }
+            }
             Event::Error { error } => return Err(self.provider(error)),
             Event::Failed { response } => {
                 return Err(self.provider(response.error.unwrap_or(ProviderError {
@@ -789,6 +860,9 @@ impl Decoder {
                         Item::Other => None,
                     };
                     if id.is_some_and(|id| self.done.contains(id)) {
+                        if let Item::Message { id, content, .. } = item {
+                            self.message_citations(&id, content, BTreeMap::new(), &mut out);
+                        }
                         continue;
                     }
                     let template = replay.remove(item.identity()?.0);

@@ -91,7 +91,7 @@ export function BotReply(props: {
                               }
                               sourceId={(() => {
                                 const s = seg();
-                                return s.kind === 'markdown' && s.atStart
+                                return s.kind === 'markdown' && s.start === 0
                                   ? `bot/${message().sequence}`
                                   : undefined;
                               })()}

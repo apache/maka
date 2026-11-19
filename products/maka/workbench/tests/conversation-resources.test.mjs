@@ -123,7 +123,8 @@ test('resource requests from both workspaces keep their source session, even for
   assert.equal(resources.terminals.sessionId(), 'A');
   resources.openImage(image('A'));
   resources.openImage(image('B'));
-  assert.equal(resources.activeTab().image.source.read.sessionId, 'B');
+  assert.equal(resources.activeTab().sessionId, 'B');
+  assert.equal(resources.activeTab().image.uri, image('B').uri);
 });
 
 test('external links do not change the current preview, and file links open in their originating workspace', async (t) => {
@@ -236,7 +237,7 @@ test('window commands follow the focused pane and stop targeting a removed pane'
 });
 
 test('review navigation preserves workspace file:// anchors, history back/forward, and review batch formatting', async (t) => {
-  const { formatReviewBatch, extractLineIdentifiers, relativizeWorkspaceFileUrl } = await import(
+  const { formatReviewBatch, extractLineIdentifiers } = await import(
     new URL('reviewState.ts', appRoot)
   );
   globalThis.resourceScope = [];
@@ -274,7 +275,7 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
   assert.equal(resources.active(), 'changes');
 
   await resources.openLink('A', 'file:///Users/test/project/src/lib.rs#L10-L15', () => false);
-  assert.deepEqual(openedTargets, ['src/lib.rs#L10-L15']);
+  assert.deepEqual(openedTargets, ['file:///Users/test/project/src/lib.rs#L10-L15']);
   assert.equal(resources.activeTab().kind, 'file');
   assert.equal(resources.activeTab().model.anchorValue.line, 9);
   assert.equal(resources.activeTab().model.anchorValue.endLine, 14);
@@ -340,19 +341,6 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
   });
   const mdFormatted = formatReviewBatch([mdNote]);
   assert.ok(mdFormatted.includes('````markdown\n```ts'), mdFormatted);
-
-  // Windows file:///C:/... and '#'/'?' percent-encoded filenames relativize without corrupting anchors.
-  assert.equal(
-    relativizeWorkspaceFileUrl('file:///C:/Users/dev/repo/src/main.rs#L12', 'C:\\Users\\dev\\repo'),
-    'src/main.rs#L12',
-  );
-  assert.equal(
-    relativizeWorkspaceFileUrl(
-      'file:///Users/test/project/docs/a%23b.md#L10',
-      '/Users/test/project',
-    ),
-    'docs/a%23b.md#L10',
-  );
 
   // Closing session B prunes its review store entries.
   assert.equal(resources.reviewStore.notes('B').length, 1);

@@ -204,6 +204,24 @@ pub(crate) async fn attachment_image(
             )
             .await?
         }
+        ui::AttachmentImageSource::Artifact { id } => {
+            let image = scoped_state(owner, scope)?
+                .artifacts()
+                .reference_chunk(
+                    SessionScope {
+                        owner: owner.run_owner(),
+                        session: input.session_id.clone(),
+                    },
+                    id.clone(),
+                    input.offset,
+                    32 * 1024,
+                )
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("agent_image_unavailable")?;
+            validate(&image)?;
+            image
+        }
         ui::AttachmentImageSource::Uploaded { id } => {
             uploaded(owner, scope, &input.session_id, id.clone(), input.offset).await?
         }

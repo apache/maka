@@ -33,7 +33,9 @@ pub use window::{
     WindowKind, WindowMode, WindowOptions, WindowPointerEvents, WindowPosition, WindowProgress,
     WindowRequest, Workspaces,
 };
-pub use window_state::{Display, DisplayId, WindowPlacement, WindowState, notch};
+pub use window_state::{
+    Display, DisplayId, NativeDesktopBounds, NativeDesktopUnit, WindowPlacement, WindowState, notch,
+};
 
 /// Additional sources of quit requests on standalone macOS apps. Both
 /// options default to false and require a quit request listener. Other

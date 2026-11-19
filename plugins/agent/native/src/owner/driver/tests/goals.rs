@@ -149,6 +149,7 @@ async fn exercise(
             binding: config.binding,
         },
         model: ModelSelection {
+            service_tier: None,
             connection_id: model.source.accepted.binding.connection_id.clone(),
             model_id: model.source.accepted.binding.model.clone(),
         },

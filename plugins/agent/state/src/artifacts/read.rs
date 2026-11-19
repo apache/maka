@@ -180,16 +180,10 @@ impl Query for Resolve {
         }
         // Tool metadata remains owned by its original canonical producer. This
         // verification does not turn the selected descriptor into a byte grant.
-        let origin:Option<(String,i64)>=c.query_row("SELECT b.run,b.revision FROM agent_artifact_run_bindings b INDEXED BY agent_artifact_bindings_session JOIN agent_run_specs r ON r.run=b.run WHERE b.session=? AND b.artifact=? AND r.owner=? AND r.session=? ORDER BY b.run LIMIT 1",params![self.scope.session,id,owner,self.scope.session],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-        let (run, revision) = origin.ok_or_else(|| {
-            invalid("artifact index has no original canonical registration or producer")
-        })?;
-        let scope = ArtifactReadScope::from(ArtifactScope {
-            owner: self.scope.owner,
-            session: self.scope.session,
-            run: serde_json::from_value(serde_json::Value::String(run))?,
-            through: from_sql_integer(revision)?,
-        });
+        let scope =
+            ArtifactReadScope::from(producer_scope(c, self.scope, &id)?.ok_or_else(|| {
+                invalid("artifact index has no original canonical registration or producer")
+            })?);
         let material = lookup(c, &scope, &id)?
             .ok_or_else(|| invalid("artifact original producer evidence is unavailable"))?;
         Ok(Some(material.record.artifact))
@@ -218,6 +212,46 @@ impl Query for Source {
             proof: item.proof,
             root: self.root,
         }))
+    }
+}
+fn producer_scope(
+    c: &Connection,
+    session: SessionScope,
+    id: &str,
+) -> Result<Option<ArtifactScope>, StoreError> {
+    let owner = serde_json::to_string(&session.owner)?;
+    let origin:Option<(String,i64)>=c.query_row("SELECT b.run,b.revision FROM agent_artifact_run_bindings b INDEXED BY agent_artifact_bindings_session JOIN agent_run_specs r ON r.run=b.run WHERE b.session=? AND b.artifact=? AND r.owner=? AND r.session=? ORDER BY b.run LIMIT 1",params![session.session,id,owner,session.session],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+    let Some((run, revision)) = origin else {
+        return Ok(None);
+    };
+    Ok(Some(ArtifactScope {
+        owner: session.owner,
+        session: session.session,
+        run: serde_json::from_value(serde_json::Value::String(run))?,
+        through: from_sql_integer(revision)?,
+    }))
+}
+
+pub(super) struct ReferenceChunk {
+    pub scope: SessionScope,
+    pub id: String,
+    pub offset: u64,
+    pub limit: u32,
+}
+impl Query for ReferenceChunk {
+    type Output = Option<ArtifactChunk>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let scope = match producer_scope(c, self.scope.clone(), &self.id)? {
+            Some(run) => run.into(),
+            None => self.scope.into(),
+        };
+        Chunk {
+            scope,
+            id: self.id,
+            offset: self.offset,
+            limit: self.limit,
+        }
+        .execute(c)
     }
 }
 pub(super) struct Chunk {

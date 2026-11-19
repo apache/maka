@@ -589,12 +589,11 @@ impl Decor {
             layer.setShadowPath(None);
         }
         let covered = covers_shadows && kind != Kind::Text;
-        let text = kind == Kind::Text;
         match &mut self.visual {
-            Some(visual) => visual.apply(view, layer, style, local, radii, text, covered),
+            Some(visual) => visual.apply(view, layer, style, local, radii, kind, covered),
             None => {
                 let mut visual = crate::visual::Visual::default();
-                visual.apply(view, layer, style, local, radii, text, covered);
+                visual.apply(view, layer, style, local, radii, kind, covered);
                 if !visual.is_empty() {
                     self.visual = Some(Box::new(visual));
                 }

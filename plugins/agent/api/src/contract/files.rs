@@ -20,7 +20,7 @@
 pub use maka_fs_tools::files::{
     FileChange, FileContent, FileCursor, FileEntry, FileKind, FilePage, FileUnavailable,
 };
-pub use maka_fs_tools::path::WorkspacePath;
+pub use maka_fs_tools::path::{FileReadPath, WorkspacePath};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -66,13 +66,22 @@ pub struct FileWatch {
     pub path: Option<WorkspacePath>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentFileLinkRead")]
+pub struct FileLinkRead {
+    pub session_id: String,
+    /// Exact percent-decoded Markdown path bytes.
+    pub path_bytes: String,
+}
+
 /// One bounded current-file capture. A version is a precondition, never read authority.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentFileRead")]
 pub struct FileRead {
     pub session_id: String,
-    pub path: WorkspacePath,
+    pub path: FileReadPath,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 71, max = 71), regex(pattern = "^sha256:[a-f0-9]{64}$"))]
     pub expected_version: Option<String>,

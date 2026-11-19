@@ -133,9 +133,6 @@ pub(super) fn metadata(value: Value) -> Extensions {
     Some(BTreeMap::from([("anthropic".into(), value)]))
 }
 impl Citation {
-    pub fn is_web_search(&self) -> bool {
-        matches!(self, Self::WebSearchResultLocation { .. })
-    }
     pub fn attachment(&self, documents: &DocumentReferences) -> output::Citation {
         let extensions = metadata(serde_json::to_value(self).expect("citation is JSON"));
         let (source, text) = match self {
@@ -224,7 +221,13 @@ impl Citation {
             Self::CharLocation { document, start_char_index, end_char_index } => {
                 self.document_source(document, documents, next_id, json!({"citedText":document.cited_text,"startCharIndex":start_char_index,"endCharIndex":end_char_index}))
             }
-            _ => None,
+            Self::SearchResultLocation { cited_text, source, title, start_block_index, end_block_index, search_result_index } => Some(output::Source::Url {
+                id: next_id(), url: source.clone(), title: title.clone(),
+                extensions: metadata(json!({"citedText":cited_text,"searchResultIndex":search_result_index,"startBlockIndex":start_block_index,"endBlockIndex":end_block_index})),
+            }),
+            Self::ContentBlockLocation { document, start_block_index, end_block_index } => {
+                self.document_source(document, documents, next_id, json!({"citedText":document.cited_text,"startBlockIndex":start_block_index,"endBlockIndex":end_block_index}))
+            }
         }
     }
     fn document_source(
@@ -232,8 +235,9 @@ impl Citation {
         location: &Location,
         documents: &DocumentReferences,
         next_id: &mut dyn FnMut() -> String,
-        details: Value,
+        mut details: Value,
     ) -> Option<output::Source> {
+        details["documentIndex"] = json!(location.document_index);
         let reference = documents.get(location.document_index)?;
         let document = match reference {
             DocumentReference::Owned(document) => document,

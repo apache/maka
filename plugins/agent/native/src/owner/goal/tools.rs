@@ -202,10 +202,7 @@ impl ToolPreparer for Goals {
                                 };
                                 let language = view.spec.language;
                                 let grant = match &view.spec.backend {
-                                    BackendSpec::Model {
-                                        binding,
-                                        descriptor,
-                                    } => {
+                                    BackendSpec::Model { descriptor, .. } => {
                                         let accepted = crate::model::AcceptedModel::from_backend(
                                             &view.spec.backend,
                                             &captured
@@ -218,10 +215,7 @@ impl ToolPreparer for Goals {
                                         BackgroundGrant::Model(
                                             super::super::notifications::BackgroundApproval {
                                                 target,
-                                                model: ModelSelection {
-                                                    connection_id: binding.connection_id.clone(),
-                                                    model_id: binding.model.clone(),
-                                                },
+                                                model: accepted.selection(),
                                                 thinking_level: accepted.thinking_level,
                                                 accepted_model: accepted,
                                                 language,

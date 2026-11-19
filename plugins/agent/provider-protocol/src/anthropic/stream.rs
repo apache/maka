@@ -112,7 +112,6 @@ pub struct Stream {
     end: wire::End,
     transformations: Option<Vec<wire::Transformation>>,
     context: Option<wire::ContextManagement>,
-    pending_web_citations: Vec<Citation>,
     has_output: bool,
     has_error: bool,
     last_finish: Option<output::Finish>,
@@ -132,7 +131,6 @@ impl Stream {
             end: wire::End::default(),
             transformations: None,
             context: None,
-            pending_web_citations: Vec::new(),
             has_output: false,
             has_error: false,
             last_finish: None,
@@ -360,16 +358,6 @@ impl Stream {
             }
             Chunk::MessageStop => {
                 self.lifecycle = Lifecycle::Idle;
-                if !self.decoder.has_search_results {
-                    for citation in self.pending_web_citations.drain(..) {
-                        if let Some(source) =
-                            citation.source(&self.decoder.options.documents, next_id)
-                        {
-                            events.push(Event::Source(source));
-                        }
-                    }
-                }
-                self.pending_web_citations.clear();
                 let finish = response::finish::from_usage(
                     &self.usage,
                     self.raw_usage.clone(),
@@ -386,10 +374,8 @@ impl Stream {
                 index,
                 content_block,
             } => events.extend(self.start(index, content_block, next_id)?),
-            Chunk::ContentBlockDelta { index, delta } => {
-                events.extend(self.delta(index, delta, next_id)?)
-            }
-            Chunk::ContentBlockStop { index } => events.extend(self.stop(index)),
+            Chunk::ContentBlockDelta { index, delta } => events.extend(self.delta(index, delta)?),
+            Chunk::ContentBlockStop { index } => events.extend(self.stop(index, next_id)),
             Chunk::Error { error } => {
                 events.push(Event::ProviderError(output::ProviderError {
                     message: Some(error.message),
@@ -419,13 +405,23 @@ impl Stream {
         let id = index.to_string();
         let mut events = Vec::new();
         match block {
-            Block::Text { .. } if !self.decoder.options.json_tool => {
-                self.blocks.insert(index, Active::Text(Vec::new()));
+            Block::Text { text, citations } if !self.decoder.options.json_tool => {
+                self.blocks
+                    .insert(index, Active::Text(citations.unwrap_or_default()));
                 events.push(Event::TextStart {
-                    id,
+                    id: id.clone(),
                     kind: TextKind::Text,
                     extensions: None,
                 });
+                if !text.is_empty() {
+                    events.push(Event::TextDelta {
+                        id,
+                        kind: TextKind::Text,
+                        text,
+                        extensions: None,
+                        reasoning_field: None,
+                    });
+                }
             }
             Block::Text { .. } => {}
             Block::Thinking { .. } => {
@@ -539,11 +535,14 @@ impl Stream {
                 }
             }
             block => {
-                for part in self.decoder.block(block, next_id)? {
+                for part in self.decoder.block(block, index, next_id)? {
                     match part {
                         Part::ToolCall(call) => events.push(Event::ToolCall(call)),
                         Part::ToolResult(result) => events.push(Event::ToolResult(result)),
-                        Part::Source(source) => events.push(Event::Source(source)),
+                        Part::Source { source, .. } => events.push(Event::Source {
+                            source,
+                            anchor: None,
+                        }),
                         Part::Custom { kind, extensions } => {
                             events.push(Event::Custom { kind, extensions })
                         }
@@ -556,12 +555,7 @@ impl Stream {
         }
         Ok(events)
     }
-    fn delta(
-        &mut self,
-        index: usize,
-        delta: Delta,
-        next_id: &mut dyn FnMut() -> String,
-    ) -> Result<Vec<Event>> {
+    fn delta(&mut self, index: usize, delta: Delta) -> Result<Vec<Event>> {
         let id = index.to_string();
         let mut events = Vec::new();
         match delta {
@@ -643,26 +637,30 @@ impl Stream {
             }
             Delta::Citations { citation } => {
                 if let Some(Active::Text(citations)) = self.blocks.get_mut(&index) {
-                    citations.push(citation.clone());
-                }
-                if citation.is_web_search() {
-                    self.pending_web_citations.push(citation);
-                } else if let Some(source) =
-                    citation.source(&self.decoder.options.documents, next_id)
-                {
-                    events.push(Event::Source(source));
+                    citations.push(citation);
                 }
             }
         }
         Ok(events)
     }
-    fn stop(&mut self, index: usize) -> Vec<Event> {
+    fn stop(&mut self, index: usize, next_id: &mut dyn FnMut() -> String) -> Vec<Event> {
         let Some(block) = self.blocks.remove(&index) else {
             return Vec::new();
         };
         let mut events = Vec::new();
         match block {
             Active::Text(citations) => {
+                for citation in &citations {
+                    if let Some(source) = citation.source(&self.decoder.options.documents, next_id)
+                    {
+                        events.push(Event::Source {
+                            source,
+                            anchor: Some(output::CitationAnchor::BlockEnd {
+                                part: index.to_string(),
+                            }),
+                        });
+                    }
+                }
                 let extensions = (!citations.is_empty())
                     .then(|| metadata(json!({"citations":citations})))
                     .flatten();

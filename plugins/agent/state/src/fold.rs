@@ -486,12 +486,33 @@ impl RunView {
     }
 
     pub fn blocks_followup(&self) -> bool {
+        self.blocks_successor(|tool| {
+            // A new turn does not reuse the original tool outcome.
+            matches!(
+                tool.receipt,
+                Some(Receipt::Recorded {
+                    outcome: OperationOutcome::Unknown { .. },
+                    cleanup: OperationCleanup::Confirmed,
+                })
+            )
+        })
+    }
+
+    pub fn blocks_continuation(&self) -> bool {
+        self.blocks_successor(|_| false)
+    }
+
+    fn blocks_successor(&self, ignore_unknown: impl Fn(&Tool) -> bool) -> bool {
         (self.terminal == Some(Terminal::Failed) || self.cancelled_by_risk)
-            && self.has_unsettled_recovery()
+            && self.has_unsettled_recovery_except(ignore_unknown)
             && !self.interrupted_host_calls()
     }
 
     pub fn has_unsettled_recovery(&self) -> bool {
+        self.has_unsettled_recovery_except(|_| false)
+    }
+
+    fn has_unsettled_recovery_except(&self, ignore_unknown: impl Fn(&Tool) -> bool) -> bool {
         let closed_native_process = matches!(&self.spec.backend, BackendSpec::Executor { selection, .. }
             if selection.executor == "external")
             && self
@@ -499,6 +520,11 @@ impl RunView {
                 .as_ref()
                 .is_some_and(|task| task.cleanup == OperationCleanup::Confirmed);
         self.recovery_failures().any(|reason| {
+            if let BlockerKind::OperationUnknown { tool, reference } = reason {
+                return !self.tools.get(&tool_key(tool)).is_some_and(|tool| {
+                    tool.original.as_ref() == Some(reference) && ignore_unknown(tool)
+                });
+            }
             if let BlockerKind::OriginalAdmissionUnknown { tool } = reason {
                 return self
                     .tools
@@ -522,7 +548,10 @@ impl RunView {
                     | BlockerKind::ExternalPublicationUnavailable { .. }
                     | BlockerKind::ExternalPublicationItem { .. }
             )
-        }) || self.tools.values().any(|tool| self.tool_unsettled(tool))
+        }) || self
+            .tools
+            .values()
+            .any(|tool| !ignore_unknown(tool) && self.tool_unsettled(tool))
             || self.attempts.values().any(attempt_unsettled)
             || self.cells.values().any(|cell| cell.has_unsettled_effects())
             || self.external.as_ref().is_some_and(|task| {

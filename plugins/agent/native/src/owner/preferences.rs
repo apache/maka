@@ -35,6 +35,7 @@ impl Owner {
             BackendPreference::Model {
                 connection_id,
                 model_id,
+                service_tier,
                 ..
             } => {
                 let snapshot = {
@@ -54,6 +55,12 @@ impl Owner {
                         row.connection_id == *connection_id
                             && row.enabled
                             && row.enabled_model_ids.contains(model_id)
+                            && service_tier.as_ref().is_none_or(|tier| {
+                                row.models.iter().any(|model| {
+                                    &model.id == model_id
+                                        && model.service_tiers.iter().any(|item| &item.id == tier)
+                                })
+                            })
                             && maka_providers::definition(&row.provider, snapshot.clone()).is_ok()
                     })
             }
@@ -132,6 +139,7 @@ impl Owner {
                 BackendPreference::Model {
                     connection_id: accepted.binding.connection_id,
                     model_id: accepted.binding.model,
+                    service_tier: accepted.service_tier,
                     thinking_level: accepted.thinking_level,
                 }
             }

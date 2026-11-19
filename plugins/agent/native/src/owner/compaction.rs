@@ -143,11 +143,7 @@ impl Owner {
         {
             return rejected(CompactRejection::WorkspaceChanged);
         }
-        let preference = BackendPreference::Model {
-            connection_id: input.model.connection_id,
-            model_id: input.model.model_id,
-            thinking_level: input.thinking_level,
-        };
+        let preference = BackendPreference::model(input.model, input.thinking_level);
         let mut basis = self
             .capture_current_run(
                 &input.session_id,

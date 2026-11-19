@@ -117,6 +117,7 @@ impl std::fmt::Display for NativeEpochId {
 /// The Host closes this owner after joining the epochs it created.
 #[derive(Clone)]
 pub struct SessionOwner {
+    preview: crate::preview::PreviewRegistry,
     driver: Arc<Mutex<Driver>>,
     state: Arc<std::sync::Mutex<OwnerState>>,
     remote_id: NativeEpochId,
@@ -130,17 +131,27 @@ struct OwnerState {
     closed: bool,
     remote_epochs: std::collections::HashMap<NativeEpochId, Option<String>>,
     remote_registered: bool,
+    remote_previews: std::collections::HashMap<NativeEpochId, worker::preview::Bridge>,
+    retired_previews: Vec<NativeCleanup>,
+    preview_failure: Option<ToolError>,
     cleanup: Option<NativeCleanup>,
 }
 
 impl SessionOwner {
+    pub fn preview(&self) -> crate::preview::PreviewRegistry {
+        self.preview.clone()
+    }
     pub fn new(driver: Arc<Mutex<Driver>>) -> Self {
         Self {
+            preview: Default::default(),
             driver,
             state: Arc::new(std::sync::Mutex::new(OwnerState {
                 closed: false,
                 remote_epochs: std::collections::HashMap::new(),
                 remote_registered: false,
+                remote_previews: Default::default(),
+                retired_previews: Vec::new(),
+                preview_failure: None,
                 cleanup: None,
             })),
             remote_id: NativeEpochId::new(),
@@ -149,6 +160,17 @@ impl SessionOwner {
             #[cfg(feature = "native-desktop")]
             cursor: Arc::new(std::sync::Mutex::new(crate::cursor::Spec::default())),
         }
+    }
+
+    /// Recover a failed renderer after an explicit reset without closing the shared Driver.
+    pub async fn recover_cursor_renderer(&self) -> Result<(), ToolError> {
+        self.ensure_open()?;
+        #[cfg(feature = "native-desktop")]
+        {
+            let pending = self.driver.lock().await.cursors.recover_failed();
+            pending.await?;
+        }
+        Ok(())
     }
 
     /// Create fresh interpreter-facing caches without borrowing an older epoch.
@@ -172,6 +194,54 @@ impl SessionOwner {
             return Err(failed("Computer Use Session owner is closed"));
         }
         state.remote_epochs.entry(epoch).or_default();
+        Ok(())
+    }
+
+    fn bind_remote_preview(
+        &self,
+        epoch: NativeEpochId,
+        session: &str,
+        connection: worker::Connection,
+    ) -> Result<(), ToolError> {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return Err(failed("Computer Use Session owner is closed"));
+        }
+        if state
+            .remote_previews
+            .get(&epoch)
+            .is_some_and(|bridge| bridge.matches(&connection))
+        {
+            return Ok(());
+        }
+        let mut failure = None;
+        state
+            .retired_previews
+            .retain(|cleanup| match cleanup.borrow().clone() {
+                None => true,
+                Some(Ok(())) => false,
+                Some(Err(error)) => {
+                    failure.get_or_insert(error);
+                    false
+                }
+            });
+        if let Some(error) = failure {
+            state.preview_failure.get_or_insert(error);
+        }
+        if let Some(old) = state.remote_previews.remove(&epoch) {
+            old.stop();
+            state.retired_previews.push(old.cleanup);
+        }
+        let stream = self.preview.epoch_stop(epoch)?;
+        self.preview.replace_remote(epoch, &stream, Vec::new());
+        let bridge = worker::preview::Bridge::start(
+            connection,
+            self.remote_id.to_string(),
+            epoch,
+            session.to_owned(),
+            self.preview.clone(),
+        )?;
+        state.remote_previews.insert(epoch, bridge);
         Ok(())
     }
 
@@ -202,8 +272,21 @@ impl SessionOwner {
             .flatten()
     }
 
-    fn release_remote(&self, epoch: NativeEpochId) {
+    async fn release_remote(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
+        let bridge = self.state.lock().unwrap().remote_previews.remove(&epoch);
+        if let Some(bridge) = bridge {
+            bridge.stop();
+            if let Err(error) = observe_retirement(bridge.cleanup.clone()).await {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .preview_failure
+                    .get_or_insert(error.clone());
+                return Err(error);
+            }
+        }
         self.state.lock().unwrap().remote_epochs.remove(&epoch);
+        Ok(())
     }
 
     #[cfg(feature = "native-desktop")]
@@ -284,6 +367,7 @@ impl SessionOwner {
     /// Finalize shared resources after joining every original epoch close.
     /// Concurrent observers join the original cleanup; terminal failures may reconcile again.
     pub async fn close(&self) -> Result<(), ToolError> {
+        self.preview.close();
         let pending = {
             let mut state = self.state.lock().unwrap();
             state.closed = true;
@@ -294,6 +378,12 @@ impl SessionOwner {
             {
                 pending.clone()
             } else {
+                let mut previews = std::mem::take(&mut state.retired_previews);
+                for (_, bridge) in state.remote_previews.drain() {
+                    bridge.stop();
+                    previews.push(bridge.cleanup);
+                }
+                let preview_failure = state.preview_failure.clone();
                 let remote_live = !state.remote_epochs.is_empty();
                 let registered = state.remote_registered;
                 let driver = self.driver.clone();
@@ -305,6 +395,14 @@ impl SessionOwner {
                 let (reply, pending) = tokio::sync::watch::channel(None);
                 tokio::spawn(async move {
                     let mut failures = Vec::new();
+                    if let Some(error) = preview_failure {
+                        failures.push(error.to_string());
+                    }
+                    for preview in previews {
+                        if let Err(error) = observe_retirement(preview).await {
+                            failures.push(error.to_string());
+                        }
+                    }
                     if remote_live {
                         failures
                             .push("Windows native epoch has not confirmed its cleanup".to_owned());
@@ -388,6 +486,7 @@ impl Session {
     }
 
     fn from_owner(owner: SessionOwner, native_epoch: NativeEpochId) -> Self {
+        owner.preview.open_epoch(native_epoch);
         Self {
             driver: owner.driver.clone(),
             owner,
@@ -611,10 +710,15 @@ impl Session {
                 let connection = prepare_windows(&self.driver, cancellation).await?;
                 self.owner
                     .bind_remote(self.native_epoch, invocation.session())?;
-                connection
+                let reply = connection
                     .invoke_browser(message, invocation, cancellation.clone())
-                    .await
-                    .map(|reply| reply.value)
+                    .await?;
+                self.owner.bind_remote_preview(
+                    self.native_epoch,
+                    invocation.session(),
+                    connection.clone(),
+                )?;
+                Ok(reply.value)
             }
         }
     }
@@ -648,6 +752,7 @@ impl Session {
             }
             Backend::Windows { browsers, .. } => {
                 let request = worker::Request::Invoke {
+                    app_target: invocation.app_target().cloned(),
                     preparation_policy: invocation.browser_preparation_policy().clone(),
                     owner: self.owner.remote_id.to_string(),
                     epoch: self.native_epoch.to_string(),
@@ -667,6 +772,11 @@ impl Session {
                 // the arm before a later click without serializing a Rust future.
                 let completion =
                     connection.begin_browser(request, invocation, cancellation.clone())?;
+                self.owner.bind_remote_preview(
+                    self.native_epoch,
+                    invocation.session(),
+                    connection.clone(),
+                )?;
                 Ok(crate::InvocationCompletion::pending(async move {
                     completion.await.map(|reply| reply.value)
                 }))
@@ -713,6 +823,7 @@ impl Session {
                 let start_audio = matches!(&command, Command::StartAudioRecording { .. });
                 let stop_audio = matches!(&command, Command::StopAudioRecording);
                 let request = worker::Request::Invoke {
+                    app_target: invocation.app_target().cloned(),
                     preparation_policy: invocation.browser_preparation_policy().clone(),
                     owner: self.owner.remote_id.to_string(),
                     epoch: self.native_epoch.to_string(),
@@ -730,6 +841,8 @@ impl Session {
                 let reply = connection
                     .invoke_browser(request, invocation, cancellation.clone())
                     .await?;
+                self.owner
+                    .bind_remote_preview(self.native_epoch, session, connection.clone())?;
                 if start_audio {
                     *audio = Some((
                         (
@@ -876,6 +989,7 @@ impl Session {
 
     /// Release this epoch without ending the logical browser or cursor lifetime.
     pub async fn close_native(&mut self) -> Result<(), ToolError> {
+        self.owner.preview.retire_epoch(self.native_epoch);
         if matches!(self.state, SessionState::Closed) {
             return Ok(());
         }
@@ -919,19 +1033,17 @@ impl Session {
                         } else {
                             Ok(())
                         };
-                        if result.is_ok() {
-                            owner.release_remote(epoch);
-                        }
+                        let result = match result {
+                            Ok(()) => owner.release_remote(epoch).await,
+                            Err(error) => Err(error),
+                        };
                         let _ = reply.send(Some(result));
                     });
                     pending
                 });
                 observe_retirement(pending.clone()).await
             }
-            None => {
-                self.owner.release_remote(self.native_epoch);
-                Ok(())
-            }
+            None => self.owner.release_remote(self.native_epoch).await,
         };
         if result.is_ok() {
             self.backend = None;

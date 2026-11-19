@@ -59,11 +59,7 @@ impl NotificationBackend {
             Self::Model {
                 model,
                 thinking_level,
-            } => BackendPreference::Model {
-                connection_id: model.connection_id.clone(),
-                model_id: model.model_id.clone(),
-                thinking_level: *thinking_level,
-            },
+            } => BackendPreference::model(model.clone(), *thinking_level),
             Self::Executor { selection } => BackendPreference::Executor {
                 selection: selection.clone(),
             },
@@ -84,10 +80,7 @@ impl ReturnRoute {
         binding: maka_sandbox::workspace::BindingStamp,
     ) -> Self {
         let backend = NotificationBackend::Model {
-            model: ModelSelection {
-                connection_id: model.binding.connection_id.clone(),
-                model_id: model.binding.model.clone(),
-            },
+            model: model.selection(),
             thinking_level: model.thinking_level,
         };
         Self {

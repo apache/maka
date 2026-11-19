@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod discovery;
+
 use std::{sync::Arc, time::Duration};
 
 use maka_agent_facts::model::ModelPart;
@@ -213,6 +215,64 @@ async fn ordered_raw_reasoning_preserves_empty_fields_and_reopened_parts() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_annotations_resolve_reopened_text_parts_through_model_stream() {
+    use maka_agent_facts::model::{CitationAnchor, ModelSource};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        body(&mut socket).await;
+        let annotation = |start, end| {
+            json!({"type":"url_citation","url_citation":{
+                "url":"https://example.org/", "title":"Example", "start_index":start,"end_index":end
+            }})
+        };
+        response(
+            &mut socket,
+            200,
+            &completion(&[
+                json!({"content":"首🙂"}),
+                json!({"reasoning":"interlude"}),
+                json!({"content":"后段"}),
+                json!({"annotations":[annotation(1,2), annotation(2,4), annotation(2,99)]}),
+            ]),
+        )
+        .await;
+    });
+    let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
+    let step = collect(&executor, &url).await.unwrap();
+    server.await.unwrap();
+    let anchors = step
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            ModelPart::Source {
+                source: ModelSource::Url { url, .. },
+                anchor,
+            } if url == "https://example.org/" => Some(*anchor),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        anchors,
+        [
+            Some(CitationAnchor::Range {
+                part: 0,
+                start: 1,
+                end: 2
+            }),
+            Some(CitationAnchor::Range {
+                part: 2,
+                start: 0,
+                end: 2
+            }),
+            None,
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -473,6 +533,7 @@ async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         let binding = ApiProviders::definition("ollama-cloud", Arc::new(Snapshot::bundled().unwrap())).unwrap();
         let model = binding.prepare(Resolve {
+            service_tier: None,
             connection: Connection { id: "cloud".into(), revision: 1, configuration: binding.configure(json!({"baseUrl":url})).unwrap() },
             model: ModelInfo::new("deepseek-v4-flash"),
             overrides: None,

@@ -124,6 +124,9 @@ export type Row = {
   model?: HistoryModel;
   finalOutput?: boolean;
   finalAnswer?: boolean;
+  sourceCitation?: boolean;
+  citation?: AgentHistoryChunk['citation'];
+  citationAnchor?: AgentHistoryChunk['citationAnchor'];
   compaction?: HistoryCompaction;
   foldedWork?: AgentHistoryChunk['foldedWork'];
   work?: AgentHistoryChunk['work'];
@@ -316,6 +319,9 @@ export function historyMetadata(
     attemptId: chunk.modelPart?.attemptId,
     finalOutput: chunk.finalOutput,
     finalAnswer: chunk.finalAnswer,
+    sourceCitation: chunk.sourceCitation,
+    citation: chunk.citation ?? previous?.citation,
+    citationAnchor: chunk.citationAnchor ?? previous?.citationAnchor,
     compaction: chunk.compaction ?? undefined,
     foldedWork: chunk.foldedWork ?? previous?.foldedWork,
     work: chunk.work ?? undefined,
@@ -386,6 +392,8 @@ export function mergeHistoryPage(
       ...(newerMetadata
         ? {
             ...historyMetadata(previous, previousThrough, previous),
+            citation: previous.citation ?? chunk.citation,
+            citationAnchor: previous.citationAnchor ?? chunk.citationAnchor,
             ...(chunk.offset === 0 && previous.attachments === undefined
               ? { attachments: chunk.attachments ?? [] }
               : {}),

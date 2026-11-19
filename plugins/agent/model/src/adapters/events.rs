@@ -24,16 +24,22 @@ use maka_agent_facts::model::{
 };
 use maka_provider_protocol::{
     input::Extensions,
-    output::{Event, Source, Stop, TextKind},
+    output::{CitationAnchor, Event, Source, Stop, TextKind},
 };
 use serde_json::Value;
 use std::collections::HashMap;
+
+struct TextPart {
+    id: String,
+    kind: TextKind,
+    open: bool,
+}
 
 pub(super) struct Events {
     pub evidence: Evidence,
     pub finished: bool,
     sequence: u64,
-    open: HashMap<String, (String, TextKind)>,
+    parts: HashMap<String, TextPart>,
     tools: HashMap<String, Option<Value>>,
 }
 impl Events {
@@ -42,7 +48,7 @@ impl Events {
             evidence: Evidence::default(),
             finished: false,
             sequence: 0,
-            open: HashMap::new(),
+            parts: HashMap::new(),
             tools: HashMap::new(),
         }
     }
@@ -68,11 +74,6 @@ impl Events {
             Event::ToolCall(call) => &call.extensions,
             Event::ToolResult(result) => &result.extensions,
             Event::Finish(finish) => &finish.extensions,
-            Event::Source(
-                Source::Url { extensions, .. }
-                | Source::Document { extensions, .. }
-                | Source::DeferredDocument { extensions, .. },
-            ) => extensions,
             _ => &None,
         };
         let has_metadata = extension.as_ref().is_some_and(|v| !v.is_empty());
@@ -80,6 +81,7 @@ impl Events {
             || matches!(
                 &event,
                 Event::Finish(_)
+                    | Event::Source { .. }
                     | Event::ToolResult(_)
                     | Event::ToolStart {
                         provider_executed: true,
@@ -119,7 +121,18 @@ impl Events {
             } => {
                 let canonical = format!("part-{}", self.sequence);
                 self.sequence += 1;
-                if self.open.insert(id, (canonical.clone(), kind)).is_some() {
+                if self
+                    .parts
+                    .insert(
+                        id,
+                        TextPart {
+                            id: canonical.clone(),
+                            kind,
+                            open: true,
+                        },
+                    )
+                    .is_some_and(|part| part.open)
+                {
                     return Err(ModelError::Adapter("duplicate open text part".into()));
                 }
                 ModelEvent::PartStarted {
@@ -162,7 +175,7 @@ impl Events {
                 ..
             } => {
                 let canonical = self.part(&id, kind)?;
-                self.open.remove(&id);
+                self.parts.get_mut(&id).expect("validated open part").open = false;
                 ModelEvent::PartFinished {
                     id: canonical,
                     provider_options: options(extensions),
@@ -214,39 +227,67 @@ impl Events {
                 is_error: result.is_error,
                 provider_options: options(result.extensions),
             },
-            Event::Source(source) => ModelEvent::Source(match source {
-                Source::DeferredDocument { .. } => {
-                    return Err(ModelError::Adapter(
-                        "deferred citation document reached the owned output boundary".into(),
-                    ));
+            Event::Source { source, anchor } => {
+                let visible = |part: &str| {
+                    self.parts
+                        .get(part)
+                        .filter(|part| part.kind == TextKind::Text)
+                        .map(|part| part.id.clone())
+                        .ok_or_else(|| {
+                            ModelError::Adapter("citation references an unknown text part".into())
+                        })
+                };
+                let anchor = match anchor {
+                    Some(CitationAnchor::Range { part, start, end }) => {
+                        Some(CitationAnchor::Range {
+                            part: visible(&part)?,
+                            start,
+                            end,
+                        })
+                    }
+                    Some(CitationAnchor::BlockEnd { part }) => Some(CitationAnchor::BlockEnd {
+                        part: visible(&part)?,
+                    }),
+                    None => None,
+                };
+                ModelEvent::Source {
+                    anchor,
+                    source: match source {
+                        Source::DeferredDocument { .. } => {
+                            return Err(ModelError::Adapter(
+                                "deferred citation document reached the owned output boundary"
+                                    .into(),
+                            ));
+                        }
+                        Source::Url {
+                            id,
+                            url,
+                            title,
+                            extensions,
+                        } => model::ModelSource::Url {
+                            id,
+                            url,
+                            title,
+                            provider_options: options(extensions),
+                        },
+                        Source::Document {
+                            id,
+                            media_type,
+                            title,
+                            filename,
+                            extensions,
+                        } => model::ModelSource::Document {
+                            id,
+                            media_type,
+                            title,
+                            filename,
+                            provider_options: options(extensions),
+                        },
+                    },
                 }
-                Source::Url {
-                    id,
-                    url,
-                    title,
-                    extensions,
-                } => model::ModelSource::Url {
-                    id,
-                    url,
-                    title,
-                    provider_options: options(extensions),
-                },
-                Source::Document {
-                    id,
-                    media_type,
-                    title,
-                    filename,
-                    extensions,
-                } => model::ModelSource::Document {
-                    id,
-                    media_type,
-                    title,
-                    filename,
-                    provider_options: options(extensions),
-                },
-            }),
+            }
             Event::Finish(finish) => {
-                if !self.open.is_empty() || !self.tools.is_empty() {
+                if self.parts.values().any(|part| part.open) || !self.tools.is_empty() {
                     return Err(ModelError::Adapter(
                         "finish with incomplete model parts".into(),
                     ));
@@ -303,10 +344,10 @@ impl Events {
         Ok(Some(event))
     }
     fn part(&self, id: &str, kind: TextKind) -> Result<String, ModelError> {
-        self.open
+        self.parts
             .get(id)
-            .filter(|(_, current)| *current == kind)
-            .map(|(id, _)| id.clone())
+            .filter(|part| part.open && part.kind == kind)
+            .map(|part| part.id.clone())
             .ok_or_else(|| ModelError::Adapter("unknown or mismatched text part".into()))
     }
 }

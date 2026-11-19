@@ -2874,9 +2874,10 @@ fn transition_properties(s: &str) -> Option<TransitionProps> {
             "border-radius" | "borderRadius" | "border-width" | "borderWidth" => {
                 TransitionProps::SHAPE
             }
+            "filter" => TransitionProps::FILTER,
             // Properties that do not animate natively.
-            "filter" | "backdrop-filter" | "display" | "visibility" | "content-visibility"
-            | "overlay" | "pointer-events" => 0,
+            "backdrop-filter" | "display" | "visibility" | "content-visibility" | "overlay"
+            | "pointer-events" => 0,
             _ => return None,
         };
     }

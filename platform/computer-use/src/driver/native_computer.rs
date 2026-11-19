@@ -51,7 +51,7 @@ impl Driver {
         window_pixels: bool,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
-        Self::invoke_with_coordinates(
+        let result = Self::invoke_with_coordinates(
             driver,
             tool.name(),
             input,
@@ -66,6 +66,43 @@ impl Driver {
             #[cfg(target_os = "windows")]
             None,
             #[cfg(target_os = "windows")]
+            invocation,
+        )
+        .await?;
+        #[cfg(target_os = "windows")]
+        {
+            Ok(result.value)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(result)
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn invoke_raw_windows(
+        driver: &Arc<Mutex<Self>>,
+        tool: RawTool,
+        input: Value,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+        language: Language,
+        window_pixels: bool,
+        invocation: &crate::InvocationContext<'_>,
+    ) -> Result<super::NativeWindowsCall<CallResult>, ToolError> {
+        Self::invoke_with_coordinates(
+            driver,
+            tool.name(),
+            input,
+            epoch,
+            cancellation,
+            language,
+            if window_pixels {
+                NativeCoordinates::WindowPixels
+            } else {
+                NativeCoordinates::Captured
+            },
+            None,
             invocation,
         )
         .await

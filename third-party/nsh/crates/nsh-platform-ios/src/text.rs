@@ -683,33 +683,42 @@ impl CoreTextEngine {
         let (up, down) = alignments.extent(a, font);
         let (up, down) = (up.0 as CGFloat, down.0 as CGFloat);
         // A fixed `lineHeight`: CoreText centers a line's own extent in
-        // it, so a placeholder reaching past the font on one side only
-        // would move its line's baseline (lines unevenly spaced). Its
-        // delegate reserves the font's half-leading box instead (the CSS
-        // strut), and where the attachment reaches past that box, as much
-        // again on the other side: the line grows only when it must,
-        // evenly, its text where other lines' is.
+        // it, so a placeholder smaller than the half-leading box (the CSS
+        // strut) would move its line's baseline. Keep at least the strut
+        // on both sides; a `middle` attachment taller than the strut grows
+        // both sides evenly to stay centered on its text, while other
+        // alignments grow only the side they reach past.
         let line_height = line_height(text);
         if line_height <= 0.0 {
             return (top, up, down);
         }
         let half = (line_height - (ascent + descent + leading)) / 2.0;
         let (strut_up, strut_down) = (ascent + half, descent + half);
-        let grow = (up - strut_up).max(down - strut_down).max(0.0);
-        (top, strut_up + grow, strut_down + grow)
+        if align == nsh_core::VerticalAlign::Middle {
+            let grow = (up - strut_up).max(down - strut_down).max(0.0);
+            (top, strut_up + grow, strut_down + grow)
+        } else {
+            (top, up.max(strut_up), down.max(strut_down))
+        }
     }
 
-    /// The height a line holding the tallest attachment needs: its extent
-    /// around the baseline joined with its placeholder font's. A fixed
-    /// `lineHeight` caps text lines, not these: the view's line grows to
-    /// hold it (as a replaced inline box in CSS) instead of painting over
-    /// its neighbours.
+    /// Upper bound on the height of a line holding attachments when a fixed
+    /// `lineHeight` is set (`0` when every attachment fits in `lineHeight`,
+    /// keeping `MaximumLineHeight` at `lineHeight`). When an attachment
+    /// grows past `lineHeight`, combine the widest extent above and below
+    /// the baseline across attachments and spans so mixed alignments or
+    /// larger text spans on that line are not clamped by `CTParagraphStyle`.
     fn tallest_attachment_line(
         &self,
         text: &AttributedText,
         alignments: &nsh_core::AttachmentAlignments,
     ) -> CGFloat {
-        text.attachments.iter().fold(0.0, |tallest: CGFloat, a| {
+        let line_height = line_height(text);
+        if line_height <= 0.0 || text.attachments.is_empty() {
+            return 0.0;
+        }
+        let (mut fit_up, mut fit_down, mut fit_lead) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for a in &text.attachments {
             let (_, up, down) = self.attachment_metrics(text, a, alignments);
             let style = text
                 .span_at(a.index)
@@ -717,8 +726,32 @@ impl CoreTextEngine {
             let f = self.fonts.get(&style);
             // SAFETY: a valid font.
             let (ascent, descent, leading) = unsafe { (f.ascent(), f.descent(), f.leading()) };
-            tallest.max(up.max(ascent) + down.max(descent) + leading)
-        })
+            fit_up = fit_up.max(up).max(ascent);
+            fit_down = fit_down.max(down).max(descent);
+            fit_lead = fit_lead.max(leading);
+        }
+        let (mut all_up, mut all_down, mut all_lead) = (fit_up, fit_down, fit_lead);
+        for span in &text.spans {
+            if span.start >= span.end {
+                continue;
+            }
+            let f = self.fonts.get(&span.style);
+            // SAFETY: a valid font.
+            let (ascent, descent, leading) = unsafe { (f.ascent(), f.descent(), f.leading()) };
+            if ascent + descent + leading <= line_height + 1e-4 {
+                fit_up = fit_up.max(ascent);
+                fit_down = fit_down.max(descent);
+                fit_lead = fit_lead.max(leading);
+            }
+            all_up = all_up.max(ascent);
+            all_down = all_down.max(descent);
+            all_lead = all_lead.max(leading);
+        }
+        if fit_up + fit_down + fit_lead <= line_height + 1e-4 {
+            0.0
+        } else {
+            all_up + all_down + all_lead
+        }
     }
 
     fn attributed_string(

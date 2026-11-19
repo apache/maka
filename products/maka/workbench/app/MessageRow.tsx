@@ -28,6 +28,7 @@ import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import { hasTextPrefix, messageBytes, messageKey, senderSession, type Row } from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
+import type { InlineCitation } from './answerCitations';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
 import { SkillMessage, userMessagePresentation } from './SkillMessage';
@@ -151,6 +152,9 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  citations,
+  hasSources,
+  openSources,
   highlighted,
   repeats,
   sessionId,
@@ -162,7 +166,6 @@ export function MessageRow({
   openSession,
   senders,
   userScroll,
-  onExpand,
   ownerKey,
   toolMaxHeight,
   toolProgress,
@@ -174,6 +177,9 @@ export function MessageRow({
   failureActions,
 }: {
   item: () => Row;
+  citations?(): readonly InlineCitation[] | undefined;
+  hasSources?(): boolean;
+  openSources?(): void;
   highlighted?: () => boolean;
   /** How many identical failures this row stands for. */
   repeats?: () => number;
@@ -186,7 +192,6 @@ export function MessageRow({
   openSession?(sessionId: string): void;
   senders?: MessageSenders;
   userScroll(): void;
-  onExpand?(key: string): void;
   ownerKey?: () => string;
   toolMaxHeight: () => number;
   toolProgress?(id: string): ToolActivity['phase'] | null;
@@ -257,11 +262,9 @@ export function MessageRow({
         const setExpanded = (action: MessageRowToggle) => {
           if (!ownsRow(action)) return;
           expanded.set(action.value);
-          if (action.value) onExpand?.(action.key);
         };
-        // On the desktop the replies between tool calls carry no actions, so
-        // only the final reply (or one already showing its source) has a row.
-        const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
+        const actionRow = () =>
+          platform.idiom === 'terminal' || row().finalOutput || sourceMode() || hasSources?.();
         const sourceId = () => `${sessionId}/${rowKey(row())}`;
         const userPresentation = computed(() => userMessagePresentation(row()));
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
@@ -502,6 +505,7 @@ export function MessageRow({
                             }
                           >
                             <MarkdownBody
+                              citations={citations}
                               sessionId={sessionId}
                               row={row}
                               sourceId={sourceId()}
@@ -552,6 +556,13 @@ export function MessageRow({
                             >
                               {finalActions?.(row, () => rowKey(row()), menu)}
                             </If>
+                          </If>
+                          <If when={hasSources?.()}>
+                            <IconButton
+                              label={tr('Sources')}
+                              icon="globe"
+                              onPress={() => openSources?.()}
+                            />
                           </If>
                           <IconButton
                             label={
@@ -625,6 +636,7 @@ export function MessageRow({
                               when={sourceMode()}
                               else={
                                 <MarkdownBody
+                                  citations={citations}
                                   sessionId={sessionId}
                                   row={row}
                                   sourceId={sourceId()}
@@ -664,7 +676,11 @@ export function MessageRow({
                       previewTerminal={previewTerminal}
                       senders={senders}
                       userScroll={userScroll}
-                      expand={setExpanded}
+                      expand={(action) => {
+                        if (!ownsRow(action)) return;
+                        setExpanded(action);
+                        if (action.value) onToolReading?.(action.key);
+                      }}
                       showOriginal={setSourceMode}
                       inspect={inspectTool}
                     />

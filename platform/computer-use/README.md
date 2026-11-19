@@ -57,3 +57,9 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 ```
 
 Optional output-audio capture (`cua.computer.start_audio_recording` / `stop_audio_recording`) defaults to off and requires `audio: true` in Host configuration (never captures microphone input).
+
+## Computer Stage
+
+`SessionOwner::preview()` exposes an independent, bounded registry of actual bound app/tab targets. Preview JPEGs are latest-only, limited to 1600 pixels per edge and 2 MiB, and never enter canonical model output automatically. Retained bytes must match the current source revision and pass `authorize()` at delivery; native owner/window and browser document/claim identities are rechecked. Retiring an epoch prevents late publication and old pixels or capabilities from returning.
+
+The Host supplies read-only `PreviewAuthority` for the original producer execution and permission basis. Presenting a front card uses a separate client mutation and `ForegroundAuthority`, with its own work/effect custody. Windows targets retain the accepted native child source and complete owner/application stamp; metadata-only calls cannot supply a presentation source. Viewer cancellation preserves the shared target, while Stop, reset, permission and execution changes retire the applicable capabilities.

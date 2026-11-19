@@ -2806,10 +2806,8 @@ impl<M: TextEngine + 'static> Driver<M> {
             .window_state
             .settles
             .is_some_and(|due| due <= nsh_core::time::now())
-            && let Some(env) = state.window_state.reported
+            && let Some(env) = state.window_state.take_pending()
         {
-            state.window_state.settles = None;
-            state.window_state.shown = env.window_state;
             apply_environment(script, state, env);
         }
         let turn_start = state.trace.then(Instant::now);
@@ -3959,7 +3957,8 @@ const WINDOW_SETTLE: Duration = Duration::from_millis(150);
 
 /// The window's bounds the app reads: a move or a resize reaches it once
 /// the window has stayed for [`WINDOW_SETTLE`] (one report at the end of a
-/// drag, not one per point), a change of mode, display or being minimized
+/// drag, not one per point), or before a press handler reads it. A change
+/// of mode, display or being minimized
 /// or hidden at once (with the bounds of then).
 #[derive(Default)]
 struct WindowStateReport {
@@ -3972,6 +3971,12 @@ struct WindowStateReport {
 }
 
 impl WindowStateReport {
+    fn take_pending(&mut self) -> Option<Environment> {
+        self.settles = None;
+        let env = self.reported.take()?;
+        self.shown = env.window_state;
+        Some(env)
+    }
     /// The environment the app gets of `env`, the platform's at `now`: its
     /// window state held back while it moves.
     fn report(&mut self, mut env: Environment, now: Instant) -> Environment {
@@ -4085,6 +4090,11 @@ fn press_outside<M: TextEngine>(
 fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message: Message) -> bool {
     match message {
         Message::Event(id, event, mut payload) => {
+            if event == EventKind::Press
+                && let Some(env) = state.window_state.take_pending()
+            {
+                apply_environment(script, state, env);
+            }
             state.events_handled += 1;
             if state.trace {
                 log::info!(target: "nsh::perf", "event {event:?} on view {id}");

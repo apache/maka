@@ -36,6 +36,8 @@ const hooks = registerHooks({
   },
 });
 const {
+  availableSpeeds,
+  speedCaption,
   sameRoute,
   selectionForChoice,
   sameBackend,
@@ -172,4 +174,14 @@ test('catalog aliases preserve saved variant strength and explicit overrides wit
     ),
     null,
   );
+});
+
+test('a default-only catalog hides speed and reselecting the model clears its old tier', () => {
+  const saved = { ...native, serviceTier: 'priority' };
+  for (const serviceTiers of [undefined, [], [{ id: 'default', name: 'Default' }]]) {
+    const model = { ...choice, selection: native, serviceTiers };
+    assert.deepEqual(availableSpeeds(model), []);
+    assert.equal(speedCaption(saved, { kind: 'ready', choice: model }), '');
+    assert.deepEqual(selectionForChoice(saved, model), { ...native, serviceTier: null });
+  }
 });

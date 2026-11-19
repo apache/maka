@@ -70,3 +70,9 @@ cargo nextest run -p maka-cli --no-default-features --test integration -E 'test(
 # Offscreen native desktop integration tests (macOS / Windows, or `just test-desktop`)
 cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test native-desktop -E 'test(terminal::desktop_new_session::)'
 ```
+
+## Computer Stage
+
+The conversation shows live cards for the admitted Computer targets. Drag the front card to a corner, select a rear card to promote it, or Pin/Follow the target. The front card presents the original bound native window or browser window for OS interaction. Clicking exposed Maka content brings Maka forward while the card stays in its corner. Hide/Show controls the viewer without stopping the producer.
+
+Preview remains read-only, bounded and temporary. Presentation is a separate client mutation; the UI does not forward screenshot coordinates, synthesize keyboard input or choose a PID/window/tab.

@@ -74,6 +74,9 @@ pub enum ToolInput {
 #[derive(Debug, Clone)]
 pub struct Citation {
     pub id: String,
+    pub item_id: String,
+    pub content_index: usize,
+    pub anchor: Option<crate::output::CitationAnchor<String>>,
     pub url: String,
     pub title: Option<String>,
     pub start_index: Option<u64>,

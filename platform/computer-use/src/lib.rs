@@ -62,6 +62,7 @@ mod native_monitor;
 #[cfg(feature = "native-desktop")]
 mod observation;
 mod permission_subject;
+pub mod preview;
 pub mod protocol;
 #[cfg(feature = "native-desktop")]
 mod session;

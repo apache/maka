@@ -54,7 +54,13 @@ import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
 import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
 import { ownTitleBar, windowTitle } from './chrome';
-import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
+import {
+  createPreviewDialog,
+  Workbench,
+  canDockBrowser,
+  canDockPreview,
+  sidePaneRoom,
+} from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
@@ -167,6 +173,23 @@ function App(
     if (panel) plugins.closePanel(panel.instance);
   });
   const previewShown = () => plugins.panel() !== null || (preview()?.shown() ?? false);
+  const previewFullscreen = () =>
+    platform.idiom !== 'terminal' &&
+    plugins.panel() === null &&
+    canDockPreview() &&
+    (preview()?.shown() ?? false) &&
+    (preview()?.fullscreen?.() ?? false);
+  const closePreview = () => {
+    const panel = plugins.panel();
+    if (panel) plugins.closePanel(panel.instance);
+    else preview()?.close();
+  };
+  const previewDialog = createPreviewDialog({
+    shown: previewShown,
+    suppressed: () => plugins.panel() === null && (preview()?.modalSuppressed() ?? false),
+    focused: () => plugins.panel() !== null || (preview()?.focused() ?? false),
+    close: closePreview,
+  });
   const sideRoom = () =>
     sidePaneRoom(
       sidebarExpanded() && canDockBrowser(previewShown()),
@@ -274,12 +297,14 @@ function App(
     const reason = runtime.updateError();
     return reason instanceof Error ? reason.message : String(reason);
   };
+  const conversationPaneVisible = () => shell.visible() && !previewFullscreen() && !previewDialog();
   const shell: ConversationShell = {
     sessionId: selected,
     visible: () =>
       workspaceMode() === 'conversations' &&
       !settingsOpened() &&
       !(plugins.panel() && !canDockPreview()),
+    paneVisible: conversationPaneVisible,
     blocked,
     connectionLost: () => runtime.updateError() !== null,
     openSession,
@@ -401,6 +426,7 @@ function App(
     return {
       sessionId: pane.id,
       visible: () => shell.visible() && sides().indexOf(pane) < sideRoom(),
+      paneVisible: () => conversationPaneVisible() && sides().indexOf(pane) < sideRoom(),
       blocked,
       connectionLost: () => runtime.updateError() !== null,
       openSession: (id) => openSide(pane, id),
@@ -420,6 +446,7 @@ function App(
     return {
       ...sideShell(pane),
       visible: () => true,
+      paneVisible: () => true,
       async openSession(id) {
         if (id === pane.id()) return true;
         if (!(await closeLauncher())) return false;
@@ -496,21 +523,14 @@ function App(
         <Workbench
           expanded={sidebarExpanded}
           previewShown={previewShown}
-          previewFullscreen={() => plugins.panel() === null && (preview()?.fullscreen?.() ?? false)}
+          previewFullscreen={previewFullscreen}
           togglePreviewFullscreen={() => {
             const current = preview();
             if (current?.setFullscreen) current.setFullscreen(!(current.fullscreen?.() ?? false));
           }}
           floatingComposer={() => (session()?.floatingComposer?.() as JSX.Element | null) ?? null}
-          previewSuppressed={() =>
-            plugins.panel() === null && (preview()?.modalSuppressed() ?? false)
-          }
-          previewFocused={() => plugins.panel() !== null || (preview()?.focused() ?? false)}
-          closePreview={() => {
-            const panel = plugins.panel();
-            if (panel) plugins.closePanel(panel.instance);
-            else preview()?.close();
-          }}
+          previewDialog={previewDialog}
+          closePreview={closePreview}
           sides={sides}
           navigation={() =>
             runtime.renderView(configuration.navigation, conversationNavigationView, {

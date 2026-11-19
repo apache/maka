@@ -430,6 +430,7 @@ import { Image, View } from "nsh";
 
 | 种类 | Rust | 匹配 | 生成的节点 |
 |---|---|---|---|
+| `afterByte` | `MarkdownExtension { after_byte: Some(end), .. }` | Markdown 原文中的 UTF-8 字节结束位置（不含） | 在对应文本后插入行内自定义节点。落在链接或代码块内的节点显示在整个链接或块之后。 |
 | `pattern` | `MarkdownExtension::pattern(name, regex)` | 文本中的正则表达式（Rust 的 `regex` 语法），代码和链接之外 | 行内节点；`text` 是匹配的文本，`attributes` 是捕获组：`"1"`、`"2"`……以及按名字的命名捕获组 |
 | `language` | `MarkdownExtension::language(name, language)` | 该语言的围栏代码块（```` ```chart ````） | 块节点；`text` 是代码，`attributes.meta` 是信息字符串的其余部分 |
 | `tag` | `MarkdownExtension::tag(name, tag)` | 该标签的 HTML 或 MDX 元素，不区分大小写（`<Callout kind="tip">`） | 其属性，以及解析后的内容：独占一行的元素为 `children`（文档块），文本中的元素为 `content`（行内内容） |

@@ -98,6 +98,9 @@ fn base(
             },
             position,
             model_part: None,
+            source_citation: false,
+            citation: None,
+            citation_anchor: None,
             has_references: false,
             quotes: Vec::new(),
             final_output: false,
@@ -134,6 +137,43 @@ fn base(
 fn text(row: &mut Row, field: SourceField, body: TextBody) {
     row.body = Body::Text(body.clone());
     row.fields.push((field, Field::Text(body)));
+}
+pub(super) fn citation_body(chunk: &mut Chunk, mut citation: wire::HistoryCitation) -> String {
+    // Metadata must fit even on a page containing just the first byte of a
+    // source row. The complete label and URL remain in the paginated body.
+    fn bound_label(label: &mut String) {
+        label.truncate(label.floor_char_boundary(512));
+    }
+    chunk.source_citation = true;
+    let body = match &mut citation {
+        wire::HistoryCitation::Url { url, title } => {
+            let body = title
+                .as_ref()
+                .map_or_else(|| url.clone(), |title| format!("[{title}]({url})"));
+            // A prefix of a URL could point somewhere else.
+            if url.len() > 8192 {
+                return body;
+            }
+            if let Some(title) = title {
+                bound_label(title);
+            }
+            body
+        }
+        wire::HistoryCitation::Document {
+            title, filename, ..
+        } => {
+            let body = filename
+                .as_ref()
+                .map_or_else(|| title.clone(), |file| format!("{title} ({file})"));
+            bound_label(title);
+            if let Some(filename) = filename {
+                bound_label(filename);
+            }
+            body
+        }
+    };
+    chunk.citation = Some(citation);
+    body
 }
 pub(super) fn quotes(input: &[maka_agent_facts::input::QuoteRef]) -> Vec<wire::HistoryQuote> {
     fn prefix(text: &str, bytes: usize) -> String {
@@ -444,19 +484,28 @@ pub(super) async fn project(
                     }
                     *text_kind == TextKind::Text && phase != Some("commentary")
                 }
-                ModelPart::Source { source } => {
-                    let body = match source {
-                        maka_agent_facts::model::ModelSource::Url { url, title, .. } => match title
-                        {
-                            Some(title) => format!("[{title}]({url})"),
-                            None => url.clone(),
+                ModelPart::Source { source, anchor } => {
+                    use maka_agent_facts::model::ModelSource;
+                    let citation = match source {
+                        ModelSource::Url { url, title, .. } => wire::HistoryCitation::Url {
+                            url: url.clone(),
+                            title: title.clone(),
                         },
-                        maka_agent_facts::model::ModelSource::Document {
-                            title, filename, ..
-                        } => filename
-                            .as_ref()
-                            .map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
+                        ModelSource::Document {
+                            title,
+                            filename,
+                            provider_options,
+                            ..
+                        } => wire::HistoryCitation::Document {
+                            title: title.clone(),
+                            filename: filename.clone(),
+                            document_index: provider_options
+                                .as_ref()
+                                .and_then(|v| v["anthropic"]["documentIndex"].as_u64()),
+                        },
                     };
+                    row.chunk.citation_anchor = *anchor;
+                    let body = citation_body(&mut row.chunk, citation);
                     text(&mut row, SourceField::Body, body.into());
                     true
                 }

@@ -22,6 +22,10 @@ pub struct MarkdownExtension {
     /// match is an inline node: its `text` the match, its numbered groups
     /// the attributes `"1"`, `"2"`, ..., its named groups by name.
     pub pattern: Option<SharedString>,
+    /// Insert a custom node after this many UTF-8 bytes of the original
+    /// Markdown. Inside an atomic node (a link, code or image), it follows
+    /// that node. The marker itself has no source bytes.
+    pub after_byte: Option<u32>,
     /// Fenced code blocks of this language (```` ```chart ````) are block
     /// nodes: their `text` the code, the rest of the info string the
     /// attribute `meta`.

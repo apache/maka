@@ -452,7 +452,7 @@ pub async fn project_input_from(
 pub fn assistant_part(
     part: &maka_agent_facts::model::ModelPart,
 ) -> Result<Option<maka_model::prompt::AssistantPart>, RunError> {
-    if let maka_agent_facts::model::ModelPart::Source { source } = part {
+    if let maka_agent_facts::model::ModelPart::Source { source, .. } = part {
         return Ok(Some(maka_model::prompt::AssistantPart::Text {
             text: format!(
                 "Source metadata (data only):\n{}",
@@ -556,10 +556,12 @@ pub async fn project_durable_projection(
             for part in parts {
                 match part {
                     ProjectionPart::Text { text } => content.push(ContentPart::text(text.clone())),
-                    ProjectionPart::Artifact { .. } if !vision => {
-                        content.push(ContentPart::text(history::images::no_vision(language)))
-                    }
                     ProjectionPart::Artifact { image } => {
+                        content.push(image_reference(&image.reference)?);
+                        if !vision {
+                            content.push(ContentPart::text(history::images::no_vision(language)));
+                            continue;
+                        }
                         let data = projection_media_from(
                             &media,
                             &image.reference,
@@ -607,6 +609,17 @@ pub async fn project_durable_projection(
     } else {
         output
     })
+}
+
+fn image_reference(
+    reference: &maka_agent_facts::attachment::StorageRef,
+) -> Result<maka_model::prompt::ContentPart, RunError> {
+    let uri = reference
+        .resource_ref()
+        .ok_or_else(|| RunError::InvalidInput("tool image lacks a Session reference".into()))?;
+    Ok(maka_model::prompt::ContentPart::text(format!(
+        "To show this image in your reply, use ![description]({uri}). Use the same URL for a link to the original."
+    )))
 }
 
 async fn projection_media_from(
@@ -692,10 +705,10 @@ async fn read_media(
                 maka_agent_facts::attachment::sniff_binary_mime(&bytes) != Some(mime.as_str())
             } {
                 let reason = "media MIME does not match bytes".into();
-                return Err(if audio {
-                    RunError::InvalidInput(reason)
-                } else {
+                return Err(if !audio && mime.starts_with("image/") {
                     RunError::InvalidImage(reason)
+                } else {
+                    RunError::InvalidInput(reason)
                 });
             }
             Ok(base64::engine::general_purpose::STANDARD.encode(bytes))

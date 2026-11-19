@@ -143,3 +143,22 @@ fn invalid_frames_do_not_fabricate_successful_completion() {
         matches!(&stream.finish(&mut id).unwrap()[..],[Event::Error(_),Event::Finish(v)] if v.reason==Stop::Error)
     );
 }
+
+#[test]
+fn complete_chat_annotations_anchor_visible_content_after_reasoning() {
+    use crate::output::{CitationAnchor, Part, Source};
+    let raw = json!({"choices":[{"finish_reason":"stop","message":{
+        "role":"assistant","reasoning_content":"hidden","content":"🙂答案",
+        "annotations":[{"type":"vendor_extension"},{"type":"url_citation","url_citation":{
+            "url":"https://example.org/","title":"Example","start_index":1,"end_index":3}}]
+    }}]});
+    let result = generate(&serde_json::to_vec(&raw).unwrap(), "vendor", &mut || {
+        "citation".into()
+    })
+    .unwrap();
+    assert!(
+        matches!(&result.parts[..], [Part::Text {..}, Part::Text {..},
+        Part::Source {source:Source::Url{url,title:Some(title),..}, anchor:Some(CitationAnchor::Range{part:1,start:1,end:3})}
+    ] if url=="https://example.org/" && title=="Example")
+    );
+}

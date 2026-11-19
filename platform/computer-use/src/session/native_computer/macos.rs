@@ -442,7 +442,6 @@ impl Session {
     pub(in crate::session) async fn launch_mac_windows(
         &mut self,
         approved: &crate::ComputerAppTarget,
-        session: &str,
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Vec<WindowInfo>, ToolError> {
@@ -477,7 +476,7 @@ impl Session {
                 .await
                 .map_err(failed)?;
                 if !pids.is_empty() {
-                    let mut windows = self.windows(session, cancellation, language).await?;
+                    let mut windows = self.windows(None, cancellation, language).await?;
                     windows.retain(|window| window.pid.is_some_and(|pid| pids.contains(&pid)));
                     if !windows.is_empty() {
                         return Ok(windows);
@@ -603,7 +602,7 @@ impl Session {
         }
         if pids.is_empty() {
             pids = self
-                .launch_mac_windows(approved, session, cancellation, language)
+                .launch_mac_windows(approved, cancellation, language)
                 .await?
                 .into_iter()
                 .filter_map(|window| window.pid)
@@ -701,9 +700,7 @@ impl Session {
                 .await?
                 .ok_or_else(|| failed("application has no primary AX window"))?,
         };
-        let windows = self
-            .windows(invocation.session(), cancellation, language)
-            .await?;
+        let windows = self.windows(Some(pid), cancellation, language).await?;
         let window = primary_app_window(windows, pid, id)?;
         let expected = approved.clone();
         let observed = generation.clone();

@@ -495,6 +495,7 @@ highlighter, a formula renderer, or a component of its Rust crate). Without `ren
 
 | Kind | Rust | Matches | The node |
 |---|---|---|---|
+| `afterByte` | `MarkdownExtension { after_byte: Some(end), .. }` | An exclusive UTF-8 byte end in the original Markdown | Inserts an inline custom node directly after the anchored text. An anchor within a link or code block follows the whole link or block. |
 | `pattern` | `MarkdownExtension::pattern(name, regex)` | A regular expression in text (Rust's `regex` syntax), outside code and links | Inline; `text` is the match, `attributes` its groups: `"1"`, `"2"`, … and named groups by name |
 | `language` | `MarkdownExtension::language(name, language)` | Fenced code blocks of that language (```` ```chart ````) | A block; `text` is the code, `attributes.meta` the rest of the info string |
 | `tag` | `MarkdownExtension::tag(name, tag)` | HTML or MDX elements of that tag, any case (`<Callout kind="tip">`) | Its attributes, its content parsed: `children` (blocks) for an element on its own lines, `content` (inline) inside text |

@@ -441,33 +441,42 @@ impl CoreTextEngine {
         let (up, down) = alignments.extent(a, font);
         let (up, down) = (up.0 as CGFloat, down.0 as CGFloat);
         // A fixed `lineHeight`: CoreText centers a line's own extent in
-        // it, so a placeholder reaching past the font on one side only
-        // would move its line's baseline (lines unevenly spaced). Its
-        // delegate reserves the font's half-leading box instead (the CSS
-        // strut), and where the attachment reaches past that box, as much
-        // again on the other side: the line grows only when it must,
-        // evenly, its text where other lines' is.
+        // it, so a placeholder smaller than the half-leading box (the CSS
+        // strut) would move its line's baseline. Keep at least the strut
+        // on both sides; a `middle` attachment taller than the strut grows
+        // both sides evenly to stay centered on its text, while other
+        // alignments grow only the side they reach past.
         let line_height = line_height(text);
         if line_height <= 0.0 {
             return (top, up, down);
         }
         let half = (line_height - (ascent + descent + leading)) / 2.0;
         let (strut_up, strut_down) = (ascent + half, descent + half);
-        let grow = (up - strut_up).max(down - strut_down).max(0.0);
-        (top, strut_up + grow, strut_down + grow)
+        if align == nsh_core::VerticalAlign::Middle {
+            let grow = (up - strut_up).max(down - strut_down).max(0.0);
+            (top, strut_up + grow, strut_down + grow)
+        } else {
+            (top, up.max(strut_up), down.max(strut_down))
+        }
     }
 
-    /// The height a line holding the tallest attachment needs: its extent
-    /// around the baseline joined with its placeholder font's. A fixed
-    /// `lineHeight` caps text lines, not these: the view's line grows to
-    /// hold it (as a replaced inline box in CSS) instead of painting over
-    /// its neighbours.
+    /// Upper bound on the height of a line holding attachments when a fixed
+    /// `lineHeight` is set (`0` when every attachment fits in `lineHeight`,
+    /// keeping `MaximumLineHeight` at `lineHeight`). When an attachment
+    /// grows past `lineHeight`, combine the widest extent above and below
+    /// the baseline across attachments and spans so mixed alignments or
+    /// larger text spans on that line are not clamped by `CTParagraphStyle`.
     fn tallest_attachment_line(
         &self,
         text: &AttributedText,
         alignments: &nsh_core::AttachmentAlignments,
     ) -> CGFloat {
-        text.attachments.iter().fold(0.0, |tallest: CGFloat, a| {
+        let line_height = line_height(text);
+        if line_height <= 0.0 || text.attachments.is_empty() {
+            return 0.0;
+        }
+        let (mut fit_up, mut fit_down, mut fit_lead) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for a in &text.attachments {
             let (_, up, down) = self.attachment_metrics(text, a, alignments);
             let style = text
                 .span_at(a.index)
@@ -475,8 +484,32 @@ impl CoreTextEngine {
             let f = self.fonts.get(&style);
             // SAFETY: a valid font.
             let (ascent, descent, leading) = unsafe { (f.ascent(), f.descent(), f.leading()) };
-            tallest.max(up.max(ascent) + down.max(descent) + leading)
-        })
+            fit_up = fit_up.max(up).max(ascent);
+            fit_down = fit_down.max(down).max(descent);
+            fit_lead = fit_lead.max(leading);
+        }
+        let (mut all_up, mut all_down, mut all_lead) = (fit_up, fit_down, fit_lead);
+        for span in &text.spans {
+            if span.start >= span.end {
+                continue;
+            }
+            let f = self.fonts.get(&span.style);
+            // SAFETY: a valid font.
+            let (ascent, descent, leading) = unsafe { (f.ascent(), f.descent(), f.leading()) };
+            if ascent + descent + leading <= line_height + 1e-4 {
+                fit_up = fit_up.max(ascent);
+                fit_down = fit_down.max(descent);
+                fit_lead = fit_lead.max(leading);
+            }
+            all_up = all_up.max(ascent);
+            all_down = all_down.max(descent);
+            all_lead = all_lead.max(leading);
+        }
+        if fit_up + fit_down + fit_lead <= line_height + 1e-4 {
+            0.0
+        } else {
+            all_up + all_down + all_lead
+        }
     }
 
     fn attributed_string(
@@ -3727,6 +3760,127 @@ mod tests {
             !draw_at(full_w, full_h, Some(22.0)),
             "a partial redraw of a whole picture cuts nothing"
         );
+    }
+
+    /// Non-`middle` attachments taller than a fixed `lineHeight` grow only
+    /// the side of the baseline they reach past, mixed attachments or larger
+    /// spans on the same line keep room for both, and fitting attachments do
+    /// not relax `MaximumLineHeight` on wrapped text lines.
+    #[test]
+    fn non_middle_attachments_grow_only_the_side_they_reach_past() {
+        let engine = CoreTextEngine::default();
+        let style = ResolvedTextStyle {
+            font_size: Points(15.0),
+            line_height: Points(26.0),
+            ..ResolvedTextStyle::default()
+        };
+        let f = engine.fonts.get(&style);
+        // SAFETY: a valid font.
+        let (ascent, descent, leading) = unsafe { (f.ascent(), f.descent(), f.leading()) };
+        let strut_down = (descent + (26.0 - (ascent + descent + leading)) / 2.0) as f32;
+
+        let mut block = AttributedText::default();
+        let mut block_align = nsh_core::AttachmentAlignments::default();
+        block_align.push(
+            &mut block,
+            Size::new(Points(320.0), Points(450.0)),
+            VerticalAlign::Baseline,
+            style,
+        );
+        let prep = engine.prepare_aligned(&block, &block_align);
+        let sz = engine.measure(&prep, Some(Points(320.0)));
+        let lay = engine.layout(&prep, sz);
+        let top = engine.attachments(&lay)[0].expect("shown").y.0;
+        assert!(top.abs() < 1.0 && (sz.height.0 - (450.0 + strut_down)).abs() < 1.0);
+
+        let three_lines = |align| {
+            let mut t = AttributedText::default();
+            t.push("Ax\nAx ", style);
+            let mut a = nsh_core::AttachmentAlignments::default();
+            a.push(&mut t, Size::new(Points(40.0), Points(80.0)), align, style);
+            t.push(" x\nAx", style);
+            let prep = engine.prepare_aligned(&t, &a);
+            let lay = engine.layout(&prep, engine.measure(&prep, None));
+            let lines = engine.lines(&lay);
+            let top = engine.attachments(&lay)[0].expect("shown").y.0;
+            assert!(
+                top >= lines[0].y.0 + lines[0].height.0 - 0.5 && top + 80.0 <= lines[2].y.0 + 0.5
+            );
+            lines
+                .iter()
+                .map(|l| l.y.0 + l.ascender.0)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            (three_lines(VerticalAlign::TextTop)[1]
+                - three_lines(VerticalAlign::TextTop)[0]
+                - 26.0)
+                .abs()
+                < 1.5
+        );
+        let bot = three_lines(VerticalAlign::TextBottom);
+        assert!((bot[2] - bot[1] - 26.0).abs() < 1.5);
+
+        for (lh, img_h) in [(26.0, 100.0), (58.0, 35.0)] {
+            let row = ResolvedTextStyle {
+                line_height: Points(lh),
+                ..style
+            };
+            let mut mixed = AttributedText::default();
+            mixed.push("Ax\n", row);
+            let mut mixed_align = nsh_core::AttachmentAlignments::default();
+            mixed_align.push(
+                &mut mixed,
+                Size::new(Points(40.0), Points(img_h)),
+                VerticalAlign::Baseline,
+                row,
+            );
+            mixed.push(" ", row);
+            mixed_align.push(
+                &mut mixed,
+                Size::new(Points(40.0), Points(img_h)),
+                VerticalAlign::TextTop,
+                row,
+            );
+            mixed.push(
+                " Big",
+                ResolvedTextStyle {
+                    font_size: Points(48.0),
+                    ..row
+                },
+            );
+            mixed.push("\nHx", row);
+            let prep = engine.prepare_aligned(&mixed, &mixed_align);
+            let lay = engine.layout(&prep, engine.measure(&prep, None));
+            let lines = engine.lines(&lay);
+            let pts = engine.attachments(&lay);
+            assert!(pts[0].expect("a0").y.0 >= lines[0].y.0 + lines[0].height.0 - 1.0);
+            assert!(pts[1].expect("a1").y.0 + img_h <= lines[2].y.0 + 1.0);
+        }
+
+        let wrapped_h = |with_fitting: bool| {
+            let mut t = AttributedText::default();
+            t.push("Ax ", style);
+            let mut a = nsh_core::AttachmentAlignments::default();
+            if with_fitting {
+                a.push(
+                    &mut t,
+                    Size::new(Points(12.0), Points(12.0)),
+                    VerticalAlign::Baseline,
+                    style,
+                );
+            }
+            t.push(
+                " Big words wrap onto pure text lines",
+                ResolvedTextStyle {
+                    font_size: Points(36.0),
+                    ..style
+                },
+            );
+            let prep = engine.prepare_aligned(&t, &a);
+            engine.measure(&prep, Some(Points(100.0))).height.0
+        };
+        assert!((wrapped_h(true) - wrapped_h(false)).abs() < 0.5);
     }
 }
 

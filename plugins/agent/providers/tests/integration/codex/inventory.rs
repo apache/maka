@@ -36,6 +36,7 @@ async fn server_side_compaction_requires_connection_opt_in() {
         }
         let model = provider
             .resolve(Resolve {
+                service_tier: None,
                 connection,
                 model: discovered.clone(),
                 overrides: None,
@@ -64,6 +65,7 @@ async fn subscription_discovery_preserves_capacity_and_compaction_hash() {
     assert_eq!(discovered.codex_compaction_hash.as_deref(), Some("3000"));
     let model = provider
         .resolve(Resolve {
+            service_tier: None,
             connection: connection(),
             model: discovered,
             overrides: None,
@@ -153,6 +155,7 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
         Err(Error::Invalid(_))
     ));
     let request = Resolve {
+        service_tier: None,
         connection: connection(),
         model: inventory[0].clone(),
         overrides: None,

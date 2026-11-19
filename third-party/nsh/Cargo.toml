@@ -222,6 +222,8 @@ windows-numerics = "0.3"
 webview2-com = "0.39"
 # The Linux backend (GTK 4.14+: Ubuntu 24.04, Debian 13, Fedora 40).
 gtk4 = { version = "0.11", features = ["v4_14"] }
+gdk4-x11 = "0.11"
+x11rb = "0.13"
 pango = "0.22"
 pangocairo = "0.22"
 # The Linux backend's web views (its feature `webview`): WebKitGTK 6.0 (2.42+ for downloads).

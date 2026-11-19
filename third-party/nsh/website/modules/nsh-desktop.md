@@ -770,6 +770,8 @@ interface WindowState {
   focused: boolean;            // it has the keyboard focus
   bounds: Bounds;              // its outer frame now, decorations included
   contentBounds: Bounds;       // its content area now
+  nativeContentBounds: { x: number; y: number; width: number; height: number } | null;
+                              // macOS points, Windows/X11 pixels; null without global positioning
   placement: WindowPlacement;  // its mode and the bounds it is restored to
   display: Display | null;     // the display with most of it
   scaleFactor: number;         // device pixels per point
@@ -790,7 +792,7 @@ interface Display {
 }
 ```
 
-`win.state()` is a window as the platform reports it, `windowState()` the current window's, and `displays()` the displays, the primary one first; all are reactive. Every rectangle is in points, in screen coordinates: from the primary display's top left corner, with `y` growing down, as `setBounds` takes them. A change of mode, of display, of focus, or of being minimized or visible is reported at once; a move or a resize once the window stops for a moment, so what reads them runs once per move rather than at every step. Rust: `WindowRef::state() -> Option<WindowState>` and `displays() -> Vec<Display>` (`nsh_core::desktop`'s types); reading them subscribes to changes.
+`win.state()` is a window as the platform reports it, `windowState()` the current window's, and `displays()` the displays, the primary one first; all are reactive. Except for `nativeContentBounds`, rectangles are in points, in screen coordinates: from the primary display's top left corner, with `y` growing down, as `setBounds` takes them. A change of mode, of display, of focus, or of being minimized or visible is reported at once; a move or a resize once the window stops for a moment, so what reads them runs once per move rather than at every step. Before a press handler runs, the latest pending geometry is published so the handler reads the current placement. Rust: `WindowRef::state() -> Option<WindowState>` and `displays() -> Vec<Display>` (`nsh_core::desktop`'s types); reading them subscribes to changes.
 
 A display's `cutouts` are the parts of it a camera housing covers, in the same screen coordinates: on a MacBook with a notch, one rectangle at the top's middle, as tall as the menu bar. A window can sit beside the notch, or show content that grows out of it; on every other display the list is empty.
 

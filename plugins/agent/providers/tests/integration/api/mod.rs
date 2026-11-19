@@ -47,6 +47,7 @@ fn request(binding: &Definition, id: &str, overrides: ModelOverride) -> Resolve 
         .configure(json!({"baseUrl":"https://relay.test/v1"}))
         .unwrap();
     Resolve {
+        service_tier: None,
         connection: Connection {
             id: "test-account".into(),
             revision: 1,
@@ -313,6 +314,51 @@ async fn account_metadata_and_reply_capacity_survive_plugin_policy_resolution() 
 }
 
 #[tokio::test]
+async fn subscription_speeds_follow_account_inventory_on_the_responses_wire() {
+    use maka_providers::codex::{Codex, decode_model_inventory};
+
+    let models = decode_model_inventory(br#"{"models":[
+        {"slug":"sol","service_tiers":[{"id":"priority","name":"Fast","description":"Priority processing"},{"id":"ultrafast","name":"Ultrafast"}],"supported_reasoning_levels":[{"effort":"high"}]},
+        {"slug":"astra","service_tiers":[{"id":"priority","name":"Fast"}]}
+    ]}"#).unwrap();
+    let provider = Codex::new(snapshot()).definition().unwrap();
+    let mut input = Resolve {
+        connection: Connection {
+            id: "sub".into(),
+            revision: 1,
+            configuration: provider.configure(json!({})).unwrap(),
+        },
+        model: models[0].clone(),
+        service_tier: None,
+        thinking_level: Some(High),
+        overrides: None,
+    };
+    for tier in [None, Some("priority"), Some("ultrafast")] {
+        input.service_tier = tier.map(str::to_owned);
+        let model = provider.prepare(input.clone()).await.unwrap();
+        let body = maka_provider_protocol::responses::request::Request {
+            model: &model.info.id,
+            input: &[],
+            tools: &[],
+            tool_choice: Default::default(),
+            options: &model.provider_options,
+            max_output_tokens: None,
+            reasoning: maka_provider_protocol::responses::ReasoningMode::Encrypted,
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(body["model"], "sol");
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body.get("service_tier"), tier.map(|id| json!(id)).as_ref());
+    }
+    input.model = models[1].clone();
+    input.thinking_level = None;
+    assert!(
+        matches!(provider.prepare(input).await, Err(maka_agent_ports::provider::Error::Invalid(detail)) if detail.contains("ultrafast"))
+    );
+}
+
+#[tokio::test]
 async fn repeated_definitions_keep_each_captured_model_observation() {
     use maka_providers::{catalog::Snapshot, codex::Codex};
     use std::sync::Arc;
@@ -339,6 +385,7 @@ async fn repeated_definitions_keep_each_captured_model_observation() {
             let configuration = binding.configure(json!({})).unwrap();
             let model = binding
                 .prepare(Resolve {
+                    service_tier: None,
                     connection: Connection {
                         id: "captured-account".into(),
                         revision: 1,

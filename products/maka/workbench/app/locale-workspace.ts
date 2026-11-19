@@ -281,6 +281,11 @@ export const workspaceMessages = {
     '工作区预览不可用。',
     '工作區預覽無法使用。',
   ],
+  'This conversation cannot read that path.': [
+    'This conversation cannot read that path.',
+    '此会话无权读取这个路径。',
+    '此對話無權讀取這個路徑。',
+  ],
   'Image unavailable': ['Image unavailable', '图片不可用', '圖片無法使用'],
   'Image viewport': ['Image viewport', '图片视口', '圖片檢視區'],
   'Jump to turn: {label}': ['Jump to turn: {label}', '跳转到轮次：{label}', '跳至輪次：{label}'],
@@ -444,6 +449,11 @@ export const workspaceMessages = {
   ],
   Staged: ['Staged', '已暂存', '已暫存'],
   'Stop terminal process': ['Stop terminal process', '停止终端进程', '停止終端程序'],
+  'Stop this agent command?': [
+    'Stop this agent command?',
+    '停止这条 agent 命令？',
+    '停止這條 agent 命令？',
+  ],
   'Stop this terminal and its running process?': [
     'Stop this terminal and its running process?',
     '停止此终端及其正在运行的进程？',
@@ -499,6 +509,11 @@ export const workspaceMessages = {
     'The Host returned a different directory view. Reopen the folder.',
     '主机返回了不同的目录视图。请重新打开文件夹。',
     '主機傳回了不同的目錄檢視。請重新開啟資料夾。',
+  ],
+  'The agent sees it as stopped and may start it again.': [
+    'The agent sees it as stopped and may start it again.',
+    'agent 会看到它已被停止，可能会重新启动它。',
+    'agent 會看到它已被停止，可能會重新啟動它。',
   ],
   'The current patch has no displayable rows.': [
     'The current patch has no displayable rows.',
@@ -1013,6 +1028,8 @@ export const workspaceMessages = {
   'Switch worktree': ['Switch worktree', '切换工作树', '切換工作樹'],
   'Pull requests': ['Pull requests', '拉取请求', '拉取請求'],
   Sources: ['Sources', '来源', '來源'],
+  'Answer sources': ['Answer sources', '回答来源', '回答來源'],
+  'Open tabs': ['Open tabs', '已打开的标签页', '已開啟的分頁'],
   'View all': ['View all', '查看全部', '檢視全部'],
   'No subagents': ['No subagents', '暂无子智能体', '尚無子代理'],
   'No open files': ['No open files', '暂无打开的文件', '尚無開啟的檔案'],

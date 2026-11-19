@@ -75,6 +75,8 @@ nsh-core.workspace = true
 nsh-engine.workspace = true
 nsh-base.workspace = true
 gtk4.workspace = true
+gdk4-x11.workspace = true
+x11rb.workspace = true
 gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 gstreamer-audio = { workspace = true, optional = true }
