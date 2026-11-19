@@ -171,6 +171,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             messages,
             recorded:
                 RecordedInputs {
+                    unfinished_provider_calls,
                     cells: original_cells,
                     steering: steering_messages,
                     notifications: notification_facts,
@@ -293,6 +294,19 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                             .flush(view, prefix_attempt, current, messages)
                             .await?;
                         *current = Some(*attempt);
+                    }
+                    if let ModelPart::ToolCall { call } = part
+                        && call.provider_executed
+                        && unfinished_provider_calls.contains(&ToolKey {
+                            attempt: *attempt,
+                            call: call.id.clone(),
+                        })
+                    {
+                        assistant.parts.push(AssistantPart::Text {
+                            text: format!("The provider started tool {} (call ID {}). Its outcome is unknown. Continue without repeating this call.", json!(call.name), json!(call.id)),
+                            provider_options: None,
+                        });
+                        return Ok(());
                     }
                     if let ModelPart::ToolCall { call } = part
                         && !call.provider_executed

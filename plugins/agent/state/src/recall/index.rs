@@ -315,6 +315,9 @@ fn project(
                         .references
                         .extend(returned.artifacts.into_iter().map(|a| a.payload));
                 }
+                AcceptedToolResult::ProviderOutcomeUnknown => {
+                    message.body = "Provider tool outcome unknown".into()
+                }
                 AcceptedToolResult::Provider { output, .. } => {
                     message.body = serde_json::to_string(&output)?
                 }
