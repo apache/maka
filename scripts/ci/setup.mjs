@@ -29,11 +29,13 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  lstatSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gunzipSync } from 'node:zlib';
 import { command } from './command.mjs';
@@ -59,7 +61,9 @@ const tools =
           'macos-nsh',
           'windows-nsh',
           'native-windows',
+          'native-windows-desktop-2',
           'native-macos',
+          'native-macos-agent',
         ].includes(role)
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
@@ -311,6 +315,16 @@ async function main(action) {
         selectedManifests.map((manifest) => readFileSync(join(dirname(manifest), 'Cargo.lock'))),
       ),
     );
+    let thirdPartyTree = 'none';
+    if (workspace === 'root') {
+      try {
+        thirdPartyTree = (
+          await command('git', ['rev-parse', 'HEAD:third-party'], { capture: true })
+        ).trim();
+      } catch {
+        thirdPartyTree = 'none';
+      }
+    }
     const configuration = hash(
       Buffer.concat([
         ...selectedManifests.map((manifest) => readFileSync(manifest)),
@@ -321,41 +335,76 @@ async function main(action) {
     );
     const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;
     output({
-      compiled: `${compiled}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
+      compiled: `${compiled}-${lock}-${hash(thirdPartyTree + hash(readFileSync(new URL(import.meta.url))))}`,
       compiled_prefix: `${compiled}-`,
       downloads: `cargo-sources-${workspace}-${lock}`,
       downloads_prefix: `cargo-sources-${workspace}-`,
       downloads_writer: role === 'root' || role === 'nsh' || role === 'termina',
     });
+  } else if (action === 'stamp-third-party') {
+    const fixed = new Date('2020-01-01T00:00:00Z');
+    const visit = (dir) => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        const info = lstatSync(full);
+        if (info.isSymbolicLink()) continue;
+        if (info.isDirectory()) visit(full);
+        else if (info.isFile()) utimesSync(full, fixed, fixed);
+      }
+    };
+    if (existsSync('third-party')) visit('third-party');
   } else if (action === 'prune') {
     if (existsSync(TARGET_ROOT)) ensureCargoTargetTag();
     for (const manifest of selectedManifests) {
-      const packages = JSON.parse(
-        await command(
-          process.platform === 'win32' ? 'python' : 'python3',
-          [
-            '-c',
-            'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
-            join(dirname(manifest), 'Cargo.lock'),
-          ],
-          { capture: true },
-        ),
-      );
-      // Local path dependencies rebuild after checkout just like workspace members.
-      // Keep the immutable registry/Git dependencies instead of those large outputs.
-      await command('cargo', [
-        'clean',
-        '--manifest-path',
-        manifest,
-        '--target-dir',
-        TARGET_ROOT,
-        ...packages.flatMap((name) => ['--package', name]),
-      ]);
+      let packages;
+      if (workspace === 'root') {
+        const metadata = JSON.parse(
+          await command(
+            'cargo',
+            ['metadata', '--locked', '--format-version=1', '--manifest-path', manifest],
+            { capture: true },
+          ),
+        );
+        const repoRoot = process.cwd();
+        // Retain compiled outputs for vendored third-party/* path crates; their
+        // exact Git tree SHA is part of the cache key and timestamps are stabilized
+        // on exact cache hits.
+        packages = metadata.packages
+          .filter((pkg) => {
+            if (pkg.source !== null) return false;
+            const rel = relative(repoRoot, pkg.manifest_path).replaceAll('\\', '/');
+            return !rel.startsWith('third-party/');
+          })
+          .map((pkg) => pkg.name);
+      } else {
+        packages = JSON.parse(
+          await command(
+            process.platform === 'win32' ? 'python' : 'python3',
+            [
+              '-c',
+              'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
+              join(dirname(manifest), 'Cargo.lock'),
+            ],
+            { capture: true },
+          ),
+        );
+      }
+      if (packages.length) {
+        await command('cargo', [
+          'clean',
+          '--manifest-path',
+          manifest,
+          '--target-dir',
+          TARGET_ROOT,
+          ...packages.flatMap((name) => ['--package', name]),
+        ]);
+      }
     }
   } else if (action === 'native') {
     const dependencies = process.env.MAKA_CI_DEPENDENCIES;
     const shared = [
       'clang',
+      'lld',
       'libclang-dev',
       'pkg-config',
       'libfontconfig1-dev',

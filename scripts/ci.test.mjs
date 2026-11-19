@@ -225,11 +225,15 @@ test('a shared input plans the maintained platform jobs rather than silently nar
   }
 });
 
-test('macOS recovery cases stay in a required worker targeting only their CLI binaries', () => {
+test('macOS recovery cases run in parallel with desktop on a cache-sharing worker', () => {
   const plan = full();
-  const worker = plan.workers.find((worker) => worker.id === 'native-macos');
+  const worker = plan.workers.find((worker) => worker.id === 'native-macos-agent');
   assert.ok(worker.suites.includes('macos-agent-execution'));
-  assert.ok(!worker.suites.includes('macos-nsh'));
+  assert.equal(worker.cacheRole, 'native-macos');
+  assert.equal(worker.saveCache, false);
+  const desktopWorker = plan.workers.find((worker) => worker.id === 'native-macos');
+  assert.ok(!desktopWorker.suites.includes('macos-agent-execution'));
+  assert.ok(!desktopWorker.suites.includes('macos-nsh'));
   assert.ok(!suites['macos-agent-execution'].cargoArgs.includes('--workspace'));
   for (const name of [
     'mainline_reopen',
@@ -323,10 +327,25 @@ test('native pixel and desktop regressions run only on their native OS workers',
   const plan = createPlan({ root, revision: 'head' });
   for (const id of ['desktop', 'pixels']) {
     assert.deepEqual(
-      plan.workers.filter((worker) => worker.suites.includes(id)).map((worker) => worker.runner),
+      [
+        ...new Set(
+          plan.workers
+            .filter((worker) => worker.suites.includes(id))
+            .map((worker) => worker.runner),
+        ),
+      ],
       ['macos-latest', 'windows-latest'],
     );
   }
+  const winDesktopWorkers = plan.workers.filter(
+    (worker) => worker.runner === 'windows-latest' && worker.suites.includes('desktop'),
+  );
+  assert.deepEqual(
+    winDesktopWorkers.map((worker) => worker.desktopPartition),
+    ['count:1/2', 'count:2/2'],
+  );
+  assert.equal(winDesktopWorkers[1].cacheRole, 'native-windows');
+  assert.equal(winDesktopWorkers[1].saveCache, false);
   assert.deepEqual(
     plan.workers
       .filter((worker) => worker.suites.includes('linux-nsh'))

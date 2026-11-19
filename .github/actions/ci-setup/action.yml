@@ -79,6 +79,12 @@ runs:
       env:
         MAKA_CI_DEPENDENCIES: ${{ inputs.dependencies }}
       run: node scripts/ci/setup.mjs native
+    - name: Use lld linker on Linux
+      if: runner.os == 'Linux' && inputs.compile == 'true' && inputs.dependencies != ''
+      shell: bash
+      run: |
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang' >> "$GITHUB_ENV"
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
     - name: Exclude Cargo paths from Windows Defender
       if: runner.os == 'Windows' && inputs.compile == 'true'
       shell: pwsh
@@ -136,6 +142,10 @@ runs:
           !target/**/deps/*.exe
         key: ${{ steps.keys.outputs.compiled }}
         restore-keys: ${{ steps.keys.outputs.compiled_prefix }}
+    - name: Stabilize third-party timestamps on exact cache hit
+      if: inputs.compile == 'true' && inputs.workspace == 'root' && steps.compiled.outputs.cache-hit == 'true'
+      shell: bash
+      run: node scripts/ci/setup.mjs stamp-third-party
     - name: Stage prebuilt V8 archive
       if: inputs.workspace == 'root' && inputs.role != 'replay' && steps.compiled.outputs.cache-hit != 'true'
       shell: bash
