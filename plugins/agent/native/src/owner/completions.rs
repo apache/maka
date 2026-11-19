@@ -18,11 +18,14 @@
  */
 use super::*;
 use maka_agent_facts::{
-    durable::{RunId, Terminal},
+    durable::{RunId, Terminal, UnixMillis},
     message::MessageOrigin,
 };
 use maka_agent_state::{NotificationAttention, NotificationState, queue::MessageResolution};
 use maka_event_log::root_store::completions::{Completion, RegisterCompletion};
+
+/// The longest a delegated task waits for its caller to answer a question or approval.
+const UNANSWERED_LIMIT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct CompletionRequest {
@@ -409,6 +412,10 @@ impl Owner {
         });
     }
     pub(super) async fn deliver_completions(self: &Arc<Self>) -> Result<(), String> {
+        self.deliver_completions_at(now()).await
+    }
+    /// `now` decides which unanswered requests have passed the limit.
+    pub(super) async fn deliver_completions_at(self: &Arc<Self>, now: u64) -> Result<(), String> {
         let mut after = None;
         loop {
             let entries = self
@@ -454,7 +461,7 @@ impl Owner {
             for (entry, request, resolution) in pending {
                 // One invalid route must not prevent unrelated callers from receiving results.
                 if let Err(error) = self
-                    .deliver_completion(entry, request, resolution, &states)
+                    .deliver_completion(entry, request, resolution, &states, now)
                     .await
                 {
                     tracing::warn!(%error, "Session completion delivery deferred");
@@ -468,6 +475,7 @@ impl Owner {
         request: CompletionRequest,
         resolution: MessageResolution,
         states: &BTreeMap<RunId, NotificationState>,
+        now: u64,
     ) -> Result<(), String> {
         let _goal = self.goals.gate.lock().await;
         let parent = match self.session(&request.source.session_id).await {
@@ -548,17 +556,24 @@ impl Owner {
             let identity = notice.identity(&entry);
             let attention = matches!(notice, Notice::Attention { .. });
             if attention
-                && self
+                && let Some(notified_at) = self
                     .durable
                     .queue()
-                    .entry(
+                    .entry_enqueued_at(
                         entry.recipient.clone(),
                         maka_agent_state::queue::RequestId(identity.clone()),
                     )
                     .await
                     .map_err(|error| error.to_string())?
-                    .is_some()
             {
+                if let Notice::Attention {
+                    reason: NotificationAttention::Interaction { request },
+                    ..
+                } = &notice
+                {
+                    self.close_unanswered(&entry.session_id, request, notified_at, now)
+                        .await?;
+                }
                 return Ok(());
             }
             let route = self
@@ -570,7 +585,7 @@ impl Owner {
                 )
                 .await?;
             let Some(notification) = self
-                .prepare_notification(
+                .prepare_notification_at(
                     &request.source,
                     &route,
                     &identity,
@@ -579,6 +594,7 @@ impl Owner {
                         session_id: entry.session_id.clone(),
                         message_id: entry.message_id.clone(),
                     },
+                    UnixMillis(now as i64),
                 )
                 .await?
             else {
@@ -607,6 +623,45 @@ impl Owner {
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+    /// The caller was told about this question or approval. If no one answers it
+    /// within the limit, the delegated task gets "no one answered" and continues.
+    /// The limit counts from when the caller's attention notice was durably
+    /// enqueued, so queued parallel interactions and restart delays get the full window.
+    async fn close_unanswered(
+        &self,
+        session: &str,
+        request: &str,
+        notified_at: UnixMillis,
+        now: u64,
+    ) -> Result<(), String> {
+        let notified_at = u64::try_from(notified_at.0).unwrap_or(0);
+        if now.saturating_sub(notified_at) < UNANSWERED_LIMIT.as_millis() as u64 {
+            return Ok(());
+        }
+        let interactions = self.durable.interactions();
+        let Some(record) = interactions
+            .read(session, request)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
+        };
+        if record.outcome.is_some() {
+            return Ok(());
+        }
+        interactions
+            .commit_outcome(
+                session,
+                request,
+                maka_agent_facts::interaction::InteractionOutcome::Closure {
+                    reason: maka_agent_facts::interaction::ClosureReason::TimedOut,
+                    committed_at: now,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
     async fn retire_completion(&self, entry: &Completion) -> Result<(), String> {

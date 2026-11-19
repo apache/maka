@@ -4707,16 +4707,37 @@ mod model_recovery {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delegated_task_attention_is_delivered_once_and_completion_still_follows() {
-        delegated_notifications("stop").await;
+        delegated_notifications("stop", Waits::Answered).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delegated_notifications_survive_caller_failure_before_consumption() {
-        delegated_notifications("length").await;
+        delegated_notifications("length", Waits::Answered).await;
     }
 
-    async fn delegated_notifications(caller_finish: &'static str) {
-        use maka_agent_facts::interaction::{InteractionOutcome, InteractionRecord};
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parallel_delegated_questions_time_out_from_first_notice_not_creation() {
+        delegated_notifications("stop", Waits::ParallelTimedOut).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delegated_permission_no_one_answers_counts_as_denied() {
+        delegated_notifications("stop", Waits::Permission).await;
+    }
+
+    /// What the delegated task waits on after it asks its caller.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Waits {
+        /// A question recorded by hand, which the caller answers.
+        Answered,
+        /// Two parallel questions created together; Q2's deadline must start when Q2 is first noticed.
+        ParallelTimedOut,
+        /// A WebFetch permission request that no one answers.
+        Permission,
+    }
+
+    async fn delegated_notifications(caller_finish: &'static str, waits: Waits) {
+        use maka_agent_facts::interaction::{ClosureReason, InteractionOutcome, InteractionRecord};
         use maka_plugin_core::contract::ServiceTarget;
         let mut rig = Rig::new().unwrap();
         let stop = CancellationToken::new();
@@ -4725,7 +4746,14 @@ mod model_recovery {
         let result = tokio::time::timeout(Duration::from_secs(90), async {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
             let base = rig.directory.path().to_path_buf();
-            let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
+            let boot = bootstrap_with(&base, format!("http://{}/v1", listener.local_addr()?), |config| {
+                config["todo"] = json!(false);
+                config["permissions"]["requestPermissions"] = json!(true);
+                config["tools"] = json!([
+                    {"name":"WebFetch","description":"Fetch a web page.","target":{"kind":"import","name":"web"},
+                        "method":"fetch","input":"web","result":"json","confirmation":"preapproved"}
+                ]);
+            }).await?;
             let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(
                 move |request: axum::extract::Request| {
                     let requests = requests.clone();
@@ -4735,12 +4763,18 @@ mod model_recovery {
                         let (reply, response) = oneshot::channel::<(&'static str, &'static str)>();
                         requests.send((request, reply)).await.unwrap();
                         let (text, finish) = response.await.unwrap();
-                        let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                            json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                                "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
-                            json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                                "choices":[{"index":0,"delta":{},"finish_reason":finish}],
-                                "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}));
+                        // A tool call reply carries {"name", "input"} as its text.
+                        let body = if finish == "tool_calls" {
+                            let call: Value = serde_json::from_str(text).unwrap();
+                            bot_tools::tool_response(call["name"].as_str().unwrap(), call["input"].clone())
+                        } else {
+                            format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                                json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                                    "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
+                                json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                                    "choices":[{"index":0,"delta":{},"finish_reason":finish}],
+                                    "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}))
+                        };
                         ([("content-type", "text/event-stream")], body)
                     }
                 }));
@@ -4760,10 +4794,14 @@ mod model_recovery {
             })).await?;
             assert_eq!(connection["kind"], "committed");
             let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
+            let worker_tools = match waits {
+                Waits::Answered | Waits::ParallelTimedOut => json!([]),
+                Waits::Permission => json!(["WebFetch"]),
+            };
             let mut sessions = Vec::new();
-            for title in ["Caller", "Worker"] {
+            for (title, tools) in [("Caller", json!([])), ("Worker", worker_tools)] {
                 let created = call(client, "agent", "create", json!({
-                    "title":title,"automaticTitle":false,"labels":[],"tools":[],
+                    "title":title,"automaticTitle":false,"labels":[],"tools":tools,
                     "workspace":{"kind":"directory","path":base.join("workspace")}
                 })).await?;
                 assert_eq!(created["kind"], "created");
@@ -4797,6 +4835,13 @@ mod model_recovery {
             assert_eq!(delegated["kind"], "queued");
             assert_eq!(delegated["completion"], "registered");
             let (_, worker_reply) = observed.recv().await.ok_or("worker HTTP request missing")?;
+            let worker_reply = match waits {
+                Waits::Answered | Waits::ParallelTimedOut => Some(worker_reply),
+                Waits::Permission => {
+                    worker_reply.send((r#"{"name":"WebFetch","input":{"url":"https://example.com/"}}"#, "tool_calls")).unwrap();
+                    None
+                }
+            };
             let caller_run = access.execution().run_id;
             drop(request);
             drop(access);
@@ -4822,16 +4867,37 @@ mod model_recovery {
 
             let worker_access = owner.runs.state().await.controls.get(worker)
                 .and_then(|control| control.access.upgrade()).ok_or("worker access missing")?;
-            let worker_run = worker_access.execution().run_id;
-            let view = owner.durable.frontier(worker_run).await?;
-            let question = InteractionRecord {
-                execution:worker_access.execution().clone(),request_id:"delegated-question".into(),created_at:now(),
-                request:serde_json::from_value(json!({"kind":"question","toolUseId":"delegated-question-tool",
-                    "questions":[{"question":"Which result do you need?","options":[{"label":"Brief"},{"label":"Detailed"}]}]}))?,
-                outcome:None,
+            let t0 = now();
+            let request_id = if waits != Waits::Permission {
+                let view = owner.durable.frontier(worker_access.execution().run_id).await?;
+                let question = InteractionRecord {
+                    execution:worker_access.execution().clone(),request_id:"delegated-question".into(),created_at:t0,
+                    request:serde_json::from_value(json!({"kind":"question","toolUseId":"delegated-question-tool",
+                        "questions":[{"question":"Which result do you need?","options":[{"label":"Brief"},{"label":"Detailed"}]}]}))?,
+                    outcome:None,
+                };
+                owner.durable.interactions().establish(worker_access.claim(), (&view).into(), question, None, vec![]).await?;
+                if waits == Waits::ParallelTimedOut {
+                    let view = owner.durable.frontier(worker_access.execution().run_id).await?;
+                    let second = InteractionRecord {
+                        execution:worker_access.execution().clone(),request_id:"delegated-question-2".into(),created_at:t0,
+                        request:serde_json::from_value(json!({"kind":"question","toolUseId":"delegated-question-tool-2",
+                            "questions":[{"question":"Second parallel question?","options":[{"label":"Yes"},{"label":"No"}]}]}))?,
+                        outcome:None,
+                    };
+                    owner.durable.interactions().establish(worker_access.claim(), (&view).into(), second, None, vec![]).await?;
+                }
+                "delegated-question".to_owned()
+            } else {
+                loop {
+                    let pending = call(client, "agent", "pendingInteractions", json!({"sessionId":worker})).await?;
+                    if let Some(request) = pending["entries"][0]["requestId"].as_str() {
+                        break request.to_owned();
+                    }
+                    tokio::task::yield_now().await;
+                }
             };
-            owner.durable.interactions().establish(worker_access.claim(), (&view).into(), question, None, vec![]).await?;
-            owner.deliver_completions().await?;
+            owner.deliver_completions_at(t0).await?;
             if let Some(caller_reply) = caller_reply {
                 caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
             }
@@ -4839,7 +4905,7 @@ mod model_recovery {
             let messages = serde_json::to_string(attention["messages"].as_array()
                 .and_then(|messages| messages.iter().rev().find(|message| message["role"] == "user"))
                 .ok_or("attention user message missing")?)?;
-            assert!(messages.contains("needs attention") && messages.contains("delegated-question"), "{messages}");
+            assert!(messages.contains("needs attention") && messages.contains(&request_id), "{messages}");
             let attention_run = owner.durable.latest_run(caller.clone()).await?.ok_or("attention Run missing")?;
             assert_eq!(attention_run == caller_run, caller_finish == "stop");
             if caller_finish == "length" {
@@ -4849,8 +4915,54 @@ mod model_recovery {
             let queue = call(client, "agent", "queue", json!({"sessionId":caller})).await?;
             assert_eq!(queue["entries"], json!([]), "the same pending question was queued again");
             assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(attention_run));
-            owner.durable.interactions().commit_outcome(worker, "delegated-question",
-                InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:now()}).await?;
+            let worker_reply = match worker_reply {
+                Some(worker_reply) => {
+                    let minute = 60 * 1000;
+                    if waits == Waits::ParallelTimedOut {
+                        let q1_answered_at = t0 + 30 * minute + 1_000;
+                        owner.durable.interactions().commit_outcome(worker, "delegated-question",
+                            InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:q1_answered_at}).await?;
+                        // Q2 was created at t0 alongside Q1, but only gets its first caller notice now.
+                        let q2_noticed_at = q1_answered_at + 1_000;
+                        owner.deliver_completions_at(q2_noticed_at).await?;
+                        let q2_after_notice = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(q2_after_notice.outcome.is_none(), "Q2 closed immediately on first notice: {:?}", q2_after_notice.outcome);
+                        // 2 seconds later (30m+4s after creation), Q2 must still be open because the caller only just saw it.
+                        owner.deliver_completions_at(q2_noticed_at + 2_000).await?;
+                        let q2_after_tick = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(q2_after_tick.outcome.is_none(), "Q2 closed prematurely 2s after first notice: {:?}", q2_after_tick.outcome);
+                        // 29m after first notice: still open.
+                        owner.deliver_completions_at(q2_noticed_at + 29 * minute).await?;
+                        let q2_before_limit = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(q2_before_limit.outcome.is_none(), "Q2 closed before 30m from notice: {:?}", q2_before_limit.outcome);
+                        // 30m after first notice: closed as TimedOut.
+                        owner.deliver_completions_at(q2_noticed_at + 30 * minute).await?;
+                        let q2_closed = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(matches!(q2_closed.outcome, Some(InteractionOutcome::Closure {reason:ClosureReason::TimedOut, ..})), "{:?}", q2_closed.outcome);
+                    } else {
+                        owner.durable.interactions().commit_outcome(worker, "delegated-question",
+                            InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:now()}).await?;
+                    }
+                    worker_reply
+                }
+                None => {
+                    let timed_out = InteractionOutcome::Closure {reason:ClosureReason::TimedOut,committed_at:t0};
+                    assert!(maka_agent_ports::execution::Interactions::commit_outcome(&*worker_access, &request_id, timed_out).await.is_err(),
+                        "only the Host closes a request as timed out");
+                    // The caller's Run is still open; only the time limit closes the request.
+                    owner.deliver_completions_at(t0 + 29 * 60 * 1000).await?;
+                    let open = owner.durable.interactions().read(worker, &request_id).await?.ok_or("delegated request missing")?;
+                    assert!(open.outcome.is_none(), "closed before the time limit: {:?}", open.outcome);
+                    owner.deliver_completions_at(t0 + 31 * 60 * 1000).await?;
+                    let closed = owner.durable.interactions().read(worker, &request_id).await?.ok_or("delegated request missing")?;
+                    assert!(matches!(closed.outcome, Some(InteractionOutcome::Closure {reason:ClosureReason::TimedOut, ..})), "{:?}", closed.outcome);
+                    let (continued, worker_reply) = observed.recv().await.ok_or("the delegated task did not continue")?;
+                    let result = continued["messages"].as_array().unwrap().iter().rev()
+                        .find(|message| message["role"] == "tool").ok_or("tool result missing")?.to_string();
+                    assert!(result.contains("denied"), "{result}");
+                    worker_reply
+                }
+            };
             worker_reply.send(("Delegated task completed.", "stop")).unwrap();
             completed_message(client, worker, &delegated["messageId"]).await?;
             owner.deliver_completions().await?;

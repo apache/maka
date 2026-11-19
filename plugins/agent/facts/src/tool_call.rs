@@ -104,6 +104,28 @@ impl ToolRejection {
             Self::Cancelled => RejectionKind::Cancelled,
         }
     }
+
+    /// The result of a tool whose approval was refused or closed without an answer.
+    /// An approval that nobody answered in time counts as denied.
+    pub fn for_refused_approval(outcome: &crate::interaction::InteractionOutcome) -> Self {
+        use crate::interaction::{ClosureReason, InteractionOutcome};
+        match outcome {
+            InteractionOutcome::Closure {
+                reason: ClosureReason::Steered,
+                ..
+            } => Self::Superseded,
+            InteractionOutcome::Closure {
+                reason: ClosureReason::TimedOut,
+                ..
+            } => Self::PolicyDenied {
+                message: "No one approved this request in time".into(),
+            },
+            InteractionOutcome::Closure { .. } => Self::Cancelled,
+            _ => Self::PolicyDenied {
+                message: "The original tool approval was refused".into(),
+            },
+        }
+    }
 }
 
 /// A Tool Call is distinct from its durable host operation. Origin determines

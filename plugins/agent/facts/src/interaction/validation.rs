@@ -349,19 +349,6 @@ impl InteractionOutcome {
         self.validate()?;
         match (request, self) {
             (
-                InteractionRequest::Form { .. }
-                | InteractionRequest::SessionApproval { .. }
-                | InteractionRequest::ServiceApproval { .. }
-                | InteractionRequest::Question { .. }
-                | InteractionRequest::Permissions { .. }
-                | InteractionRequest::ComputerApp { .. }
-                | InteractionRequest::SystemPermission { .. },
-                Self::Closure {
-                    reason: ClosureReason::TimedOut,
-                    ..
-                },
-            ) => Err("Human interactions have no response deadline"),
-            (
                 InteractionRequest::Permissions { request, .. },
                 Self::PermissionsDecision { decision, .. },
             ) => decision

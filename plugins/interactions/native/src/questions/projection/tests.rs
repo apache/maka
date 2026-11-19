@@ -84,13 +84,14 @@ fn answers_bind_count_not_labels_and_public_construction_preserves_semantics() {
                 .is_err()
         );
     }
+    // A question nobody answered in time is closed by the Host.
     assert!(
         InteractionOutcome::Closure {
             reason: ClosureReason::TimedOut,
             committed_at: 2
         }
         .validate_for_request(&request)
-        .is_err()
+        .is_ok()
     );
     let mut invalid = request;
     if let InteractionRequest::Question { questions, .. } = &mut invalid {

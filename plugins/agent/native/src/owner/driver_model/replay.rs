@@ -27,7 +27,6 @@ use maka_agent_facts::{
     context::{CodexRequestProvenance, ModelPurpose},
     durable::{AcceptedResult, Fact, ModelAttemptId, RecordedFact, ToolDecision, ToolKey},
     execution::SystemPrompt,
-    interaction::{ClosureReason, InteractionOutcome},
     model::{ModelPart, ModelToolCall, prompt::Message, prompt_source::source::ReplayOrigin},
     operation::RecordedOperationReply,
     tool_call::ToolRejection,
@@ -589,17 +588,9 @@ async fn unaccepted_tool_output(
         return Ok(ToolOutput::ErrorText(rejection.to_string()));
     }
     if let Some(refusal) = &tool.approval_refusal {
-        let rejection = match &refusal.outcome {
-            InteractionOutcome::Closure {
-                reason: ClosureReason::Steered,
-                ..
-            } => ToolRejection::Superseded,
-            InteractionOutcome::Closure { .. } => ToolRejection::Cancelled,
-            _ => ToolRejection::PolicyDenied {
-                message: "The original tool approval was refused".into(),
-            },
-        };
-        return Ok(ToolOutput::ErrorText(rejection.to_string()));
+        return Ok(ToolOutput::ErrorText(
+            ToolRejection::for_refused_approval(&refusal.outcome).to_string(),
+        ));
     }
     if !tool.admitted && tool.original.is_none() {
         let rejection = if view.model_steered(attempt) {

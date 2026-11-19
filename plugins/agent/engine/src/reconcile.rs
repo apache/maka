@@ -1179,19 +1179,10 @@ fn next_action(
             );
         }
         if let Some(refusal) = &tool.approval_refusal {
-            let rejection = match &refusal.outcome {
-                maka_agent_facts::interaction::InteractionOutcome::Closure {
-                    reason: maka_agent_facts::interaction::ClosureReason::Steered,
-                    ..
-                } => ToolRejection::Superseded,
-                maka_agent_facts::interaction::InteractionOutcome::Closure { .. } => {
-                    ToolRejection::Cancelled
-                }
-                _ => ToolRejection::PolicyDenied {
-                    message: "The original tool approval was refused".into(),
-                },
-            };
-            return Action::Reject(tool.key.clone(), rejection);
+            return Action::Reject(
+                tool.key.clone(),
+                ToolRejection::for_refused_approval(&refusal.outcome),
+            );
         }
         if view.current_attempt != Some(tool.key.attempt)
             && view

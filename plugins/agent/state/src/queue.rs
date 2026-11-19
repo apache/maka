@@ -261,6 +261,13 @@ impl QueueStore {
     ) -> Result<Option<QueueEntry>, StoreError> {
         self.data.query(ReadEntry(session, request)).await
     }
+    pub async fn entry_enqueued_at(
+        &self,
+        session: String,
+        request: RequestId,
+    ) -> Result<Option<UnixMillis>, StoreError> {
+        self.data.query(ReadEntryEnqueuedAt(session, request)).await
+    }
     /// Resolve the immutable source request by its submitted message identity.
     pub async fn message_entry(
         &self,
@@ -543,6 +550,13 @@ impl Query for ReadEntry {
     type Output = Option<QueueEntry>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::entry(c, &self.0, &self.1)
+    }
+}
+struct ReadEntryEnqueuedAt(String, RequestId);
+impl Query for ReadEntryEnqueuedAt {
+    type Output = Option<UnixMillis>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::entry_enqueued_at(c, &self.0, &self.1)
     }
 }
 struct Resolve(String, String);

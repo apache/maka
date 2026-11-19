@@ -941,3 +941,61 @@ fn a_finished_turn_fails_the_run_when_its_external_task_closed_as_failed() {
         Action::Terminate(Terminal::Failed)
     ));
 }
+
+#[test]
+fn an_approval_no_one_answered_in_time_counts_as_denied() {
+    use maka_agent_facts::{
+        accounting::Outcome,
+        context::ModelPurpose,
+        interaction::{ClosureReason, InteractionOutcome},
+        model::ModelFinishReason,
+    };
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (mut view, _, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Success,
+        true,
+    );
+    let tool = ToolKey {
+        attempt,
+        call: "continuation".into(),
+    };
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+        },
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::ApprovalRefused {
+            approval: ApprovalId::new(),
+            tool: tool.clone(),
+            outcome: InteractionOutcome::Closure {
+                reason: ClosureReason::TimedOut,
+                committed_at: 1,
+            },
+        },
+    );
+    let Action::Reject(key, rejection) = next(&view, &Live::default(), UnixMillis(1), None, false)
+    else {
+        panic!("an unanswered approval must reject the call");
+    };
+    assert_eq!(key, tool);
+    assert_eq!(
+        rejection,
+        ToolRejection::PolicyDenied {
+            message: "No one approved this request in time".into()
+        }
+    );
+}
