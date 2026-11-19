@@ -87,6 +87,7 @@ export interface PriorUnknownToolOutcome {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly operationId: string;
+  readonly requiresUserAttention: boolean;
 }
 
 export type PriorUnknownToolOutcomeProjection =
@@ -230,8 +231,10 @@ export function inspectPriorUnknownToolOutcomes(
     // tool. Validate their durable boundary above, but never surface their
     // names or operation identities in model-visible request context.
     if (callEvent.modelVisibility === 'hidden') continue;
-    if (!unknownOutcomeAcknowledged(invocation, invocations)) requiresUserAttention = true;
+    const outcomeRequiresUserAttention = !unknownOutcomeAcknowledged(invocation, invocations);
+    if (outcomeRequiresUserAttention) requiresUserAttention = true;
     outcomes.push({
+      requiresUserAttention: outcomeRequiresUserAttention,
       callEventId: callEvent.id,
       toolCallId: call.id,
       toolName: call.name,

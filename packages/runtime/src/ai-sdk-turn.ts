@@ -2868,10 +2868,11 @@ export class AiSdkTurn {
       contextBudget = preparedContextBudget.policy;
       const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
       const budgetedEvents = budgeted?.events ?? rawPriorRuntimeContext;
-      const preservesUnknownCalls = priorUnknownProjection.outcomes.every((outcome) =>
-        budgetedEvents.some((event) => event.id === outcome.callEventId),
+      const preservesUnknownCalls = priorUnknownProjection.outcomes.every(
+        (outcome) =>
+          !outcome.requiresUserAttention ||
+          budgetedEvents.some((event) => event.id === outcome.callEventId),
       );
-      // Existing checkpoints and durable result pruning are safe when they
       // Before a user has acknowledged an unknown, retain its call so that the
       // projected result cannot be hidden by an older checkpoint. After that
       // turn, a new checkpoint can summarize the paired projected result.

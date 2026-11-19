@@ -155,6 +155,7 @@ describe('plan context compaction', () => {
           requiresUserAttention: false,
           outcomes: [
             {
+              requiresUserAttention: false,
               callEventId: 'lost-call',
               toolCallId: 'lost-id',
               toolName: 'tool',
