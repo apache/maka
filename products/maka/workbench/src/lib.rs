@@ -377,6 +377,47 @@ mod tests {
     }
 
     #[test]
+    fn inline_dictation_cancels_or_inserts_at_the_original_caret() {
+        let mut app = fixture("inline-dictation.tsx");
+        app.wait_for("label:Microphone").unwrap();
+        let bounds = |app: &nsh_testing::Headless, selector: &str| {
+            let screen = app.screen();
+            let id = screen.id(selector).unwrap();
+            screen
+                .layout_nodes()
+                .into_iter()
+                .find(|n| n.id == id)
+                .unwrap()
+                .bounds
+        };
+        let plus = bounds(&app, "label:Add to message").center();
+        app.press("label:Microphone").unwrap();
+        app.wait_for("text:Recording").unwrap();
+        app.press("label:Cancel dictation").unwrap();
+        app.wait_for("text:周五开会").unwrap();
+        app.press("label:Microphone").unwrap();
+        app.wait_for("label:Finish and transcribe").unwrap();
+        assert_eq!(bounds(&app, "id:recording-dot").center(), plus);
+        let cancel = bounds(&app, "label:Cancel dictation").origin;
+        let status = bounds(&app, "text:Recording").origin;
+        app.press("label:Finish and transcribe").unwrap();
+        app.wait_for("text:Transcribing…").unwrap();
+        assert_eq!(bounds(&app, "label:Transcribing…").center(), plus);
+        assert_eq!(bounds(&app, "label:Cancel dictation").origin, cancel);
+        assert_eq!(bounds(&app, "text:Transcribing…").origin, status);
+        app.press("label:Release transcription").unwrap();
+        app.wait_for("text:Transcription failed").unwrap();
+        app.press("label:Retry transcription").unwrap();
+        app.wait_for("text:周五下午开会").unwrap();
+        app.wait_for("text:Unsent").unwrap();
+        app.press("label:Microphone").unwrap();
+        app.wait_for("label:Transcribe and send").unwrap();
+        app.press("label:Transcribe and send").unwrap();
+        app.wait_for("text:Sent: 周五下午下午开会").unwrap();
+        app.wait_for("label:Microphone").unwrap();
+    }
+
+    #[test]
     fn recycled_completion_cells_refresh_labels_and_press_actions() {
         let mut app = fixture("composer-completion.tsx");
         app.wait_for("role:button[skill-00]").unwrap();

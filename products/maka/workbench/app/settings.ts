@@ -64,6 +64,7 @@ export type ConnectionEditor = {
   enabled: boolean;
   overlay: string;
   apiKey: string;
+  useForDictation?: boolean;
 };
 function supportsServerSideCompaction(provider: SettingsProvider) {
   const schema = provider.descriptor.configurationSchema as {
@@ -183,6 +184,8 @@ export function createModelSettings(
   active: () => boolean,
   initialModel?: ModelSelection,
   restored?: ModelSettingsSnapshot,
+  connectionSaved?: (id: string) => void,
+  enableDictation?: (id: string) => Promise<void>,
 ) {
   const { busy, error, notice, pending, pendingKnown, report, mutate, run } = operations;
   // Snapshots from before the models list joined the connection page name it 'models'.
@@ -626,12 +629,29 @@ export function createModelSettings(
       value.serverSideCompaction = form.serverSideCompaction;
     return value;
   };
+  const offersDictation = () => {
+    const form = editor();
+    const provider = form?.provider.identity;
+    return (
+      !!enableDictation &&
+      !!form?.enabled &&
+      provider?.name === 'deepseek' &&
+      provider.packageId === 'maka.providers' &&
+      provider.entryId === provider.packageId &&
+      provider.scope === 'profile' &&
+      ['https://api.deepseek.com', 'https://api.deepseek.com/v1'].includes(
+        form.baseUrl.trim().replace(/\/+$/, ''),
+      ) &&
+      (!form.baseline || !!form.apiKey || !!form.useForDictation)
+    );
+  };
   const dirty = () => {
     const form = editor();
     if (!form?.baseline) return !!form;
     try {
       return (
         !!form.apiKey ||
+        (offersDictation() && !!form.useForDictation) ||
         form.name !== form.baseline.name ||
         form.enabled !== form.baseline.enabled ||
         !sameValue(configuration(form), form.baseline.target.configuration) ||
@@ -678,6 +698,9 @@ export function createModelSettings(
     return run(async () => {
       const form = editor();
       if (!form) return;
+      const useForDictation = offersDictation() && form.useForDictation;
+      if (useForDictation && !form.apiKey.trim() && !credential()?.configured)
+        throw new UiError('Enter a DeepSeek API key to enable dictation.');
       if (!form.name.trim()) throw new UiError('Enter a connection name.');
       const body = overlay(form.overlay);
       const config = configuration(form);
@@ -755,6 +778,16 @@ export function createModelSettings(
         if (!(await adopt(basis(detail), form.instance, 'committed'))) return;
         notice.set(message('Connection and API key saved.'));
       } else if (alive && !result) notice.set(message('No connection changes.'));
+      if (useForDictation && enableDictation && detail && credential()?.configured) {
+        await enableDictation(detail.target.connectionId);
+        if (!alive || editor()?.instance !== form.instance) return;
+        editor.set({ ...editor()!, useForDictation: false });
+        notice.set(message('Connection saved and dictation enabled.'));
+      }
+      if (connectionSaved && detail && credential()?.configured) {
+        connectionSaved(detail.target.connectionId);
+        return;
+      }
       await loadConnections();
       if (refreshModels) await discoverSavedConnection(form.instance);
     });
@@ -1273,6 +1306,7 @@ export function createModelSettings(
     const slug = suggestedSlug(form.provider.identity);
     return (
       !!form.apiKey ||
+      (offersDictation() && !!form.useForDictation) ||
       form.name !== form.provider.descriptor.label ||
       form.slug !== slug ||
       !form.enabled ||
@@ -1472,6 +1506,12 @@ export function createModelSettings(
     edit,
     saveConnection,
     setUsageAccessKey,
+    offersDictation,
+    toggleDictation(request: ConnectionAction) {
+      const form = editor();
+      if (form && current(request) && !busy() && offersDictation())
+        editor.set({ ...form, useForDictation: !form.useForDictation });
+    },
     toggleEnabled,
     supportsServerSideCompaction: () => supportsServerSideCompaction(editor()!.provider),
     toggleServerSideCompaction,

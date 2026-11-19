@@ -4642,6 +4642,11 @@ export interface ServiceMethods {
       input: Runtime.DeleteCredentialInput;
       output: Runtime.CredentialMutationResult;
     };
+    dictationConnections: {
+      mode: 'query';
+      input: {};
+      output: SettingsDictationConnectionsOutput_DictationConnection[];
+    };
     models: {
       mode: 'query';
       input: Runtime.SettingsModelsRead;
@@ -4702,6 +4707,14 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.SetDefaultConnectionTargetInput;
       output: Runtime.CatalogMutationResult;
+    };
+    transcribeDictation: {
+      mode: 'query';
+      input: {
+        connection: Runtime.ConnectionVersionBasis;
+        audio: string;
+      };
+      output: string;
     };
     update: {
       mode: 'mutation';
@@ -6852,6 +6865,15 @@ export interface SettingsConnectionUsageLimitsOutput_UsageQuantity {
   used: number;
   limit: number;
   unit?: string | null;
+}
+export interface SettingsDictationConnectionsOutput_DictationConnection {
+  basis: SettingsDictationConnectionsOutput_ConnectionVersionBasis;
+  name: string;
+  [k: string]: unknown | undefined;
+}
+export interface SettingsDictationConnectionsOutput_ConnectionVersionBasis {
+  connectionId: string;
+  revision: number;
 }
 export interface SettingsUpdateInput_ConnectionVersionBasis {
   connectionId: string;

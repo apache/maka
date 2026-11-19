@@ -168,6 +168,10 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       const plist = await readFile(join(contents, 'Info.plist'), 'utf8');
       for (const [key, value] of [
         ['CFBundleDisplayName', 'Maka'],
+        [
+          'NSMicrophoneUsageDescription',
+          'Maka uses the microphone to transcribe speech into your message draft.',
+        ],
         ['CFBundleExecutable', 'maka-desktop-shell'],
         ['CFBundleIconFile', 'Maka'],
         ['CFBundleIdentifier', 'org.apache.maka.desktop'],

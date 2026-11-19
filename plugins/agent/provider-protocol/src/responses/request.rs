@@ -332,6 +332,20 @@ impl Request<'_> {
         {
             include.push(json!("reasoning.encrypted_content"));
         }
+        if self.reasoning == ReasoningMode::Encrypted
+            && self.tools.iter().any(|tool| {
+                matches!(
+                    tool,
+                    Tool::WebSearch {
+                        kind: SearchKind::Search,
+                        ..
+                    }
+                )
+            })
+            && !include.contains(&json!("web_search_call.action.sources"))
+        {
+            include.push(json!("web_search_call.action.sources"));
+        }
         if !include.is_empty() {
             object.insert("include".into(), Value::Array(include));
         }
@@ -351,5 +365,52 @@ impl Request<'_> {
             );
         }
         Ok(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_search_requests_sources_and_preserves_explicit_includes() {
+        let tools = [Tool::WebSearch {
+            kind: SearchKind::Search,
+            args: json!({}),
+        }];
+        let field = "web_search_call.action.sources";
+        for include in [json!([]), json!([field])] {
+            let opts = json!({"openai":{"include": include,"store":false}});
+            let request = Request {
+                model: "example",
+                input: &[],
+                tools: &tools,
+                tool_choice: ToolChoice::Auto,
+                reasoning: ReasoningMode::Encrypted,
+                options: &opts,
+                max_output_tokens: None,
+            };
+            let body = request.encode().unwrap();
+            let fields = body["include"].as_array().unwrap();
+            assert_eq!(
+                fields.iter().filter(|v| v.as_str() == Some(field)).count(),
+                1
+            );
+            assert!(fields.contains(&json!("reasoning.encrypted_content")));
+        }
+        let opts = json!({});
+        let mut request = Request {
+            model: "example",
+            input: &[],
+            tools: &tools,
+            tool_choice: ToolChoice::Auto,
+            reasoning: ReasoningMode::PlaintextContent,
+            options: &opts,
+            max_output_tokens: None,
+        };
+        assert!(request.encode().unwrap().get("include").is_none());
+        request.reasoning = ReasoningMode::Encrypted;
+        request.tools = &[];
+        assert!(request.encode().unwrap().get("include").is_none());
     }
 }

@@ -20,8 +20,9 @@
 import { tr } from './locale';
 import { structuredToolPatch, textToolPatch, type ToolPatchFile } from './toolPatch';
 import { toolPresentation, webPresentation } from '../../../../plugins/shared/tool-presentation';
+export const providerSearchKey = 'provider.web_search';
 export const cardFamily = (key: string | null | undefined) =>
-  toolPresentation(key) ?? webPresentation(key);
+  key === providerSearchKey ? 'webSearch' : (toolPresentation(key) ?? webPresentation(key));
 export type ToolFamily = ReturnType<typeof cardFamily>;
 export type ToolSection = {
   label: string;

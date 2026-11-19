@@ -71,6 +71,175 @@ fn timing(page: &Value) -> wire::TurnTiming {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_recognizes_hosted_search_independently_of_the_local_tool_name() -> TestResult<()> {
+    use maka_agent_facts::model::ModelToolCall;
+
+    let mut rig = Rig::new()?;
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let mut parts = vec![
+            ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: "hosted".into(),
+                    name: "SearchAlias".into(),
+                    input: json!({}).into(),
+                    provider_options: None,
+                    provider_executed: true,
+                },
+            },
+            ModelPart::ToolResult {
+                id: "hosted".into(),
+                name: "SearchAlias".into(),
+                is_error: false,
+                output: json!({"action": {"query": "query from result"}}),
+                provider_options: Some(json!({
+                    "openai": {"responsesReplay": {"fields": {"type": "web_search_call"}}}
+                })),
+            },
+            ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: "local".into(),
+                    name: "WebSearch".into(),
+                    input: json!({"query": "local query"}).into(),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            },
+        ];
+        let aliases = [
+            "web.run",
+            "openai.webSearchPreview",
+            "web_search_20250305",
+            "deepseek-web-search",
+            "browser.search",
+            "google_search",
+        ];
+        for name in aliases {
+            parts.push(ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: name.into(),
+                    name: name.into(),
+                    input: json!({"search_query":[{"q":"another query"}]}).into(),
+                    provider_options: None,
+                    provider_executed: true,
+                },
+            });
+        }
+        let facts = parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| Fact::ModelObserved {
+                attempt,
+                index: index as u64,
+                part,
+                continuation: None,
+            })
+            .collect();
+        rig.append(facts, vec![]).await?;
+
+        let mut page = live(&rig, &session, wire::Position::Start).await?;
+        let mut rows = tools(&page);
+        while !page["after"].is_null() {
+            page = query(
+                &rig,
+                "history",
+                json!({
+                    "sessionId": session, "through": page["through"],
+                    "position": {"kind": "after", "cursor": page["after"]},
+                    "includeThinking": true, "view": "conversation"
+                }),
+            )
+            .await?;
+            rows.extend(tools(&page));
+        }
+        let hosted: Vec<_> = rows
+            .iter()
+            .filter_map(|row| row.call.as_ref())
+            .filter(|call| call.name == "SearchAlias")
+            .collect();
+        assert_eq!(
+            hosted.len(),
+            2,
+            "both the call and its receipt reference the search"
+        );
+        for call in hosted {
+            assert_eq!(call.presentation.as_deref(), Some("provider.web_search"));
+            assert_eq!(call.title.as_ref().unwrap().fallback, "query from result");
+        }
+        for name in aliases {
+            let call = rows
+                .iter()
+                .filter_map(|row| row.call.as_ref())
+                .find(|call| call.name == name)
+                .unwrap();
+            assert_eq!(
+                call.presentation.as_deref(),
+                Some("provider.web_search"),
+                "{name}"
+            );
+            assert_eq!(call.title.as_ref().unwrap().fallback, "another query");
+        }
+        let local = rows
+            .iter()
+            .filter_map(|row| row.call.as_ref())
+            .find(|call| call.name == "WebSearch")
+            .unwrap();
+        assert!(local.presentation.is_none());
+
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let history = rig
+            .driver
+            .as_ref()
+            .unwrap()
+            .state
+            .session_history(owner.run_owner(), session);
+        let stop = CancellationToken::new();
+        let frozen = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                stop.clone(),
+            )
+            .await?;
+        let chat = |position| {
+            crate::service::history::snapshot_page(
+                &frozen,
+                position,
+                true,
+                wire::HistoryView::Chat,
+                &stop,
+            )
+        };
+        let wire::Page::Ready { chunks, .. } = chat(wire::Position::Tail).await?;
+        let group = chunks
+            .last()
+            .and_then(|row| row.work.as_ref())
+            .ok_or("missing tool group")?;
+        assert_eq!(group.tools, aliases.len() as u64 + 2);
+        let wire::Page::Ready { chunks, .. } = chat(wire::Position::Row {
+            position: group.end.position.clone(),
+            field: group.end.field,
+        })
+        .await?;
+        assert_eq!(
+            chunks.first().and_then(|row| row.work.as_ref()),
+            Some(group)
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    result.expect("hosted search projection assertion failed")?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_preserves_citation_targets_and_legacy_sources() -> TestResult<()> {
     use maka_agent_facts::model::{CitationAnchor, ModelSource, TextKind};
 

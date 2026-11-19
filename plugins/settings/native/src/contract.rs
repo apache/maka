@@ -27,6 +27,20 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Serialize, JsonSchema)]
+pub struct DictationConnection {
+    pub basis: ConnectionVersionBasis,
+    pub name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DictationInput {
+    pub connection: ConnectionVersionBasis,
+    #[schemars(length(max = 5400000))]
+    pub audio: String,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsCatalogModelsRead")]
@@ -560,6 +574,14 @@ pub fn contract() -> Contract {
                 (
                     "connection".into(),
                     method::<ConnectionRead, ConnectionDetail>(MethodMode::Query),
+                ),
+                (
+                    "dictationConnections".into(),
+                    method::<crate::preferences::Read, Vec<DictationConnection>>(MethodMode::Query),
+                ),
+                (
+                    "transcribeDictation".into(),
+                    method::<DictationInput, String>(MethodMode::Query),
                 ),
                 (
                     "connectionUsageLimits".into(),

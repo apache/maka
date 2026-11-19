@@ -21,7 +21,13 @@ import type { DisplayText } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Icon } from './Icon';
 import { displayText, tr } from './locale';
 import { scriptReply } from './scriptReply';
-import { cardFamily, record, type ToolProjection, type ToolSection } from './toolCards';
+import {
+  cardFamily,
+  providerSearchKey,
+  record,
+  type ToolProjection,
+  type ToolSection,
+} from './toolCards';
 import { sessionToolPresentations } from './toolSessionActivity';
 import { deploymentToolPresentations } from './toolDeploymentActivity';
 import { nativeToolPresentations } from './toolNativeActivity';
@@ -57,7 +63,7 @@ const workspaceTitles = {
   stdin: ['Send process input', 'terminal'],
   stop: ['Stop process', 'terminal'],
   fetch: ['Read web page', 'link'],
-  webSearch: ['Search the web', 'search'],
+  webSearch: ['Search the web', 'globe'],
 } as const;
 
 const presentations: ReadonlyMap<string, ActivityPresentation> = new Map(
@@ -83,6 +89,10 @@ export function activityTitle(
     | null
     | undefined,
 ): string {
+  if (tool?.presentation === providerSearchKey)
+    return [tr('Search the web'), tool.title && displayText(tool.title)]
+      .filter(Boolean)
+      .join(' · ');
   if (tool?.title) return displayText(tool.title);
   const descriptor = activityPresentation(tool?.presentation);
   if (descriptor) return descriptor.title();

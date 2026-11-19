@@ -93,6 +93,107 @@ pub(crate) async fn page(
     })
 }
 
+fn official_deepseek(row: &ConnectionCatalogEntry) -> bool {
+    let provider = &row.provider;
+    provider.name == "deepseek"
+        && provider.package_id == maka_providers::api::ID
+        && provider.entry_id == provider.package_id
+        && provider.scope == Scope::Profile
+        && matches!(
+            row.configuration
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .map(|url| url.trim_end_matches('/')),
+            Some("https://api.deepseek.com" | "https://api.deepseek.com/v1")
+        )
+}
+
+pub(crate) async fn dictation_connections(store: &ConfigurationStore) -> Result<Value, String> {
+    let catalog = store
+        .catalog()
+        .await
+        .map_err(|_| "Could not read model connections")?;
+    let mut options = Vec::new();
+    for row in catalog
+        .connections
+        .into_iter()
+        .filter(|row| row.enabled && official_deepseek(row))
+    {
+        let status = store
+            .credential_status(CredentialLocator::Connection {
+                connection_id: row.connection_id.clone(),
+                kind: ConnectionCredentialKind::Provider,
+            })
+            .await
+            .map_err(|_| "Could not read credential status")?;
+        if matches!(status, CredentialVaultQueryResult::Status {status} if status.basis().is_some())
+        {
+            options.push(DictationConnection {
+                name: row.name,
+                basis: ConnectionVersionBasis {
+                    connection_id: row.connection_id,
+                    revision: row.revision,
+                },
+            });
+        }
+    }
+    encode(options)
+}
+
+pub(crate) async fn transcribe(
+    store: &ConfigurationStore,
+    input: DictationInput,
+) -> Result<Value, String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let observation = store
+        .observe_usage(input.connection)
+        .await
+        .map_err(|_| "Could not read model connection")?
+        .ok_or("The selected DeepSeek connection has changed")?;
+    let row = &observation.connection;
+    if !official_deepseek(row) {
+        return Err("Select an official DeepSeek connection".into());
+    }
+    let key = observation
+        .provider_credential()
+        .map_err(|_| "Could not read credential")?
+        .ok_or("Configure the DeepSeek model connection API key first")?;
+    let wav = STANDARD
+        .decode(input.audio)
+        .map_err(|_| "Invalid recording")?;
+    if wav.len() > 4_000_000 || !wav.starts_with(b"RIFF") || wav.get(8..12) != Some(b"WAVE") {
+        return Err("Invalid WAV recording".into());
+    }
+    let network = &observation.network;
+    let policy =
+        maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
+            .map_err(|_| "Invalid network configuration")?;
+    let file = reqwest::multipart::Part::bytes(wav)
+        .file_name("speech.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| e.to_string())?;
+    let response = policy
+        .client_builder()
+        .timeout(Duration::from_secs(90))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?
+        .post("https://api.deepseek.com/v1/tools/asr")
+        .bearer_auth(key.secret)
+        .multipart(reqwest::multipart::Form::new().part("file", file))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| e.to_string())?;
+    let result: Value = serde_json::from_slice(&response.bytes().await.map_err(|e| e.to_string())?)
+        .map_err(|_| "Invalid transcription response")?;
+    result
+        .get("text")
+        .filter(|v| v.is_string())
+        .cloned()
+        .ok_or_else(|| "Missing transcript".into())
+}
+
 pub(crate) async fn usage_limits(
     store: &Arc<ConfigurationStore>,
     input: Value,

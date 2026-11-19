@@ -36,6 +36,7 @@ import { invalidatePredictionPreferences, observePredictionPreferences } from '.
 import { createSettingsDiscard } from './settingsDiscard';
 
 type PreferencesEditor =
+  | { kind: 'dictation'; id: number; basis: SettingsAssistantPreferences }
   | {
       kind: 'personalization';
       id: number;
@@ -383,25 +384,27 @@ export function createGeneralSettings(
     if (!basis || request.kind !== 'root' || !current(request) || disabled()) return;
     cancelRead();
     editor.set(
-      kind === 'shell'
-        ? {
-            kind,
-            id: view(),
-            basis,
-            preference: basis.shell.preference,
-            executable: basis.shell.executable,
-          }
-        : kind === 'personalization'
+      kind === 'dictation'
+        ? { kind, id: view(), basis }
+        : kind === 'shell'
           ? {
               kind,
               id: view(),
               basis,
-              displayName: basis.displayName,
-              avatar: basis.avatar ?? null,
+              preference: basis.shell.preference,
+              executable: basis.shell.executable,
             }
-          : kind === 'compaction'
-            ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
-            : { kind, id: view(), basis, ...predictionDraft(basis) },
+          : kind === 'personalization'
+            ? {
+                kind,
+                id: view(),
+                basis,
+                displayName: basis.displayName,
+                avatar: basis.avatar ?? null,
+              }
+            : kind === 'compaction'
+              ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
+              : { kind, id: view(), basis, ...predictionDraft(basis) },
     );
   };
   const dirty = () => {
@@ -428,7 +431,8 @@ export function createGeneralSettings(
                   catchUpSamplePercent: String(form.basis.predictions.catchUpSamplePercent),
                 },
               )
-            : !!form?.document &&
+            : form?.kind === 'globalInstructions' &&
+              !!form.document &&
               (!form.document.basis.exists ||
                 form.document.content !== form.document.basis.content);
   };
@@ -510,17 +514,19 @@ export function createGeneralSettings(
     },
     back,
     title: () =>
-      editor()?.kind === 'personalization'
-        ? tr('Personalization')
-        : editor()?.kind === 'shell'
-          ? tr('Bash tool shell')
-          : editor()?.kind === 'globalInstructions'
-            ? tr('Global instructions')
-            : editor()?.kind === 'compaction'
-              ? tr('Compaction prompt')
-              : editor()?.kind === 'predictions'
-                ? tr('Message predictions')
-                : tr('General'),
+      editor()?.kind === 'dictation'
+        ? tr('Dictation')
+        : editor()?.kind === 'personalization'
+          ? tr('Personalization')
+          : editor()?.kind === 'shell'
+            ? tr('Bash tool shell')
+            : editor()?.kind === 'globalInstructions'
+              ? tr('Global instructions')
+              : editor()?.kind === 'compaction'
+                ? tr('Compaction prompt')
+                : editor()?.kind === 'predictions'
+                  ? tr('Message predictions')
+                  : tr('General'),
     open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
       open(request, kind),
     openGlobal(request: GeneralAction) {
@@ -674,7 +680,7 @@ export function createGeneralSettings(
           await settleGlobal(result, form.id);
         });
       }
-      if (form.kind === 'globalInstructions') return;
+      if (form.kind === 'globalInstructions' || form.kind === 'dictation') return;
       if (form.kind === 'shell') {
         if (form.preference === 'git_bash' && !form.executable.trim()) {
           operations.report(new UiError('Select a Git Bash executable.'));

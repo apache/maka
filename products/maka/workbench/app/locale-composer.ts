@@ -20,6 +20,72 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const composerMessages = {
+  'Preparing microphone…': ['Preparing microphone…', '正在准备麦克风…', '正在準備麥克風…'],
+  Recording: ['Recording', '录音中', '錄音中'],
+  'Recording finished': ['Recording finished', '录音已结束', '錄音已結束'],
+  'Transcribing…': ['Transcribing…', '正在转写…', '正在轉寫…'],
+  'Cancel dictation': ['Cancel dictation', '取消听写', '取消聽寫'],
+  'Transcribe and send': ['Transcribe and send', '转写并发送', '轉寫並傳送'],
+  'Finish and transcribe': ['Finish and transcribe', '结束并转写', '結束並轉寫'],
+  'Transcription failed': ['Transcription failed', '转写失败', '轉寫失敗'],
+  'Retry transcription': ['Retry transcription', '重试转写', '重試轉寫'],
+  'Transcript ready': ['Transcript ready', '听写文字待插入', '聽寫文字待插入'],
+  'Insert transcript': ['Insert transcript', '插入听写文字', '插入聽寫文字'],
+  'Saved dictation key': ['Saved dictation key', '已保存的听写密钥', '已儲存的聽寫密鑰'],
+  'Choose a model connection': ['Choose a model connection', '选择模型连接', '選擇模型連線'],
+  'Dictation is off': ['Dictation is off', '听写已关闭', '聽寫已關閉'],
+  'Choose a DeepSeek connection in dictation settings.': [
+    'Choose a DeepSeek connection in dictation settings.',
+    '请在听写设置中选择 DeepSeek 连接。',
+    '請在聽寫設定中選擇 DeepSeek 連線。',
+  ],
+  'Enable dictation': ['Enable dictation', '启用语音听写', '啟用語音聽寫'],
+  'Show the microphone in the message composer.': [
+    'Show the microphone in the message composer.',
+    '在聊天输入框中显示麦克风。',
+    '在聊天輸入框中顯示麥克風。',
+  ],
+  'Dictation uses the API key from this connection.': [
+    'Dictation uses the API key from this connection.',
+    '听写使用此连接的 API Key。',
+    '聽寫使用此連線的 API Key。',
+  ],
+  'Transcription service': ['Transcription service', '听写服务', '聽寫服務'],
+  'Add a DeepSeek connection': [
+    'Add a DeepSeek connection',
+    '添加 DeepSeek 连接',
+    '新增 DeepSeek 連線',
+  ],
+  'Model connection': ['Model connection', '模型连接', '模型連線'],
+  'Use for dictation': ['Use for dictation', '用于听写', '用於聽寫'],
+  'Saving will enable dictation with this connection.': [
+    'Saving will enable dictation with this connection.',
+    '保存后启用听写，并使用此连接。',
+    '儲存後啟用聽寫，並使用此連線。',
+  ],
+  'Dictation settings are being saved.': [
+    'Dictation settings are being saved.',
+    '正在保存听写设置。',
+    '正在儲存聽寫設定。',
+  ],
+  'Enter a DeepSeek API key to enable dictation.': [
+    'Enter a DeepSeek API key to enable dictation.',
+    '请输入 DeepSeek API Key 以启用听写。',
+    '請輸入 DeepSeek API Key 以啟用聽寫。',
+  ],
+  'Connection saved and dictation enabled.': [
+    'Connection saved and dictation enabled.',
+    '连接已保存，听写已启用。',
+    '連線已儲存，聽寫已啟用。',
+  ],
+  Dictation: ['Dictation', '语音听写', '語音聽寫'],
+  'Dictate a message': ['Dictate a message', '语音听写', '語音聽寫'],
+  'No speech detected': ['No speech detected', '没有识别到语音', '沒有辨識到語音'],
+  'Draft changed. Dictation: {text}': [
+    'Draft changed. Dictation: {text}',
+    '草稿已更改。听写内容：{text}',
+    '草稿已變更。聽寫內容：{text}',
+  ],
   'Suggested message: {message}': [
     'Suggested message: {message}',
     '消息建议：{message}',

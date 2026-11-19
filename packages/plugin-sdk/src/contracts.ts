@@ -67330,6 +67330,53 @@ export const contracts: {
           },
           resources: {},
         },
+        dictationConnections: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsPreferencesRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Array_of_DictationConnection',
+            type: 'array',
+            items: {
+              $ref: '#/$defs/DictationConnection',
+            },
+            $defs: {
+              DictationConnection: {
+                type: 'object',
+                properties: {
+                  basis: {
+                    $ref: '#/$defs/ConnectionVersionBasis',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['basis', 'name'],
+              },
+              ConnectionVersionBasis: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision'],
+              },
+            },
+          },
+          resources: {},
+        },
         models: {
           mode: 'query',
           input: {
@@ -69746,6 +69793,48 @@ export const contracts: {
                 required: ['connectionId', 'modelId'],
               },
             },
+          },
+          resources: {},
+        },
+        transcribeDictation: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DictationInput',
+            type: 'object',
+            properties: {
+              connection: {
+                $ref: '#/$defs/ConnectionVersionBasis',
+              },
+              audio: {
+                type: 'string',
+                maxLength: 5400000,
+              },
+            },
+            additionalProperties: false,
+            required: ['connection', 'audio'],
+            $defs: {
+              ConnectionVersionBasis: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'string',
+            type: 'string',
           },
           resources: {},
         },
