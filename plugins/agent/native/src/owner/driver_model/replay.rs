@@ -107,9 +107,16 @@ impl AssistantBatch {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FailureNote {
+    Include,
+    Omit,
+}
+
 pub(super) struct TailReplay<'a, 'source> {
     driver: &'a DriverModel,
     target: super::ReplayTarget<'a>,
+    failure_note: FailureNote,
     reader: &'a HistorySource<'source>,
     view: &'a RunView,
     prefix_attempt: Option<ModelAttemptId>,
@@ -138,10 +145,12 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
         recorded: RecordedInputs,
+        failure_note: FailureNote,
     ) -> Self {
         Self {
             driver,
             target,
+            failure_note,
             reader,
             view,
             prefix_attempt,
@@ -163,6 +172,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         let Self {
             driver,
             target,
+            failure_note,
             reader,
             view,
             prefix_attempt,
@@ -426,6 +436,25 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 *current = None;
                 Ok(())
             }),
+            // Later turns otherwise replay the failed turn as if it had simply stopped.
+            Fact::RunTerminated {
+                terminal: maka_agent_facts::durable::Terminal::Failed,
+                diagnostic,
+            } => Box::pin(async move {
+                assistant
+                    .flush(view, prefix_attempt, current, messages)
+                    .await?;
+                if *failure_note == FailureNote::Include {
+                    messages
+                        .append(Message::user(failed_turn_note(
+                            view.spec.language,
+                            diagnostic.as_deref(),
+                        )))
+                        .await?;
+                }
+                *current = None;
+                Ok(())
+            }),
             _ => return Ok(None),
         };
         Ok(Some(work))
@@ -603,4 +632,54 @@ fn tool_message(call: &ModelToolCall, output: ToolOutput) -> Message {
         content[0].provider_options = call.provider_options.clone();
     }
     message
+}
+
+const MAX_FAILED_TURN_DIAGNOSTIC_CHARS: usize = 512;
+
+fn failed_turn_note(
+    language: maka_agent_facts::language::Language,
+    diagnostic: Option<&str>,
+) -> String {
+    use maka_agent_facts::language::Language;
+    let normalized = diagnostic
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            if text.chars().count() <= MAX_FAILED_TURN_DIAGNOSTIC_CHARS {
+                text.to_owned()
+            } else {
+                let truncated: String = text
+                    .chars()
+                    .take(MAX_FAILED_TURN_DIAGNOSTIC_CHARS)
+                    .collect();
+                format!("{truncated}…")
+            }
+        });
+    match (language, normalized.as_deref()) {
+        (Language::ZhCn, Some(reason)) => format!("[Host] 这一轮失败，在此结束：{reason}"),
+        (Language::ZhCn, None) => "[Host] 这一轮失败，在此结束。".into(),
+        (Language::ZhTw, Some(reason)) => format!("[Host] 這一輪失敗，在此結束：{reason}"),
+        (Language::ZhTw, None) => "[Host] 這一輪失敗，在此結束。".into(),
+        (Language::En, Some(reason)) => format!("[Host] This turn failed and ended here: {reason}"),
+        (Language::En, None) => "[Host] This turn failed and ended here.".into(),
+    }
+}
+
+#[cfg(test)]
+mod failed_turn_note_tests {
+    use super::*;
+    use maka_agent_facts::language::Language;
+
+    #[test]
+    fn normalizes_blank_and_truncates_overlong_diagnostics() {
+        assert_eq!(
+            failed_turn_note(Language::En, Some("   \n\t  ")),
+            "[Host] This turn failed and ended here."
+        );
+        let huge = "错".repeat(MAX_FAILED_TURN_DIAGNOSTIC_CHARS + 50);
+        let note = failed_turn_note(Language::ZhCn, Some(&huge));
+        assert!(note.starts_with("[Host] 这一轮失败，在此结束："), "{note}");
+        assert!(note.ends_with('…'), "{note}");
+        assert!(note.chars().count() < MAX_FAILED_TURN_DIAGNOSTIC_CHARS + 30);
+    }
 }
