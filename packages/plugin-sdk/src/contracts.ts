@@ -9208,6 +9208,7 @@ export const contracts: {
                   'quota_exhausted',
                   'provider_unavailable',
                   'stream_truncated',
+                  'withheld',
                 ],
               },
               StepId: {

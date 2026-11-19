@@ -616,7 +616,20 @@ impl DriverModel {
             })
             .await?;
         if matches!(mode, Preparation::ResumeFromHistory) {
-            append_continuation_cue(view.spec.language, &mut messages).await?;
+            if let Some(reason) = view
+                .retry_pending
+                .and_then(|attempt| view.attempts.get(&attempt))
+                .and_then(withheld)
+            {
+                messages
+                    .append(maka_model::prompt::Message::user(withheld_note(
+                        view.spec.language,
+                        &reason,
+                    )))
+                    .await?;
+            } else {
+                append_continuation_cue(view.spec.language, &mut messages).await?;
+            }
         }
         let purpose = if summary {
             ModelPurpose::Summary
@@ -2881,6 +2894,7 @@ impl DriverModel {
                                 prefix_request,
                                 prefix_adapter,
                                 &parts,
+                                withheld_before(&view, attempt),
                             )?
                             }
                         };
@@ -3155,6 +3169,7 @@ impl DriverModel {
             request.request,
             frozen.adapter,
             &parts,
+            withheld_before(view, attempt),
         )
     }
 
@@ -3719,6 +3734,53 @@ fn ensure_no_unknown_provider_effect(
     }
 }
 
+fn withheld(attempt: &maka_agent_state::fold::Attempt) -> Option<String> {
+    let closed = attempt
+        .closed
+        .as_ref()
+        .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)?;
+    let protocol: maka_agent_facts::context::ModelFailureProtocol =
+        serde_json::from_value(closed.protocol.clone()).ok()?;
+    match protocol.failure {
+        maka_model::ModelError::Provider(failure)
+            if failure.reason()
+                == maka_agent_facts::model::error::ProviderFailureReason::Withheld =>
+        {
+            Some(failure.message().to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn withheld_before(view: &RunView, attempt: ModelAttemptId) -> bool {
+    withheld_before_in(&view.attempts, view.proactive_summary, attempt)
+}
+
+fn withheld_before_in(
+    attempts: &BTreeMap<ModelAttemptId, maka_agent_state::fold::Attempt>,
+    proactive_summary: Option<ModelAttemptId>,
+    attempt: ModelAttemptId,
+) -> bool {
+    attempts.iter().any(|(id, earlier)| {
+        *id != attempt && Some(*id) != proactive_summary && withheld(earlier).is_some()
+    })
+}
+
+fn withheld_note(language: maka_agent_facts::language::Language, reason: &str) -> String {
+    use maka_agent_facts::language::Language;
+    match language {
+        Language::En => format!(
+            "[Host] The model provider did not return your previous response: {reason}. Do not repeat it. Take a different approach, or tell the user why you cannot continue."
+        ),
+        Language::ZhCn => format!(
+            "[Host] 模型服务商没有返回你上一次的回复：{reason}。不要重复它。换一种做法，或者告诉用户为什么无法继续。"
+        ),
+        Language::ZhTw => format!(
+            "[Host] 模型服務商沒有返回你上一次的回覆：{reason}。不要重複它。換一種做法，或者告訴使用者為什麼無法繼續。"
+        ),
+    }
+}
+
 fn missing_provider_result(parts: &[maka_agent_facts::model::ModelPart]) -> Option<&str> {
     use maka_agent_facts::model::ModelPart;
     let results: std::collections::BTreeSet<_> = parts
@@ -3746,6 +3808,7 @@ fn recovery_for_failure(
     request: ContentRef,
     adapter: SourceRevision,
     parts: &[maka_agent_facts::model::ModelPart],
+    withheld_before: bool,
 ) -> Result<RecoveryEvidence, RunError> {
     if let RunError::Model(maka_model::ModelError::ContextOverflow { observed_output }) = error {
         if !observed_output && !parts.is_empty() {
@@ -3771,6 +3834,17 @@ fn recovery_for_failure(
         return Ok(blocked());
     };
     failure.validate()?;
+    // The model hears about one withheld response and chooses another approach; a second ends the Run.
+    if failure.reason() == maka_agent_facts::model::error::ProviderFailureReason::Withheld {
+        return Ok(if withheld_before {
+            blocked()
+        } else {
+            RecoveryEvidence {
+                recovery: AttemptRecovery::ContinueFromHistory { not_before: None },
+                contents: vec![],
+            }
+        });
+    }
     if !failure.retryable() {
         return Ok(blocked());
     }
@@ -3905,6 +3979,7 @@ mod retry_wait_cap_tests {
                 revision: "1".into(),
             },
             &[],
+            false,
         )
     }
 
@@ -3948,5 +4023,67 @@ mod retry_wait_cap_tests {
             now,
         );
         assert!(overflow.contains("more than 15 minutes"), "{overflow}");
+    }
+}
+
+#[cfg(test)]
+mod withheld_recovery_tests {
+    use super::*;
+    use maka_agent_facts::{
+        accounting::Outcome,
+        context::ModelFailureProtocol,
+        durable::StepId,
+        model::error::{ProviderFailure, ProviderFailureReason},
+    };
+    use maka_agent_state::fold::{Attempt, ModelClosure};
+
+    fn withheld_attempt() -> Attempt {
+        let protocol = ModelFailureProtocol {
+            failure: maka_model::ModelError::Provider(ProviderFailure::new(
+                ProviderFailureReason::Withheld,
+                "refused",
+                false,
+                None,
+            )),
+            transport: None,
+        };
+        Attempt {
+            cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+            step: StepId::new(),
+            admission: None,
+            observed: 0,
+            semantic: false,
+            has_tools: false,
+            recovery: None,
+            closed: Some(ModelClosure {
+                outcome: Outcome::Error,
+                diagnostic: Some("refused".into()),
+                usage: Default::default(),
+                protocol: serde_json::to_value(protocol).unwrap(),
+            }),
+            interrupted: None,
+            retry: None,
+            private_partial: None,
+            source_failure: None,
+        }
+    }
+
+    #[test]
+    fn withheld_before_ignores_proactive_summary_and_blocks_second_main_attempt() {
+        let mut attempts = BTreeMap::new();
+        let proactive = ModelAttemptId::new();
+        let main1 = ModelAttemptId::new();
+        let main2 = ModelAttemptId::new();
+        attempts.insert(proactive, withheld_attempt());
+        attempts.insert(main1, withheld_attempt());
+        assert!(
+            !withheld_before_in(&attempts, Some(proactive), main1),
+            "proactive summary refusal must not consume main turn retry"
+        );
+        attempts.insert(main2, withheld_attempt());
+        assert!(
+            withheld_before_in(&attempts, Some(proactive), main2),
+            "second main turn refusal must be blocked"
+        );
     }
 }

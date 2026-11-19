@@ -1706,3 +1706,106 @@ async fn interrupted_stream_and_silent_provider_are_retried() -> TestResult<()> 
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_hears_about_one_withheld_response_and_a_second_ends_the_run() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let withheld = |reason: &str| {
+            let chunk = |delta: Value, finish: Value| {
+                json!({"id":"r","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                "choices":[{"index":0,"delta":delta,"finish_reason":finish}]})
+            };
+            ModelReply::Stream(format!(
+                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                chunk(
+                    json!({"role":"assistant","content":"Refused draft."}),
+                    Value::Null
+                ),
+                chunk(json!({}), json!(reason)),
+            ))
+        };
+        for twice in [false, true] {
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":id,"message":"Analyze the sample.","delivery":"queue"}),
+            )
+            .await?;
+            let (_, reply) = provider.next().await?;
+            reply
+                .send(withheld(if twice {
+                    "recitation"
+                } else {
+                    "content_filter"
+                }))
+                .map_err(|_| "provider reply lost")?;
+            let (retried, reply) = provider.next().await?;
+            let text = text_messages(&retried);
+            assert!(
+                text.contains("[Host] The model provider did not return"),
+                "{retried}"
+            );
+            assert!(
+                text.contains(if twice {
+                    "recitation"
+                } else {
+                    "content_filter"
+                }),
+                "{retried}"
+            );
+            assert!(!text.contains("Refused draft."), "{retried}");
+            if twice {
+                reply
+                    .send(withheld("content_filter"))
+                    .map_err(|_| "provider reply lost")?;
+            } else {
+                reply
+                    .send(completion(
+                        json!({"role":"assistant","content":"Done another way."}),
+                        "stop",
+                    ))
+                    .map_err(|_| "provider reply lost")?;
+            }
+            let target = json!({"kind":"message","messageId":sent["messageId"]});
+            let work = loop {
+                let work = call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({"sessionId":id,"target":target}),
+                )
+                .await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("completed" | "failed" | "cancelled") => break work,
+                    _ => tokio::time::sleep(Duration::from_millis(30)).await,
+                }
+            };
+            let expected = if twice { "failed" } else { "completed" };
+            assert_eq!(work["execution"]["state"]["kind"], expected, "{work}");
+        }
+        assert!(
+            provider.requests.try_recv().is_err(),
+            "a second refusal was retried"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
