@@ -1638,3 +1638,71 @@ async fn product_preset_tools(code: bool) -> TestResult<()> {
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_stream_and_silent_provider_are_retried() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    rig.model_idle_timeout = Some(Duration::from_millis(600));
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        for silent in [true, false] {
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":id,"message":"Write the summary.","delivery":"queue"}),
+            )
+            .await?;
+            let (_, reply) = provider.next().await?;
+            if silent {
+                // Hold the response past the idle timeout; no byte reaches the client.
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                drop(reply);
+            } else {
+                // Reasoning metadata makes the request unsafe to send again verbatim.
+                let partial = json!({"id":"cut","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                    "choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Planning.","content":"First half."},"finish_reason":null}]});
+                reply
+                    .send(ModelReply::Stream(format!("data: {partial}\n\n")))
+                    .map_err(|_| "provider reply lost")?;
+            }
+            let (retry_request, reply) = provider.next().await?;
+            if !silent {
+                let messages = retry_request["messages"].to_string();
+                assert!(
+                    !messages.contains("Planning.") && !messages.contains("First half."),
+                    "interrupted draft leaked into retry request: {messages}"
+                );
+            }
+            reply
+                .send(completion(json!({"role":"assistant","content":"Done."}), "stop"))
+                .map_err(|_| "provider reply lost")?;
+            let target = json!({"kind":"message","messageId":sent["messageId"]});
+            let work = loop {
+                let work = call(client, "agent", "work", json!({"sessionId":id,"target":target})).await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("completed" | "failed" | "cancelled") => break work,
+                    _ => tokio::time::sleep(Duration::from_millis(30)).await,
+                }
+            };
+            assert_eq!(work["execution"]["state"]["kind"], "completed", "silent={silent} {work}");
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}

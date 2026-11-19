@@ -3777,16 +3777,10 @@ fn recovery_for_failure(
             contents: vec![],
         });
     }
-    if missing_provider_result(parts).is_some()
-        || (failure.reason() == maka_agent_facts::model::error::ProviderFailureReason::TimedOut
-            && (parts.is_empty() || !failure.retained_output_safe()))
+    if missing_provider_result(parts).is_none()
+        && !parts.is_empty()
+        && failure.retained_output_safe()
     {
-        return Ok(RecoveryEvidence {
-            recovery: AttemptRecovery::ContinueFromHistory { not_before },
-            contents: vec![],
-        });
-    }
-    if !parts.is_empty() && failure.retained_output_safe() {
         let proof = ContentBlob::json(&PrefixProof {
             run,
             attempt,
@@ -3806,7 +3800,11 @@ fn recovery_for_failure(
             contents: vec![proof],
         });
     }
-    Ok(blocked())
+    // The stream ended without a verbatim-replayable prefix; continue from canonical history.
+    Ok(RecoveryEvidence {
+        recovery: AttemptRecovery::ContinueFromHistory { not_before },
+        contents: vec![],
+    })
 }
 
 pub(crate) async fn append_continuation_cue(
