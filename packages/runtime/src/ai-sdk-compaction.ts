@@ -379,15 +379,12 @@ export class AiSdkCompaction {
           ? { historyCompactRoute: this.input.historyCompactRoute }
           : {}),
       });
-      const unknownToolOutcomes = inspectPriorUnknownToolOutcomes(
-        input.runtimeContext,
-        input.runtimeContextInvocations,
+      const unknownToolOutcomes = acknowledgedUnknownOutcomes(
+        inspectPriorUnknownToolOutcomes(input.runtimeContext, input.runtimeContextInvocations),
       );
       const plan = await planHistoryCompaction({
         sessionId: this.sessionId,
-        ...(unknownToolOutcomes.kind === 'projected' && !unknownToolOutcomes.requiresUserAttention
-          ? { unknownToolOutcomes }
-          : {}),
+        ...(unknownToolOutcomes ? { unknownToolOutcomes } : {}),
         phase: 'standalone',
         orderedEvents: runtimeContext,
         ...(input.runtimeContextInvocations
@@ -808,12 +805,9 @@ export class AiSdkCompaction {
       resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
         policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
-    const unknownToolOutcomes = inspectPriorUnknownToolOutcomes(
-      input.runtimeContext ?? [],
-      input.runtimeContextInvocations,
+    state.unknownToolOutcomes = acknowledgedUnknownOutcomes(
+      inspectPriorUnknownToolOutcomes(input.runtimeContext ?? [], input.runtimeContextInvocations),
     );
-    if (unknownToolOutcomes.kind === 'projected' && !unknownToolOutcomes.requiresUserAttention)
-      state.unknownToolOutcomes = unknownToolOutcomes;
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
     // later step. No anchor means no proactive fold on step 0; the provider
@@ -1396,6 +1390,17 @@ function stableStringifyForSignature(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringifyForSignature(object[key])}`)
     .join(',')}}`;
+}
+
+/** Only acknowledged unknowns can be folded; newer unknowns must remain verbatim. */
+function acknowledgedUnknownOutcomes(
+  projection: PriorUnknownToolOutcomeProjection,
+): Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }> | undefined {
+  if (projection.kind !== 'projected') return undefined;
+  const outcomes = projection.outcomes.filter((outcome) => !outcome.requiresUserAttention);
+  return outcomes.length > 0
+    ? { kind: 'projected', outcomes, requiresUserAttention: false }
+    : undefined;
 }
 
 /**
