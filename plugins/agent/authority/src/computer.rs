@@ -79,6 +79,8 @@ pub trait NativeCallAccess: Access {
     /// wider floor so that a grant can reach the Run's approval ceiling; its
     /// base sandbox stays within this.
     fn permission_ceiling(&self) -> &maka_sandbox::Sandbox;
+    /// The pre-grant sandbox for a PTY input call dispatched with a wider file ceiling.
+    fn file_approval_base(&self) -> Option<&maka_sandbox::Sandbox>;
     /// Validate actual Host dispatch, original native caller intent and original custody.
     /// Bind canonical original-reference evidence only; do not fabricate a provider outcome.
     fn bind_original<'a>(

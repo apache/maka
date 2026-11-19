@@ -43,6 +43,7 @@ struct BoundCall {
     call: ToolCallContext,
     target: AuthorizationObligation,
     tool: String,
+    file_approval_base: Option<maka_sandbox::Sandbox>,
     cancellation: CancellationToken,
     host_original: std::sync::OnceLock<RecoveryRef>,
 }
@@ -51,6 +52,7 @@ impl RunAccess {
         self: &Arc<Self>,
         call: ToolCallContext,
         tool: String,
+        file_approval_base: Option<maka_sandbox::Sandbox>,
         cancellation: CancellationToken,
         computer: bool,
     ) -> Result<Arc<NativeCallContext>, ToolError> {
@@ -61,6 +63,7 @@ impl RunAccess {
             call,
             target,
             tool,
+            file_approval_base,
             cancellation,
             host_original: Default::default(),
         });
@@ -313,6 +316,9 @@ impl NativeCallAccess for BoundCall {
     }
     fn permission_ceiling(&self) -> &maka_sandbox::Sandbox {
         &self.access.spec.permission_ceiling.sandbox
+    }
+    fn file_approval_base(&self) -> Option<&maka_sandbox::Sandbox> {
+        self.file_approval_base.as_ref()
     }
     fn current(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>> {
         Box::pin(async move {
@@ -1108,6 +1114,7 @@ pub(in crate::owner) async fn preview_fixture(
         call,
         target,
         tool: "cua_repl".into(),
+        file_approval_base: None,
         cancellation: CancellationToken::new(),
         host_original: Default::default(),
     });

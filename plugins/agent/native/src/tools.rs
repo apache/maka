@@ -528,9 +528,9 @@ fn catalog_inner(
                     computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
                     network_ceiling: selection.input == ToolInput::Web
                         || contract == &process_contract,
-                    // Process controls need authority already held, not authority that could be approved.
                     file_ceiling: contract == &file_contract
-                        || (contract == &process_contract && selection.method == "execute"),
+                        || (contract == &process_contract
+                            && matches!(selection.method.as_str(), "execute" | "writeStdin")),
                     input_projection,
                     title_kind,
                     presentation,
@@ -872,21 +872,26 @@ impl Service {
                 operation_id: context.operation_id.clone(),
                 tool_use_id: context.tool_use_id(),
             };
+            let (base, approval) = if computer {
+                (access.workspace_sandbox_floor().await?, None)
+            } else if file_ceiling {
+                access.file_approval_floors(&context.call.origin).await?
+            } else {
+                (access.sandbox_floor(&context.call.origin).await?, None)
+            };
+            let (mut floor, file_approval_base) = match approval {
+                Some(approval) => (approval, (selection.method == "writeStdin").then_some(base)),
+                None => (base, None),
+            };
             let capsule = access
                 .native_call(
                     context.clone(),
                     selection.name.clone(),
+                    file_approval_base,
                     cancellation.clone(),
                     computer,
                 )
                 .await?;
-            let mut floor = if computer {
-                access.workspace_sandbox_floor().await?
-            } else if file_ceiling {
-                access.file_approval_floor(&context.call.origin).await?
-            } else {
-                access.sandbox_floor(&context.call.origin).await?
-            };
             if network_ceiling && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor {
                 // Network still requires a grant from the same tool family. The
                 // ceiling is independent of the preset's base network, which a

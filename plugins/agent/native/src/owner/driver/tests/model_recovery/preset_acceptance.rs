@@ -833,7 +833,8 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
         let boot = bootstrap_with(&base, provider.url.clone(), |config| {
             config["tools"] = json!([
                 {"name":"Write","description":"Write local file","target":{"kind":"import","name":"files"},"method":"write","nestable":true,"result":"json","confirmation":"preapproved"},
-                {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"}
+                {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"ProcessInput","description":"Write to a background process","target":{"kind":"import","name":"processes"},"method":"writeStdin","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
         }).await?;
         attach(&mut rig, &boot).await?;
@@ -867,6 +868,19 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
         let contents = std::fs::read_to_string(&shell_file)
             .map_err(|error| format!("read shell.txt: {error}; Shell result: {shell}"))?;
         assert_eq!(contents, "approved\n", "{shell}");
+
+        let launched = approved_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":"read line; echo got-$line","login":false,"pty":true,"run_in_background":true,
+            "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
+            "justification":"Start an interactive Shell with access to the fixture"
+        }), "session").await?;
+        let result = launched.replace('\\', "");
+        let (_, result) = result.split_once(r#""ref":""#)
+            .ok_or_else(|| format!("process ref missing: {launched}"))?;
+        let (reference, _) = result.split_once('"').ok_or("incomplete process ref")?;
+        let input = tool_round(&rig, &mut provider, id, false, "ProcessInput",
+            json!({"ref":reference,"input":"ready\n"})).await?;
+        assert!(input.contains(r#"\"acceptedBytes\":6"#), "{input}");
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
     let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;

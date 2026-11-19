@@ -235,61 +235,77 @@ impl RunAccess {
     }
 
     pub(crate) async fn workspace_sandbox_floor(&self) -> Result<maka_sandbox::Sandbox, ToolError> {
-        self.resolve_sandbox_floor(false, false).await
+        Ok(self.resolve_sandbox_floors(false, false).await?.0)
     }
 
     pub(crate) async fn sandbox_floor(
         &self,
         origin: &maka_agent_facts::tool_call::ToolOrigin,
     ) -> Result<maka_sandbox::Sandbox, ToolError> {
-        self.resolve_sandbox_floor(external_origin(origin), false)
-            .await
+        Ok(self
+            .resolve_sandbox_floors(external_origin(origin), false)
+            .await?
+            .0)
     }
 
-    /// The floor of a tool that asks for file writes per call. The floor bounds
-    /// what a grant can give; the tool keeps its base within the Run's ceiling.
-    pub(crate) async fn file_approval_floor(
+    /// The held sandbox and, when wider, the filesystem approval ceiling.
+    pub(crate) async fn file_approval_floors(
         &self,
         origin: &maka_agent_facts::tool_call::ToolOrigin,
-    ) -> Result<maka_sandbox::Sandbox, ToolError> {
-        self.resolve_sandbox_floor(external_origin(origin), true)
+    ) -> Result<(maka_sandbox::Sandbox, Option<maka_sandbox::Sandbox>), ToolError> {
+        self.resolve_sandbox_floors(external_origin(origin), true)
             .await
     }
 
-    async fn resolve_sandbox_floor(
+    async fn resolve_sandbox_floors(
         &self,
         protect_external_files: bool,
         file_approvals: bool,
-    ) -> Result<maka_sandbox::Sandbox, ToolError> {
+    ) -> Result<(maka_sandbox::Sandbox, Option<maka_sandbox::Sandbox>), ToolError> {
+        use maka_sandbox::Sandbox;
+
         let current = self.live_configuration().await?;
         let workspace = current.workspace;
         let mode = current.permissions.access;
         let root = self.state_root()?;
         let ceiling = self.spec.permission_ceiling.sandbox.clone();
-        let policy_workspace = workspace.clone();
-        let mut floor = tokio::task::spawn_blocking(move || {
-            let (live, _) = maka_workspace_support::sandbox(&policy_workspace, mode, &root)?;
-            live.intersect(&ceiling).map_err(|error| error.to_string())
+        let approved = if file_approvals {
+            self.spec.filesystem_approval_ceiling.clone()
+        } else {
+            None
+        };
+        tokio::task::spawn_blocking(move || {
+            let (live, protections) = maka_workspace_support::sandbox(&workspace, mode, &root)?;
+            let mut base = live
+                .intersect(&ceiling)
+                .map_err(|error| error.to_string())?;
+            let mut approval = match (approved, &base) {
+                (Some(filesystem), Sandbox::Managed { network, .. }) => Some(
+                    Sandbox::Managed {
+                        filesystem,
+                        network: network.clone(),
+                    }
+                    .intersect(&protections)
+                    .map_err(|error| error.to_string())?,
+                ),
+                _ => None,
+            };
+            if protect_external_files && !matches!(base, Sandbox::Disabled) {
+                let reserved = maka_workspace_support::reserved(&workspace, &root)?;
+                base = base
+                    .intersect(&reserved)
+                    .map_err(|error| error.to_string())?;
+                if let Some(approval) = &mut approval {
+                    *approval = approval
+                        .intersect(&reserved)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Ok((base, approval))
         })
         .await
         .map_err(|error| ToolError::Failed(error.to_string()))?
-        .map_err(ToolError::Failed)?;
-        if file_approvals
-            && let Some(approved) = &self.spec.filesystem_approval_ceiling
-            && let maka_sandbox::Sandbox::Managed { filesystem, .. } = &mut floor
-        {
-            *filesystem = approved.clone();
-        }
-        if !protect_external_files || matches!(floor, maka_sandbox::Sandbox::Disabled) {
-            return Ok(floor);
-        }
-        let owner = self.owner().map_err(ToolError::Failed)?;
-        let reserved = reserved_sandbox_floor(&owner.store, &workspace)
-            .await
-            .map_err(ToolError::Failed)?;
-        floor
-            .intersect(&reserved)
-            .map_err(|error| ToolError::Failed(error.to_string()))
+        .map_err(ToolError::Failed)
     }
 
     pub(crate) fn spec(&self) -> &RunSpec {
