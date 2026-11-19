@@ -71,6 +71,88 @@ fn timing(page: &Value) -> wire::TurnTiming {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_recognizes_hosted_search_independently_of_the_local_tool_name() -> TestResult<()> {
+    use maka_agent_facts::model::ModelToolCall;
+
+    let mut rig = Rig::new()?;
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let parts = [
+            ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: "hosted".into(),
+                    name: "SearchAlias".into(),
+                    input: json!({}).into(),
+                    provider_options: None,
+                    provider_executed: true,
+                },
+            },
+            ModelPart::ToolResult {
+                id: "hosted".into(),
+                name: "SearchAlias".into(),
+                is_error: false,
+                output: json!({"action": {"query": "query from result"}}),
+                provider_options: Some(json!({
+                    "openai": {"responsesReplay": {"fields": {"type": "web_search_call"}}}
+                })),
+            },
+            ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: "local".into(),
+                    name: "WebSearch".into(),
+                    input: json!({"query": "local query"}).into(),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            },
+        ];
+        let facts = parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| Fact::ModelObserved {
+                attempt,
+                index: index as u64,
+                part,
+                continuation: None,
+            })
+            .collect();
+        rig.append(facts, vec![]).await?;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let rows = tools(&page);
+        let hosted: Vec<_> = rows
+            .iter()
+            .filter_map(|row| row.call.as_ref())
+            .filter(|call| call.name == "SearchAlias")
+            .collect();
+        assert_eq!(
+            hosted.len(),
+            2,
+            "both the call and its receipt reference the search"
+        );
+        for call in hosted {
+            assert_eq!(call.presentation.as_deref(), Some("provider.web_search"));
+            assert_eq!(call.title.as_ref().unwrap().fallback, "query from result");
+        }
+        let local = rows
+            .iter()
+            .filter_map(|row| row.call.as_ref())
+            .find(|call| call.name == "WebSearch")
+            .unwrap();
+        assert!(local.presentation.is_none());
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    result.expect("hosted search projection assertion failed")?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_preserves_citation_targets_and_legacy_sources() -> TestResult<()> {
     use maka_agent_facts::model::{CitationAnchor, ModelSource, TextKind};
 

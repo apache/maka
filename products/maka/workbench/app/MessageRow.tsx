@@ -661,6 +661,7 @@ export function MessageRow({
                     }
                   >
                     <ToolCard
+                      openLink={openLink}
                       row={row}
                       progress={() => toolProgress?.(row().tool?.toolUseId ?? '') ?? null}
                       sessionId={sessionId}

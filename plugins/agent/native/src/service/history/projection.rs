@@ -264,6 +264,45 @@ fn apply_display(call: &mut wire::ToolCall, display: &ToolDisplay) {
         .map(|title| Box::new(maka_agent_facts::display::Text::plain(title.clone())));
     call.presentation = display.presentation.as_deref().map(Into::into);
 }
+
+fn apply_provider_search(call: &mut wire::ToolCall, state: &maka_agent_state::fold::Tool) {
+    let recorded = &state.call;
+    if !recorded.provider_executed
+        || recorded
+            .provider_options
+            .as_ref()
+            .and_then(|v| v.pointer("/anthropic/serverName"))
+            .is_some()
+    {
+        return;
+    }
+    let result = state.provider_result.as_ref();
+    let replay = result
+        .and_then(|r| r.provider_options.as_ref())
+        .and_then(|v| v.pointer("/openai/responsesReplay/fields/type"))
+        .and_then(Value::as_str);
+    let is_search = match replay {
+        Some(kind) => kind == "web_search_call",
+        None => matches!(
+            recorded.name.as_str(),
+            "WebSearch" | "web_search" | "web_search_preview" | "deepseek_web_search"
+        ),
+    };
+    if !is_search {
+        return;
+    }
+    call.presentation = Some("provider.web_search".into());
+    let action = result.map(|result| &result.output["action"]);
+    let query = recorded
+        .input
+        .as_json()
+        .and_then(|input| input["query"].as_str())
+        .or_else(|| action.and_then(|a| a["queries"][0].as_str().or_else(|| a["query"].as_str())));
+    call.title = query
+        .and_then(maka_agent_facts::display::Text::single_line)
+        .map(Box::new);
+}
+
 fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>) {
     row.chunk.tool = Some(wire::Tool {
         tool_use_id: id,
@@ -592,6 +631,8 @@ pub(super) async fn project(
                     call.dispatched = state.admitted;
                     if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
                         apply_display(call, display);
+                    } else {
+                        apply_provider_search(call, state);
                     }
                 }
             }

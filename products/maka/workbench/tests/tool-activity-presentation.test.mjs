@@ -45,6 +45,7 @@ const { activityFailure, activityPresentation, activityProjection, activityTitle
   new URL('toolActivityPresentation.ts', app)
 );
 const { toolResult } = await import(new URL('toolCards.ts', app));
+const { providerSearch } = await import(new URL('providerSearch.ts', app));
 hooks.deregister();
 
 const sendKey = 'maka.agent.Agent@1/send';
@@ -394,5 +395,53 @@ test('human-symmetric Session* tool cards project real contract variants', () =>
         { label: 'Details', text: 'model adapter failed: quota exhausted', style: undefined },
       ],
     },
+  );
+});
+
+test('hosted search cards preserve distinct queries and expose recorded web sources', () => {
+  const q = 'site:github.com/maka-agent/cua browser takeover transport';
+  assert.deepEqual(providerSearch({}, { action: { type: 'search', queries: [q], query: q } }), {
+    queries: [q],
+    sources: [],
+    error: null,
+  });
+  const source = { title: 'The Rust Book', url: 'https://doc.rust-lang.org/book/' };
+  const expected = { key: source.url, ...source, site: 'doc.rust-lang.org' };
+  const responses = providerSearch(
+    {},
+    {
+      action: {
+        type: 'search',
+        queries: ['Rust', ' borrow checker ', 'Rust'],
+        query: 'Rust',
+        sources: [source, source, { url: 'file:///private/example' }],
+      },
+    },
+  );
+  assert.deepEqual(responses, {
+    queries: ['Rust', 'borrow checker'],
+    sources: [expected],
+    error: null,
+  });
+  assert.deepEqual(
+    providerSearch({ query: 'Rust' }, [
+      { type: 'web_search_result', ...source, encrypted_content: 'opaque provider data' },
+    ]),
+    { queries: ['Rust'], sources: [expected], error: null },
+  );
+  assert.equal(
+    providerSearch(
+      { query: 'Rust' },
+      { type: 'web_search_tool_result_error', error_code: 'max_uses_exceeded' },
+    ).error,
+    'max_uses_exceeded',
+  );
+  assert.equal(
+    activityTitle({
+      name: 'WebSearch',
+      presentation: 'provider.web_search',
+      title: { fallback: q },
+    }),
+    'Search the web · ' + q,
   );
 });
