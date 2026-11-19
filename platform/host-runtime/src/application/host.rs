@@ -185,10 +185,15 @@ impl Host {
                     .map_err(|error| error.to_string())?
             ))
         );
+        let source = application.source().expect("persisted Host").clone();
+        // Only this running revision and newer ones can still have callers.
+        if let Err(error) = store.release_superseded_application_sources(&source).await {
+            tracing::error!(%error, "Superseded application sources remain installed");
+        }
         Ok(Arc::new(Self {
             root,
             options,
-            source: application.source().expect("persisted Host").clone(),
+            source,
             application,
             store,
             access,
