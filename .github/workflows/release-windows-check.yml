@@ -83,6 +83,8 @@ on:
       - 'packages/runtime/src/child-fd-input.ts'
       - 'packages/runtime/src/child-process-lifecycle.ts'
       - 'packages/runtime/src/edit-replace.ts'
+      - 'packages/runtime/src/file-mutation-guard.ts'
+      - 'packages/runtime/src/file-mutation-guard-contract.ts'
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/image-file.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
