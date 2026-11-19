@@ -55,6 +55,13 @@ import {
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
+import { ComposerUsageLimits } from '../../../../products/maka/workbench/app/ComposerUsageLimits';
+import {
+  composerToolbar,
+  NARROW_COMPOSER_TOOLBAR_WIDTH,
+  ToolbarCompactProvider,
+  type ComposerToolbarSlot,
+} from '../../../../products/maka/workbench/app/composerToolbar';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { DraftQuotes } from './DraftQuotes';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
@@ -230,6 +237,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
+  const toolbarWidth = signal(0);
+  const narrowToolbar = () =>
+    platform.idiom !== 'terminal' &&
+    toolbarWidth() > 0 &&
+    toolbarWidth() < NARROW_COMPOSER_TOOLBAR_WIDTH;
+  const activeBackend = (): ComposerBackend =>
+    props.session()?.backend() ?? pending()?.backend() ?? null;
   const toggleAttachments = () => {
     const owner = props.session();
     if (owner && owner.editable())
@@ -884,169 +898,227 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               );
             }}
           </Each>
-          <View
-            style={[
-              {
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: platform.idiom === 'terminal' ? 8 : 4,
-              },
-              { pointerEvents: 'box-none' },
-            ]}
-          >
-            <Button
-              ref={completion.addButton}
-              onPress={inputAction(completion.toggleAdd, {
-                owner: props.session()?.sessionId ?? pending()?.id ?? null,
-              })}
-              accessibilityLabel={tr('Add to message')}
-              tooltip={textTooltip(() => tr('Add to message'))}
-              disabled={
-                completion.composing() ||
-                (pending() ? pending()!.sending() : !props.session()?.editable())
+          <ToolbarCompactProvider value={narrowToolbar}>
+            <View
+              onLayout={
+                platform.idiom === 'terminal'
+                  ? undefined
+                  : ({ bounds }) => toolbarWidth.set(bounds.size.width)
               }
-              style={{
-                width: 32,
-                height: 32,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 16,
-              }}
-              hoverStyle={{ backgroundColor: C.line }}
-              focusStyle={{ backgroundColor: C.line }}
-              activeStyle={{ backgroundColor: C.surface }}
-            >
-              <Icon name="plus" color={C.secondary} />
-            </Button>
-            <If when={!externalAgent()}>
-              <SessionPermissionsSelect
-                owner={props.session()?.permissions ?? null}
-                pending={pending()?.permissions ?? null}
-              />
-            </If>
-            {/* After the sandbox, so leaving the start pane moves neither. */}
-            <If when={platform.idiom !== 'terminal' && hero()}>{workspaceControl()}</If>
-            <If
-              when={
-                platform.idiom !== 'terminal' &&
-                !hero() &&
-                props.openFiles !== undefined &&
-                Boolean(props.session()?.workspace())
-              }
-            >
-              <Button
-                accessibilityLabel={tr('Browse workspace files')}
-                tooltip={textTooltip(
-                  () => props.session()?.workspace() || tr('Browse workspace files'),
-                )}
-                ref={props.filesOpener ? (node) => props.filesOpener!(node) : undefined}
-                onPress={props.openFiles!}
-                style={{
-                  ...toolbarControlStyle,
+              style={[
+                {
                   flexDirection: 'row',
                   alignItems: 'center',
-                  maxWidth: 200,
-                  minWidth: 0,
-                  flexShrink: 1,
-                  gap: 4,
+                  gap: platform.idiom === 'terminal' ? 8 : 4,
+                },
+                { pointerEvents: 'box-none' },
+              ]}
+            >
+              <Button
+                ref={completion.addButton}
+                onPress={inputAction(completion.toggleAdd, {
+                  owner: props.session()?.sessionId ?? pending()?.id ?? null,
+                })}
+                accessibilityLabel={tr('Add to message')}
+                tooltip={textTooltip(() => tr('Add to message'))}
+                disabled={
+                  completion.composing() ||
+                  (pending() ? pending()!.sending() : !props.session()?.editable())
+                }
+                style={{
+                  width: 32,
+                  height: 32,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 16,
+                  flexShrink: 0,
                 }}
                 hoverStyle={{ backgroundColor: C.line }}
                 focusStyle={{ backgroundColor: C.line }}
                 activeStyle={{ backgroundColor: C.surface }}
               >
-                <Icon name="folder" color={C.muted} />
-                <Text
-                  style={[
-                    { ...captionTextStyle, color: C.secondary, flexShrink: 1, minWidth: 0 },
-                    { numberOfLines: 1 },
-                  ]}
-                >
-                  {workspaceLabel()}
-                </Text>
+                <Icon name="plus" color={C.secondary} />
               </Button>
-            </If>
-            <If when={props.session() !== null || pending() !== null}>
-              <View
-                style={[
-                  platform.idiom === 'terminal'
-                    ? { flex: 1, minWidth: 0 }
-                    : {
-                        flex: 1,
-                        minWidth: 0,
-                        flexDirection: 'row',
-                        justifyContent: 'flex-end',
-                        alignItems: 'center',
-                        gap: 4,
-                      },
-                  { pointerEvents: 'box-none' },
-                ]}
-              >
-                {/* The desktop shows context use beside the model; the terminal
-                    keeps it in the line under the composer. */}
-                <If when={platform.idiom !== 'terminal' && props.session()?.contextUsage?.()}>
-                  <ContextGauge usage={() => props.session()!.contextUsage!()!} />
+              <If when={platform.idiom === 'terminal'}>
+                <If when={!externalAgent()}>
+                  <SessionPermissionsSelect
+                    owner={props.session()?.permissions ?? null}
+                    pending={pending()?.permissions ?? null}
+                  />
                 </If>
-                {props.models}
-              </View>
-            </If>
-            <If when={props.session() === null && pending() === null}>
-              <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
-            </If>
-            <If when={running() && hasContent()} else={primaryButton()}>
-              <ContextMenu
-                offset={8}
-                margin={8}
-                popupStyle={floatingStyle()}
-                trigger={primaryButton()}
-              >
-                <Each
-                  of={running() && hasContent() ? [props.session()!] : []}
-                  key={(owner) => owner.sessionId}
+                <If when={props.session() !== null || pending() !== null}>
+                  <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'box-none' }]}>
+                    {props.models}
+                  </View>
+                </If>
+                <If when={props.session() === null && pending() === null}>
+                  <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
+                </If>
+              </If>
+              <If when={platform.idiom !== 'terminal'}>
+                <Each<ComposerToolbarSlot>
+                  of={composerToolbar.layout()}
+                  key={(slot: ComposerToolbarSlot) => slot}
                 >
-                  {(owner) => (
-                    <>
-                      <MenuItem
-                        accessibilityLabel={tr('Add to queue')}
-                        disabled={sendDisabled() || completion.isCommand()}
-                        onSelect={inputAction(completion.send, {
-                          owner: owner().sessionId,
-                          text: owner().draft(),
-                          backend: owner().backend(),
-                          attachments: owner().attachments.ids(),
-                          quotes: owner().quotes(),
-                          delivery: 'queue' as const,
-                        })}
-                        style={menuRowStyle()}
-                        hoverStyle={menuRowHoverStyle()}
-                        focusStyle={menuRowHoverStyle()}
-                      >
-                        <Icon name="queue" color={C.secondary} />
-                        <Text style={{ ...captionTextStyle, color: C.text }}>
-                          {tr('Add to queue')}
-                        </Text>
-                      </MenuItem>
-                      <MenuItem
-                        accessibilityLabel={
-                          owner().stopping() ? tr('Stopping…') : tr('Stop response')
-                        }
-                        disabled={owner().stopping()}
-                        onSelect={inputAction(owner().stop, owner().run())}
-                        style={menuRowStyle()}
-                        hoverStyle={menuRowHoverStyle()}
-                        focusStyle={menuRowHoverStyle()}
-                      >
-                        <Icon name="stop" color={C.secondary} />
-                        <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
-                          {tr('Stop response')}
-                        </Text>
-                        <Text style={{ ...menuDetailTextStyle, color: C.muted }}>Esc</Text>
-                      </MenuItem>
-                    </>
-                  )}
+                  {(item) => {
+                    const slot = item();
+                    if (slot === 'spacer') {
+                      return <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]} />;
+                    }
+                    if (slot === 'permissions') {
+                      return (
+                        <If when={!externalAgent()}>
+                          <SessionPermissionsSelect
+                            owner={props.session()?.permissions ?? null}
+                            pending={pending()?.permissions ?? null}
+                          />
+                        </If>
+                      );
+                    }
+                    if (slot === 'workspace') {
+                      return (
+                        <>
+                          <If when={hero()}>{workspaceControl()}</If>
+                          <If
+                            when={
+                              !hero() &&
+                              props.openFiles !== undefined &&
+                              Boolean(props.session()?.workspace())
+                            }
+                          >
+                            <Button
+                              accessibilityLabel={tr('Browse workspace files')}
+                              tooltip={textTooltip(
+                                () => props.session()?.workspace() || tr('Browse workspace files'),
+                              )}
+                              ref={
+                                props.filesOpener ? (node) => props.filesOpener!(node) : undefined
+                              }
+                              onPress={props.openFiles!}
+                              style={{
+                                ...toolbarControlStyle,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                maxWidth: narrowToolbar() ? 32 : 200,
+                                minWidth: 0,
+                                flexShrink: narrowToolbar() ? 0 : 1,
+                                gap: 4,
+                              }}
+                              hoverStyle={{ backgroundColor: C.line }}
+                              focusStyle={{ backgroundColor: C.line }}
+                              activeStyle={{ backgroundColor: C.surface }}
+                            >
+                              <Icon name="folder" color={C.muted} />
+                              <If when={!narrowToolbar()}>
+                                <Text
+                                  style={[
+                                    {
+                                      ...captionTextStyle,
+                                      color: C.secondary,
+                                      flexShrink: 1,
+                                      minWidth: 0,
+                                    },
+                                    { numberOfLines: 1 },
+                                  ]}
+                                >
+                                  {workspaceLabel()}
+                                </Text>
+                              </If>
+                            </Button>
+                          </If>
+                        </>
+                      );
+                    }
+                    if (slot === 'usage') {
+                      return (
+                        <If when={props.session() !== null || pending() !== null}>
+                          <ComposerUsageLimits backend={activeBackend} />
+                        </If>
+                      );
+                    }
+                    if (slot === 'context') {
+                      return (
+                        <If when={props.session()?.contextUsage?.()}>
+                          <ContextGauge usage={() => props.session()!.contextUsage!()!} />
+                        </If>
+                      );
+                    }
+                    return (
+                      <If when={props.session() !== null || pending() !== null}>
+                        <View
+                          style={[
+                            {
+                              minWidth: 0,
+                              flexShrink: 1,
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                            },
+                            { pointerEvents: 'box-none' },
+                          ]}
+                        >
+                          {props.models}
+                        </View>
+                      </If>
+                    );
+                  }}
                 </Each>
-              </ContextMenu>
-            </If>
-          </View>
+              </If>
+              <If when={running() && hasContent()} else={primaryButton()}>
+                <ContextMenu
+                  offset={8}
+                  margin={8}
+                  popupStyle={floatingStyle()}
+                  trigger={primaryButton()}
+                >
+                  <Each
+                    of={running() && hasContent() ? [props.session()!] : []}
+                    key={(owner) => owner.sessionId}
+                  >
+                    {(owner) => (
+                      <>
+                        <MenuItem
+                          accessibilityLabel={tr('Add to queue')}
+                          disabled={sendDisabled() || completion.isCommand()}
+                          onSelect={inputAction(completion.send, {
+                            owner: owner().sessionId,
+                            text: owner().draft(),
+                            backend: owner().backend(),
+                            attachments: owner().attachments.ids(),
+                            quotes: owner().quotes(),
+                            delivery: 'queue' as const,
+                          })}
+                          style={menuRowStyle()}
+                          hoverStyle={menuRowHoverStyle()}
+                          focusStyle={menuRowHoverStyle()}
+                        >
+                          <Icon name="queue" color={C.secondary} />
+                          <Text style={{ ...captionTextStyle, color: C.text }}>
+                            {tr('Add to queue')}
+                          </Text>
+                        </MenuItem>
+                        <MenuItem
+                          accessibilityLabel={
+                            owner().stopping() ? tr('Stopping…') : tr('Stop response')
+                          }
+                          disabled={owner().stopping()}
+                          onSelect={inputAction(owner().stop, owner().run())}
+                          style={menuRowStyle()}
+                          hoverStyle={menuRowHoverStyle()}
+                          focusStyle={menuRowHoverStyle()}
+                        >
+                          <Icon name="stop" color={C.secondary} />
+                          <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+                            {tr('Stop response')}
+                          </Text>
+                          <Text style={{ ...menuDetailTextStyle, color: C.muted }}>Esc</Text>
+                        </MenuItem>
+                      </>
+                    )}
+                  </Each>
+                </ContextMenu>
+              </If>
+            </View>
+          </ToolbarCompactProvider>
           <If when={fileDragging()}>
             <FileDropHint radius={cardRadius()} />
           </If>
