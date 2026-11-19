@@ -272,6 +272,10 @@ impl Decoder {
         !self.finished && self.pending_effects.is_empty()
     }
 
+    fn search_name(&self) -> &str {
+        self.search_name.as_deref().unwrap_or("web_search")
+    }
+
     fn invalid(message: &str) -> Error {
         Error::Invalid(message.into())
     }
@@ -295,15 +299,11 @@ impl Decoder {
             }
             if identity == Identity::Search {
                 self.pending_effects.insert(id.into());
-                let name = self
-                    .search_name
-                    .clone()
-                    .ok_or_else(|| Self::invalid("unrequested Responses web search"))?;
                 self.observed_output = true;
                 self.replay_safe = false;
                 out.push(OutputEvent::ToolCall {
                     id: id.into(),
-                    name,
+                    name: self.search_name().to_owned(),
                     input: ToolInput::Function("{}".into()),
                     provider_executed: true,
                     metadata: ItemMetadata {
@@ -669,10 +669,6 @@ impl Decoder {
                 }
                 self.observed_output = true;
                 self.replay_safe = false;
-                let name = self
-                    .search_name
-                    .clone()
-                    .ok_or_else(|| Self::invalid("unrequested Responses web search"))?;
                 // A terminal response can contain unfinished provider work.
                 // Retain its call without fabricating a settlement; the strict
                 // step assembler then keeps the outcome unknown.
@@ -681,7 +677,7 @@ impl Decoder {
                     let metadata = metadata(&id);
                     out.push(OutputEvent::ToolResult {
                         id,
-                        name,
+                        name: self.search_name().to_owned(),
                         action,
                         is_error: status == "failed",
                         metadata,
@@ -1240,6 +1236,42 @@ mod tests {
             assert!(matches!(&end[..], [OutputEvent::Finished { usage, .. }]
                 if (usage.input, usage.cache_read, usage.cache_write) == (Some(100), read, write)));
         }
+    }
+
+    #[test]
+    fn undeclared_hosted_search_settles_once_and_allows_the_response_to_finish() {
+        let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+        let item = json!({
+            "type":"web_search_call","id":"ws_returned","status":"completed",
+            "action":{"type":"search","query":"rust"}
+        });
+        let start = decoder
+            .push(json!({
+                "type":"response.output_item.added",
+                "item":{"type":"web_search_call","id":"ws_returned","status":"in_progress"}
+            }))
+            .unwrap();
+        assert!(
+            matches!(&start[..], [OutputEvent::ToolCall { id, name, provider_executed: true, .. }]
+            if id == "ws_returned" && name == "web_search")
+        );
+        let done = decoder
+            .push(json!({"type":"response.output_item.done","item":item}))
+            .unwrap();
+        assert!(
+            matches!(&done[..], [OutputEvent::ToolResult { id, name, action, is_error: false, .. }]
+            if id == "ws_returned" && name == "web_search" && *action == item["action"])
+        );
+        let end = decoder
+            .push(json!({"type":"response.completed","response":{"output":[item]}}))
+            .unwrap();
+        assert!(matches!(
+            &end[..],
+            [OutputEvent::Finished {
+                reason: Stop::Stop,
+                ..
+            }]
+        ));
     }
 
     #[test]
