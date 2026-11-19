@@ -86,6 +86,15 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
             disabled={disabled()}
           />
         </If>
+        <If when={owner.offersDictation()}>
+          <SettingsSwitch
+            label={tr('Use for dictation')}
+            description={tr('Saving will enable dictation with this connection.')}
+            checked={!!form().useForDictation}
+            disabled={disabled()}
+            onPress={inputAction(owner.toggleDictation, owner.action())}
+          />
+        </If>
         <If when={form().provider.descriptor.customEndpoint}>
           <SettingsInput
             label={tr('Base URL')}

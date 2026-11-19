@@ -47,25 +47,33 @@ const { createSettingsOperations } = await import(new URL('settingsOperations.ts
 const { createModelSettings } = await import(new URL('settings.ts', appRoot));
 hooks.deregister();
 
-function connectionEditor() {
+function connectionEditor(dictation) {
   const provider = {
     packageId: 'maka.codex',
     entryId: 'maka.codex',
     scope: 'profile',
     name: 'chatgpt',
   };
-  const configuration = { baseUrl: 'https://chatgpt.com/backend-api/codex' };
+  if (dictation)
+    Object.assign(provider, {
+      packageId: 'maka.providers',
+      entryId: 'maka.providers',
+      name: 'deepseek',
+    });
+  const configuration = {
+    baseUrl: dictation ? 'https://api.deepseek.com' : 'https://chatgpt.com/backend-api/codex',
+  };
   const descriptor = {
     label: 'ChatGPT Subscription',
     anonymous: false,
-    discovery: true,
+    discovery: !dictation,
     configurationSchema: { properties: {} },
     configurationDefaults: configuration,
     authentication: [{ id: 'device', interactive: true, label: 'Sign in with ChatGPT' }],
   };
   const status = () => ({
     locator: { scope: 'connection', connectionId: 'connection', kind: 'provider' },
-    configured: false,
+    configured: !!dictation?.saved,
     credentialId: null,
     revision: null,
     updatedAt: null,
@@ -85,6 +93,7 @@ function connectionEditor() {
   const api = {
     pendingSettings: async () => [],
     async query(_, method) {
+      if (method === 'connection') return original;
       if (method === 'credentialStatus') return { kind: 'status', status: status() };
       if (method === 'connections')
         return {
@@ -106,39 +115,54 @@ function connectionEditor() {
     },
   };
   const operations = createSettingsOperations(api);
+  if (dictation)
+    operations.mutate = async (_, method) => {
+      assert.equal(method, 'saveCredential');
+      if (dictation.reject) return { kind: 'rejected', reason: 'invalid_secret' };
+      dictation.saved = true;
+      return { kind: 'saved' };
+    };
   operations.pendingKnown.set(true);
-  const owner = createModelSettings(api, operations, () => true, undefined, {
-    page: 'connection',
-    connections: [],
-    providers: [],
-    connectionQuery: '',
-    providerQuery: '',
-    modelQuery: '',
-    revision: 1,
-    defaultTarget: null,
-    next: null,
-    providerNext: null,
-    editor: {
-      instance: 1,
-      baseline: original,
-      provider: {
-        identity: provider,
-        descriptor,
+  const owner = createModelSettings(
+    api,
+    operations,
+    () => true,
+    undefined,
+    {
+      page: 'connection',
+      connections: [],
+      providers: [],
+      connectionQuery: '',
+      providerQuery: '',
+      modelQuery: '',
+      revision: 1,
+      defaultTarget: null,
+      next: null,
+      providerNext: null,
+      editor: {
+        instance: 1,
+        baseline: original,
+        provider: {
+          identity: provider,
+          descriptor,
+        },
+        name: original.name,
+        slug: 'chatgpt',
+        baseUrl: original.target.configuration.baseUrl,
+        enabled: true,
+        serverSideCompaction: false,
+        overlay: 'null',
+        apiKey: '',
       },
-      name: original.name,
-      slug: 'chatgpt',
-      baseUrl: original.target.configuration.baseUrl,
-      enabled: true,
-      serverSideCompaction: false,
-      overlay: 'null',
-      apiKey: '',
+      model: null,
+      credential: status(),
+      discovery: 'idle',
+      confirmation: null,
+      initialModel: null,
     },
-    model: null,
-    credential: status(),
-    discovery: 'idle',
-    confirmation: null,
-    initialModel: null,
-  });
+    undefined,
+    dictation?.enable,
+  );
 
   return { owner };
 }
@@ -156,4 +180,30 @@ test('leaving a connection runs the exit at once when clean and only after disca
   owner.discardEdits(owner.action());
   assert.deepEqual(ran, ['clean', 'discarded']);
   assert.equal(owner.page(), 'connections');
+});
+
+test('model key saves apply dictation only after an opted-in DeepSeek credential commits', async () => {
+  for (const [optIn, reject] of [
+    [false, false],
+    [true, true],
+    [true, false],
+  ]) {
+    const selected = [];
+    const state = {
+      reject,
+      saved: false,
+      enable: async (id) => {
+        assert.equal(state.saved, true);
+        selected.push(id);
+      },
+    };
+    const { owner } = connectionEditor(state);
+    owner.edit('apiKey', 'fixture-key');
+    assert.equal(owner.offersDictation(), true);
+    assert.ok(!owner.editor().useForDictation);
+    if (optIn) owner.toggleDictation(owner.action());
+    assert.deepEqual(selected, []);
+    await owner.saveConnection(owner.action());
+    assert.deepEqual(selected, optIn && !reject ? ['connection'] : []);
+  }
 });

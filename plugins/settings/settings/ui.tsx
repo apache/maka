@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, keymap, lifecycle, signal, untracked, type JSX } from 'nsh';
+import { cleanup, effect, keymap, lifecycle, platform, signal, untracked, type JSX } from 'nsh';
 import type { UiModule, UiViewProps } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
@@ -27,6 +27,9 @@ import {
   type SettingsViewInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { ModelSettings } from '../../../products/maka/workbench/app/ModelSettings';
+import { dictationPreferences } from '../../../products/maka/workbench/app/dictationPreferences';
+import { LoadingIndicator } from '../../../products/maka/workbench/app/Loading';
+import { SettingsProblem } from '../../../products/maka/workbench/app/SettingsPage';
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
@@ -131,6 +134,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     active('connections'),
     undefined,
     restoredConnections,
+    undefined,
+    platform.os === 'macos' && platform.idiom !== 'terminal'
+      ? dictationPreferences.enableForConnection
+      : undefined,
   );
   const general = createGeneralSettings(
     host,
@@ -313,22 +320,80 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       },
       general: {
         kind: 'settings',
-        render: (props) =>
-          mountPage(
+        render: (props) => {
+          const adding = signal(false);
+          const finish = () => {
+            adding.set(false);
+            form.deactivate();
+          };
+          const form = createModelSettings(host, operations, adding, undefined, undefined, (id) => {
+            finish();
+            void dictationPreferences.save('connection', id);
+          });
+          const open = async () => {
+            adding.set(false);
+            form.reset();
+            adding.set(true);
+            // Creation needs the current catalog revision before the editor opens.
+            await form.loadConnections();
+            if (!adding() || form.revision() === null) return;
+            form.newConnection();
+            await form.chooseProvider({
+              packageId: 'maka.providers',
+              entryId: 'maka.providers',
+              scope: 'profile',
+              name: 'deepseek',
+            });
+          };
+          const back = () => {
+            if (!adding()) return general.back();
+            if (
+              form.discardTarget() ||
+              form.confirmation() ||
+              form.page() === 'advanced' ||
+              form.page() === 'model'
+            )
+              return form.back();
+            form.leave(finish);
+            return false;
+          };
+          return mountPage(
             'general',
             general,
             props,
             {
-              title: general.title,
+              title: () =>
+                adding()
+                  ? form.page() === 'advanced'
+                    ? tr('Advanced')
+                    : tr('Add a DeepSeek connection')
+                  : general.title(),
               nested: () => general.editor() !== null,
-              navigation: general.navigation,
-              back: general.back,
-              leave: general.leave,
+              navigation: () => (adding() ? form.navigation() : general.navigation()),
+              back,
+              leave: (next) => (adding() ? form.leave(next) : general.leave(next)),
               backLabel: () => tr('Back from general settings'),
               busy: operations.navigationBusy,
             },
-            () => <GeneralSettings owner={general} />,
-          ),
+            () => (
+              <If
+                when={adding()}
+                else={<GeneralSettings owner={general} addConnection={() => void open()} />}
+              >
+                <If
+                  when={form.editor() !== null}
+                  else={
+                    <If when={!!operations.error()} else={<LoadingIndicator />}>
+                      <SettingsProblem message={operations.error()} retry={() => void open()} />
+                    </If>
+                  }
+                >
+                  <ConnectionSettings owner={form} />
+                </If>
+              </If>
+            ),
+          );
+        },
       },
       connections: {
         kind: 'settings',

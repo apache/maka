@@ -138,7 +138,16 @@ export function desktopShell(platform) {
 }
 
 /** The desktop's identity; the shell gives its window the same application id. */
-const desktopApp = { id: 'org.apache.maka.desktop', name: 'Maka' };
+const desktopApp = {
+  id: 'org.apache.maka.desktop',
+  name: 'Maka',
+  extra: [
+    [
+      'NSMicrophoneUsageDescription',
+      'Maka uses the microphone to transcribe speech into your message draft.',
+    ],
+  ],
+};
 
 /**
  * The identity the Host runs under on macOS, so privacy grants belong to it

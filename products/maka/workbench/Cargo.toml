@@ -47,7 +47,8 @@ maka-ui-support.workspace = true
 nsh-core.workspace = true
 nsh-engine = { workspace = true, features = ["net"] }
 nsh-base.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["multipart"] }
+tempfile.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -66,6 +67,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSData", "NSDictionary", "NSGeometry", "NSString", "NSURL"] }
 
 [build-dependencies]
+cc = "1"
 maka-ui-build.workspace = true
 
 [dev-dependencies]
@@ -74,4 +76,3 @@ nsh-bundler = { workspace = true, features = ["bundle"] }
 # The ui_types example writes the specs' TypeScript, which only this feature keeps.
 nsh-core = { workspace = true, features = ["declarations"] }
 nsh-js.workspace = true
-tempfile.workspace = true
