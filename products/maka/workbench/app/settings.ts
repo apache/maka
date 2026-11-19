@@ -178,6 +178,30 @@ function overlay(text: string): Record<string, unknown> | null {
   return value as Record<string, unknown> | null;
 }
 
+export const settingsModelKey = (selection: Pick<ModelSelection, 'connectionId' | 'modelId'>) =>
+  JSON.stringify([selection.connectionId, selection.modelId]);
+
+export async function readSettingsModels(host: Host, current: () => boolean) {
+  let choices: SettingsModelChoice[] = [];
+  let request: SettingsModelsRead = { kind: 'start' };
+  for (let restarts = 0; ; ) {
+    const result: SettingsModelsPage = await host.query('settings', 'models', request);
+    if (!current()) return;
+    if (result.kind === 'changed') {
+      if (++restarts > 2)
+        throw new UiError('The model catalog keeps changing. Retry to read the current choices.');
+      choices = [];
+      request = { kind: 'start' };
+      continue;
+    }
+    choices = [...choices, ...result.choices];
+    if (!result.next) {
+      return { choices, defaultModel: result.defaultModel };
+    }
+    request = { kind: 'continue', revision: result.revision, cursor: result.next };
+  }
+}
+
 export function createModelSettings(
   host: Host,
   operations: SettingsOperations,
@@ -374,25 +398,10 @@ export function createModelSettings(
     }
   };
   const loadModelChoices = async (generation: number) => {
-    let choices: SettingsModelChoice[] = [];
-    let request: SettingsModelsRead = { kind: 'start' };
-    for (let restarts = 0; ; ) {
-      const result: SettingsModelsPage = await host.query('settings', 'models', request);
-      if (!alive || !active() || generation !== read) return;
-      if (result.kind === 'changed') {
-        if (++restarts > 2)
-          throw new UiError('The model catalog keeps changing. Retry to read the current choices.');
-        choices = [];
-        request = { kind: 'start' };
-        continue;
-      }
-      choices = [...choices, ...result.choices];
-      if (!result.next) {
-        modelChoices.set(choices);
-        defaultModel.set(result.defaultModel);
-        return;
-      }
-      request = { kind: 'continue', revision: result.revision, cursor: result.next };
+    const catalog = await readSettingsModels(host, () => alive && active() && generation === read);
+    if (catalog && alive && active() && generation === read) {
+      modelChoices.set(catalog.choices);
+      defaultModel.set(catalog.defaultModel);
     }
   };
   const loadProviders = async (more = false) => {

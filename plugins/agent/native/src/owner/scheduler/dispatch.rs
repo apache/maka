@@ -23,13 +23,6 @@ use maka_agent_facts::durable::{FactId, UnixMillis};
 use maka_agent_state::queue::{MessageResolution, QueueCommand, QueueEdit, RequestId};
 use tokio::time::Instant;
 
-fn require_discovery_approval(plan: &mut Plan, at: i64) {
-    *plan = pause_plan(plan, at, None);
-    plan.authorization = None;
-    plan.task.next_fire_at = None;
-    plan.task.last_error = Some("scheduler_authorization_changed".into());
-}
-
 #[derive(Default)]
 struct ScriptChecks {
     running: BTreeSet<String>,
@@ -93,6 +86,20 @@ impl CapturedRun {
     }
 }
 impl Owner {
+    fn require_discovery_approval(&self, plan: &mut Plan, at: i64) {
+        *plan = pause_plan(plan, at, None);
+        if let (
+            Some(Approval::Discovery { tools, .. }),
+            ScheduledEffect::Discovery { selected_tools, .. },
+        ) = (plan.authorization.take(), &mut plan.task.effect)
+        {
+            // Preserve a preset's last choices for review without retaining its execution grant.
+            selected_tools.get_or_insert_with(|| self.discovery_tool_groups(&tools.names));
+        }
+        plan.task.next_fire_at = None;
+        plan.task.last_error = Some("scheduler_authorization_changed".into());
+    }
+
     pub(in crate::owner) async fn validate_background(
         &self,
         basis: &CapturedRun,
@@ -185,8 +192,13 @@ impl Owner {
             .await?;
         let discovery_tools = match &plan.task.effect {
             ScheduledEffect::Discovery { worker_tools, .. } => Some(
-                self.discovery_tool_grant(&basis, target, *worker_tools)
-                    .await?,
+                self.discovery_tool_grant(
+                    &basis,
+                    target,
+                    *worker_tools,
+                    plan.task.effect.selected_discovery_tools(),
+                )
+                .await?,
             ),
             _ => None,
         };
@@ -490,7 +502,7 @@ impl Owner {
                     || followup_changed
                     || matches!(plan.task.schedule, TaskSchedule::Script { .. })
                 {
-                    require_discovery_approval(&mut plan, at);
+                    self.require_discovery_approval(&mut plan, at);
                 }
             }
             if recover && self.settings.scheduled_tasks {
@@ -521,7 +533,7 @@ impl Owner {
                                 | "agent_workspace_unavailable"
                         )
                     {
-                        require_discovery_approval(&mut plan, run.at);
+                        self.require_discovery_approval(&mut plan, run.at);
                     }
                     let needs_approval = plan.task.last_error.as_deref()
                         == Some("scheduler_authorization_changed")

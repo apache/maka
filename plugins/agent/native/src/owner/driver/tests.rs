@@ -3288,11 +3288,13 @@ mod model_recovery {
             .remove("memoryTestPeer")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let with_processes = configuration["tools"].as_array().is_some_and(|tools| {
-            tools
-                .iter()
-                .any(|tool| tool["target"]["name"] == "processes")
-        });
+        let uses_target = |name: &str| {
+            configuration["tools"]
+                .as_array()
+                .is_some_and(|tools| tools.iter().any(|tool| tool["target"]["name"] == name))
+        };
+        let with_processes = uses_target("processes");
+        let with_management = uses_target("management");
 
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
@@ -3329,6 +3331,16 @@ mod model_recovery {
                     "processes".into(),
                     Import {
                         contract: maka_workspace_api::processes::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                )
+            }))
+            .chain(with_management.then(|| {
+                (
+                    "management".into(),
+                    Import {
+                        contract:
+                            maka_plugin_core::deployment::management::deployment_manager_contract(),
                         cardinality: Cardinality::One,
                     },
                 )
@@ -3431,12 +3443,14 @@ mod model_recovery {
                         ["files", "web"]
                             .into_iter()
                             .chain(with_processes.then_some("processes"))
-                            .map(|name| {
+                            .map(|name| (name, name))
+                            .chain(with_management.then_some(("management", "Management")))
+                            .map(|(name, export)| {
                                 (
                                     name.into(),
                                     vec![Target::Instance {
                                         path: vec![name.into()],
-                                        export: name.into(),
+                                        export: export.into(),
                                     }],
                                 )
                             })
@@ -3505,6 +3519,23 @@ mod model_recovery {
             );
         }
         let mut packages = vec![agent, settings, client, files, web, receipts];
+        if with_management {
+            let manager = package(
+                "maka.tests.deployment-manager",
+                maka_host_runtime::application::management::native(),
+                BTreeMap::new(),
+            )?;
+            input.instances.insert(
+                "management".into(),
+                node(
+                    Uuid::new_v4(),
+                    manager.application_ref(),
+                    json!({}),
+                    BTreeMap::new(),
+                ),
+            );
+            packages.push(manager);
+        }
         if with_processes {
             let processes = package(
                 "maka.tests.processes",

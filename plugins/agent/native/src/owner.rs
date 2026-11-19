@@ -252,7 +252,6 @@ pub(crate) struct Owner {
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
-    discovery_reads: Vec<String>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
     pub(super) executors: crate::executor::Executors,
@@ -501,7 +500,6 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
-            discovery_reads,
         } = match prepared_tools {
             Ok(tools) => tools,
             Err(error) => {
@@ -598,7 +596,6 @@ impl Owner {
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
-            discovery_reads,
             editing_tools,
             skills,
             executors,

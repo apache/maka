@@ -374,12 +374,22 @@ export function SettingsSelect(props: {
   placeholder?: string;
   /** Drawn before the current value, such as a palette swatch. */
   preview?: JSX.Element;
+  trailing?: JSX.Element;
+  flush?: boolean;
   change(value: string): void;
 }) {
   const current = () => props.choices.find((choice) => choice.value === props.value);
   return (
-    <View style={rowStyle}>
-      <RowLine />
+    <View
+      style={
+        props.flush
+          ? { ...rowStyle, paddingHorizontal: 0, paddingVertical: 0, minHeight: terminal ? 16 : 32 }
+          : rowStyle
+      }
+    >
+      <If when={!props.flush}>
+        <RowLine />
+      </If>
       <View style={[{ flex: 1, minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
         <Text style={{ ...labelStyle, color: C.text }}>{props.label}</Text>
         <If when={props.description}>
@@ -470,6 +480,7 @@ export function SettingsSelect(props: {
           </View>
         )}
       />
+      {props.trailing}
     </View>
   );
 }
