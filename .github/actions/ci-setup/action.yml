@@ -21,6 +21,9 @@ inputs:
   role:
     description: Stable worker identity.
     required: true
+  cache_role:
+    description: Compiler cache key owner (defaults to role).
+    default: ""
   workspace:
     description: Owning Cargo workspace.
     default: root
@@ -76,6 +79,18 @@ runs:
       env:
         MAKA_CI_DEPENDENCIES: ${{ inputs.dependencies }}
       run: node scripts/ci/setup.mjs native
+    - name: Use lld linker on Linux
+      if: runner.os == 'Linux' && inputs.compile == 'true' && inputs.dependencies != ''
+      shell: bash
+      run: |
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang' >> "$GITHUB_ENV"
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+    - name: Exclude Cargo paths from Windows Defender
+      if: runner.os == 'Windows' && inputs.compile == 'true'
+      shell: pwsh
+      run: |
+        Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\target"
+        Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
     - name: Select libclang on Windows
       if: runner.os == 'Windows' && inputs.compile == 'true'
       shell: bash
@@ -86,6 +101,7 @@ runs:
       shell: bash
       env:
         MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_CACHE_ROLE: ${{ inputs.cache_role }}
         MAKA_CI_WORKSPACE: ${{ inputs.workspace }}
       run: node scripts/ci/setup.mjs keys
     - name: Cache shared Cargo downloads
@@ -126,6 +142,14 @@ runs:
           !target/**/deps/*.exe
         key: ${{ steps.keys.outputs.compiled }}
         restore-keys: ${{ steps.keys.outputs.compiled_prefix }}
+    - name: Stabilize third-party timestamps on exact cache hit
+      if: inputs.compile == 'true' && inputs.workspace == 'root' && steps.compiled.outputs.cache-hit == 'true'
+      shell: bash
+      run: node scripts/ci/setup.mjs stamp-third-party
+    - name: Clean vendored third-party outputs on fallback restore
+      if: inputs.compile == 'true' && inputs.workspace == 'root' && steps.compiled.outputs.cache-hit != 'true'
+      shell: bash
+      run: node scripts/ci/setup.mjs clean-third-party
     - name: Stage prebuilt V8 archive
       if: inputs.workspace == 'root' && inputs.role != 'replay' && steps.compiled.outputs.cache-hit != 'true'
       shell: bash
