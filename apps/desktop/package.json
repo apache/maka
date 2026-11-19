@@ -103,7 +103,7 @@
     "react-dom": "^19.3.0",
     "simple-icons": "16.32.0",
     "storybook": "^10.6.2",
-    "vite": "^8.3.1"
+    "vite": "^8.3.5"
   },
   "maka": {
     "rendererBundledDependencies": [
