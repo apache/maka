@@ -45,6 +45,7 @@ import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
   type ArtifactAuthorityStore,
   type ArtifactStoreWriteAuthority,
+  type ConversationArtifactCopyResult,
   type CreateArtifactInput,
   createSqliteArtifactStoreWriteAuthority,
   isSafeRelativeArtifactPath,
@@ -349,6 +350,56 @@ describe('SQLite Artifact store', () => {
         (await listArtifacts(store, 'session-1')).map((record) => record.id).sort(),
         ['later-artifact', 'retained-artifact'],
       );
+    });
+  });
+
+  test('a fresh conversation copy re-verifies its plain source under the writer lock', async (t) => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const source = await store.create({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        id: 'attachment',
+        name: 'requirements.txt',
+        kind: 'file',
+        source: 'user_upload',
+        mimeType: 'text/plain',
+        content: 'requirements',
+        now: 1,
+      });
+      const sourcePath = await fsPromises.realpath(join(root, 'artifacts', source.relativePath));
+      const originalOpen = fsPromises.open;
+      // The copy reads a plain source once to anchor it at selection and once
+      // more under the writer lock. Swap the bytes at exactly the locked read,
+      // so the payload changed between the two views of one selection.
+      let sourceOpens = 0;
+      const injected = t.mock.method(
+        fsPromises,
+        'open',
+        async (...args: Parameters<typeof originalOpen>) => {
+          const handle = await originalOpen(...args);
+          if (args[0] === sourcePath && ++sourceOpens === 2) {
+            await fsPromises.writeFile(sourcePath, 'REQUIREMENTS');
+          }
+          return handle;
+        },
+      );
+      syncBuiltinESMExports();
+      let copy: Promise<ConversationArtifactCopyResult> | undefined;
+      try {
+        copy = store.copyConversationArtifacts({
+          sourceSessionId: 'session-1',
+          targetSessionId: 'session-2',
+          turnIds: ['turn-1'],
+        });
+        await assert.rejects(copy, /already exists with different metadata or content/);
+      } finally {
+        injected.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.deepEqual(await listArtifacts(store, 'session-2'), []);
+      assert.deepEqual(await getArtifact(store, source.id), source);
+      assert.equal(await fsPromises.readFile(sourcePath, 'utf8'), 'REQUIREMENTS');
     });
   });
 
