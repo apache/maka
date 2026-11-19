@@ -187,6 +187,48 @@ async fn history_recognizes_hosted_search_independently_of_the_local_tool_name()
             .find(|call| call.name == "WebSearch")
             .unwrap();
         assert!(local.presentation.is_none());
+
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let history = rig
+            .driver
+            .as_ref()
+            .unwrap()
+            .state
+            .session_history(owner.run_owner(), session);
+        let stop = CancellationToken::new();
+        let frozen = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                stop.clone(),
+            )
+            .await?;
+        let chat = |position| {
+            crate::service::history::snapshot_page(
+                &frozen,
+                position,
+                true,
+                wire::HistoryView::Chat,
+                &stop,
+            )
+        };
+        let wire::Page::Ready { chunks, .. } = chat(wire::Position::Tail).await?;
+        let group = chunks
+            .last()
+            .and_then(|row| row.work.as_ref())
+            .ok_or("missing tool group")?;
+        assert_eq!(group.tools, aliases.len() as u64 + 2);
+        let wire::Page::Ready { chunks, .. } = chat(wire::Position::Row {
+            position: group.end.position.clone(),
+            field: group.end.field,
+        })
+        .await?;
+        assert_eq!(
+            chunks.first().and_then(|row| row.work.as_ref()),
+            Some(group)
+        );
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })
     .catch_unwind()

@@ -55,6 +55,12 @@ impl Handler for Agent {
         context: Context,
     ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
+        // Poll nested history readers outside the combined RPC dispatch frame.
+        if method == "history" {
+            return json_reply(async move {
+                encode(history::read(&owner, context.scope(), decode(input)?).await?)
+            });
+        }
         if method == "send" {
             return Box::pin(async move {
                 let input: Send = decode(input).map_err(HandlerError::from)?;
@@ -783,7 +789,6 @@ impl Handler for Agent {
                 "observe" => {
                     encode(history::observation(&owner, context.scope(), decode(input)?).await?)
                 }
-                "history" => encode(history::read(&owner, context.scope(), decode(input)?).await?),
                 "historyLandmarks" => {
                     encode(history::landmarks(&owner, context.scope(), decode(input)?).await?)
                 }
@@ -923,11 +928,13 @@ impl Handler for Agent {
                 _ => Err("agent_method_unavailable".into()),
             }
         };
-        Box::pin(async move {
-            let result: std::result::Result<Value, String> = result.await;
-            result.map(HandlerValue::Json).map_err(handler_error)
-        })
+        json_reply(result)
     }
+}
+fn json_reply(
+    reply: impl Future<Output = Result<Value, String>> + std::marker::Send + 'static,
+) -> BoxFuture<'static, HandlerResult> {
+    Box::pin(async move { reply.await.map(HandlerValue::Json).map_err(handler_error) })
 }
 fn decode<T: DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|_| "agent_input_invalid".into())
