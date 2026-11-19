@@ -205,6 +205,31 @@ function skipsHelperBuild(extra) {
     .some((arg) => ['--help', '-h', '--no-run'].includes(arg));
 }
 
+function helperBuildFlags(extra) {
+  const separator = extra.indexOf('--');
+  const slice = extra.slice(0, separator < 0 ? extra.length : separator);
+  const flags = [];
+  const valueFlags = new Set(['--cargo-profile', '--target', '--target-dir', '-F', '--features']);
+  const boolFlags = new Set(['--release', '-r', '--no-default-features', '--all-features']);
+  for (let i = 0; i < slice.length; i++) {
+    const arg = slice[i];
+    if (boolFlags.has(arg)) {
+      flags.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf('=');
+    const name = eq >= 0 ? arg.slice(0, eq) : arg;
+    if (valueFlags.has(name)) {
+      const mapped = name === '--cargo-profile' ? '--profile' : name;
+      if (eq >= 0) flags.push(`${mapped}=${arg.slice(eq + 1)}`);
+      else if (i + 1 < slice.length) flags.push(mapped, slice[++i]);
+    } else if (arg.startsWith('-F') && arg.length > 2) {
+      flags.push(arg);
+    }
+  }
+  return flags;
+}
+
 export function executor(
   root,
   worker = {},
@@ -234,7 +259,7 @@ export function executor(
 
   const cargoScopeFor = (id) =>
     worker.cargoScope && suites[id].workspace === worker.workspace
-      ? worker.cargoScope
+      ? [...worker.cargoScope, ...(worker.prepareTargets ?? [])]
       : suites[id].cargoArgs;
 
   function parseRuntimeHelpers(records) {
@@ -262,7 +287,7 @@ export function executor(
     return helperEnv;
   }
 
-  async function buildRuntimeHelpers(id) {
+  async function buildRuntimeHelpers(id, extra = []) {
     if (worker.cargoScope && suites[id]?.workspace === worker.workspace) {
       const output = await cargo(
         [
@@ -279,6 +304,7 @@ export function executor(
         .map((line) => JSON.parse(line));
       return parseRuntimeHelpers(records);
     }
+    const forwarded = helperBuildFlags(extra);
     const records = [];
     for (const artifact of taskHelperBinaries) {
       const output = await cargo(
@@ -290,6 +316,7 @@ export function executor(
           '--bin',
           artifact.binary,
           ...artifact.cargoArgs,
+          ...forwarded,
           '--message-format=json-render-diagnostics',
         ],
         { env: suiteEnv(id), capture: true },
@@ -307,7 +334,7 @@ export function executor(
   const nextest = async (id, noRun = false, filter = suites[id].filter ?? 'all()', extra = []) => {
     const environment = suiteEnv(id);
     if (!noRun && helperSuites.has(id) && !skipsHelperBuild(extra)) {
-      Object.assign(environment, await buildRuntimeHelpers(id));
+      Object.assign(environment, await buildRuntimeHelpers(id, extra));
     }
     return cargo(
       [
@@ -374,8 +401,11 @@ export function executor(
       ].includes(id)
     ) {
       await nextest(id, true, filter, extra);
-      if (['windows-shell', 'macos-agent-execution', 'desktop'].includes(id)) {
-        await buildRuntimeHelpers(id);
+      if (
+        ['windows-shell', 'macos-agent-execution', 'desktop'].includes(id) &&
+        !skipsHelperBuild(extra)
+      ) {
+        await buildRuntimeHelpers(id, extra);
       }
       if (id === 'windows-nsh') {
         await cargo([
@@ -483,9 +513,12 @@ export function executor(
     const rest = selectedIds.filter((id) => !scoped.includes(id));
     if (scoped.length) {
       const envSuite = scoped.includes('windows-shell') ? 'windows-shell' : scoped[0];
-      await cargo(['nextest', 'run', ...worker.cargoScope, '--no-run'], {
-        env: { ...suiteEnv(envSuite), NEXTEST_PROFILE: 'default' },
-      });
+      await cargo(
+        ['nextest', 'run', ...worker.cargoScope, ...(worker.prepareTargets ?? []), '--no-run'],
+        {
+          env: { ...suiteEnv(envSuite), NEXTEST_PROFILE: 'default' },
+        },
+      );
       const helperSuite = scoped.find((id) => helperSuites.has(id));
       if (helperSuite) await buildRuntimeHelpers(helperSuite);
     }
@@ -623,15 +656,30 @@ export function executor(
       const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-types-'));
       try {
         const output = join(temporary, 'ui-types');
-        await run(
-          join(
-            target,
-            'debug',
-            'examples',
-            process.platform === 'win32' ? 'ui_types.exe' : 'ui_types',
-          ),
-          [output],
+        const built = await cargo(
+          [
+            'build',
+            '--locked',
+            '--workspace',
+            '--example',
+            'ui_types',
+            '--message-format=json-render-diagnostics',
+          ],
+          { capture: true },
         );
+        const uiTypes = built
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith('{'))
+          .map((line) => JSON.parse(line))
+          .filter(
+            (record) =>
+              record.reason === 'compiler-artifact' &&
+              record.target?.name === 'ui_types' &&
+              record.target.kind?.includes('example') &&
+              typeof record.executable === 'string',
+          );
+        if (uiTypes.length !== 1) throw new Error('Expected one ui_types example executable');
+        await run(uiTypes[0].executable, [output]);
         await node(['node_modules/typescript/bin/tsc', '-p', join(output, 'tsconfig.json')]);
       } finally {
         rmSync(temporary, { recursive: true, force: true });

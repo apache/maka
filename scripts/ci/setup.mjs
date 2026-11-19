@@ -333,9 +333,9 @@ async function main(action) {
         readFileSync('.github/actions/ci-cache/action.yml'),
       ]),
     );
-    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;
+    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}-${thirdPartyTree}`;
     output({
-      compiled: `${compiled}-${lock}-${hash(thirdPartyTree + hash(readFileSync(new URL(import.meta.url))))}`,
+      compiled: `${compiled}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
       compiled_prefix: `${compiled}-`,
       downloads: `cargo-sources-${workspace}-${lock}`,
       downloads_prefix: `cargo-sources-${workspace}-`,

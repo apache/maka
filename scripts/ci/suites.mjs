@@ -43,6 +43,12 @@ const bundledPackages = Object.values(
   ),
 );
 
+const sharedProductContractInputs = [
+  'products/maka/bundle',
+  'packages/plugin-sdk',
+  'plugins/shared',
+  'plugins/application/gateway',
+];
 export const productInputs = [
   ...bundledPackages,
   'products/maka/bundle',
@@ -52,6 +58,9 @@ export const productInputs = [
   'scripts/plugins',
   'scripts/rust/product.mjs',
 ];
+const uiProductInputs = productInputs.filter(
+  (entry) => !sharedProductContractInputs.includes(entry),
+);
 const distributionInputs = [
   'scripts/asf-source-release.mjs',
   'scripts/rust/build-v8.mjs',
@@ -108,7 +117,16 @@ export const suites = {
     cargoArgs: ['--locked', '--workspace'],
     profile: 'ci',
     extraInputPackages: [
-      { inputs: productInputs, packages: productConsumers },
+      {
+        inputs: sharedProductContractInputs,
+        packages: [
+          ...productConsumers,
+          'maka-agent-native',
+          'maka-skills-core',
+          'maka-skills-native',
+        ],
+      },
+      { inputs: uiProductInputs, packages: productConsumers },
       { inputs: skillInputs, packages: skillConsumers },
       { inputs: distributionInputs, packages: distributionConsumers },
       {
@@ -258,7 +276,7 @@ export const suites = {
   },
   'macos-nsh': {
     workspace: 'nsh',
-    packages: ['nsh-platform-apple', 'nsh-platform-macos'],
+    packages: ['nsh-platform-apple', 'nsh-platform-macos', 'nsh-cli'],
     cargoArgs: [
       '--locked',
       '--manifest-path',
@@ -320,7 +338,7 @@ export const suites = {
     packages: ['maka-skills-native'],
     cargoArgs: ['--locked', '-p', 'maka-skills-native', '--lib'],
     filter: 'package(=maka-skills-native) & kind(lib)',
-    extraInputs: bundledSkillInputs,
+    extraInputs: [...bundledSkillInputs, ...sharedProductContractInputs],
   },
   'windows-ci': {
     workspace: 'root',
@@ -383,7 +401,7 @@ export const suites = {
       'binary_id(=maka-cli::external_jobs)',
       'binary_id(=maka-cli::producer_reopen)',
     ].join(' | '),
-    extraInputs: [externalCodexFixture, ...skillInputs],
+    extraInputs: [externalCodexFixture, 'products/maka/bundle', ...skillInputs],
   },
   'windows-shell': {
     workspace: 'root',
@@ -500,6 +518,18 @@ export const workers = [
   {
     id: 'native-macos-agent',
     suites: ['macos-agent-execution'],
+    prepareTargets: [
+      '--test',
+      'mainline_reopen',
+      '--test',
+      'journal_recovery',
+      '--test',
+      'codemode_reopen',
+      '--test',
+      'external_jobs',
+      '--test',
+      'producer_reopen',
+    ],
     cargoScope: [
       '--locked',
       '-p',
@@ -569,6 +599,7 @@ export const workers = [
     id: 'native-windows-desktop-2',
     suites: ['desktop'],
     desktopPartition: 'count:2/2',
+    prepareTargets: ['--test', 'native-desktop'],
     cargoScope: [
       '--locked',
       '-p',

@@ -120,9 +120,19 @@ function suiteScopedPackages(suite, path, owner) {
   return matched;
 }
 
-function isScopedNonRustInput(path, owner) {
+const scopedShellOwners = new Set([
+  'maka-workbench',
+  'maka-cli',
+  'maka-terminal-shell',
+  'maka-desktop-shell',
+  'maka-ui-build',
+]);
+
+function isScopedNonRustInput(path, owner, packages) {
+  const pkgName = packages.get(owner)?.name;
   return (
     !path.endsWith('.rs') &&
+    scopedShellOwners.has(pkgName) &&
     Object.values(suites).some((suite) => suiteScopedPackages(suite, path, owner).length > 0)
   );
 }
@@ -176,7 +186,7 @@ export function createPlan({
     const seeds = new Set();
     for (const path of inputs) {
       const owner = owners.get(path);
-      if (owner && !isScopedNonRustInput(path, owner)) seeds.add(owner);
+      if (owner && !isScopedNonRustInput(path, owner, packages)) seeds.add(owner);
       const extra = Object.values(suites).some(
         (suite) =>
           suiteExtraInput(suite, path, owner) || suiteScopedPackages(suite, path, owner).length > 0,
