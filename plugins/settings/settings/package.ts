@@ -87,7 +87,17 @@ export default {
         },
         plugins: {
           kind: 'settings',
-          title: { fallback: 'Plugins', translations: { 'zh-CN': '插件', 'zh-TW': '外掛' } },
+          title: {
+            fallback: 'Installed plugins',
+            translations: { 'zh-CN': '已安装插件', 'zh-TW': '已安裝外掛' },
+          },
+        },
+        marketplace: {
+          kind: 'settings',
+          title: {
+            fallback: 'Plugin marketplace',
+            translations: { 'zh-CN': '插件市场', 'zh-TW': '外掛市集' },
+          },
         },
         appearanceTextSize: {
           kind: 'command',

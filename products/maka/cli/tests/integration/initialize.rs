@@ -298,6 +298,7 @@ async fn public_init_persists_connections_and_default_target_from_stdin() {
 
     let observed = store
         .observe_selected_model(ModelSelection {
+            service_tier: None,
             connection_id: primary.connection_id.clone(),
             model_id: "eval-model".into(),
         })

@@ -1356,6 +1356,7 @@ export const conversationMessages = {
   ],
   'Search notice': ['Search notice', '搜索提示', '搜尋提示'],
   'Search pattern': ['Search pattern', '搜索模式', '搜尋模式'],
+  'Search failed': ['Search failed', '搜索失败', '搜尋失敗'],
   'Search the web': ['Search the web', '搜索网页', '搜尋網頁'],
   'Select a conversation to browse its workspace.': [
     'Select a conversation to browse its workspace.',

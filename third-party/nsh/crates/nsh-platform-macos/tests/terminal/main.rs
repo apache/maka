@@ -36,6 +36,10 @@ fn main() -> std::process::ExitCode {
             cases::focus_admission,
         ),
         (
+            "retained_image_replacement_is_atomic_and_clear_fences_late_decode",
+            cases::retained_image,
+        ),
+        (
             "delayed_native_image_invalidates_idle_capture_without_input_or_js",
             cases::delayed_image,
         ),

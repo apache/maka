@@ -124,6 +124,9 @@ export type Row = {
   model?: HistoryModel;
   finalOutput?: boolean;
   finalAnswer?: boolean;
+  sourceCitation?: boolean;
+  citation?: AgentHistoryChunk['citation'];
+  citationAnchor?: AgentHistoryChunk['citationAnchor'];
   compaction?: HistoryCompaction;
   foldedWork?: AgentHistoryChunk['foldedWork'];
   work?: AgentHistoryChunk['work'];
@@ -157,6 +160,14 @@ export function stableRowId(
 
 export function activityMessage(origin: MessageOrigin | null | undefined): boolean {
   return origin?.kind === 'automation' || senderSession(origin) !== null;
+}
+
+/** Expanded rows can come from a newer read than the surrounding window. */
+export function historyRowThrough(
+  row: Pick<Row, 'metadataThrough'>,
+  windowThrough: number,
+): number {
+  return Math.max(row.metadataThrough ?? 0, windowThrough);
 }
 
 export function historyFollowTail(
@@ -316,6 +327,9 @@ export function historyMetadata(
     attemptId: chunk.modelPart?.attemptId,
     finalOutput: chunk.finalOutput,
     finalAnswer: chunk.finalAnswer,
+    sourceCitation: chunk.sourceCitation,
+    citation: chunk.citation ?? previous?.citation,
+    citationAnchor: chunk.citationAnchor ?? previous?.citationAnchor,
     compaction: chunk.compaction ?? undefined,
     foldedWork: chunk.foldedWork ?? previous?.foldedWork,
     work: chunk.work ?? undefined,
@@ -386,6 +400,8 @@ export function mergeHistoryPage(
       ...(newerMetadata
         ? {
             ...historyMetadata(previous, previousThrough, previous),
+            citation: previous.citation ?? chunk.citation,
+            citationAnchor: previous.citationAnchor ?? chunk.citationAnchor,
             ...(chunk.offset === 0 && previous.attachments === undefined
               ? { attachments: chunk.attachments ?? [] }
               : {}),

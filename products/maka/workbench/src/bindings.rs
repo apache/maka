@@ -20,7 +20,9 @@
 //! The application receives this already connected Host object; it cannot choose a Root.
 
 mod assets;
+mod community;
 mod diagrams;
+mod dictation;
 mod file_search;
 mod files;
 mod links;
@@ -28,7 +30,7 @@ mod mutation;
 mod permission_window;
 mod plugins;
 mod quick_tools;
-mod settings;
+mod resources;
 mod system_permission;
 mod terminal;
 mod terminal_grid;
@@ -269,8 +271,11 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 pub fn ui_registry() -> Registry {
     let mut registry = Registry::ui_set("maka/host");
     registry.register::<crate::composer_input::ComposerInput>();
+    registry.register::<crate::live_image::LiveImage>();
+    registry.register::<crate::composer_input::file::MarkdownFileEditor>();
     registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
+    registry.class::<dictation::MessageDictation>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
@@ -369,6 +374,17 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn community_plugins(
+        this: Instance<Self>,
+        query: String,
+        page: u32,
+        locale: String,
+    ) -> Result<community::Page, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, community::search(query, page, locale)).await
+    }
+
     pub async fn installed_applications(this: Instance<Self>) -> Result<Vec<String>, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
@@ -398,6 +414,21 @@ impl ApplicationHost {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
         execute(owner, file_search::search(query, roots)).await
+    }
+
+    pub fn dictation_storage_prefix(&self) -> String {
+        format!("dictation.{}.", self.owner.client.source().state_domain)
+    }
+
+    pub fn legacy_dictation_key(&self) -> bool {
+        dictation::legacy_key()
+    }
+
+    pub fn message_dictation(&self) -> Result<Instance<dictation::MessageDictation>, String> {
+        Ok(Instance::new(dictation::MessageDictation::new(
+            self.owner.clone(),
+            self.client.clone(),
+        )?))
     }
 
     pub async fn open_local_path(this: Instance<Self>, path: String) -> Result<(), String> {
@@ -502,13 +533,8 @@ impl ApplicationHost {
         Ok(())
     }
 
-    /// Resolve the original Markdown target once. Workspace bytes remain with
-    /// the Host; HTTP(S) images use NSH's native loader and bundle permissions.
-    pub fn markdown_image_source(
-        &self,
-        target: String,
-    ) -> Result<links::MarkdownImageSource, String> {
-        links::markdown_image(&target)
+    pub fn markdown_link(&self, target: String) -> Result<links::MarkdownLink, String> {
+        links::markdown_link(&target)
     }
 
     /// Convert diagram labels to paths locally; NSH keeps its existing SVG loader.
@@ -523,16 +549,10 @@ impl ApplicationHost {
         .await
     }
 
-    /// Hand an HTTP(S) link to this client's system browser, or return an exact
-    /// workspace-relative path and parent for the original session's reader.
-    /// This does not read files or execute anything on the connected Host.
-    pub async fn open_link(
-        this: Instance<Self>,
-        target: String,
-    ) -> Result<Option<links::WorkspaceLink>, String> {
+    pub async fn open_browser(this: Instance<Self>, target: String) -> Result<(), String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        links::open(owner, target).await
+        links::open_browser(owner, target).await
     }
 
     /// Display only. Keep the original opaque WorkspacePath for every Host call.
@@ -950,13 +970,19 @@ impl ApplicationHost {
         this: Instance<Self>,
         method: String,
         input: JsonValue,
+        content: Option<String>,
     ) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
             let client = source.resolve(&owner).await?;
             let id = Uuid::new_v4();
-            let mutation = client.control(id, &method, input).await?;
+            let resources = content
+                .map(|text| resources::text("content", text))
+                .unwrap_or_default();
+            let mutation = client
+                .control_with_resources(id, &method, input, resources)
+                .await?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))
@@ -990,7 +1016,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<JsonValue, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
@@ -1019,7 +1045,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<Instance<OriginalMutation>, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = execute(owner.clone(), async move {

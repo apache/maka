@@ -418,6 +418,8 @@ futures@0.3.34		X										X
 gdk-pixbuf-sys@0.22.9												X							
 gdk-pixbuf@0.22.0												X							
 gdk4-sys@0.11.5												X							
+gdk4-x11-sys@0.11.5												X							
+gdk4-x11@0.11.5												X							
 gdk4@0.11.5												X							
 generic-array@0.14.7												X							
 get-size-derive2@0.11.1		X										X							
@@ -732,6 +734,7 @@ memoffset@0.6.5												X
 memoffset@0.9.1												X							
 meval@0.2.0												X						X	
 micromap@0.3.0												X							
+mime_guess@2.0.5												X							
 mime@0.3.17		X										X							
 minicbor-serde@0.7.2							X												
 minicbor@2.3.1							X												
@@ -1315,6 +1318,7 @@ typed-path@0.13.0		X										X
 typedmap@0.6.0		X										X							
 typenum@1.20.1		X										X							
 uds_windows@1.2.1												X							
+unicase@2.10.0		X										X							
 unicode_names2_generator@1.3.0		X										X							
 unicode_names2@1.3.0		X										X					X		
 unicode-bidi-mirroring@0.4.0		X										X							

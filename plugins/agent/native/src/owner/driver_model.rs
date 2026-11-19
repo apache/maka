@@ -92,7 +92,12 @@ pub(super) struct DriverModel {
         tokio::sync::watch::Sender<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
 }
 
-type ProjectedHistory = (Option<String>, Vec<FrozenCellKnowledge>);
+#[derive(Default)]
+struct ReplayedTail {
+    cells: Vec<FrozenCellKnowledge>,
+    compaction_request: Option<ToolKey>,
+}
+type ProjectedHistory = (Option<String>, ReplayedTail);
 
 struct ProjectedStepInput<'a> {
     system: Option<SystemPrompt>,
@@ -100,7 +105,7 @@ struct ProjectedStepInput<'a> {
     source_evidence: RequestSource,
     reader: HistorySource<'a>,
     previous_checkpoint_id: Option<String>,
-    recovered_cells: Vec<FrozenCellKnowledge>,
+    tail: ReplayedTail,
 }
 
 pub(super) struct PreparedContinuation {
@@ -282,6 +287,26 @@ struct ItemContinuation {
 }
 
 impl DriverModel {
+    async fn prepare_summary_input(
+        &self,
+        prompt: &mut maka_agent_engine::prepared_prompt::PreparedPrompt,
+        model: &maka_agent_engine::PreparedModel,
+        language: maka_agent_facts::language::Language,
+    ) -> Result<(), RunError> {
+        if model.provider.capabilities.native_compaction != Some(true) {
+            *prompt = maka_agent_engine::context_input::fit_prepared_summary(
+                prompt,
+                maka_agent_engine::context_input::summary_budget(model.context.as_ref()),
+                language,
+                &self.cancellation,
+            )
+            .await?;
+        }
+        prompt
+            .prepare_media(&model.provider, &self.cancellation)
+            .await
+    }
+
     pub(super) fn prepare_step<'a>(
         &'a self,
         view: &'a RunView,
@@ -407,7 +432,11 @@ impl DriverModel {
             source_evidence,
             reader,
             previous_checkpoint_id,
-            recovered_cells,
+            tail:
+                ReplayedTail {
+                    cells: recovered_cells,
+                    compaction_request,
+                },
         } = self
             .project_step_input(
                 view,
@@ -419,124 +448,136 @@ impl DriverModel {
             )
             .await?;
         let reader = &reader;
-        let mut steering_refs = Vec::new();
-        let mut steering_contents = Vec::new();
-        let mut steering_evidence = Vec::new();
-        for entry in cut.as_ref().into_iter().flat_map(|cut| &cut.entries) {
-            let request = &entry.request;
-            if request.spec.workspace != view.spec.workspace
-                || request.spec.permission_basis != view.spec.permission_basis
-            {
-                return Err(RunError::InvalidInput(
-                    "steering workspace basis changed".into(),
-                ));
-            }
-            let source_bytes = queue
-                .content(
-                    view.spec.session_id.clone(),
-                    request.id.clone(),
-                    request.source.clone(),
-                )
-                .await?;
-            let input_bytes = queue
-                .content(
-                    view.spec.session_id.clone(),
-                    request.id.clone(),
-                    request.spec.input.clone(),
-                )
-                .await?;
-            let resource_bytes = queue
-                .content(
-                    view.spec.session_id.clone(),
-                    request.id.clone(),
-                    request.resources.clone(),
-                )
-                .await?;
-            let source: maka_agent_facts::message::RootSourceMessage =
-                serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
-            source
-                .validate()
-                .map_err(|error| RunError::InvalidInput(error.into()))?;
-            let steering_input: RunInput =
-                serde_json::from_slice(&input_bytes).map_err(RunError::Json)?;
-            let RunInput::Message { content, .. } = &steering_input else {
-                return Err(RunError::InvalidInput(
-                    "steering is not message input".into(),
-                ));
-            };
-            if content != &source.message.content {
-                return Err(RunError::InvalidInput(
-                    "steering input and original source differ".into(),
-                ));
-            }
-            let resources: Value =
-                serde_json::from_slice(&resource_bytes).map_err(RunError::Json)?;
-            if resources["attachments"]
-                != serde_json::to_value(&content.attachments).map_err(RunError::Json)?
-            {
-                return Err(RunError::InvalidInput(
-                    "steering immutable resources differ from input".into(),
-                ));
-            }
-            messages
-                .append(
-                    preparation::project_input(
-                        &self.state.artifacts(),
-                        &maka_agent_state::artifacts::SessionScope {
-                            owner: view.spec.owner.clone(),
-                            session: view.spec.session_id.clone(),
-                        },
-                        content,
-                        view.spec.language,
-                        model.supports_vision,
-                        true,
-                        source.message.origin.as_ref(),
-                        &self.resources,
-                        &self.cancellation,
-                    )
-                    .await?,
-                )
-                .await?;
-            merge_skill(&mut system, content)?;
-            steering_evidence.push(json!({"input": steering_input, "resources": resources}));
-            steering_refs.push(request.source.clone());
-            steering_contents.push(ContentBlob::new(source_bytes));
-        }
-        let steering = cut
-            .as_ref()
-            .filter(|cut| !cut.entries.is_empty())
-            .map(|cut| maka_agent_state::queue::Consume {
-                session: view.spec.session_id.clone(),
-                expected_revision: cut.revision,
-                requests: cut
-                    .entries
-                    .iter()
-                    .map(|entry| entry.request.id.clone())
-                    .collect(),
-            });
-        let notification_through = view.revision;
-        let mut notification_sources = Vec::with_capacity(notifications.len());
-        for notice in &notifications {
-            let knowledge = FrozenCellKnowledge::capture(view, notice.cell)?;
-            let dependencies = self
-                .append_notification(
-                    reader,
-                    view,
-                    notification_through,
-                    notice,
-                    &knowledge,
-                    model.supports_vision,
-                    &mut messages,
-                )
-                .await?;
-            notification_sources.push(FrozenNotification {
-                cell: notice.cell,
-                id: notice.id,
-                content: notice.content.clone(),
-                dependencies,
-                knowledge,
-            });
-        }
+        let (steering_refs, steering_contents, steering_evidence, steering, notification_sources) =
+            Box::pin(async {
+                let mut steering_refs = Vec::new();
+                let mut steering_contents = Vec::new();
+                let mut steering_evidence = Vec::new();
+                for entry in cut.as_ref().into_iter().flat_map(|cut| &cut.entries) {
+                    let request = &entry.request;
+                    if request.spec.workspace != view.spec.workspace
+                        || request.spec.permission_basis != view.spec.permission_basis
+                    {
+                        return Err(RunError::InvalidInput(
+                            "steering workspace basis changed".into(),
+                        ));
+                    }
+                    let source_bytes = queue
+                        .content(
+                            view.spec.session_id.clone(),
+                            request.id.clone(),
+                            request.source.clone(),
+                        )
+                        .await?;
+                    let input_bytes = queue
+                        .content(
+                            view.spec.session_id.clone(),
+                            request.id.clone(),
+                            request.spec.input.clone(),
+                        )
+                        .await?;
+                    let resource_bytes = queue
+                        .content(
+                            view.spec.session_id.clone(),
+                            request.id.clone(),
+                            request.resources.clone(),
+                        )
+                        .await?;
+                    let source: maka_agent_facts::message::RootSourceMessage =
+                        serde_json::from_slice(&source_bytes).map_err(RunError::Json)?;
+                    source
+                        .validate()
+                        .map_err(|error| RunError::InvalidInput(error.into()))?;
+                    let steering_input: RunInput =
+                        serde_json::from_slice(&input_bytes).map_err(RunError::Json)?;
+                    let RunInput::Message { content, .. } = &steering_input else {
+                        return Err(RunError::InvalidInput(
+                            "steering is not message input".into(),
+                        ));
+                    };
+                    if content != &source.message.content {
+                        return Err(RunError::InvalidInput(
+                            "steering input and original source differ".into(),
+                        ));
+                    }
+                    let resources: Value =
+                        serde_json::from_slice(&resource_bytes).map_err(RunError::Json)?;
+                    if resources["attachments"]
+                        != serde_json::to_value(&content.attachments).map_err(RunError::Json)?
+                    {
+                        return Err(RunError::InvalidInput(
+                            "steering immutable resources differ from input".into(),
+                        ));
+                    }
+                    messages
+                        .append(
+                            preparation::project_input(
+                                &self.state.artifacts(),
+                                &maka_agent_state::artifacts::SessionScope {
+                                    owner: view.spec.owner.clone(),
+                                    session: view.spec.session_id.clone(),
+                                },
+                                content,
+                                view.spec.language,
+                                model.supports_vision,
+                                true,
+                                source.message.origin.as_ref(),
+                                &self.resources,
+                                &self.cancellation,
+                            )
+                            .await?,
+                        )
+                        .await?;
+                    merge_skill(&mut system, content)?;
+                    steering_evidence
+                        .push(json!({"input": steering_input, "resources": resources}));
+                    steering_refs.push(request.source.clone());
+                    steering_contents.push(ContentBlob::new(source_bytes));
+                }
+                let steering = cut
+                    .as_ref()
+                    .filter(|cut| !cut.entries.is_empty())
+                    .map(|cut| maka_agent_state::queue::Consume {
+                        session: view.spec.session_id.clone(),
+                        expected_revision: cut.revision,
+                        requests: cut
+                            .entries
+                            .iter()
+                            .map(|entry| entry.request.id.clone())
+                            .collect(),
+                    });
+                let notification_through = view.revision;
+                let mut notification_sources = Vec::with_capacity(notifications.len());
+                for notice in &notifications {
+                    let knowledge = FrozenCellKnowledge::capture(view, notice.cell)?;
+                    let dependencies = self
+                        .append_notification(
+                            reader,
+                            view,
+                            notification_through,
+                            notice,
+                            &knowledge,
+                            model.supports_vision,
+                            &mut messages,
+                        )
+                        .await?;
+                    notification_sources.push(FrozenNotification {
+                        cell: notice.cell,
+                        id: notice.id,
+                        content: notice.content.clone(),
+                        dependencies,
+                        knowledge,
+                    });
+                }
+                Ok::<_, RunError>((
+                    steering_refs,
+                    steering_contents,
+                    steering_evidence,
+                    steering,
+                    notification_sources,
+                ))
+            })
+            .await?;
         let purpose = if summary {
             ModelPurpose::Summary
         } else {
@@ -596,15 +637,19 @@ impl DriverModel {
             None
         };
         let rendered = Arc::new(rendered);
-        let mut prompt = preparation::prepare_prompt(
-            messages,
-            &settings,
-            &self.cancellation,
-            Some(rendered.clone()),
-            purpose,
-            None,
-        )
-        .await?;
+        let mut prompt = if purpose == ModelPurpose::Summary {
+            Box::pin(messages.finish()).await?
+        } else {
+            Box::pin(preparation::prepare_prompt(
+                messages,
+                &settings,
+                &self.cancellation,
+                Some(rendered.clone()),
+                purpose,
+                None,
+            ))
+            .await?
+        };
         let continuation = match &input {
             RunInput::Continuation { claim, .. } if view.steps.is_empty() => Some(claim),
             _ => None,
@@ -615,11 +660,14 @@ impl DriverModel {
                 .filter(|claim| claim.replay.uses_logical_prompt())
                 .map(|_| maka_agent_engine::digest(&prompt.model().identity()))
                 .transpose()?;
-            let covered_prefix=if purpose==ModelPurpose::Summary{
-                let covered=CoveredPrefix::capture(&prompt).await?;
-                prompt.initialize_overlays(Some(rendered),true,instruction).await?;
+            let covered_prefix = if purpose == ModelPurpose::Summary {
+                let covered = CoveredPrefix::capture(&prompt).await?;
+                prompt.initialize_overlays(Some(rendered), true, instruction).await?;
+                self.prepare_summary_input(&mut prompt, model, view.spec.language).await?;
                 Some(covered)
-            }else{None};
+            } else {
+                None
+            };
             preparation::prepare_wire(
                 &settings,
                 &mut prompt,
@@ -628,23 +676,6 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            if purpose == ModelPurpose::Summary && !native_compaction {
-                prompt = maka_agent_engine::context_input::fit_prepared_summary(
-                    &prompt,
-                    maka_agent_engine::context_input::summary_budget(context),
-                    view.spec.language,
-                    &self.cancellation,
-                )
-                .await?;
-                preparation::prepare_wire(
-                    &settings,
-                    &mut prompt,
-                    &definitions,
-                    model.main_output_limit,
-                    &self.cancellation,
-                )
-                .await?;
-            }
             let calibration = if purpose==ModelPurpose::Main {
                 self.calibration(view,&source_evidence,model,previous_checkpoint_id.as_deref()).await?
             }else{None};
@@ -740,8 +771,12 @@ impl DriverModel {
                 Some(catalog) => driver.tool_contracts(catalog, &definitions)?,
                 None => std::collections::BTreeMap::new(),
             };
+            let compaction_request = compaction_request.filter(|key| !summary && matches!(mode,
+                Preparation::ToolContinuation { attempt } | Preparation::Notifications { attempt } | Preparation::Steering { attempt } if attempt == key.attempt
+            ));
             let provenance = ContentBlob::json(&json!({
                 "inputDigest": request.input_digest,
+                "compactionRequest": compaction_request,
                 "toolContracts": tool_contracts,
                 "routeIdentity": request.route_identity,
                 "modelInputPolicy": {"vision": model.supports_vision, "imageInput": model.provider.image_input},
@@ -919,7 +954,7 @@ impl DriverModel {
             )
             .await?;
             let previous_checkpoint_id;
-            let mut recovered_cells = Vec::new();
+            let mut tail = ReplayedTail::default();
             let mut has_main_attempt = false;
             if summary {
                 for attempt in view.attempts.values() {
@@ -978,7 +1013,7 @@ impl DriverModel {
                 source_evidence.current = before;
                 source_evidence.current_revision = 0;
             } else if view.baseline.is_some() {
-                (previous_checkpoint_id, recovered_cells) = self
+                (previous_checkpoint_id, tail) = self
                     .project_history(
                         target,
                         reader,
@@ -989,14 +1024,14 @@ impl DriverModel {
                     )
                     .await?;
             } else if let Some((after, request)) = self.latest_replan(reader, view).await? {
-                let (source, baseline) = self
-                    .request_base(target, reader, view.run, &request, &mut messages)
-                    .await?;
+                let (source, baseline) =
+                    Box::pin(self.request_base(target, reader, view.run, &request, &mut messages))
+                        .await?;
                 source_evidence.cut = source.cut;
                 system = baseline;
                 previous_checkpoint_id =
                     self.request_checkpoint(reader, view.run, &request).await?;
-                recovered_cells = self
+                tail = self
                     .semantic_tail(
                         target,
                         reader,
@@ -1033,16 +1068,16 @@ impl DriverModel {
                         .await?
                     }
                 };
-                self.project_message_input(
+                Box::pin(self.project_message_input(
                     reader,
                     view,
                     input,
                     model.supports_vision,
                     false,
                     &mut messages,
-                )
+                ))
                 .await?;
-                recovered_cells = self
+                tail = self
                     .semantic_tail(
                         target,
                         reader,
@@ -1061,7 +1096,7 @@ impl DriverModel {
                 source_evidence,
                 reader: captured,
                 previous_checkpoint_id,
-                recovered_cells,
+                tail,
             })
         })
     }
@@ -1559,15 +1594,11 @@ impl DriverModel {
         messages: &'a mut preparation::PromptBuilder,
     ) -> BoxFuture<'a, Result<ProjectedHistory, RunError>> {
         Box::pin(async move {
-            #[expect(
-                clippy::large_enum_variant,
-                reason = "Replay resolves one history base at a time and keeps that captured base inline"
-            )]
             enum Base {
                 Request {
                     sequence: u64,
                     run: RunId,
-                    request: RequestSpec,
+                    request: Box<RequestSpec>,
                 },
                 Compacted {
                     id: FactId,
@@ -1584,119 +1615,143 @@ impl DriverModel {
                 covered: u64,
                 order: std::collections::BTreeMap<u64, (RunId, u64)>,
             }
-            let mut current = std::borrow::Cow::Borrowed(reader);
-            let mut frames = Vec::new();
-            let (mut covered, previous_checkpoint_id, mut order) = loop {
-                let reader = current.as_ref();
-                if let Some(snapshot) = reader.as_snapshot() {
-                    let manifest = snapshot.manifest().await?;
-                    manifest
-                        .validate()
-                        .map_err(|error| RunError::InvalidInput(error.into()))?;
-                    if matches!(
-                        manifest.origin,
-                        maka_agent_facts::history_snapshot::Origin::Imported { .. }
-                    ) {
-                        self.imported_messages(
-                            target,
-                            snapshot,
-                            reader.source_path(),
-                            vision,
-                            language,
-                            messages,
-                        )
-                        .await?;
-                        break (None, None, std::collections::BTreeMap::new());
-                    }
-                }
-                let mut base = None;
-                let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
-                let mut after = 0;
-                loop {
-                    let (items, next) = reader.page(after, 256).await?;
-                    for item in items {
-                        match &item.recorded.fact {
-                            Fact::RunAdmitted { .. } => {
-                                let source = reader.run_source(item.recorded.run).await?;
-                                if !matches!(source.spec.origin, RunOrigin::Local) {
-                                    if !matches!(source.spec.backend, BackendSpec::Historical {}) {
-                                        return Err(unsupported("historical-installation-backend"));
-                                    }
-                                    base = Some(Base::Snapshot {
-                                        sequence: item.sequence,
-                                        run: item.recorded.run,
-                                    });
-                                }
+            let (mut current, mut frames, mut covered, previous_checkpoint_id, mut order) =
+                Box::pin(async {
+                    let mut current = std::borrow::Cow::Borrowed(reader);
+                    let mut frames = Vec::new();
+                    loop {
+                        let reader = current.as_ref();
+                        if let Some(snapshot) = reader.as_snapshot() {
+                            let manifest = snapshot.manifest().await?;
+                            manifest
+                                .validate()
+                                .map_err(|error| RunError::InvalidInput(error.into()))?;
+                            if matches!(
+                                manifest.origin,
+                                maka_agent_facts::history_snapshot::Origin::Imported { .. }
+                            ) {
+                                self.imported_messages(
+                                    target,
+                                    snapshot,
+                                    reader.source_path(),
+                                    vision,
+                                    language,
+                                    messages,
+                                )
+                                .await?;
+                                return Ok((
+                                    current,
+                                    frames,
+                                    None,
+                                    None,
+                                    std::collections::BTreeMap::new(),
+                                ));
                             }
-                            Fact::StepPrepared { step, .. } => {
-                                let request = reader.request(item.recorded.run, *step).await?;
-                                if !request.adjudications.is_empty() {
-                                    base = Some(Base::Request {
-                                        sequence: item.sequence,
-                                        run: item.recorded.run,
-                                        request,
-                                    });
-                                }
-                            }
-                            Fact::ContextCompacted { baseline } => {
-                                base = Some(Base::Compacted {
-                                    id: item.recorded.id,
-                                    run: item.recorded.run,
-                                    baseline: baseline.clone(),
-                                })
-                            }
-                            _ => {}
                         }
-                        order
-                            .entry(item.admission_sequence)
-                            .and_modify(|entry| entry.1 = item.recorded.revision)
-                            .or_insert((item.recorded.run, item.recorded.revision));
-                    }
-                    let Some(next) = next else {
-                        break;
-                    };
-                    after = next;
-                }
-                let (covered, previous_checkpoint_id) = match base {
-                    None => (None, None),
-                    Some(Base::Request {
-                        sequence,
-                        run,
-                        request,
-                    }) => {
-                        self.request_base(target, reader, run, &request, messages)
-                            .await?;
-                        (
-                            Some(sequence),
-                            self.request_checkpoint(reader, run, &request).await?,
-                        )
-                    }
-                    Some(Base::Compacted { id, run, baseline }) => {
-                        let capture = self
-                            .append_compacted(reader, run, &baseline, target, language, messages)
-                            .await?;
-                        (Some(capture.current.through_sequence), Some(id.to_string()))
-                    }
-                    Some(Base::Snapshot { sequence, run }) => {
-                        let nested = reader.nested(run).await?;
-                        frames.push(Frame {
-                            reader: current,
-                            covered: sequence,
+                        let mut base = None;
+                        let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
+                        let mut after = 0;
+                        loop {
+                            let (items, next) = reader.page(after, 256).await?;
+                            for item in items {
+                                match &item.recorded.fact {
+                                    Fact::RunAdmitted { .. } => {
+                                        let source = reader.run_source(item.recorded.run).await?;
+                                        if !matches!(source.spec.origin, RunOrigin::Local) {
+                                            if !matches!(
+                                                source.spec.backend,
+                                                BackendSpec::Historical {}
+                                            ) {
+                                                return Err(unsupported(
+                                                    "historical-installation-backend",
+                                                ));
+                                            }
+                                            base = Some(Base::Snapshot {
+                                                sequence: item.sequence,
+                                                run: item.recorded.run,
+                                            });
+                                        }
+                                    }
+                                    Fact::StepPrepared { step, .. } => {
+                                        let request =
+                                            reader.request(item.recorded.run, *step).await?;
+                                        if !request.adjudications.is_empty() {
+                                            base = Some(Base::Request {
+                                                sequence: item.sequence,
+                                                run: item.recorded.run,
+                                                request: Box::new(request),
+                                            });
+                                        }
+                                    }
+                                    Fact::ContextCompacted { baseline } => {
+                                        base = Some(Base::Compacted {
+                                            id: item.recorded.id,
+                                            run: item.recorded.run,
+                                            baseline: baseline.clone(),
+                                        })
+                                    }
+                                    _ => {}
+                                }
+                                order
+                                    .entry(item.admission_sequence)
+                                    .and_modify(|entry| entry.1 = item.recorded.revision)
+                                    .or_insert((item.recorded.run, item.recorded.revision));
+                            }
+                            let Some(next) = next else {
+                                break;
+                            };
+                            after = next;
+                        }
+                        let (covered, previous_checkpoint_id) = match base {
+                            None => (None, None),
+                            Some(Base::Request {
+                                sequence,
+                                run,
+                                request,
+                            }) => {
+                                self.request_base(target, reader, run, &request, messages)
+                                    .await?;
+                                (
+                                    Some(sequence),
+                                    self.request_checkpoint(reader, run, &request).await?,
+                                )
+                            }
+                            Some(Base::Compacted { id, run, baseline }) => {
+                                let capture = self
+                                    .append_compacted(
+                                        reader, run, &baseline, target, language, messages,
+                                    )
+                                    .await?;
+                                (Some(capture.current.through_sequence), Some(id.to_string()))
+                            }
+                            Some(Base::Snapshot { sequence, run }) => {
+                                let nested = reader.nested(run).await?;
+                                frames.push(Frame {
+                                    reader: current,
+                                    covered: sequence,
+                                    order,
+                                });
+                                current = std::borrow::Cow::Owned(nested);
+                                continue;
+                            }
+                        };
+                        return Ok::<_, RunError>((
+                            current,
+                            frames,
+                            covered,
+                            previous_checkpoint_id,
                             order,
-                        });
-                        current = std::borrow::Cow::Owned(nested);
-                        continue;
+                        ));
                     }
-                };
-                break (covered, previous_checkpoint_id, order);
-            };
+                })
+                .await?;
             loop {
                 let reader = current.as_ref();
                 let covered_revisions = match covered {
                     Some(through) => self.covered_revisions(reader, through).await?,
                     None => Default::default(),
                 };
-                let mut recovered_cells = Vec::new();
+                let mut tail = ReplayedTail::default();
                 for (admission, (run, through)) in order {
                     let source = reader.run_source(run).await?;
                     if matches!(source.spec.backend, BackendSpec::Historical {}) {
@@ -1721,11 +1776,11 @@ impl DriverModel {
                         )
                         .await?;
                     if run == self.execution.run_id {
-                        recovered_cells = knowledge;
+                        tail = knowledge;
                     }
                 }
                 let Some(frame) = frames.pop() else {
-                    return Ok((previous_checkpoint_id, recovered_cells));
+                    return Ok((previous_checkpoint_id, tail));
                 };
                 current = frame.reader;
                 covered = Some(frame.covered);
@@ -1940,7 +1995,7 @@ impl DriverModel {
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
         after_revision: u64,
-    ) -> BoxFuture<'a, Result<Vec<FrozenCellKnowledge>, RunError>> {
+    ) -> BoxFuture<'a, Result<ReplayedTail, RunError>> {
         Box::pin(async move {
             let recorded = self.recorded_inputs(reader, view, after_revision).await?;
             let mut replay = replay::TailReplay::new(

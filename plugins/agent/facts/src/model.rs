@@ -17,6 +17,7 @@
  * under the License.
  */
 
+pub use maka_provider_protocol::output::CitationAnchor;
 use serde::{Deserialize, Serialize};
 pub mod assembly;
 pub mod body;
@@ -157,6 +158,8 @@ pub struct ModelToolCall {
 pub enum ModelPart {
     Source {
         source: ModelSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<CitationAnchor<u64>>,
     },
     Text {
         text_kind: TextKind,
@@ -182,7 +185,12 @@ pub use compaction::NativeCompaction;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ModelEvent {
-    Source(ModelSource),
+    Source {
+        #[serde(flatten)]
+        source: ModelSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<CitationAnchor<String>>,
+    },
     PartStarted {
         id: String,
         text_kind: TextKind,

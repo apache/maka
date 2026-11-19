@@ -18,7 +18,7 @@
  */
 
 use super::{
-    response::{self, Envelope, ToolDelta, Usage},
+    response::{self, Annotation, Envelope, TextSpan, ToolDelta, UrlCitation, Usage},
     tools::Tracker,
 };
 use crate::{
@@ -40,18 +40,26 @@ enum Phase {
 /// One lane owns prose lifecycle; reasoning and visible text cannot be active
 /// simultaneously. Tool calls have their own identities and may overlap prose.
 #[derive(Default)]
-struct Prose(Option<TextKind>);
+struct Prose {
+    active: Option<TextKind>,
+    visible: Vec<TextSpan<String>>,
+}
 impl Prose {
-    fn id(kind: TextKind) -> &'static str {
+    fn id(&self, kind: TextKind) -> String {
         match kind {
-            TextKind::Text => "txt-0",
-            TextKind::Reasoning => "reasoning-0",
+            TextKind::Text => self
+                .visible
+                .last()
+                .expect("started visible text")
+                .part
+                .clone(),
+            TextKind::Reasoning => "reasoning-0".into(),
         }
     }
     fn close(&mut self, events: &mut Vec<Event>) {
-        if let Some(kind) = self.0.take() {
+        if let Some(kind) = self.active.take() {
             events.push(Event::TextEnd {
-                id: Self::id(kind).into(),
+                id: self.id(kind),
                 kind,
                 citations: vec![],
                 extensions: None,
@@ -68,18 +76,28 @@ impl Prose {
         if text.is_empty() && reasoning_field.is_none() {
             return;
         }
-        if self.0 != Some(kind) {
+        if self.active != Some(kind) {
             self.close(events);
-            self.0 = Some(kind);
+            self.active = Some(kind);
+            if kind == TextKind::Text {
+                self.visible.push(TextSpan {
+                    part: format!("txt-{}", self.visible.len()),
+                    end: self.visible.last().map_or(0, |span| span.end),
+                });
+            }
             events.push(Event::TextStart {
-                id: Self::id(kind).into(),
+                id: self.id(kind),
                 kind,
                 extensions: None,
             });
         }
+        if kind == TextKind::Text {
+            self.visible.last_mut().expect("started visible text").end +=
+                text.chars().count() as u64;
+        }
         events.push(Event::TextDelta {
             reasoning_field,
-            id: Self::id(kind).into(),
+            id: self.id(kind),
             kind,
             text,
             extensions: None,
@@ -114,6 +132,7 @@ pub struct Stream {
     phase: Phase,
     metadata_emitted: bool,
     prose: Prose,
+    pending_annotations: Vec<UrlCitation>,
     finish: Option<(Stop, Option<String>)>,
     usage: Option<(Usage, Value)>,
     pending: Vec<(f64, ToolDelta)>,
@@ -130,6 +149,7 @@ impl Stream {
             phase: Phase::Receiving,
             metadata_emitted: false,
             prose: Prose::default(),
+            pending_annotations: Vec::new(),
             finish: None,
             usage: None,
             pending: vec![],
@@ -245,8 +265,20 @@ impl Stream {
             for (kind, text) in delta.content.into_iter().flat_map(|v| v.text()) {
                 self.prose.append(kind, text, None, &mut events);
             }
+            for annotation in delta.annotations.into_iter().flatten() {
+                if let Annotation::UrlCitation { url_citation } = annotation {
+                    let visible_end = self.prose.visible.last().map_or(0, |span| span.end);
+                    if url_citation.end_index.is_some_and(|end| end > visible_end) {
+                        self.pending_annotations.push(url_citation);
+                    } else {
+                        let (source, anchor) =
+                            url_citation.source(&self.prose.visible, generate_id);
+                        events.push(Event::Source { source, anchor });
+                    }
+                }
+            }
             if delta.tool_calls.as_ref().is_some_and(|v| !v.is_empty())
-                && self.prose.0 == Some(TextKind::Reasoning)
+                && self.prose.active == Some(TextKind::Reasoning)
             {
                 self.prose.close(&mut events);
             }
@@ -308,6 +340,10 @@ impl Stream {
         self.phase = Phase::Finished;
         let mut events = vec![];
         self.prose.close(&mut events);
+        for citation in self.pending_annotations.drain(..) {
+            let (source, anchor) = citation.source(&self.prose.visible, generate_id);
+            events.push(Event::Source { source, anchor });
+        }
         for (_, pending) in self.pending.drain(..) {
             events.extend(self.tools.push(&pending, &self.namespace, generate_id)?);
         }

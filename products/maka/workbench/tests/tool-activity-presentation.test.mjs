@@ -45,6 +45,7 @@ const { activityFailure, activityPresentation, activityProjection, activityTitle
   new URL('toolActivityPresentation.ts', app)
 );
 const { toolResult } = await import(new URL('toolCards.ts', app));
+const { providerSearch } = await import(new URL('providerSearch.ts', app));
 hooks.deregister();
 
 const sendKey = 'maka.agent.Agent@1/send';
@@ -395,4 +396,74 @@ test('human-symmetric Session* tool cards project real contract variants', () =>
       ],
     },
   );
+});
+
+test('hosted search cards preserve distinct queries and expose recorded web sources', () => {
+  const q = 'site:github.com/maka-agent/cua browser takeover transport';
+  assert.deepEqual(providerSearch({}, { action: { type: 'search', queries: [q], query: q } }), {
+    queries: [q],
+    sources: [],
+    error: null,
+  });
+  const source = { title: 'The Rust Book', url: 'https://doc.rust-lang.org/book/' };
+  const expected = { key: source.url, ...source, site: 'doc.rust-lang.org' };
+  const responses = providerSearch(
+    {},
+    {
+      action: {
+        type: 'search',
+        queries: ['Rust', ' borrow checker ', 'Rust'],
+        query: 'Rust',
+        sources: [source, source, { url: 'file:///private/example' }],
+      },
+    },
+  );
+  assert.deepEqual(responses, {
+    queries: ['Rust', 'borrow checker'],
+    sources: [expected],
+    error: null,
+  });
+  assert.deepEqual(
+    providerSearch({ query: 'Rust' }, [
+      { type: 'web_search_result', ...source, encrypted_content: 'opaque provider data' },
+    ]),
+    { queries: ['Rust'], sources: [expected], error: null },
+  );
+  assert.equal(
+    providerSearch(
+      { query: 'Rust' },
+      { type: 'web_search_tool_result_error', error_code: 'max_uses_exceeded' },
+    ).error,
+    'max_uses_exceeded',
+  );
+  assert.equal(
+    activityTitle({
+      name: 'WebSearch',
+      presentation: 'provider.web_search',
+      title: { fallback: q },
+    }),
+    'Search the web · ' + q,
+  );
+});
+
+test('gateway search envelopes accept query batches, text blocks and titled result links', () => {
+  const url = 'https://example.org/reference';
+  const sources = [{ key: url, title: 'Reference', url, site: 'example.org' }];
+  const input = { search_query: [{ q: 'one' }, { q: 'two' }, { q: 'one' }] };
+  for (const output of [
+    { data: { results: [{ link: url, title: 'Reference' }] } },
+    {
+      content: [
+        { type: 'text', text: JSON.stringify({ items: [{ href: url, name: 'Reference' }] }) },
+      ],
+    },
+    { result: { webPages: { value: [{ url, name: 'Reference' }] } } },
+    { action: { searchQuery: 'two', sources: [{ url, title: 'Reference' }, url] } },
+  ]) {
+    assert.deepEqual(providerSearch(input, output), {
+      queries: ['one', 'two'],
+      sources,
+      error: null,
+    });
+  }
 });

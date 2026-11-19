@@ -97,6 +97,7 @@ fn model_choice_from_metadata(
             apply_patch: overrides.and_then(|value| value.apply_patch),
         }),
         selection: ModelSelection {
+            service_tier: None,
             connection_id: row.connection_id.clone(),
             model_id: model.into(),
         },
@@ -341,6 +342,14 @@ impl Handler for Settings {
                     super::connections::page(&store, input, snapshot).await
                 }
                 "connection" => super::connections::detail(&store, input).await,
+                "dictationConnections" => super::connections::dictation_connections(&store).await,
+                "transcribeDictation" => {
+                    let request = serde_json::from_value(input).map_err(|_| "Invalid recording")?;
+                    tokio::select! {
+                        result = super::connections::transcribe(&store, request) => result,
+                        _ = context.scope().cancellation.cancelled() => Err("Dictation cancelled".into()),
+                    }
+                }
                 "connectionUsageLimits" => {
                     let snapshot = public_catalog
                         .snapshot

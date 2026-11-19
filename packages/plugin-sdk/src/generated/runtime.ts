@@ -102,6 +102,14 @@ export type RuntimeProtocol =
   | ComputerEvaluate
   | ComputerReplState
   | ComputerResult
+  | ComputerWatchStage
+  | ComputerStageSnapshot
+  | ComputerWatchFrames
+  | ComputerFrameNotice
+  | ComputerReadFrame
+  | ComputerPresentTarget
+  | ComputerPresentationResult
+  | ComputerFrameResult
   | ProtocolProcessLaunch
   | AcpExecutorConfiguration
   | ExecutorOutcome
@@ -889,6 +897,7 @@ export type AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: ThinkingLevel | null;
     }
   | {
@@ -1062,6 +1071,33 @@ export type ComputerResult =
       kind: 'failed';
       message: string;
       state: ComputerReplState;
+    };
+export type ComputerStageTargetKind = 'app' | 'browser';
+export type ComputerPresentationResult =
+  | {
+      kind: 'presented';
+      details: unknown;
+    }
+  | {
+      kind: 'requested';
+      details: unknown;
+    }
+  | {
+      kind: 'partial';
+      message: string;
+      details: unknown;
+    };
+export type ComputerFrameResult =
+  | {
+      kind: 'frame';
+      frame: ComputerStageFrame;
+    }
+  | {
+      kind: 'pending';
+    }
+  | {
+      kind: 'unavailable';
+      message: string;
     };
 export type Scope = 'subtree' | 'exact';
 /**
@@ -3691,6 +3727,10 @@ export type AuthorizationObligation =
       cell: CellId;
       operation: string;
     };
+/**
+ * The tool family whose authority raised a permission request.
+ */
+export type PermissionSource = 'processes' | 'web' | 'files';
 export type FormField = {
   name: string;
   label: string;
@@ -4597,6 +4637,37 @@ export type AgentQueueRejection =
   | 'invalid_edit'
   | 'execution_changed'
   | 'not_running';
+export type HistoryCitation =
+  | {
+      kind: 'url';
+      url: string;
+      title?: string | null;
+    }
+  | {
+      kind: 'document';
+      title: string;
+      filename?: string | null;
+      /**
+       * Document identity within this model request.
+       */
+      documentIndex?: number | null;
+    };
+/**
+ * Location in one assistant text part. Ranges are half-open Unicode scalar offsets.
+ */
+export type CitationAnchor =
+  | {
+      kind: 'range';
+      part: number;
+      start: number;
+      end: number;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'block_end';
+      part: number;
+      [k: string]: unknown | undefined;
+    };
 /**
  * Model identity recorded for the exact historical assistant step.
  */
@@ -4926,6 +4997,10 @@ export type AgentToolImagePage = {
   data: string;
 };
 export type AgentAttachmentImageSource =
+  | {
+      kind: 'artifact';
+      id: string;
+    }
   | {
       kind: 'room';
       messageId: string;
@@ -6030,6 +6105,7 @@ export interface AgentModelsCursor {
   offset: number;
 }
 export interface AgentModelChoice {
+  serviceTiers?: ModelServiceTier[];
   selection: AgentBackendPreference;
   /**
    * Previously published selections, including their implied thinking level.
@@ -6039,6 +6115,11 @@ export interface AgentModelChoice {
   label: string;
   thinkingLevels: string[];
   defaultThinkingLevel?: string | null;
+}
+export interface ModelServiceTier {
+  id: string;
+  name: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentExecutorSelection {
   executor: string;
@@ -6223,6 +6304,80 @@ export interface ComputerEvaluate {
    */
   title?: string | null;
 }
+export interface ComputerWatchStage {
+  sessionId: string;
+}
+export interface ComputerStageSnapshot {
+  sessionId: string;
+  bindingId?: string | null;
+  revision: number;
+  targets: ComputerStageTarget[];
+  activeTargetId?: string | null;
+}
+export interface ComputerStageTarget {
+  id: string;
+  revision: number;
+  title: string;
+  kind: ComputerStageTargetKind;
+}
+export interface ComputerWatchFrames {
+  sessionId: string;
+  bindingId: string;
+  /**
+   * @minItems 1
+   * @maxItems 5
+   */
+  targetIds:
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string];
+  selectedTargetId?: string | null;
+}
+/**
+ * Notifications are small. Encoded images stay in one replaceable slot per
+ * target, never in the ordered Host subscription queue or durable history.
+ */
+export interface ComputerFrameNotice {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  sequence: number;
+}
+export interface ComputerReadFrame {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  after: number;
+}
+export interface ComputerPresentTarget {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  revision: number;
+  area: ComputerPresentationArea;
+}
+export interface ComputerPresentationArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+export interface ComputerStageFrame {
+  revision: number;
+  sessionId: string;
+  bindingId: string;
+  targetId: string;
+  sequence: number;
+  mimeType: string;
+  dataBase64: string;
+  width: number;
+  height: number;
+}
 export interface ProtocolProcessLaunch {
   executable: string;
   args?: string[];
@@ -6345,9 +6500,10 @@ export interface AgentAnswerPage {
   next?: AgentAnswerCursor | null;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -7957,6 +8113,13 @@ export interface PermissionRequest {
   reason: string;
   command?: PermissionCommand | null;
   permissions: Permissions;
+  /**
+   * Network access granted for this request covers only later requests from
+   * the same source; filesystem access covers all of them. Requests stored
+   * before sources were recorded decode as Web, the only source that could
+   * be granted network access then.
+   */
+  source?: PermissionSource & string;
 }
 export interface PermissionCommand {
   command: string;
@@ -8525,6 +8688,18 @@ export interface AgentHistoryChunk {
   importedTurn: number | null;
   runId?: RunId | null;
   modelPart?: ModelPartIdentity | null;
+  /**
+   * Provider citation evidence, not assistant prose.
+   */
+  sourceCitation?: boolean;
+  /**
+   * Structured source on the first fragment, with bounded display labels.
+   */
+  citation?: HistoryCitation | null;
+  /**
+   * Target ordinal belongs to the same model attempt as this source.
+   */
+  citationAnchor?: CitationAnchor | null;
   /**
    * The original user input has quotes, directory references or inline references.
    * Present only on the first fragment; display text cannot reconstruct these references.

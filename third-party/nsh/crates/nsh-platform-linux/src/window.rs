@@ -12,8 +12,8 @@
 //!   shows empty. Dialogs and panels are transient for their parent
 //!   (`modal` makes the parent take no input).
 //! - **State**: the main window's goes in the environment, the others' as
-//!   window events; a resize is reported once it settles. GTK 4 tells no
-//!   window's position, so a window's bounds start at the origin.
+//!   window events; a resize is reported once it settles. X11 reports global
+//!   native positions; on Wayland bounds remain local and native bounds absent.
 //! - **What GTK 4 has no API for** is left as it is, silently: positions
 //!   (`defaultPosition`, `center`, the origin of `setBounds`), levels,
 //!   the taskbar, workspaces, a largest size, an aspect ratio, focusability,
@@ -1303,6 +1303,46 @@ fn moved_only(last: &WindowState, next: &WindowState) -> bool {
         && last.scale_factor == next.scale_factor
 }
 
+fn native_content_bounds(
+    window: &gtk::Window,
+    content: &gtk::Widget,
+) -> Option<nsh_core::desktop::NativeDesktopBounds> {
+    use x11rb::protocol::xproto::ConnectionExt;
+    thread_local! {
+        static CONNECTION: std::cell::OnceCell<Result<x11rb::rust_connection::RustConnection, x11rb::errors::ConnectError>> = const { std::cell::OnceCell::new() };
+    }
+    let surface = window.surface()?;
+    let surface = surface.downcast_ref::<gdk4_x11::X11Surface>()?;
+    let xid = u32::try_from(surface.xid()).ok()?;
+    CONNECTION.with(|connection| {
+        let connection = connection
+            .get_or_init(|| {
+                x11rb::rust_connection::RustConnection::connect(None)
+                    .map(|(connection, _)| connection)
+            })
+            .as_ref()
+            .ok()?;
+        let geometry = connection.get_geometry(xid).ok()?.reply().ok()?;
+        let origin = connection
+            .translate_coordinates(xid, geometry.root, 0, 0)
+            .ok()?
+            .reply()
+            .ok()?;
+        let local = content.compute_bounds(window)?;
+        let scale = surface.scale() as f64;
+        let mut native = nsh_core::desktop::NativeDesktopBounds::default();
+        native.x = nsh_core::geometry::ScaledPixels(
+            (origin.dst_x as f64 + local.x() as f64 * scale) as f32,
+        );
+        native.y = nsh_core::geometry::ScaledPixels(
+            (origin.dst_y as f64 + local.y() as f64 * scale) as f32,
+        );
+        native.width = nsh_core::geometry::ScaledPixels((local.width() as f64 * scale) as f32);
+        native.height = nsh_core::geometry::ScaledPixels((local.height() as f64 * scale) as f32);
+        Some(native)
+    })
+}
+
 /// The state of `window`, whose app content is `content`; `normal` keeps
 /// its bounds in the normal mode. `None` before it has a size.
 fn state_of(
@@ -1314,17 +1354,28 @@ fn state_of(
     if width <= 0 || height <= 0 {
         return None;
     }
-    let bounds = Bounds::new(
+    let mut bounds = Bounds::new(
         point(Points(0.0), Points(0.0)),
         size(Points(width as f32), Points(height as f32)),
     );
-    let content_bounds = content.compute_bounds(window).map_or(bounds, |r| {
+    let mut content_bounds = content.compute_bounds(window).map_or(bounds, |r| {
         Bounds::new(
             point(Points(r.x()), Points(r.y())),
             size(Points(r.width()), Points(r.height())),
         )
     });
     let gdk_surface = window.surface();
+    let scale = gdk_surface
+        .as_ref()
+        .map_or(1.0, |surface| surface.scale() as f64);
+    let native = native_content_bounds(window, content);
+    if let Some(native) = native {
+        let x = (f64::from(native.x.0) / scale) as f32;
+        let y = (f64::from(native.y.0) / scale) as f32;
+        bounds.origin.x = Points(x - content_bounds.origin.x.0);
+        bounds.origin.y = Points(y - content_bounds.origin.y.0);
+        content_bounds.origin = point(Points(x), Points(y));
+    }
     let minimized = gdk_surface
         .as_ref()
         .and_then(|s| s.downcast_ref::<gdk::Toplevel>().map(|t| t.state()))
@@ -1339,11 +1390,12 @@ fn state_of(
     state.visible = window.is_visible() && !minimized;
     state.focused = window.is_active();
     state.content_bounds = content_bounds;
+    state.native_content_bounds = native;
     state.display = gdk_surface
         .as_ref()
         .and_then(|s| s.display().monitor_at_surface(s))
         .map(|m| monitor_id(&m));
-    state.scale_factor = gdk_surface.as_ref().map_or(1.0, |s| s.scale() as f32);
+    state.scale_factor = scale as f32;
     Some(state)
 }
 

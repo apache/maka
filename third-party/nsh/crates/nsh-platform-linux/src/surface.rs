@@ -618,6 +618,11 @@ impl Surface {
 
     /// Sends an event to JS.
     pub(crate) fn event(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
+        if kind == EventKind::Press {
+            // X11 can move without a GTK resize/focus notification. Publish
+            // actual geometry before the action reads its WindowRef state.
+            crate::window::main_state_changed(self);
+        }
         self.control(|c| c.dispatch_event(id, kind, payload));
     }
 

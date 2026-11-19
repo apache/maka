@@ -20,22 +20,13 @@
 use super::*;
 use maka_plugin_core::contract::ServiceTarget;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bot_controls_remain_visible_with_tool_discovery() -> TestResult<()> {
-    let mut rig = Rig::new()?;
-    let base = rig.directory.path().to_path_buf();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let boot = bootstrap_with(
-        &base,
-        format!("http://{}/v1", listener.local_addr()?),
-        |config| {
-            config["bot"] = json!(true);
-            config["scheduledTasks"] = json!(true);
-            config["toolDiscovery"] = json!(true);
-        },
-    )
-    .await?;
-    let (requests, mut observed) = tokio::sync::mpsc::channel(1);
+pub(super) fn observed_provider(
+    listener: tokio::net::TcpListener,
+) -> (
+    tokio::sync::mpsc::Receiver<(Value, oneshot::Sender<String>)>,
+    tokio::task::JoinHandle<std::io::Result<()>>,
+) {
+    let (requests, observed) = tokio::sync::mpsc::channel(1);
     let app = axum::Router::new().route(
         "/v1/chat/completions",
         axum::routing::post(move |request: axum::extract::Request| {
@@ -55,6 +46,25 @@ async fn bot_controls_remain_visible_with_tool_discovery() -> TestResult<()> {
         }),
     );
     let provider = tokio::spawn(async move { axum::serve(listener, app).await });
+    (observed, provider)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bot_controls_remain_visible_with_tool_discovery() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let boot = bootstrap_with(
+        &base,
+        format!("http://{}/v1", listener.local_addr()?),
+        |config| {
+            config["bot"] = json!(true);
+            config["scheduledTasks"] = json!(true);
+            config["toolDiscovery"] = json!(true);
+        },
+    )
+    .await?;
+    let (mut observed, provider) = observed_provider(listener);
     let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
@@ -130,26 +140,7 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
         },
     )
     .await?;
-    let (requests, mut observed) = tokio::sync::mpsc::channel(1);
-    let app = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move |request: axum::extract::Request| {
-            let requests = requests.clone();
-            async move {
-                let bytes = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024)
-                    .await
-                    .unwrap();
-                let request: Value = serde_json::from_slice(&bytes).unwrap();
-                let (reply, response) = oneshot::channel::<String>();
-                let _ = requests.send((request, reply)).await;
-                (
-                    [("content-type", "text/event-stream")],
-                    response.await.unwrap_or_default(),
-                )
-            }
-        }),
-    );
-    let provider = tokio::spawn(async move { axum::serve(listener, app).await });
+    let (mut observed, provider) = observed_provider(listener);
     let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(120), async {
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();

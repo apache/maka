@@ -68,3 +68,9 @@ cargo nextest run -p maka-cli --no-default-features --test integration -E 'test(
 # 桌面端离屏原生渲染集成测试（macOS / Windows，或直接执行 `just test-desktop`）
 cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test native-desktop -E 'test(terminal::desktop_new_session::)'
 ```
+
+## Computer Stage
+
+会话中的实时卡片显示已授权的 Computer 目标。可将前卡拖到四角、选择后卡将其置前，或使用 Pin/Follow 固定和跟随目标。前卡呈现原先绑定的原生窗口或浏览器窗口，由 OS 处理交互；点击裸露的 Maka 内容会将 Maka 置前，小卡保留在所选角落。Hide/Show 只控制 viewer，不停止 producer。
+
+预览保持只读、有界、临时。呈现使用独立 client mutation；UI 不转发截图坐标、不合成键盘输入，也不能自选 PID/window/tab。

@@ -435,7 +435,7 @@ async fn scan_window(
     let mut rows = Vec::new();
     let mut folded = None;
     let mut first = true;
-    let mut seen = false;
+    let mut may_backfill = origin.is_some();
     let mut steps_turn = None;
     let mut skip_turn: Option<Option<TurnKey>> = None;
     let mut pending: Option<(Option<TurnKey>, Vec<Selected>, bool)> = None;
@@ -526,10 +526,10 @@ async fn scan_window(
                             }
                         }
                         pending
-                            .get_or_insert_with(|| (key, Vec::new(), !seen))
+                            .get_or_insert_with(|| (key, Vec::new(), may_backfill))
                             .1
                             .push(row);
-                        seen = true;
+                        may_backfill = false;
                         continue;
                     }
                     skip_turn = None;
@@ -553,7 +553,7 @@ async fn scan_window(
                     rows.push(row);
                 }
             }
-            seen = true;
+            may_backfill = false;
             if rows.len() >= limit {
                 return Ok(rows);
             }

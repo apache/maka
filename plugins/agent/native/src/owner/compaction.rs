@@ -25,6 +25,38 @@ use maka_agent_facts::{
 };
 use maka_capabilities::call::Scope;
 
+pub(super) const TOOL: &str = "CompactContext";
+
+pub(super) fn tool() -> maka_agent_facts::tools::ToolRegistration {
+    use maka_agent_facts::tools::*;
+    ToolRegistration {
+        definition: ToolDefinition {
+            name: TOOL.into(), provider: None, freeform: None, output_schema: None,
+            description: "Summarize earlier context and continue this Run. Use at a natural break when earlier work no longer needs its full detail. The checkpoint is applied after this batch of tools settles.".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+        },
+        nesting: ToolNesting::DirectOnly,
+        semantics: ToolSemantics::Parallel,
+        handler: ToolHandler::Immediate(Arc::new(CompactContext)),
+    }
+}
+
+struct CompactContext;
+impl maka_agent_facts::tools::ToolExecutor for CompactContext {
+    fn names(&self) -> Vec<String> {
+        vec![TOOL.into()]
+    }
+
+    fn invoke(
+        &self,
+        _: String,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> maka_agent_facts::tools::ToolFuture {
+        Box::pin(async { Ok(serde_json::json!({"status":"requested"})) })
+    }
+}
+
 impl Owner {
     pub(super) fn effective_compaction_prompt(
         &self,
@@ -143,11 +175,7 @@ impl Owner {
         {
             return rejected(CompactRejection::WorkspaceChanged);
         }
-        let preference = BackendPreference::Model {
-            connection_id: input.model.connection_id,
-            model_id: input.model.model_id,
-            thinking_level: input.thinking_level,
-        };
+        let preference = BackendPreference::model(input.model, input.thinking_level);
         let mut basis = self
             .capture_current_run(
                 &input.session_id,

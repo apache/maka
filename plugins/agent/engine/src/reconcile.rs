@@ -1047,9 +1047,15 @@ fn next_action(
                 Action::Block(reason)
             };
         }
+        // A finished turn cannot complete a Run whose external task closed otherwise.
+        let unsuccessful = view
+            .external
+            .as_ref()
+            .and_then(|task| task.closed.as_ref())
+            .is_some_and(|closed| closed.outcome != Terminal::Completed);
         return Action::Terminate(if view.stopped || view.cancelled_by_risk {
             Terminal::Cancelled
-        } else if finish && !deadline && (!exhausted || complete_at_budget) {
+        } else if finish && !deadline && (!exhausted || complete_at_budget) && !unsuccessful {
             Terminal::Completed
         } else {
             Terminal::Failed

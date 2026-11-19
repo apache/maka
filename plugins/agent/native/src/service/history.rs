@@ -281,6 +281,12 @@ async fn window(
         &scope.cancellation,
     )
     .await
+    .inspect_err(|error| {
+        if !scope.cancellation.is_cancelled() {
+            tracing::warn!(session = %input.session_id, through = cut.through_sequence,
+                position = ?input.position, view = ?input.view, %error, "History page read failed");
+        }
+    })
 }
 pub async fn snapshot_page(
     snapshot: &maka_agent_state::session_history::snapshot::Snapshot,
@@ -573,6 +579,8 @@ fn fragment_metadata(chunk: &mut wire::Chunk) {
     if chunk.offset != 0 {
         chunk.attachments.clear();
         chunk.quotes.clear();
+        chunk.citation = None;
+        chunk.citation_anchor = None;
         chunk.has_references = false;
     }
 }

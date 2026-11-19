@@ -224,7 +224,34 @@ impl Target {
         }
     }
     pub(crate) fn verify(&self) -> Result<(), ToolError> {
-        let fresh = Self::bind(self.pid as u32, self.window_id as u64)?;
+        let fresh = Self::bind(self.pid as u32, self.window_id as u64).map_err(|error| {
+            let role = CFString::new("AXRole");
+            let mut value = std::ptr::null();
+            // SAFETY: this worker owns the retained AX window for the entire
+            // read, and releases the copied attribute value before returning.
+            let status = unsafe {
+                AXUIElementCopyAttributeValue(
+                    self.window.as_ptr() as AXUIElementRef,
+                    role.as_concrete_TypeRef(),
+                    &mut value,
+                )
+            };
+            if !value.is_null() {
+                unsafe { CFRelease(value) };
+            }
+            if status == kAXErrorInvalidUIElement {
+                ToolError::Native(Box::new(NativeToolError {
+                    name: "AXError".into(),
+                    code: status,
+                    error_name: "kAXErrorInvalidUIElement".into(),
+                    message:
+                        "stale_target: retained AX window is no longer valid; bind a current window"
+                            .into(),
+                }))
+            } else {
+                failed(format!("{error}; retained AXRole status: {status}"))
+            }
+        })?;
         // CF equality compares the remote AX identity, not the wrapper pointer.
         if unsafe { CFEqual(self.window.as_ptr() as _, fresh.window.as_ptr() as _) } == 0 {
             return Err(failed("stale_target: window was replaced; bind it again"));

@@ -125,6 +125,7 @@ pub struct Prepared {
 struct Options {
     user: Option<String>,
     reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     text_verbosity: Option<String>,
     strict_json_schema: Option<bool>,
 }
@@ -233,6 +234,8 @@ pub fn prompt_options(
 struct Body {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u64>,
@@ -284,6 +287,7 @@ fn prepare_inner(
     let known = [
         "user",
         "reasoningEffort",
+        "serviceTier",
         "textVerbosity",
         "strictJsonSchema",
     ];
@@ -354,6 +358,7 @@ fn prepare_inner(
     let body = Body {
         model: request.model,
         user: options.user,
+        service_tier: options.service_tier,
         max_tokens: sampling.max_output_tokens,
         temperature: sampling.temperature,
         top_p: sampling.top_p,

@@ -41,6 +41,7 @@ import { useHost } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
+  availableSpeeds,
   effectiveThinkingLevel,
   effortCaption,
   modelCaption,
@@ -48,12 +49,15 @@ import {
   sameBackend,
   sameRoute,
   selectionForChoice,
+  serviceTier,
+  speedCaption,
   thinkingLevel,
   withThinkingLevel,
   type BackendIdentity,
   type ModelBackend,
   type ModelChoice,
 } from './modelSelection';
+import { SettingsSegmented } from './SettingsPage';
 import { createText, errorText, UiError } from './text';
 import {
   C,
@@ -126,9 +130,15 @@ export function ModelSelect(props: {
       ? details.choice.label
       : modelCaption(owner.backend(), details);
   };
-  const effort = () => effortCaption(owner.backend(), owner.modelDetails());
+  const modifiers = () =>
+    [
+      effortCaption(owner.backend(), owner.modelDetails()),
+      speedCaption(owner.backend(), owner.modelDetails()),
+    ]
+      .filter(Boolean)
+      .join(' · ');
   const tooltipLabel = () =>
-    [modelCaption(owner.backend(), owner.modelDetails()), effort()].filter(Boolean).join(' · ');
+    [modelCaption(owner.backend(), owner.modelDetails()), modifiers()].filter(Boolean).join(' · ');
   return (
     <Popover
       open={props.instance() !== null}
@@ -187,11 +197,11 @@ export function ModelSelect(props: {
             >
               {model()}
             </Text>
-            <If when={effort()}>
+            <If when={modifiers()}>
               <Text
                 style={[{ color: C.secondary, fontSize: 13, flexShrink: 0 }, { numberOfLines: 1 }]}
               >
-                {` · ${effort()}`}
+                {` · ${modifiers()}`}
               </Text>
             </If>
           </View>
@@ -277,6 +287,7 @@ function ModelMenu(props: {
       ? details.choice
       : null;
   };
+  const speeds = computed(() => availableSpeeds(readyChoice()));
   const hasEffortControls = () => {
     const choice = readyChoice();
     return (
@@ -746,6 +757,25 @@ function ModelMenu(props: {
           </Each>
         </Scroll>
       </Popover>
+      <If when={speeds().length > 0}>
+        <SettingsSegmented
+          label={tr('Speed')}
+          value={serviceTier(owner.backend()) ?? ''}
+          choices={[
+            { value: '', title: tr('Default') },
+            ...speeds().map((tier) => ({
+              value: tier.id,
+              title: tier.name,
+            })),
+          ]}
+          disabled={pending()}
+          change={(value) => {
+            const current = owner.backend();
+            if (current?.kind === 'model')
+              void submit(action({ ...current, serviceTier: value || null }));
+          }}
+        />
+      </If>
       <Button
         disabled={pending()}
         accessibilityLabel={tr('Manage models')}

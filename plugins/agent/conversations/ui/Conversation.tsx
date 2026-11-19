@@ -17,6 +17,12 @@
  * under the License.
  */
 
+import { AnswerSourceList } from '../../../../products/maka/workbench/app/AnswerSources';
+import {
+  answerSource,
+  type AnswerSource,
+  type InlineCitation,
+} from '../../../../products/maka/workbench/app/answerCitations';
 import { createTrajectoryRequests } from './trajectoryRequests';
 import {
   appendDraftQuote,
@@ -91,6 +97,8 @@ import {
 } from '../../../../products/maka/workbench/app/host';
 import {
   animateDisclosure,
+  Disclosure,
+  IconButton,
   C,
   Header,
   ViewSegment,
@@ -107,6 +115,7 @@ import {
   historyTurnKey,
   historyChunkKey,
   historyRowKey,
+  historyRowThrough,
   rootEventSequence,
   historyFollowPosition,
   historyFollowTail,
@@ -162,6 +171,7 @@ import {
   selectionForChoice,
   sameBackend,
   routeKey,
+  nativeModelSelection,
   backendName,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import type {
@@ -982,8 +992,17 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | TrajectoryEntry
     | { kind: 'summary'; key: string; turnKey: string }
+    | { kind: 'sources'; key: string; sources: AnswerSource[] }
     | { kind: 'process'; key: string; group: ProcessGroup }
-    | { kind: 'row'; key: string; rowId: string; turnKey?: string; repeats?: number }
+    | {
+        kind: 'row';
+        key: string;
+        rowId: string;
+        turnKey?: string;
+        repeats?: number;
+        citations?: InlineCitation[];
+        sources?: AnswerSource[];
+      }
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string }
@@ -1011,6 +1030,23 @@ export function Conversation(props: ConversationProps) {
       return entries;
     }),
   );
+  const latestAnswerSources = computed<readonly AnswerSource[]>(() => {
+    if (!atHistoryTail() || botView() !== 'ordinary') return [];
+    const sections = chatDisplaySections();
+    for (let index = sections.length - 1; index >= 0; index--) {
+      const entries = sections[index]!;
+      for (let at = entries.length - 1; at >= 0; at--) {
+        const item = entries[at]!;
+        if (item.kind === 'sources') return item.sources;
+        if (item.kind === 'row') {
+          if (item.sources) return item.sources;
+          const role = currentRow(item.rowId)?.role;
+          if (role === 'assistant' || role === 'user') return [];
+        }
+      }
+    }
+    return [];
+  });
   const otherDisplay = computed<DisplayEntry[]>(() => {
     if (reading() === 'trajectory') {
       const query = trajectoryQuery().trim().toLocaleLowerCase();
@@ -1139,6 +1175,37 @@ export function Conversation(props: ConversationProps) {
       }
       openTurn = undefined;
     };
+    let sources: Map<string, AnswerSource> | undefined;
+    let anchors: Map<string, InlineCitation[]> | undefined;
+    let citationTurn: string | undefined;
+    let turnStart = 0;
+    const partKey = (row: ProcessRow, ordinal: number) =>
+      JSON.stringify([row.runId, row.modelPart!.stepId, row.modelPart!.attemptId, ordinal]);
+    const flushSources = () => {
+      if (sources?.size) {
+        const list = [...sources.values()];
+        let answer: Extract<DisplayEntry, { kind: 'row' }> | undefined;
+        for (let index = turnStart; index < result.length; index++) {
+          const item = result[index]!;
+          if (item.kind !== 'row') continue;
+          const row = section.rowsById.get(item.rowId);
+          if (row?.role !== 'assistant' || row.field !== 'body') continue;
+          answer = item;
+          if (anchors && row.modelPart)
+            item.citations = anchors.get(partKey(row, row.modelPart.ordinal));
+        }
+        if (answer && platform.idiom !== 'terminal') answer.sources = list;
+        else
+          result.push({
+            kind: 'sources',
+            key: 'sources/' + (citationTurn ?? result[turnStart]?.key ?? list[0]!.key),
+            sources: list,
+          });
+      }
+      sources = undefined;
+      anchors = undefined;
+      turnStart = result.length;
+    };
     for (const entry of section.entries) {
       const row = entry.kind === 'message' ? section.rowsById.get(entry.rowId) : undefined;
       const turnId =
@@ -1148,6 +1215,10 @@ export function Conversation(props: ConversationProps) {
             ? undefined
             : historyTurnKey(row);
       const turn = turnId ? section.turns.get(turnId) : undefined;
+      if (!botChat && turnId !== citationTurn) {
+        flushSources();
+        citationTurn = turnId;
+      }
       if (botChat && turnId !== openTurn) {
         speak();
         openTurn = turnId;
@@ -1192,6 +1263,21 @@ export function Conversation(props: ConversationProps) {
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
+        if (row.sourceCitation) {
+          const source = answerSource(row, entry.rowId);
+          if (source) {
+            sources ??= new Map();
+            if (!sources.has(source.key)) sources.set(source.key, source);
+            if (row.modelPart && row.citationAnchor && row.citation) {
+              anchors ??= new Map();
+              const key = partKey(row, row.citationAnchor.part);
+              const atPart = anchors.get(key) ?? [];
+              atPart.push({ source, anchor: row.citationAnchor });
+              anchors.set(key, atPart);
+            }
+          }
+          continue;
+        }
         result.push({
           kind: 'row',
           key: entry.key,
@@ -1201,6 +1287,7 @@ export function Conversation(props: ConversationProps) {
         });
       }
     }
+    flushSources();
     if (botChat) {
       speak();
       // The running Turn may not be projected yet (its message is still pending).
@@ -1471,9 +1558,12 @@ export function Conversation(props: ConversationProps) {
     });
     if (!trajectorySideBySide()) pendingTrajectoryAnchor = key;
     const window = historyWindow();
-    const position = currentRow(rowId)?.position;
-    if (window?.view === 'chat' && position) {
-      void resetHistory({ kind: 'row', position, field: 'body' }, window.through)
+    const row = currentRow(rowId);
+    if (window?.view === 'chat' && row?.position) {
+      void resetHistory(
+        { kind: 'row', position: row.position, field: 'body' },
+        historyRowThrough(row, window.through),
+      )
         .then((opened) => {
           if (opened && reading() === 'trajectory') jumpTrajectoryEntry(key);
         })
@@ -1818,7 +1908,7 @@ export function Conversation(props: ConversationProps) {
     const existing = workPages.get(rowId);
     const through =
       !existing || existing.task
-        ? Math.max(row.metadataThrough ?? 0, owner.through)
+        ? historyRowThrough(row, owner.through)
         : (row.metadataThrough ?? owner.through);
     loadPages(
       rowId,
@@ -1980,10 +2070,16 @@ export function Conversation(props: ConversationProps) {
             return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
           });
           executorTextChanges.clear();
+          const windowStart =
+            currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
+          const snap = overlay.snapshot();
+          const initial = historyFollowPosition(tail, snap.rows, snap.closedStarts, windowStart);
+          const coveredFrom =
+            initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
+          const chunks: AgentHistoryChunk[] = [];
           // A native message can keep streaming after another row has taken the tail.
           for (const row of changedRows) {
             let position = historyFollowPosition(row, []);
-            const chunks: AgentHistoryChunk[] = [];
             for (;;) {
               const page = await history(fence, position);
               if (!ownsWindow(owner.identity)) return;
@@ -1995,16 +2091,8 @@ export function Conversation(props: ConversationProps) {
               if (page.after === null || matching.length !== page.chunks.length) break;
               position = { kind: 'after', cursor: page.after };
             }
-            publishHistory(chunks, fence);
           }
-          const windowStart =
-            currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
-          const snap = overlay.snapshot();
-          const initial = historyFollowPosition(tail, snap.rows, snap.closedStarts, windowStart);
-          const coveredFrom =
-            initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
           let position = initial;
-          const chunks: AgentHistoryChunk[] = [];
           for (;;) {
             const page = await history(fence, position, owner.view);
             if (!ownsWindow(owner.identity)) return;
@@ -2012,9 +2100,10 @@ export function Conversation(props: ConversationProps) {
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
           }
-          publishHistory(chunks, fence, false, coveredFrom, windowStart);
-          const current = historyWindow()!;
-          historyWindow.set({ ...current, through: fence, after: null });
+          batch(() => {
+            historyWindow.set({ ...historyWindow()!, through: fence, after: null });
+            publishHistory(chunks, fence, false, coveredFrom, windowStart);
+          });
         }
         const last = rows().at(-1);
         if (refresh !== null && last?.position) {
@@ -2720,7 +2809,7 @@ export function Conversation(props: ConversationProps) {
         model: backend.modelId,
       });
     return {
-      model: { connectionId: backend.connectionId, modelId: backend.modelId },
+      model: nativeModelSelection(backend),
       thinkingLevel: backend.thinkingLevel ?? null,
     };
   };
@@ -3612,7 +3701,9 @@ export function Conversation(props: ConversationProps) {
               field: row.field === 'thinking' ? 'thinking' : 'body',
             }
           : { kind: 'tail' };
-      void resetHistory(position, window.through, undefined, () => reading() === mode, desired)
+      const through =
+        position.kind === 'row' && row ? historyRowThrough(row, window.through) : window.through;
+      void resetHistory(position, through, undefined, () => reading() === mode, desired)
         .then((opened) => {
           if (!opened || reading() !== mode) return;
           if (position.kind === 'tail') resumeHistoryFollowing();
@@ -3774,6 +3865,19 @@ export function Conversation(props: ConversationProps) {
     return '';
   });
   const inspectorOpen = signal(false);
+  const selectedSourceKey = signal<string | null>(null);
+  const inspectorSources = () => {
+    const key = selectedSourceKey();
+    if (key === null) return latestAnswerSources();
+    const item = displayEntry(key);
+    return (item?.kind === 'row' || item?.kind === 'sources') && item.sources ? item.sources : [];
+  };
+  const openAnswerSources = (key: string) => {
+    const item = displayEntry(key);
+    if (item?.kind !== 'row' && item?.kind !== 'sources') return;
+    selectedSourceKey.set(item.sources === latestAnswerSources() ? null : key);
+    inspectorOpen.set(true);
+  };
   const inspectorSideBySide = signal(false);
   const ownHandle: ConversationHandle = {
     sessionId,
@@ -4296,12 +4400,6 @@ export function Conversation(props: ConversationProps) {
           const initial = displayEntry(ownedKey());
           if (!initial) return <View />;
           const entry = () => displayEntry(ownedKey()) ?? initial;
-          const reveal = () =>
-            list?.scrollToIndex({
-              index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
-              viewPosition: 0,
-              animated: false,
-            });
           if (initial.kind === 'trajectory-turn') {
             return (
               <TrajectoryTurn
@@ -4349,6 +4447,41 @@ export function Conversation(props: ConversationProps) {
                   initial.toolKey ? inputAction(toggleTrajectoryTool, initial.toolKey) : undefined
                 }
               />
+            );
+          }
+          if (initial.kind === 'sources') {
+            const label = tr('Sources');
+            if (platform.idiom !== 'terminal')
+              return (
+                <View style={{ alignItems: 'flex-start' }}>
+                  <IconButton
+                    label={label}
+                    icon="globe"
+                    onPress={() => openAnswerSources(initial.key)}
+                  />
+                </View>
+              );
+            const open = rowState(initial.key).expanded;
+            const sources = () => {
+              const latest = entry();
+              return latest.kind === 'sources' ? latest.sources : initial.sources;
+            };
+            return (
+              <View style={{ gap: 4 }}>
+                <Disclosure
+                  label={label}
+                  open={open()}
+                  onPress={() => {
+                    animateDisclosure();
+                    open.set(!open());
+                  }}
+                >
+                  <Text style={captionTextStyle}>{label}</Text>
+                </Disclosure>
+                <If when={open()}>
+                  <AnswerSourceList sources={sources} openLink={openLink} />
+                </If>
+              </View>
             );
           }
           if (initial.kind === 'summary') {
@@ -4462,7 +4595,16 @@ export function Conversation(props: ConversationProps) {
                 openLink={openLink}
                 senders={senders}
                 userScroll={() => cancelNavigation()}
-                reveal={reveal}
+                revealTerminalGroup={
+                  platform.idiom === 'terminal'
+                    ? () =>
+                        list?.scrollToIndex({
+                          index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
+                          viewPosition: 0,
+                          animated: false,
+                        })
+                    : undefined
+                }
                 activity={activity}
                 viewport={readingSize}
                 reading={(away) => {
@@ -4564,6 +4706,15 @@ export function Conversation(props: ConversationProps) {
           return (
             <MessageRow
               item={row}
+              hasSources={() => {
+                const item = entry();
+                return item.kind === 'row' && Boolean(item.sources?.length);
+              }}
+              openSources={() => openAnswerSources(initial.key)}
+              citations={() => {
+                const current = entry();
+                return current.kind === 'row' ? current.citations : undefined;
+              }}
               highlighted={() => highlightedAnchor() === initial.key}
               repeats={() => {
                 const item = displayEntry(initial.rowId);
@@ -4582,7 +4733,6 @@ export function Conversation(props: ConversationProps) {
               openSession={canOpenWorker() ? openWorker : undefined}
               senders={senders}
               userScroll={() => cancelNavigation()}
-              onExpand={reveal}
               onToolReading={(key) => {
                 if (
                   !alive ||
@@ -4751,7 +4901,10 @@ export function Conversation(props: ConversationProps) {
             ? undefined
             : {
                 open: inspectorOpen(),
-                toggle: () => inspectorOpen.set(!inspectorOpen()),
+                toggle: () => {
+                  selectedSourceKey.set(null);
+                  inspectorOpen.set(!inspectorOpen());
+                },
               }
         }
         stage={platform.idiom === 'terminal' || ownHandle.empty() ? undefined : props.stage?.()}
@@ -5174,6 +5327,8 @@ export function Conversation(props: ConversationProps) {
                 activeWorktree={props.activeWorktree}
                 selectWorktree={props.selectWorktree}
                 sources={props.sources}
+                answerSources={inspectorSources}
+                openLink={openLink}
                 childSessions={() => props.childSessions?.() ?? []}
                 openChanges={
                   props.openChangesWithWorktree ??

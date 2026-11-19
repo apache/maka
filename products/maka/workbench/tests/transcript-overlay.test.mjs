@@ -29,6 +29,7 @@ import {
 import {
   HistoryRows,
   historyFollowTail,
+  historyRowThrough,
   historyTurnKey,
   mergeHistoryPage,
   stableRowId,
@@ -363,4 +364,33 @@ test('expanded group steps keep the chat follow tail and newer streamed text int
   put([chunk({ ...thought, text: 'First. Second.' })], 5);
   put([chunk({ ...thought, text: 'First.' })], 4);
   assert.equal(rows.byMessage.get('ext-thought/thinking').text, 'First. Second.');
+});
+
+test('a row opened during refresh is read at a fence that contains it', () => {
+  const oldFence = 11;
+  const position = {
+    kind: 'live',
+    sequence: 12,
+    fact: '00000000-0000-4000-8000-000000000012',
+    itemIndex: 0,
+  };
+  const [admission] = mergeHistoryPage(
+    [
+      {
+        position,
+        order: { path: [position.sequence], itemIndex: 0 },
+        field: 'body',
+        role: 'user',
+        messageId: 'completion',
+        offset: 0,
+        totalBytes: 0,
+        text: '',
+      },
+    ],
+    () => undefined,
+    false,
+    12,
+  );
+  assert.equal(historyRowThrough(admission, oldFence), 12);
+  assert.equal(historyRowThrough(admission, 34), 34);
 });

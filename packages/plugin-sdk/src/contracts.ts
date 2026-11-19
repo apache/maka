@@ -174,6 +174,21 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'artifact',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'room',
                       },
                       messageId: {
@@ -383,6 +398,21 @@ export const contracts: {
             $defs: {
               AgentAttachmentImageSource: {
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'artifact',
+                      },
+                      id: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'id'],
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -1137,9 +1167,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -1386,6 +1419,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -1804,9 +1840,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -2254,9 +2293,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -2735,9 +2777,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -2984,6 +3029,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -4497,9 +4545,12 @@ export const contracts: {
             $defs: {
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -6598,9 +6649,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -7430,6 +7484,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -7791,9 +7848,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -8040,6 +8100,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -8295,9 +8358,12 @@ export const contracts: {
             $defs: {
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -8477,9 +8543,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -8763,9 +8832,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -11703,9 +11775,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -11952,6 +12027,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -12483,9 +12561,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -12733,6 +12814,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -12946,9 +13030,12 @@ export const contracts: {
             $defs: {
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -15983,6 +16070,33 @@ export const contracts: {
                       },
                     ],
                   },
+                  sourceCitation: {
+                    description: 'Provider citation evidence, not assistant prose.',
+                    type: 'boolean',
+                  },
+                  citation: {
+                    description:
+                      'Structured source on the first fragment, with bounded display labels.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryCitation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  citationAnchor: {
+                    description: 'Target ordinal belongs to the same model attempt as this source.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/CitationAnchor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   hasReferences: {
                     description:
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
@@ -16161,6 +16275,96 @@ export const contracts: {
               ModelAttemptId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryCitation: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'url',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'url'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'document',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                      filename: {
+                        type: ['string', 'null'],
+                      },
+                      documentIndex: {
+                        description: 'Document identity within this model request.',
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'title'],
+                  },
+                ],
+              },
+              CitationAnchor: {
+                description:
+                  'Location in one assistant text part. Ranges are half-open Unicode scalar offsets.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      end: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part', 'start', 'end'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'block_end',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part'],
+                  },
+                ],
               },
               HistoryQuote: {
                 description:
@@ -19248,9 +19452,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -19497,6 +19704,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -20445,9 +20655,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -20694,6 +20907,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -21536,6 +21752,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -21552,6 +21774,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -22666,9 +22893,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -22915,6 +23145,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -24575,6 +24808,33 @@ export const contracts: {
                       },
                     ],
                   },
+                  sourceCitation: {
+                    description: 'Provider citation evidence, not assistant prose.',
+                    type: 'boolean',
+                  },
+                  citation: {
+                    description:
+                      'Structured source on the first fragment, with bounded display labels.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryCitation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  citationAnchor: {
+                    description: 'Target ordinal belongs to the same model attempt as this source.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/CitationAnchor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   hasReferences: {
                     description:
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
@@ -24753,6 +25013,96 @@ export const contracts: {
               ModelAttemptId: {
                 type: 'string',
                 format: 'uuid',
+              },
+              HistoryCitation: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'url',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'url'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'document',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                      filename: {
+                        type: ['string', 'null'],
+                      },
+                      documentIndex: {
+                        description: 'Document identity within this model request.',
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'title'],
+                  },
+                ],
+              },
+              CitationAnchor: {
+                description:
+                  'Location in one assistant text part. Ranges are half-open Unicode scalar offsets.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'range',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      start: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      end: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part', 'start', 'end'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'block_end',
+                      },
+                      part: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'part'],
+                  },
+                ],
               },
               HistoryQuote: {
                 description:
@@ -27516,9 +27866,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -27765,6 +28118,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -29409,9 +29765,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -29658,6 +30017,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -29906,6 +30268,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -30021,6 +30386,12 @@ export const contracts: {
               AgentModelChoice: {
                 type: 'object',
                 properties: {
+                  serviceTiers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelServiceTier',
+                    },
+                  },
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
                   },
@@ -30051,6 +30422,18 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
               },
+              ModelServiceTier: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'name'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -30069,6 +30452,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -30264,6 +30650,12 @@ export const contracts: {
               AgentModelChoice: {
                 type: 'object',
                 properties: {
+                  serviceTiers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelServiceTier',
+                    },
+                  },
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
                   },
@@ -30294,6 +30686,18 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
               },
+              ModelServiceTier: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'name'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -30312,6 +30716,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -30694,9 +31101,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -30943,6 +31353,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -31865,9 +32278,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -32006,9 +32422,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -33343,7 +33762,7 @@ export const contracts: {
                 type: 'string',
               },
               path: {
-                $ref: '#/$defs/WorkspacePath',
+                $ref: '#/$defs/FileReadPath',
               },
               expectedVersion: {
                 type: ['string', 'null'],
@@ -33355,6 +33774,25 @@ export const contracts: {
             additionalProperties: false,
             required: ['sessionId', 'path'],
             $defs: {
+              FileReadPath: {
+                description:
+                  'A file selected for reading. Only workspace paths are accepted by editing APIs.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/WorkspacePath',
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      absolute: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['absolute'],
+                  },
+                ],
+              },
               WorkspacePath: {
                 type: 'object',
                 properties: {
@@ -34118,9 +34556,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -34367,6 +34808,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -35114,9 +35558,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -35507,6 +35954,59 @@ export const contracts: {
                     const: 'screen_recording',
                   },
                 ],
+              },
+            },
+          },
+          resources: {},
+        },
+        resolveFileLink: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentFileLinkRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              pathBytes: {
+                description: 'Exact percent-decoded Markdown path bytes.',
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'pathBytes'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'FileReadPath',
+            description:
+              'A file selected for reading. Only workspace paths are accepted by editing APIs.',
+            anyOf: [
+              {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              {
+                type: 'object',
+                properties: {
+                  absolute: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['absolute'],
+              },
+            ],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
               },
             },
           },
@@ -36519,6 +37019,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -36535,6 +37041,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -37357,6 +37868,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -37542,6 +38056,79 @@ export const contracts: {
             },
           },
           resources: {},
+        },
+        saveFile: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFile',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              path: {
+                $ref: '#/$defs/WorkspacePath',
+              },
+              expectedVersion: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'path', 'expectedVersion'],
+            $defs: {
+              WorkspacePath: {
+                type: 'object',
+                properties: {
+                  bytesBase64: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['bytesBase64'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSaveFileResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  version: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'version'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {
+            content: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
         },
         saveGitHubToken: {
           mode: 'mutation',
@@ -38197,9 +38784,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -38656,9 +39246,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -39402,9 +39995,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -39984,6 +40580,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -40294,9 +40893,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -40543,6 +41145,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -41028,6 +41633,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -41655,6 +42263,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -42329,6 +42940,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -42677,9 +43291,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -42926,6 +43543,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -43351,6 +43971,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -43695,9 +44318,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -43935,6 +44561,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -45358,6 +45987,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -46104,6 +46736,12 @@ export const contracts: {
                   permissions: {
                     $ref: '#/$defs/Permissions',
                   },
+                  source: {
+                    description:
+                      'Network access granted for this request covers only later requests from\nthe same source; filesystem access covers all of them. Requests stored\nbefore sources were recorded decode as Web, the only source that could\nbe granted network access then.',
+                    $ref: '#/$defs/PermissionSource',
+                    default: 'web',
+                  },
                 },
                 additionalProperties: false,
                 required: ['reason', 'permissions'],
@@ -46120,6 +46758,11 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['command', 'cwd'],
+              },
+              PermissionSource: {
+                description: 'The tool family whose authority raised a permission request.',
+                type: 'string',
+                enum: ['processes', 'web', 'files'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -47171,6 +47814,9 @@ export const contracts: {
                         type: 'string',
                         minLength: 1,
                       },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
                       thinkingLevel: {
                         anyOf: [
                           {
@@ -47917,9 +48563,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -48166,6 +48815,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -48534,6 +49186,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -50510,9 +51165,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -50722,9 +51380,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -52681,6 +53342,12 @@ export const contracts: {
               AgentModelChoice: {
                 type: 'object',
                 properties: {
+                  serviceTiers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelServiceTier',
+                    },
+                  },
                   selection: {
                     $ref: '#/$defs/AgentBackendPreference',
                   },
@@ -52711,6 +53378,18 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
               },
+              ModelServiceTier: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'name'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -52729,6 +53408,9 @@ export const contracts: {
                       modelId: {
                         type: 'string',
                         minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -53143,9 +53825,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -53889,9 +54574,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -66789,6 +67477,53 @@ export const contracts: {
           },
           resources: {},
         },
+        dictationConnections: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsPreferencesRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Array_of_DictationConnection',
+            type: 'array',
+            items: {
+              $ref: '#/$defs/DictationConnection',
+            },
+            $defs: {
+              DictationConnection: {
+                type: 'object',
+                properties: {
+                  basis: {
+                    $ref: '#/$defs/ConnectionVersionBasis',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['basis', 'name'],
+              },
+              ConnectionVersionBasis: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision'],
+              },
+            },
+          },
+          resources: {},
+        },
         models: {
           mode: 'query',
           input: {
@@ -67060,9 +67795,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -68324,9 +69062,12 @@ export const contracts: {
               },
               ModelSelection: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
+                  'Selected model and optional service tier, resolved from the connection at admission.',
                 type: 'object',
                 properties: {
+                  serviceTier: {
+                    type: ['string', 'null'],
+                  },
                   connectionId: {
                     type: 'string',
                     minLength: 1,
@@ -69199,6 +69940,48 @@ export const contracts: {
                 required: ['connectionId', 'modelId'],
               },
             },
+          },
+          resources: {},
+        },
+        transcribeDictation: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DictationInput',
+            type: 'object',
+            properties: {
+              connection: {
+                $ref: '#/$defs/ConnectionVersionBasis',
+              },
+              audio: {
+                type: 'string',
+                maxLength: 5400000,
+              },
+            },
+            additionalProperties: false,
+            required: ['connection', 'audio'],
+            $defs: {
+              ConnectionVersionBasis: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'string',
+            type: 'string',
           },
           resources: {},
         },
@@ -81390,6 +82173,238 @@ export const contracts: {
           },
           resources: {},
         },
+        presentTarget: {
+          mode: 'mutation',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              feedId: {
+                type: 'string',
+              },
+              targetId: {
+                type: 'string',
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              area: {
+                $ref: '#/$defs/ComputerPresentationArea',
+              },
+            },
+            required: ['sessionId', 'bindingId', 'feedId', 'targetId', 'revision', 'area'],
+            title: 'ComputerPresentTarget',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ComputerPresentationArea: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  x: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  y: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  width: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  height: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                },
+                required: ['x', 'y', 'width', 'height'],
+              },
+            },
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'presented',
+                  },
+                  details: true,
+                },
+                required: ['kind', 'details'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'requested',
+                  },
+                  details: true,
+                },
+                required: ['kind', 'details'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'partial',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                  details: true,
+                },
+                required: ['kind', 'message', 'details'],
+              },
+            ],
+            title: 'ComputerPresentationResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
+        readFrame: {
+          mode: 'query',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              feedId: {
+                type: 'string',
+              },
+              targetId: {
+                type: 'string',
+              },
+              after: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['sessionId', 'bindingId', 'feedId', 'targetId', 'after'],
+            title: 'ComputerReadFrame',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'frame',
+                  },
+                  frame: {
+                    $ref: '#/$defs/ComputerStageFrame',
+                  },
+                },
+                required: ['kind', 'frame'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'pending',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+            ],
+            title: 'ComputerFrameResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ComputerStageFrame: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  bindingId: {
+                    type: 'string',
+                  },
+                  targetId: {
+                    type: 'string',
+                  },
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  dataBase64: {
+                    type: 'string',
+                  },
+                  width: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  height: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                required: [
+                  'revision',
+                  'sessionId',
+                  'bindingId',
+                  'targetId',
+                  'sequence',
+                  'mimeType',
+                  'dataBase64',
+                  'width',
+                  'height',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         reset: {
           mode: 'mutation',
           input: {
@@ -81459,6 +82474,136 @@ export const contracts: {
             enum: ['fresh', 'ready', 'reset_required'],
             title: 'ComputerReplState',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
+        watchFrames: {
+          mode: 'subscription',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              targetIds: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                minItems: 1,
+                maxItems: 5,
+              },
+              selectedTargetId: {
+                type: ['string', 'null'],
+              },
+            },
+            required: ['sessionId', 'bindingId', 'targetIds'],
+            title: 'ComputerWatchFrames',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: 'string',
+              },
+              feedId: {
+                type: 'string',
+              },
+              targetId: {
+                type: 'string',
+              },
+              sequence: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['sessionId', 'bindingId', 'feedId', 'targetId', 'sequence'],
+            description:
+              'Notifications are small. Encoded images stay in one replaceable slot per\ntarget, never in the ordered Host subscription queue or durable history.',
+            title: 'ComputerFrameNotice',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
+        watchStage: {
+          mode: 'subscription',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+            },
+            required: ['sessionId'],
+            title: 'ComputerWatchStage',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              bindingId: {
+                type: ['string', 'null'],
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              targets: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/ComputerStageTarget',
+                },
+              },
+              activeTargetId: {
+                type: ['string', 'null'],
+              },
+            },
+            required: ['sessionId', 'revision', 'targets'],
+            title: 'ComputerStageSnapshot',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ComputerStageTarget: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  kind: {
+                    $ref: '#/$defs/ComputerStageTargetKind',
+                  },
+                },
+                required: ['id', 'revision', 'title', 'kind'],
+              },
+              ComputerStageTargetKind: {
+                type: 'string',
+                enum: ['app', 'browser'],
+              },
+            },
           },
           resources: {},
         },

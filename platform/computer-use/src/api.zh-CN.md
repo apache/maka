@@ -29,7 +29,8 @@ ChatGPT 和原版 OpenCLI 按实际能力尽力兼容。原版 OpenCLI 当前无
 
 入口（选择目标时自动输出初始状态）：
 - `await cua.getState({emit?})`：应用和可用浏览器清单，包括清单错误。
-- `await cua.listApps({emit?})`、`await cua.listWindows({emit?})`。
+- `await cua.listApps({emit?})`、`await cua.listWindows({pid?, emit?})`。
+  macOS 传入已观察的 app PID 时，会包含该 app 的浮动面板。
   窗口条目包含 `pid` 和 `bindable`，选择 `bindable: true` 的窗口。不可绑定的条目包含
   `bindingError`。macOS 可绑定窗口还提供 `applicationId` 和 `appPath`，绑定时会检查当前窗口身份和应用授权。
 - `const app = await cua.getApp("Name / bundle ID / app path")` 或 `getApp({windowId})`。

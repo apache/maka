@@ -98,6 +98,9 @@ fn base(
             },
             position,
             model_part: None,
+            source_citation: false,
+            citation: None,
+            citation_anchor: None,
             has_references: false,
             quotes: Vec::new(),
             final_output: false,
@@ -134,6 +137,43 @@ fn base(
 fn text(row: &mut Row, field: SourceField, body: TextBody) {
     row.body = Body::Text(body.clone());
     row.fields.push((field, Field::Text(body)));
+}
+pub(super) fn citation_body(chunk: &mut Chunk, mut citation: wire::HistoryCitation) -> String {
+    // Metadata must fit even on a page containing just the first byte of a
+    // source row. The complete label and URL remain in the paginated body.
+    fn bound_label(label: &mut String) {
+        label.truncate(label.floor_char_boundary(512));
+    }
+    chunk.source_citation = true;
+    let body = match &mut citation {
+        wire::HistoryCitation::Url { url, title } => {
+            let body = title
+                .as_ref()
+                .map_or_else(|| url.clone(), |title| format!("[{title}]({url})"));
+            // A prefix of a URL could point somewhere else.
+            if url.len() > 8192 {
+                return body;
+            }
+            if let Some(title) = title {
+                bound_label(title);
+            }
+            body
+        }
+        wire::HistoryCitation::Document {
+            title, filename, ..
+        } => {
+            let body = filename
+                .as_ref()
+                .map_or_else(|| title.clone(), |file| format!("{title} ({file})"));
+            bound_label(title);
+            if let Some(filename) = filename {
+                bound_label(filename);
+            }
+            body
+        }
+    };
+    chunk.citation = Some(citation);
+    body
 }
 pub(super) fn quotes(input: &[maka_agent_facts::input::QuoteRef]) -> Vec<wire::HistoryQuote> {
     fn prefix(text: &str, bytes: usize) -> String {
@@ -224,6 +264,106 @@ fn apply_display(call: &mut wire::ToolCall, display: &ToolDisplay) {
         .map(|title| Box::new(maka_agent_facts::display::Text::plain(title.clone())));
     call.presentation = display.presentation.as_deref().map(Into::into);
 }
+
+fn web_search_name(name: &str) -> bool {
+    // Providers and gateways may qualify a tool, change its casing, or append a release date.
+    let name = name.to_ascii_lowercase();
+    let mut segments = name.rsplit(['.', ':', '/']).filter(|s| !s.is_empty());
+    let leaf = segments.next().unwrap_or_default();
+    let namespace = segments.next();
+    if matches!(
+        (namespace, leaf),
+        (Some("web"), "run" | "search") | (Some("browser" | "google" | "bing"), "search")
+    ) {
+        return true;
+    }
+    let compact: String = leaf.chars().filter(|c| !matches!(c, '_' | '-')).collect();
+    let stem = compact.trim_end_matches(|c: char| c.is_ascii_digit());
+    if !matches!(compact.len() - stem.len(), 0 | 8) {
+        return false;
+    }
+    matches!(
+        stem,
+        "websearch"
+            | "websearchcall"
+            | "websearchpreview"
+            | "webrun"
+            | "browsersearch"
+            | "deepseekwebsearch"
+            | "searchweb"
+            | "searchtheweb"
+            | "internetsearch"
+            | "searchinternet"
+            | "googlesearchretrieval"
+            | "googlesearch"
+            | "bingsearch"
+    )
+}
+
+fn first_search_query(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim()),
+        Value::Array(entries) => entries.iter().find_map(first_search_query),
+        Value::Object(fields) => [
+            "queries",
+            "query",
+            "q",
+            "search_query",
+            "searchQuery",
+            "search_queries",
+            "searchQueries",
+            "search_terms",
+            "searchTerms",
+            "keywords",
+        ]
+        .iter()
+        .filter_map(|k| fields.get(*k))
+        .find_map(first_search_query),
+        _ => None,
+    }
+}
+
+fn apply_provider_search(call: &mut wire::ToolCall, state: &maka_agent_state::fold::Tool) {
+    let recorded = &state.call;
+    if !recorded.provider_executed
+        || recorded
+            .provider_options
+            .as_ref()
+            .and_then(|v| v.pointer("/anthropic/serverName"))
+            .is_some()
+    {
+        return;
+    }
+    let result = state.provider_result.as_ref();
+    let replay = result
+        .and_then(|r| r.provider_options.as_ref())
+        .and_then(|v| v.pointer("/openai/responsesReplay/fields/type"))
+        .and_then(Value::as_str);
+    let is_search = match replay {
+        Some(kind) => kind == "web_search_call",
+        None => web_search_name(&recorded.name),
+    };
+    if !is_search {
+        return;
+    }
+    call.presentation = Some("provider.web_search".into());
+    let action = result.map(|result| &result.output["action"]);
+    let query = recorded
+        .input
+        .as_json()
+        .filter(|input| input.is_object())
+        .and_then(first_search_query)
+        .or_else(|| action.and_then(first_search_query))
+        .or_else(|| {
+            result
+                .filter(|r| r.output.is_object())
+                .and_then(|r| first_search_query(&r.output))
+        });
+    call.title = query
+        .and_then(maka_agent_facts::display::Text::single_line)
+        .map(Box::new);
+}
+
 fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>) {
     row.chunk.tool = Some(wire::Tool {
         tool_use_id: id,
@@ -444,19 +584,28 @@ pub(super) async fn project(
                     }
                     *text_kind == TextKind::Text && phase != Some("commentary")
                 }
-                ModelPart::Source { source } => {
-                    let body = match source {
-                        maka_agent_facts::model::ModelSource::Url { url, title, .. } => match title
-                        {
-                            Some(title) => format!("[{title}]({url})"),
-                            None => url.clone(),
+                ModelPart::Source { source, anchor } => {
+                    use maka_agent_facts::model::ModelSource;
+                    let citation = match source {
+                        ModelSource::Url { url, title, .. } => wire::HistoryCitation::Url {
+                            url: url.clone(),
+                            title: title.clone(),
                         },
-                        maka_agent_facts::model::ModelSource::Document {
-                            title, filename, ..
-                        } => filename
-                            .as_ref()
-                            .map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
+                        ModelSource::Document {
+                            title,
+                            filename,
+                            provider_options,
+                            ..
+                        } => wire::HistoryCitation::Document {
+                            title: title.clone(),
+                            filename: filename.clone(),
+                            document_index: provider_options
+                                .as_ref()
+                                .and_then(|v| v["anthropic"]["documentIndex"].as_u64()),
+                        },
                     };
+                    row.chunk.citation_anchor = *anchor;
+                    let body = citation_body(&mut row.chunk, citation);
                     text(&mut row, SourceField::Body, body.into());
                     true
                 }
@@ -543,6 +692,8 @@ pub(super) async fn project(
                     call.dispatched = state.admitted;
                     if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
                         apply_display(call, display);
+                    } else {
+                        apply_provider_search(call, state);
                     }
                 }
             }

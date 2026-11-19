@@ -929,8 +929,10 @@ impl TransitionProps {
     pub const SHADOW: u8 = 8;
     /// Corner radii and border widths.
     pub const SHAPE: u8 = 16;
+    /// A single foreground blur filter, including transitions to/from none.
+    pub const FILTER: u8 = 32;
     /// Everything that can transition.
-    pub const ALL: u8 = 0x1f;
+    pub const ALL: u8 = 0x3f;
 
     /// True if `group` is included.
     #[inline]

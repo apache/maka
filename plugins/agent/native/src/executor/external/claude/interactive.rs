@@ -65,7 +65,11 @@ pub(in crate::executor::external) async fn execute(
         .arg(if resume { "--resume" } else { "--session-id" })
         .arg(&session)
         .arg("--mcp-config")
-        .arg(mcp_path);
+        .arg(mcp_path)
+        // These tools wait for an answer in Claude's own terminal UI, which the
+        // Host never shows. Questions go through the Host's AskUserQuestion tool.
+        .arg("--disallowedTools")
+        .arg("AskUserQuestion,EnterPlanMode,ExitPlanMode");
     if let Some(model) = request["model"]
         .as_str()
         .filter(|model| *model != "default")
@@ -153,27 +157,30 @@ pub(in crate::executor::external) async fn execute(
             let prompt = input::text(runtime::string(request, "/message")?);
             let images = request["images"].as_array().expect("canonical images");
             let update = journal.instruction_update(request["instructions"].as_str());
-            let prompt = if let Some(update) = update {
+            let input = if let Some(update) = update {
                 let bootstrap = input::text(&runtime::bootstrap_message(&update.text));
-                let sent = input::submit(
-                    &mut stdin,
-                    &mut screen,
-                    cwd,
-                    &bootstrap,
-                    &[],
-                    &bridge,
-                    &mut start,
+                let sent = unless_stopped(
+                    &stop,
+                    input::submit(
+                        &mut stdin,
+                        &mut screen,
+                        cwd,
+                        &bootstrap,
+                        &[],
+                        &bridge,
+                        &mut start,
+                    ),
                 )
                 .await?;
                 let outcome = observe(
                     &mut cursor,
                     &session,
                     &sent,
-                    0,
                     &BootstrapOutput(output.as_ref()),
                     &mut stdin,
                     &mut screen,
                     &mut start,
+                    &stop,
                     None,
                 )
                 .await?;
@@ -181,36 +188,44 @@ pub(in crate::executor::external) async fn execute(
                     return Ok(outcome);
                 }
                 journal.confirm_instructions(update).await?;
-                input::send(&mut stdin, &mut screen, &prompt, images, &mut start).await?
+                unless_stopped(
+                    &stop,
+                    input::send(&mut stdin, &mut screen, &prompt, images, &mut start),
+                )
+                .await?
             } else {
-                input::submit(
-                    &mut stdin,
-                    &mut screen,
-                    cwd,
-                    &prompt,
-                    images,
-                    &bridge,
-                    &mut start,
+                unless_stopped(
+                    &stop,
+                    input::submit(
+                        &mut stdin,
+                        &mut screen,
+                        cwd,
+                        &prompt,
+                        images,
+                        &bridge,
+                        &mut start,
+                    ),
                 )
                 .await?
             };
             observe(
                 &mut cursor,
                 &session,
-                &prompt,
-                images.len(),
+                &input,
                 output.as_ref(),
                 &mut stdin,
                 &mut screen,
                 &mut start,
+                &stop,
                 Some((journal, steering)),
             )
             .await
         };
+        // `work` answers the stop itself, between two outputs. Dropping it here
+        // could leave an output recorded by the Host but not acknowledged to it.
         tokio::select! {
             biased;
             () = observation.retired.cancelled() => Err(Error::ObservationRetired),
-            () = stop.cancelled() => Err(Error::Cancelled),
             () = bridge.failed.cancelled() => Err(Error::Unknown),
             result = work => result,
             () = terminal_done.cancelled() => Err(Error::Unknown),
@@ -448,23 +463,22 @@ impl OutputSink for BootstrapOutput<'_> {
 async fn observe(
     cursor: &mut Cursor,
     session: &str,
-    prompt: &str,
-    images: usize,
+    input: &input::Submitted,
     output: &dyn OutputSink,
     io: &mut (impl tokio::io::AsyncWrite + Unpin + Send),
     screen: &mut tokio::sync::watch::Receiver<input::Screen>,
     start: &mut Start,
+    stop: &CancellationToken,
     task: Option<(&journal::ProtocolSession, &mut steering::Steering)>,
 ) -> Result<Outcome, Error> {
     let (journal, mut steering) = match task {
         Some((journal, steering)) => (Some(journal), Some(steering)),
         None => (None, None),
     };
-    let mut deadline = Some(input_deadline(prompt));
+    let mut deadline = Some(input_deadline(&input.prompt));
     let mut turn = LiveTurn {
         session,
-        prompt,
-        images,
+        input,
         admitted: false,
         pending: Default::default(),
         assistant: false,
@@ -477,105 +491,121 @@ async fn observe(
         usage: Default::default(),
         duration_ms: 0,
     };
-    loop {
-        // Keep this future across ready/take/paste. Dropping Cursor::next after it
-        // drained a large row would also discard its in-flight blocking JSON parse.
-        let next = async {
-            loop {
-                if let Some(row) = cursor.next().await? {
-                    return Ok::<_, Error>(row);
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        };
-        tokio::pin!(next);
-        let row = loop {
-            tokio::select! {
-                biased;
-                row = &mut next => break row?,
-                ready = async {
-                    match steering.as_deref_mut() {
-                        Some(steering) => steering.ready().await,
-                        None => std::future::pending().await,
+    let result = async {
+        loop {
+            // Keep this future across ready/take/paste. Dropping Cursor::next after it
+            // drained a large row would also discard its in-flight blocking JSON parse.
+            let next = async {
+                loop {
+                    if let Some(row) = cursor.next().await? {
+                        return Ok::<_, Error>(row);
                     }
-                }, if turn.admitted => {
-                    ready?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                () = async {
-                    match deadline {
-                        Some(at) => tokio::time::sleep_until(at).await,
-                        None => std::future::pending().await,
+            };
+            tokio::pin!(next);
+            let row = loop {
+                tokio::select! {
+                    biased;
+                    () = stop.cancelled() => return Err(Error::Cancelled),
+                    row = &mut next => break row?,
+                    ready = async {
+                        match steering.as_deref_mut() {
+                            Some(steering) => steering.ready().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if turn.admitted => {
+                        ready?;
                     }
-                } => {
-                    return Err(Error::Invalid(
-                        "Claude native JSONL did not confirm prompt admission within the input budget".into(),
-                    ));
+                    () = async {
+                        match deadline {
+                            Some(at) => tokio::time::sleep_until(at).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        return Err(Error::Invalid(
+                            "Claude native JSONL did not confirm prompt admission within the input budget".into(),
+                        ));
+                    }
                 }
-            }
-            // Commit only outside select: cancellation of ready cannot consume input.
-            if let Some(steering) = steering.as_deref_mut()
+                // Commit only outside select: cancellation of ready cannot consume input.
+                if let Some(steering) = steering.as_deref_mut()
+                    && let Some(request) = steering.take().await?
+                {
+                    let images = request["images"]
+                        .as_array()
+                        .expect("canonical steering images");
+                    let prompt = input::text(runtime::string(&request, "/message")?);
+                    turn.pending.push_back(
+                        unless_stopped(stop, input::send(io, screen, &prompt, images, start)).await?,
+                    );
+                }
+            };
+            let terminal = row["type"] == "system"
+                && row["subtype"] == "turn_duration"
+                && row.get("isSidechain").and_then(Value::as_bool) != Some(true);
+            // A ready batch at the final native boundary still belongs to this PTY.
+            // Take it before row() can settle; an empty take does not create a new turn.
+            if terminal
+                && turn.admitted
+                && row.get("sessionId").and_then(Value::as_str) == Some(session)
+                && turn.pending.is_empty()
+                && let Some(steering) = steering.as_deref_mut()
                 && let Some(request) = steering.take().await?
             {
                 let images = request["images"]
                     .as_array()
                     .expect("canonical steering images");
                 let prompt = input::text(runtime::string(&request, "/message")?);
-                let prompt = input::send(io, screen, &prompt, images, start).await?;
-                turn.pending.push_back(SubmittedInput {
-                    prompt,
-                    images: images.len(),
-                });
+                turn.pending.push_back(
+                    unless_stopped(stop, input::send(io, screen, &prompt, images, start)).await?,
+                );
             }
-        };
-        let terminal = row["type"] == "system"
-            && row["subtype"] == "turn_duration"
-            && row.get("isSidechain").and_then(Value::as_bool) != Some(true);
-        // A ready batch at the final native boundary still belongs to this PTY.
-        // Take it before row() can settle; an empty take does not create a new turn.
-        if terminal
-            && turn.admitted
-            && row.get("sessionId").and_then(Value::as_str) == Some(session)
-            && turn.pending.is_empty()
-            && let Some(steering) = steering.as_deref_mut()
-            && let Some(request) = steering.take().await?
-        {
-            let images = request["images"]
-                .as_array()
-                .expect("canonical steering images");
-            let prompt = input::text(runtime::string(&request, "/message")?);
-            let prompt = input::send(io, screen, &prompt, images, start).await?;
-            turn.pending.push_back(SubmittedInput {
-                prompt,
-                images: images.len(),
-            });
+            let pending = turn.pending.len();
+            let admitted = turn.admitted;
+            if let Some(outcome) = turn.row(row, output).await? {
+                return Ok(outcome);
+            }
+            if !admitted
+                && turn.admitted
+                && let Some(journal) = journal
+            {
+                journal
+                    .bind_task(NativeTask::ClaudePty {
+                        session: session.into(),
+                    })
+                    .await?;
+            }
+            if (!admitted && turn.admitted) || turn.pending.len() < pending {
+                // A native busy queue can wait on arbitrarily long running tools.
+                deadline = None;
+            }
+            if terminal
+                && turn.admitted
+                && deadline.is_none()
+                && let Some(input) = turn.pending.front()
+            {
+                // Once a native turn ends, the queued input must be admitted, not lost.
+                deadline = Some(input_deadline(&input.prompt));
+            }
         }
-        let pending = turn.pending.len();
-        let admitted = turn.admitted;
-        if let Some(outcome) = turn.row(row, output).await? {
-            return Ok(outcome);
-        }
-        if !admitted
-            && turn.admitted
-            && let Some(journal) = journal
-        {
-            journal
-                .bind_task(NativeTask::ClaudePty {
-                    session: session.into(),
-                })
-                .await?;
-        }
-        if (!admitted && turn.admitted) || turn.pending.len() < pending {
-            // A native busy queue can wait on arbitrarily long running tools.
-            deadline = None;
-        }
-        if terminal
-            && turn.admitted
-            && deadline.is_none()
-            && let Some(input) = turn.pending.front()
-        {
-            // Once a native turn ends, the queued input must be admitted, not lost.
-            deadline = Some(input_deadline(&input.prompt));
-        }
+    }
+    .await;
+    // The Host accepts the end of a turn only when every message it saw start has ended.
+    if matches!(result, Err(Error::Cancelled)) {
+        turn.end_message(output).await?;
+    }
+    result
+}
+/// Terminal input publishes nothing to the Host, so a stop may end it at any point.
+async fn unless_stopped<T>(
+    stop: &CancellationToken,
+    input: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => Err(Error::Cancelled),
+        result = input => result,
     }
 }
 fn input_deadline(prompt: &str) -> tokio::time::Instant {
@@ -583,23 +613,58 @@ fn input_deadline(prompt: &str) -> tokio::time::Instant {
         + runtime::SETUP_TIMEOUT
         + Duration::from_secs(prompt.len() as u64 / (32 * 1024))
 }
-struct SubmittedInput {
-    prompt: String,
-    images: usize,
-}
-fn matches_input(content: &Value, prompt: &str, images: usize) -> bool {
-    content_text(content) == prompt
-        && content.as_array().map_or(images == 0, |blocks| {
+/// Whether a transcript row's content records this input. Claude writes the image
+/// markers first and records a pasted prompt between `<pasted_content id="…">` tags.
+fn matches_input(content: &Value, input: &input::Submitted) -> bool {
+    content_text(content)
+        .strip_prefix(input.markers.as_str())
+        .is_some_and(|text| text == input.prompt || matches_pasted(text, &input.prompt))
+        && content.as_array().map_or(input.images == 0, |blocks| {
             !blocks.iter().any(|b| b["type"] == "tool_result")
-                && blocks.iter().filter(|b| b["type"] == "image").count() == images
+                && blocks.iter().filter(|b| b["type"] == "image").count() == input.images
         })
+}
+/// Claude ends the pasted text with a newline only when it has none, so the
+/// record alone does not say whether the prompt ended with one.
+fn matches_pasted(text: &str, prompt: &str) -> bool {
+    let Some((id, body)) = text
+        .trim_start_matches('\n')
+        .strip_prefix("<pasted_content id=\"")
+        .and_then(|rest| rest.split_once("\">\n"))
+    else {
+        return false;
+    };
+    let Some(rest) = body.strip_prefix(prompt) else {
+        return false;
+    };
+    let rest = if prompt.ends_with('\n') {
+        Some(rest)
+    } else {
+        rest.strip_prefix('\n')
+    };
+    !id.is_empty()
+        && !id.contains(['"', '\n'])
+        && rest.is_some_and(|rest| {
+            rest.trim_end_matches('\n') == format!("</pasted_content id=\"{id}\">")
+        })
+}
+/// The content of a row that records submitted input. Claude gives input that
+/// arrives while it works to the running turn as a `queued_command` attachment
+/// and writes no user row for it.
+fn input_content(row: &Value) -> Option<&Value> {
+    match row.get("type").and_then(Value::as_str)? {
+        "user" => row.pointer("/message/content"),
+        "attachment" if row["attachment"]["type"] == "queued_command" => {
+            row.pointer("/attachment/prompt")
+        }
+        _ => None,
+    }
 }
 struct LiveTurn<'a> {
     session: &'a str,
-    prompt: &'a str,
-    images: usize,
+    input: &'a input::Submitted,
     admitted: bool,
-    pending: std::collections::VecDeque<SubmittedInput>,
+    pending: std::collections::VecDeque<input::Submitted>,
     assistant: bool,
     open_message: Option<AssistantMessage>,
     final_message_id: Option<String>,
@@ -648,7 +713,7 @@ impl LiveTurn<'_> {
             if kind == "user"
                 && row
                     .pointer("/message/content")
-                    .is_some_and(|v| matches_input(v, self.prompt, self.images))
+                    .is_some_and(|v| matches_input(v, self.input))
             {
                 if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
                     return Err(Error::Invalid(
@@ -659,11 +724,8 @@ impl LiveTurn<'_> {
             }
             return Ok(None);
         }
-        if kind == "user"
-            && let Some(input) = self.pending.front()
-            && row
-                .pointer("/message/content")
-                .is_some_and(|v| matches_input(v, &input.prompt, input.images))
+        if let Some(input) = self.pending.front()
+            && input_content(&row).is_some_and(|v| matches_input(v, input))
         {
             if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
                 return Err(Error::Invalid(
@@ -884,5 +946,188 @@ impl LiveTurn<'_> {
             }));
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn submitted(markers: &str, prompt: &str, images: usize) -> input::Submitted {
+        input::Submitted {
+            markers: markers.into(),
+            prompt: prompt.into(),
+            images,
+        }
+    }
+    fn with_images(text: &str, images: usize) -> Value {
+        let mut blocks = vec![json!({"type":"text","text":text})];
+        blocks.resize(images + 1, json!({"type":"image","source":{}}));
+        Value::Array(blocks)
+    }
+
+    // Shapes recorded by Claude Code 2.1.327 and 2.1.328.
+    #[test]
+    fn input_matches_the_rows_that_record_it() {
+        let lines = "line 1\nline 2\nline 3\nline 4";
+        let pasted = |body: &str| {
+            format!("\n\n<pasted_content id=\"5748\">\n{body}</pasted_content id=\"5748\">\n")
+        };
+        for (content, input) in [
+            (json!("short"), submitted("", "short", 0)),
+            (
+                with_images("[Image #1]short", 1),
+                submitted("[Image #1]", "short", 1),
+            ),
+            (
+                json!(pasted("line 1\nline 2\nline 3\nline 4\n")),
+                submitted("", lines, 0),
+            ),
+            (
+                json!(pasted("alpha\nbeta\ngamma\n")),
+                submitted("", "alpha\nbeta\ngamma\n", 0),
+            ),
+            (
+                json!(pasted("alpha\nbeta\ngamma\n\n")),
+                submitted("", "alpha\nbeta\ngamma\n\n", 0),
+            ),
+            (
+                json!(pasted("\nline 1\nline 2\nline 3\nline 4\n")),
+                submitted("", &format!("\n{lines}"), 0),
+            ),
+            (
+                with_images(
+                    &format!("[Image #1]{}", pasted("line 1\nline 2\nline 3\nline 4\n")),
+                    1,
+                ),
+                submitted("[Image #1]", lines, 1),
+            ),
+            (
+                with_images(
+                    &format!(
+                        "[Image #3] [Image #4]{}",
+                        pasted("line 1\nline 2\nline 3\nline 4\n")
+                    ),
+                    2,
+                ),
+                submitted("[Image #3] [Image #4]", lines, 2),
+            ),
+        ] {
+            assert!(matches_input(&content, &input), "{content}");
+        }
+    }
+
+    #[test]
+    fn input_does_not_match_other_rows() {
+        let pasted =
+            "\n\n<pasted_content id=\"5748\">\nline 1\nline 2\n</pasted_content id=\"5748\">\n";
+        for (content, input) in [
+            (json!("other"), submitted("", "short", 0)),
+            (
+                json!(
+                    "\n\n<pasted_content id=\"5748\">\nline 1\nline 2\n</pasted_content id=\"9e17\">\n"
+                ),
+                submitted("", "line 1\nline 2", 0),
+            ),
+            // The record has one newline fewer than a prompt that ends with two.
+            (json!(pasted), submitted("", "line 1\nline 2\n\n", 0)),
+            (json!(pasted), submitted("", "line 1", 0)),
+            (
+                json!([{"type":"tool_result","tool_use_id":"call","content":"short"},{"type":"text","text":"short"}]),
+                submitted("", "short", 0),
+            ),
+            (
+                with_images("[Image #1]short", 2),
+                submitted("[Image #1]", "short", 1),
+            ),
+            (with_images("short", 1), submitted("[Image #1]", "short", 1)),
+            (json!("short"), submitted("", "short", 1)),
+        ] {
+            assert!(!matches_input(&content, &input), "{content}");
+        }
+    }
+
+    // Row shapes recorded by Claude Code 2.1.327.
+    #[test]
+    fn input_given_to_the_running_turn_is_read_from_its_attachment() {
+        let queued = |prompt: Value| json!({"type":"attachment","sessionId":"session","attachment":{"type":"queued_command","prompt":prompt,"commandMode":"prompt"}});
+        let pasted = "<pasted_content id=\"9c2b\">\nline 1\nline 2\nline 3\nline 4\n</pasted_content id=\"9c2b\">";
+        for (row, input) in [
+            (
+                queued(json!("one more thing")),
+                submitted("", "one more thing", 0),
+            ),
+            (
+                queued(json!(pasted)),
+                submitted("", "line 1\nline 2\nline 3\nline 4", 0),
+            ),
+            (
+                queued(with_images("[Image #2]look", 1)),
+                submitted("[Image #2]", "look", 1),
+            ),
+        ] {
+            assert!(
+                input_content(&row).is_some_and(|content| matches_input(content, &input)),
+                "{row}"
+            );
+        }
+        for row in [
+            json!({"type":"queue-operation","operation":"enqueue","content":"one more thing"}),
+            json!({"type":"attachment","attachment":{"type":"output_style","prompt":"one more thing"}}),
+        ] {
+            assert!(input_content(&row).is_none(), "{row}");
+        }
+    }
+
+    /// Records what the Host would see, and stops the turn when a message starts.
+    struct Sink {
+        outputs: std::sync::Mutex<Vec<Output>>,
+        stop: CancellationToken,
+    }
+    impl OutputSink for Sink {
+        fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
+            if matches!(output, Output::MessageStart { .. }) {
+                self.stop.cancel();
+            }
+            self.outputs.lock().unwrap().push(output);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stop_ends_the_message_that_is_still_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let mut cursor = Cursor::fence(path.clone(), false).await.unwrap();
+        let rows = [
+            json!({"type":"user","sessionId":"session","message":{"role":"user","content":"prompt"}}),
+            json!({"type":"assistant","sessionId":"session","uuid":"row","message":{"id":"message","content":[{"type":"text","text":"Sleeping."}]}}),
+        ];
+        let lines: String = rows.iter().map(|row| format!("{row}\n")).collect();
+        tokio::fs::write(&path, lines).await.unwrap();
+        let stop = CancellationToken::new();
+        let sink = Sink {
+            outputs: Default::default(),
+            stop: stop.clone(),
+        };
+        let (_screen, mut screen) = tokio::sync::watch::channel(input::Screen::default());
+        let result = observe(
+            &mut cursor,
+            "session",
+            &submitted("", "prompt", 0),
+            &sink,
+            &mut tokio::io::sink(),
+            &mut screen,
+            &mut Start::Submitted,
+            &stop,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Cancelled)));
+        let outputs = sink.outputs.lock().unwrap();
+        assert!(
+            matches!(outputs.last(), Some(Output::MessageEnd { message_id }) if message_id == "message")
+        );
     }
 }

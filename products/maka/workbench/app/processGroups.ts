@@ -44,6 +44,10 @@ export type ProcessRow = Pick<
   | 'work'
   | 'finalOutput'
   | 'finalAnswer'
+  | 'sourceCitation'
+  | 'citation'
+  | 'citationAnchor'
+  | 'runId'
   | 'origin'
   | 'metadataThrough'
   | 'sequence'
@@ -213,6 +217,10 @@ export function sameProcessRows(
         Boolean(row.tool?.result) === Boolean(next.tool?.result) &&
         row.finalOutput === next.finalOutput &&
         row.finalAnswer === next.finalAnswer &&
+        row.sourceCitation === next.sourceCitation &&
+        row.citation === next.citation &&
+        row.citationAnchor === next.citationAnchor &&
+        (!row.sourceCitation || row.citation || row.text === next.text) &&
         row.timing === next.timing &&
         row.metadataThrough === next.metadataThrough
       );

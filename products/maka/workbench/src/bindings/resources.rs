@@ -22,7 +22,7 @@ use maka_plugin_core::contract::{ResourceType, text_resource_type};
 use serde_json::{Value, json};
 use std::{ops::Range, sync::Arc};
 
-pub(super) fn attachments(
+pub(super) fn settings(
     endpoint: &str,
     method: &str,
     input: &Value,
@@ -43,17 +43,16 @@ pub(super) fn attachments(
         ),
     };
     match (required, secret) {
-        (true, Some(secret)) => Ok(Attachments::from([(
-            "secret".into(),
-            Arc::new(Text(secret)) as Arc<dyn ReadResource>,
-        )])),
+        (true, Some(secret)) => Ok(text("secret", secret)),
         (false, None) => Ok(Attachments::new()),
         _ => Err(error.into()),
     }
 }
 
-// Intentionally has no Debug implementation. The key is raw UTF-8 resource
-// bytes, never part of the request's JSON input or durable operation context.
+pub(super) fn text(slot: &str, value: String) -> Attachments {
+    Attachments::from([(slot.into(), Arc::new(Text(value)) as Arc<dyn ReadResource>)])
+}
+
 struct Text(String);
 impl ReadResource for Text {
     fn encoding(&self) -> ResourceEncoding {
@@ -72,6 +71,6 @@ impl ReadResource for Text {
         self.0
             .get(range)
             .map(|text| text.as_bytes().to_vec())
-            .ok_or_else(|| "secret resource range is not on UTF-8 boundaries".into())
+            .ok_or_else(|| "text resource range is not on UTF-8 boundaries".into())
     }
 }

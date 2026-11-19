@@ -28,6 +28,8 @@ export * from './workspace-view.js';
 export interface ConversationShell {
   sessionId(): string | null;
   visible(): boolean;
+  /** Pane visibility when the workbench can cover it without leaving the route. */
+  paneVisible?(): boolean;
   blocked(): boolean;
   connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;

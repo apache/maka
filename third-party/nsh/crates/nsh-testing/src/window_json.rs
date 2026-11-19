@@ -15,6 +15,7 @@ pub(crate) fn to_json(state: &WindowState) -> Value {
         "focused": state.focused,
         "bounds": state.bounds,
         "contentBounds": state.content_bounds,
+        "nativeContentBounds": state.native_content_bounds,
         "placement": state.placement,
         "display": state.display.map(|d| format!("{:016x}", d.0)),
         "scaleFactor": state.scale_factor,
@@ -25,7 +26,7 @@ pub(crate) fn to_json(state: &WindowState) -> Value {
 #[cfg(feature = "js")]
 pub(crate) fn from_json(value: Value) -> Result<Option<WindowState>, String> {
     use nsh_core::{
-        desktop::{DisplayId, WindowMode, WindowPlacement},
+        desktop::{DisplayId, NativeDesktopBounds, WindowMode, WindowPlacement},
         geometry::{Bounds, Points},
     };
     use serde::Deserialize;
@@ -39,6 +40,7 @@ pub(crate) fn from_json(value: Value) -> Result<Option<WindowState>, String> {
         focused: bool,
         bounds: Bounds<Points>,
         content_bounds: Bounds<Points>,
+        native_content_bounds: Option<NativeDesktopBounds>,
         placement: WindowPlacement,
         display: Option<String>,
         scale_factor: f32,
@@ -54,6 +56,7 @@ pub(crate) fn from_json(value: Value) -> Result<Option<WindowState>, String> {
     state.visible = wire.visible;
     state.focused = wire.focused;
     state.content_bounds = wire.content_bounds;
+    state.native_content_bounds = wire.native_content_bounds;
     state.display = wire
         .display
         .and_then(|d| u64::from_str_radix(&d, 16).ok())
@@ -79,7 +82,10 @@ mod tests {
         state.focused = true;
         state.display = Some(DisplayId(0xab));
         state.scale_factor = 2.0;
+        let native = serde_json::json!({"x": -12.5, "y": 2.25, "width": 220.5, "height": 140.25});
+        state.native_content_bounds = Some(serde_json::from_value(native.clone()).unwrap());
         let json = to_json(&state);
+        assert_eq!(json["nativeContentBounds"], native);
         assert_eq!(json["mode"], "maximized");
         assert_eq!(json["contentBounds"]["size"]["width"], 220.0);
         assert_eq!(json["display"], "00000000000000ab");

@@ -18,7 +18,10 @@
  */
 
 mod native_computer;
+mod preview;
 
+#[cfg(target_os = "windows")]
+use crate::driver::native_computer::RawTool;
 use crate::{driver::Driver, protocol::*};
 use cua_driver_contract::{
     AppInfo, ListAppsOutput, ListWindowsOutput, WindowInfo, WindowStateOutput,
@@ -57,6 +60,8 @@ enum EpochState {
     Closed,
 }
 struct Target {
+    #[cfg(target_os = "windows")]
+    windows_source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
     #[cfg(target_os = "macos")]
     macos: Option<crate::macos::controller::Window>,
     #[cfg(target_os = "macos")]
@@ -73,6 +78,7 @@ impl Session {
         epoch: crate::desktop::NativeEpochId,
         owner: crate::desktop::SessionOwner,
     ) -> Self {
+        owner.preview().open_epoch(epoch);
         Self {
             raw_computer: Default::default(),
             native: native.clone(),
@@ -91,6 +97,15 @@ impl Session {
             owner,
             audio: None,
         }
+    }
+
+    pub(crate) fn preview_binding(
+        &self,
+    ) -> (
+        crate::desktop::NativeEpochId,
+        crate::preview::PreviewRegistry,
+    ) {
+        (self.epoch, self.owner.preview())
     }
 
     /// Internal service path for a retained page event, never a model command.
@@ -116,9 +131,18 @@ impl Session {
             ));
         }
         let cursor = self.owner.cursor();
-        self.browsers
+        let response = self
+            .browsers
             .adopt_extension_popup(request, invocation, &cursor, cancellation, language)
-            .await
+            .await?;
+        if let Some(value) = response.get("handle") {
+            let Handle::Tab(handle) = serde_json::from_value(value.clone()).map_err(failed)? else {
+                unreachable!("popup adoption returns a tab")
+            };
+            self.browsers
+                .publish_preview(&handle, &self.owner.preview(), invocation);
+        }
+        Ok(response)
     }
 
     async fn invoke_native(
@@ -293,37 +317,39 @@ impl Session {
     }
 
     /// Arm deferred browser waits before the caller releases its Session lock.
-    pub async fn prepare_invoke(
-        &mut self,
+    // Keep operation future sizes out of the enclosing desktop/Host poll stack.
+    pub fn prepare_invoke<'a>(
+        &'a mut self,
         command: Command,
-        invocation: &crate::InvocationContext<'_>,
-        cancellation: &CancellationToken,
+        invocation: &'a crate::InvocationContext<'_>,
+        cancellation: &'a CancellationToken,
         language: Language,
-    ) -> Result<crate::InvocationCompletion, ToolError> {
-        if let Command::BrowserWait { handle, operation } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_wait(handle, operation, invocation, cancellation, language)
-                .await;
+    ) -> futures_util::future::BoxFuture<'a, Result<crate::InvocationCompletion, ToolError>> {
+        match command {
+            Command::BrowserWait { handle, operation } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_wait(handle, operation, invocation, cancellation, language)
+                    .await
+            }),
+            Command::BrowserFileChooserWait { handle, options } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_file_chooser(handle, options, invocation, cancellation, language)
+                    .await
+            }),
+            Command::BrowserDownloadWait { handle, options } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_download(handle, options, invocation, cancellation, language)
+                    .await
+            }),
+            command => Box::pin(async move {
+                self.invoke_immediate(command, invocation, cancellation, language)
+                    .await
+                    .map(crate::InvocationCompletion::ready)
+            }),
         }
-        if let Command::BrowserFileChooserWait { handle, options } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_file_chooser(handle, options, invocation, cancellation, language)
-                .await;
-        }
-        if let Command::BrowserDownloadWait { handle, options } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_download(handle, options, invocation, cancellation, language)
-                .await;
-        }
-        self.invoke_immediate(command, invocation, cancellation, language)
-            .await
-            .map(crate::InvocationCompletion::ready)
     }
 
     fn admit_invocation(
@@ -352,9 +378,47 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        if let Command::BrowserRelease { browser_id } = &command {
+            self.browsers
+                .retire_browser_preview(browser_id, &self.owner.preview());
+        }
+        let bound = command.bound_handle().map(|handle| match handle {
+            Handle::App(id) => Handle::App(id.clone()),
+            Handle::Tab(id) => Handle::Tab(id.clone()),
+        });
+        let binds_target = matches!(
+            &command,
+            Command::GetApp { .. }
+                | Command::GetTab { .. }
+                | Command::CreateBrowserTab { .. }
+                | Command::BrowserTab { .. }
+                | Command::BrowserSelectedTab { .. }
+                | Command::BrowserUserClaimTab { .. }
+        );
         let result = self
             .invoke_in_turn(command, invocation, cancellation, language)
             .await;
+        if let Ok(value) = &result {
+            let returned = if binds_target {
+                value
+                    .get("handle")
+                    .cloned()
+                    .map(serde_json::from_value::<Handle>)
+                    .transpose()
+                    .map_err(failed)?
+            } else {
+                None
+            };
+            if let Some(handle) = returned.or(bound) {
+                match handle {
+                    Handle::App(id) => self.publish_native_preview(&id, invocation),
+                    Handle::Tab(id) => {
+                        self.browsers
+                            .publish_preview(&id, &self.owner.preview(), invocation)
+                    }
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         if let Err(error) = result {
             return Err(
@@ -483,10 +547,10 @@ impl Session {
                 )
                 .await
             }
-            Command::ListWindows { .. } => {
+            Command::ListWindows { options } => {
                 let windows = self
                     .windows(
-                        session,
+                        options.pid,
                         cancellation,
                         language,
                         #[cfg(target_os = "windows")]
@@ -575,9 +639,16 @@ impl Session {
                     }
                     (target, None) => target,
                 };
+                #[cfg(target_os = "macos")]
+                let pid = expected
+                    .as_ref()
+                    .and_then(|target| target.binding.as_ref())
+                    .map(|binding| binding.pid);
+                #[cfg(not(target_os = "macos"))]
+                let pid = None;
                 let windows = self
                     .windows(
-                        session,
+                        pid,
                         cancellation,
                         language,
                         #[cfg(target_os = "windows")]
@@ -660,7 +731,7 @@ impl Session {
                                 .await
                                 .map_err(failed)??,
                             };
-                            self.launch_mac_windows(&approved, session, cancellation, language)
+                            self.launch_mac_windows(&approved, cancellation, language)
                                 .await?
                         } else {
                             selected
@@ -736,6 +807,8 @@ impl Session {
                 self.targets.insert(
                     handle.clone(),
                     Target {
+                        #[cfg(target_os = "windows")]
+                        windows_source: None,
                         #[cfg(target_os = "macos")]
                         macos,
                         #[cfg(target_os = "macos")]
@@ -946,7 +1019,7 @@ impl Session {
     }
     async fn windows(
         &mut self,
-        _session: &str,
+        pid: Option<u32>,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -954,7 +1027,7 @@ impl Session {
         let output: ListWindowsOutput = decode(
             self.invoke_native(
                 "list_windows",
-                json!({}),
+                pid.map_or_else(|| json!({}), |pid| json!({"pid": pid})),
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -966,7 +1039,7 @@ impl Session {
     }
     async fn apps(
         &mut self,
-        session: &str,
+        _session: &str,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -984,7 +1057,7 @@ impl Session {
         )?;
         let windows = self
             .windows(
-                session,
+                None,
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -1003,6 +1076,12 @@ impl Session {
         })).collect::<Vec<_>>()))
     }
     async fn retire_target(&mut self, handle: &str) -> Result<(), ToolError> {
+        if let Some(target) = self.targets.get(handle) {
+            self.owner.preview().remove(
+                self.epoch,
+                &preview::window_key(&target.window, &target.process),
+            );
+        }
         #[cfg(target_os = "macos")]
         {
             self.raw_computer.retiring_mac_window(handle);
@@ -1037,7 +1116,7 @@ impl Session {
     async fn verify(
         &mut self,
         handle: &str,
-        session: &str,
+        _session: &str,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -1076,7 +1155,7 @@ impl Session {
         let macos = target.macos.clone();
         let windows = self
             .windows(
-                session,
+                Some(pid),
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -1100,6 +1179,16 @@ impl Session {
             match verified {
                 Ok(bounds) => WindowInfo { bounds, ..window },
                 Err(error) => {
+                    let stale = match &error {
+                        ToolError::Failed(message) => message.starts_with("stale_target:"),
+                        ToolError::Native(error) => {
+                            error.code == platform_macos::ax::bindings::kAXErrorInvalidUIElement
+                        }
+                        _ => false,
+                    };
+                    if stale {
+                        return Err(self.retire_failed_target(handle, error).await);
+                    }
                     // AX timeouts do not prove that the window was replaced.
                     // Keep its retained identity, but require a fresh observation
                     // before any indexed or coordinate input can resume.
@@ -1265,6 +1354,8 @@ impl Session {
         #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
         let linux_observation: Option<CallResult> = None;
         let native_linux_ax = linux_observation.is_some();
+        #[cfg(target_os = "windows")]
+        let mut windows_source = None;
         let result = if let Some(result) = frozen_result {
             result
         } else if let Some(result) = linux_observation {
@@ -1276,6 +1367,22 @@ impl Session {
                 arguments.as_object_mut().unwrap().remove("max_elements");
                 arguments["full_output"] = json!(true);
             }
+            #[cfg(target_os = "windows")]
+            {
+                let call = self
+                    .raw_windows_tool(
+                        RawTool::GetWindowState,
+                        arguments,
+                        false,
+                        cancellation,
+                        language,
+                        invocation,
+                    )
+                    .await?;
+                windows_source = call.source;
+                call.value
+            }
+            #[cfg(not(target_os = "windows"))]
             self.invoke_native(
                 "get_window_state",
                 arguments,
@@ -1464,6 +1571,10 @@ impl Session {
         target.window = window;
         target.snapshot = Some(snapshot);
         target.capture = capture;
+        #[cfg(target_os = "windows")]
+        {
+            target.windows_source = windows_source;
+        }
         Ok(Value::Object(output))
     }
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -2124,6 +2235,32 @@ impl Session {
         };
         let native_window_pixels = cfg!(any(target_os = "linux", target_os = "macos"))
             && (args.get("x").is_some() || name == "drag");
+        #[cfg(target_os = "windows")]
+        let result = {
+            let tool = match name {
+                "click" => RawTool::Click,
+                "drag" => RawTool::Drag,
+                "scroll" => RawTool::Scroll,
+                "press_key" => RawTool::PressKey,
+                "type_text" => RawTool::TypeText,
+                "set_value" => RawTool::SetValue,
+                _ => unreachable!("validated Windows App action"),
+            };
+            self.raw_windows_tool(
+                tool,
+                args,
+                native_window_pixels,
+                cancellation,
+                language,
+                invocation,
+            )
+            .await
+            .map(|call| {
+                self.targets.get_mut(handle).unwrap().windows_source = call.source;
+                call.value
+            })
+        };
+        #[cfg(not(target_os = "windows"))]
         let result = if native_window_pixels {
             self.invoke_native_window_pixels(
                 name,
@@ -2154,6 +2291,7 @@ impl Session {
         result.map(|result| result.structured_content.unwrap_or(Value::Null))
     }
     pub async fn close_native(&mut self) -> Result<(), ToolError> {
+        self.owner.preview().retire_epoch(self.epoch);
         match &self.state {
             EpochState::Closed => return Ok(()),
             EpochState::Open | EpochState::Closing => {}
@@ -2544,8 +2682,6 @@ async fn window_rows(
         return Ok(Vec::new());
     }
     tokio::task::spawn_blocking(move || {
-        #[cfg(target_os = "macos")]
-        let inventory = platform_macos::apps::list_all_apps();
         #[cfg(not(target_os = "macos"))]
         let _ = language;
         let mut owners = HashMap::new();
@@ -2559,7 +2695,6 @@ async fn window_rows(
                         #[cfg(target_os = "macos")]
                         return crate::macos::permission_subject::window_owner(
                             i32::try_from(pid).map_err(failed)?,
-                            &inventory,
                             language,
                         );
                         #[cfg(not(target_os = "macos"))]

@@ -77,14 +77,21 @@ impl ApiProviders {
         let provider = Self::provider(id, snapshot)?;
         let mut metadata = provider.model_metadata(model.clone(), overrides.as_ref());
         let mut request = Resolve {
+            service_tier: None,
             connection,
             model,
             overrides,
             thinking_level: None,
         };
-        provider
+        let prepared = provider
             .prepare(request.clone())
             .map_err(|error| error.to_string())?;
+        if matches!(
+            prepared.protocol,
+            maka_agent_ports::model::ProviderKind::Anthropic
+        ) {
+            metadata.info.service_tiers.clear();
+        }
         metadata.thinking_levels.retain(|level| {
             request.thinking_level = Some(*level);
             provider.prepare(request.clone()).is_ok()
@@ -239,7 +246,14 @@ impl ApiProvider {
         if level.is_some_and(|level| !thinking_levels.contains(&level)) {
             return Err(Error::UnsupportedThinkingLevel);
         }
-        let options = options::resolve(&selection, self.facts, &thinking_levels, level, &route)?;
+        let options = options::resolve(
+            &selection,
+            self.facts,
+            &thinking_levels,
+            level,
+            &route,
+            request.service_tier.as_deref(),
+        )?;
         let output = output::resolve(&selection, route.wire, &options)?;
         let adapter = request
             .overrides
@@ -355,6 +369,7 @@ mod tests {
         };
         let model = provider
             .prepare(Resolve {
+                service_tier: None,
                 connection: Connection {
                     id: "copilot".into(),
                     revision: 1,

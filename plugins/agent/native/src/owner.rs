@@ -333,7 +333,7 @@ impl Owner {
                 .await
                 .map_err(|_| "agent_model_process_capture_worker_failed")?
                 .map_err(|_| "agent_model_process_capture_failed")?;
-        let mut additional = Vec::new();
+        let mut additional = vec![compaction::tool()];
         let mut internal_bindings = BTreeMap::new();
         if !jsonschema_valid(&input) {
             return Err("agent_configuration_invalid".into());
@@ -924,11 +924,7 @@ impl Owner {
         let backend = if is_room {
             None
         } else if let Some(p) = &applied_preset {
-            Some(BackendPreference::Model {
-                connection_id: p.model.connection_id.clone(),
-                model_id: p.model.model_id.clone(),
-                thinking_level: p.thinking_level,
-            })
+            Some(BackendPreference::model(p.model.clone(), p.thinking_level))
         } else {
             self.use_bot_model(scope, input.backend).await?
         };
@@ -1261,12 +1257,17 @@ impl Owner {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        Ok(self.select_catalog_tools(
+        let selected = self.select_catalog_tools(
             &catalog.tools,
             Some(session),
             basis.allowed_tools.as_deref(),
             editing,
-        ))
+        );
+        Ok(if basis.model.is_some() {
+            selected
+        } else {
+            selected.excluding(&[compaction::TOOL])
+        })
     }
     fn select_catalog_tools(
         &self,

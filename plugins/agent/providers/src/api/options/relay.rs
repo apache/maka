@@ -17,13 +17,13 @@
  * under the License.
  */
 
-use super::{Error, Selection, ThinkingLevel, Value, Wire};
+use super::{Selection, ThinkingLevel, Value, Wire};
 
 pub(super) fn responses(
     row: &Selection<'_>,
     level: Option<ThinkingLevel>,
     parallel: bool,
-) -> Result<Value, Error> {
+) -> Value {
     let model = row.model.id.as_str();
     let mut options = super::openai(
         Wire::OpenaiResponses,
@@ -39,7 +39,7 @@ pub(super) fn responses(
     {
         options["openai"]["serviceTier"] = serde_json::json!(tier);
     }
-    Ok(options)
+    options
 }
 
 // core/model-thinking.ts supportsRelayFastServiceTier deliberately tests the

@@ -28,7 +28,7 @@ const native = {
   nsh: 'let tracking;\n    export const signal = initial => {\n      let value = initial;\n      const observers = new Set();\n      const read = () => { if (tracking) observers.add(tracking); return value; };\n      read.set = next => {\n        if (Object.is(value, next)) return;\n        value = next;\n        for (const observer of [...observers]) observer();\n      };\n      return read;\n    };\n    export const computed = fn => fn;\n    export const untracked = fn => { const previous = tracking; tracking = undefined; try { return fn(); } finally { tracking = previous; } };\n    export const effect = fn => {\n      let alive = true;\n      const run = () => {\n        if (!alive) return;\n        const previous = tracking;\n        tracking = run;\n        try { fn(); } finally { tracking = previous; }\n      };\n      globalThis.resourceScope.push(() => { alive = false; });\n      run();\n    };\n    export const cleanup = fn => globalThis.resourceScope.push(fn);',
   locale: `export const tr = key => key;`,
   workspaceFileState: `export const createWorkspaceFiles = (_host, options) => ({ sessionId: options.sessionId });`,
-  CurrentFile: `export const createCurrentFile = (_host, target) => ({target, anchorValue: target.anchor, setAnchor(next) { this.anchorValue = next; }, activate() {}, suspend() {}, dispose() {this.disposed = true;}});`,
+  CurrentFile: `export const createCurrentFile = (_host, target) => ({target, anchorValue: target.anchor, setAnchor(next) { this.anchorValue = next; }, dirty() { return Boolean(this.isDirty); }, saving() { return false; }, async save() { this.isDirty = false; return true; }, activate() {}, suspend() { this.suspended = true; }, dispose() {this.disposed = true;}});`,
   currentDiffState: `
     export const resolveDiffSource = (target) => target.source ?? { kind: 'working', area: target.area ?? 'worktree' };
     export const resolveDiffSourceKey = (target) => {
@@ -123,7 +123,8 @@ test('resource requests from both workspaces keep their source session, even for
   assert.equal(resources.terminals.sessionId(), 'A');
   resources.openImage(image('A'));
   resources.openImage(image('B'));
-  assert.equal(resources.activeTab().image.source.read.sessionId, 'B');
+  assert.equal(resources.activeTab().sessionId, 'B');
+  assert.equal(resources.activeTab().image.uri, image('B').uri);
 });
 
 test('external links do not change the current preview, and file links open in their originating workspace', async (t) => {
@@ -188,6 +189,22 @@ test('preview close restores the source pane and removing that session releases 
   assert.equal(resources.shown(), false);
 });
 
+test('dirty file drafts park across workspace switches and dispose when their session leaves', (t) => {
+  const { resources, sessions } = setup(t);
+  resources.openFile(file('A'));
+  const draft = resources.activeTab().model;
+  draft.isDirty = true;
+  resources.openFile(file('B'));
+  assert.equal(draft.suspended, true);
+  assert.equal(draft.disposed, undefined);
+  resources.openFiles({ sessionId: 'A' });
+  assert.equal(resources.tabs().length, 1);
+  assert.equal(resources.tabs()[0].model, draft);
+  resources.openFile(file('B'));
+  sessions.set(['B']);
+  assert.equal(draft.disposed, true);
+});
+
 test('window commands follow the focused pane and stop targeting a removed pane', () => {
   let focus = 'A';
   const received = [];
@@ -220,7 +237,7 @@ test('window commands follow the focused pane and stop targeting a removed pane'
 });
 
 test('review navigation preserves workspace file:// anchors, history back/forward, and review batch formatting', async (t) => {
-  const { formatReviewBatch, extractLineIdentifiers, relativizeWorkspaceFileUrl } = await import(
+  const { formatReviewBatch, extractLineIdentifiers } = await import(
     new URL('reviewState.ts', appRoot)
   );
   globalThis.resourceScope = [];
@@ -258,7 +275,7 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
   assert.equal(resources.active(), 'changes');
 
   await resources.openLink('A', 'file:///Users/test/project/src/lib.rs#L10-L15', () => false);
-  assert.deepEqual(openedTargets, ['src/lib.rs#L10-L15']);
+  assert.deepEqual(openedTargets, ['file:///Users/test/project/src/lib.rs#L10-L15']);
   assert.equal(resources.activeTab().kind, 'file');
   assert.equal(resources.activeTab().model.anchorValue.line, 9);
   assert.equal(resources.activeTab().model.anchorValue.endLine, 14);
@@ -324,19 +341,6 @@ test('review navigation preserves workspace file:// anchors, history back/forwar
   });
   const mdFormatted = formatReviewBatch([mdNote]);
   assert.ok(mdFormatted.includes('````markdown\n```ts'), mdFormatted);
-
-  // Windows file:///C:/... and '#'/'?' percent-encoded filenames relativize without corrupting anchors.
-  assert.equal(
-    relativizeWorkspaceFileUrl('file:///C:/Users/dev/repo/src/main.rs#L12', 'C:\\Users\\dev\\repo'),
-    'src/main.rs#L12',
-  );
-  assert.equal(
-    relativizeWorkspaceFileUrl(
-      'file:///Users/test/project/docs/a%23b.md#L10',
-      '/Users/test/project',
-    ),
-    'docs/a%23b.md#L10',
-  );
 
   // Closing session B prunes its review store entries.
   assert.equal(resources.reviewStore.notes('B').length, 1);

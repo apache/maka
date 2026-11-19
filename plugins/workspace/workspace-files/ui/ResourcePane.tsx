@@ -137,7 +137,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const tabDisplayTitle = (tab: ReturnType<typeof nonTerminalTabs>[number]): string => {
     if (tab.kind === 'pr' || tab.kind === 'image') return tab.title;
     if (tab.kind === 'diff') return basenameLabel(tab.model.target.title);
-    return basenameLabel(tab.title);
+    return basenameLabel(tab.title) + (tab.kind === 'file' && tab.model.dirty() ? ' •' : '');
   };
 
   const tabIcon = (
@@ -786,8 +786,12 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   );
 }
 
-function OriginalImage(props: { image: ImagePreview; openImageViewer: OpenImageViewer }) {
+function OriginalImage(props: {
+  image: Pick<ImagePreview, 'uri'>;
+  openImageViewer: OpenImageViewer;
+}) {
   const error = signal('');
+  const size = signal<{ width: number; height: number } | null>(null);
   let mounted = true;
   cleanup(() => {
     mounted = false;
@@ -799,25 +803,30 @@ function OriginalImage(props: { image: ImagePreview; openImageViewer: OpenImageV
       </Text>
       <Image
         src={props.image.uri}
+        onLoad={(event) => {
+          if (mounted) size.set(event.size);
+        }}
         onError={(reason) => {
           if (mounted) error.set(reason.message);
         }}
         style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
       />
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
-          {props.image.width} × {props.image.height} · {tr('Original image')}
-        </Text>
-        <ImageViewerButton
-          open={props.openImageViewer}
-          image={{
-            uri: props.image.uri,
-            width: props.image.width,
-            height: props.image.height,
-            title: tr('Original image'),
-          }}
-        />
-      </View>
+      <If when={size()}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
+            {size()!.width} × {size()!.height} · {tr('Original image')}
+          </Text>
+          <ImageViewerButton
+            open={props.openImageViewer}
+            image={{
+              uri: props.image.uri,
+              width: size()!.width,
+              height: size()!.height,
+              title: tr('Original image'),
+            }}
+          />
+        </View>
+      </If>
       <If when={error()}>
         <Text style={{ ...bodyTextStyle, color: C.danger }}>{error()}</Text>
       </If>

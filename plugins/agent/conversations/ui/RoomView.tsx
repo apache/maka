@@ -25,6 +25,7 @@ import {
   Workbench,
   canDockBrowser,
   canDockPreview,
+  createPreviewDialog,
 } from '../../../../products/maka/workbench/app/Workbench';
 import { HostProvider, type Host } from '../../../../products/maka/workbench/app/host';
 import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
@@ -80,16 +81,21 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
     const sessionId = resources.sessionId();
     if (sessionId) resources.close({ sessionId, instance: resources.instance() });
   };
+  const previewDialog = createPreviewDialog({
+    shown: resources.shown,
+    suppressed: () => resources.imageViewer() !== null,
+    focused: () => {
+      const root = resources.root();
+      return root !== undefined && keymap.focusedWithin(root);
+    },
+    close: closePreview,
+  });
   return (
     <HostProvider value={props.host}>
       <Workbench
         expanded={input.sidebarExpanded}
         previewShown={resources.shown}
-        previewSuppressed={() => resources.imageViewer() !== null}
-        previewFocused={() => {
-          const root = resources.root();
-          return root !== undefined && keymap.focusedWithin(root);
-        }}
+        previewDialog={previewDialog}
         closePreview={closePreview}
         navigation={() => rooms.navigation(input.modeSwitch())}
         preview={(docked) => (

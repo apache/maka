@@ -30,6 +30,8 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 export function settingsValue(reply: unknown): unknown {
   const receipt = record(reply) && record(reply.receipt) ? reply.receipt : null;
+  if (receipt?.kind === 'unavailable' && typeof receipt.diagnostic === 'string')
+    throw new Error(receipt.diagnostic);
   const outcome = receipt?.kind === 'recorded' && record(receipt.outcome) ? receipt.outcome : null;
   if (outcome?.kind !== 'returned')
     throw new Error(
@@ -70,6 +72,8 @@ export function settingsRejection(value: any): UiError {
 export function createSettingsOperations(host: Host) {
   const task = signal<Promise<void> | null>(null);
   const busy = () => task() !== null;
+  const backgroundTask = signal<Promise<void> | null>(null);
+  const navigationBusy = () => busy() && task() !== backgroundTask();
   const whenIdle = () => task() ?? Promise.resolve();
   const error = createText();
   const notice = createTransientText();
@@ -113,7 +117,10 @@ export function createSettingsOperations(host: Host) {
   ): Promise<unknown> {
     return settingsValue((await host.settingsMutation(endpoint, method, input, secret)).reply);
   }
-  const run = (operation: () => Promise<void>): Promise<void> => {
+  const run = (
+    operation: () => Promise<void>,
+    options?: { background?: boolean },
+  ): Promise<void> => {
     if (!alive || busy() || !pendingKnown() || pending().length) return Promise.resolve();
     const completion = Promise.resolve()
       .then(async () => {
@@ -129,7 +136,9 @@ export function createSettingsOperations(host: Host) {
       })
       .finally(() => {
         task.set(null);
+        backgroundTask.set(null);
       });
+    if (options?.background) backgroundTask.set(completion);
     task.set(completion);
     return completion;
   };
@@ -226,6 +235,7 @@ export function createSettingsOperations(host: Host) {
   return {
     busy,
     whenIdle,
+    navigationBusy,
     error,
     notice,
     pending,

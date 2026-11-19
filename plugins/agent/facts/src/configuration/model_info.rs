@@ -20,11 +20,19 @@
 use super::{ApiProtocol, ModelModalities, present, validation};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ModelServiceTier {
+    pub id: String,
+    pub name: String,
+}
+
 /// Canonical provider inventory, distinct from execution policy and model overrides.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelInfo {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<ModelServiceTier>,
     /// Opaque compatibility group reported by the ChatGPT subscription inventory.
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -290,6 +298,16 @@ impl ModelInfo {
 
     pub fn validate(&self) -> Result<(), String> {
         validation::text(&self.id)?;
+        for (index, tier) in self.service_tiers.iter().enumerate() {
+            validation::text(&tier.id)?;
+            validation::text(&tier.name)?;
+            if self.service_tiers[..index]
+                .iter()
+                .any(|other| other.id == tier.id)
+            {
+                return Err("duplicate model service tier".into());
+            }
+        }
         if let Some(hash) = &self.codex_compaction_hash
             && (hash.is_empty() || hash.trim() != hash || hash.chars().any(char::is_control))
         {

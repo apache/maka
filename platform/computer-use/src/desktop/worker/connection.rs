@@ -469,11 +469,48 @@ impl Connection {
                 effects: invocation.browser_host_effects(),
                 settlement: invocation.operation_settlement(),
                 native_interruption: invocation.native_interruption_observer(),
+                preview: None,
+                foreground: None,
             },
             cancellation,
         )
     }
 
+    pub(in crate::desktop) fn same_connection(&self, other: &Self) -> bool {
+        self.requests.same_channel(&other.requests)
+    }
+    pub(in crate::desktop) async fn invoke_preview(
+        &self,
+        request: Request,
+        authority: Option<Arc<dyn crate::preview::PreviewAuthority>>,
+        cancellation: CancellationToken,
+    ) -> Result<Reply, ToolError> {
+        self.invoke_capabilities(
+            request,
+            ParentCapabilities {
+                preview: authority,
+                ..Default::default()
+            },
+            cancellation,
+        )
+        .await
+    }
+    pub(in crate::desktop) async fn invoke_foreground(
+        &self,
+        request: Request,
+        authority: Arc<dyn crate::preview::ForegroundAuthority>,
+        cancellation: CancellationToken,
+    ) -> Result<Reply, ToolError> {
+        self.invoke_capabilities(
+            request,
+            ParentCapabilities {
+                foreground: Some(authority),
+                ..Default::default()
+            },
+            cancellation,
+        )
+        .await
+    }
     async fn invoke_capabilities(
         &self,
         request: Request,
@@ -482,6 +519,23 @@ impl Connection {
     ) -> Result<Reply, ToolError> {
         self.begin_capabilities(request, capabilities, cancellation)?
             .await
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    pub(super) async fn invoke_native_present(
+        &self,
+        request: Request,
+        cancellation: CancellationToken,
+        admission: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<Reply, ToolError> {
+        self.begin_capabilities_with_native(
+            request,
+            ParentCapabilities::default(),
+            cancellation,
+            Some(admission),
+            None,
+        )?
+        .await
     }
 
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
@@ -1059,7 +1113,8 @@ impl ConnectionTask {
                             }
                             let _ = request.frames.send(Ok(frame));
                         }
-                        WorkerFrame::BrowserAuthorization { id, authorization_id, .. }
+                        WorkerFrame::PreviewAuthorization { id, authorization_id, .. }
+                        | WorkerFrame::BrowserAuthorization { id, authorization_id, .. }
                         | WorkerFrame::BrowserSessionPreparationAuthorization { id, authorization_id, .. } => {
                             let Some(request) = pending.get(&id).filter(|pending| !pending.response_received) else {
                                 let _ = terminal.get_or_insert(ToolError::OutcomeUnknown("desktop response identity mismatch".into()));
@@ -1199,9 +1254,22 @@ impl ConnectionTask {
                             native.observation.send_modify(|state| state.source = Some(Arc::new(source.clone())));
                         }
                     }
-                    let cancel_native = matches!(&invocation.request, Request::Invoke { .. } | Request::LeaseChild { .. });
                     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
-                    let cancel_native = cancel_native || matches!(&invocation.request, Request::NativeInvoke { .. });
+                    if let Request::NativePresent { ref key, ref generation, .. } = invocation.request {
+                        let valid = self.native.as_ref().is_some_and(|native| {
+                            native.key == *key && native.generation.observed() == *generation
+                                && !native.observation.borrow().interrupted
+                                && native.observation.borrow().retired.is_none()
+                        });
+                        if !valid {
+                            drop(invocation.native_admission);
+                            let _ = invocation.reply.send(Err(ToolError::Failed("native presentation source retired before dispatch".into())));
+                            continue;
+                        }
+                    }
+                    let cancel_native = matches!(&invocation.request, Request::Invoke { .. } | Request::LeaseChild { .. } | Request::PreviewRead { .. } | Request::PreviewWatch { .. } | Request::PreviewPresent { .. });
+                    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+                    let cancel_native = cancel_native || matches!(&invocation.request, Request::NativeInvoke { .. } | Request::NativePresent { .. });
                     let is_audio = matches!(&invocation.request, Request::Invoke { command, .. } if matches!(command.as_ref(), Command::StartAudioRecording { .. }));
                     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
                     let is_audio = is_audio || matches!(&invocation.request, Request::NativeInvoke { operation: super::native_owner::NativeOperation::StartAudioRecording, .. });
@@ -1396,7 +1464,7 @@ async fn invoke_routed(
             WorkerFrame::Response { result, .. } => {
                 return result.map_err(ToolError::from);
             }
-            frame @ (WorkerFrame::BrowserAuthorization { .. }
+            frame @ (WorkerFrame::PreviewAuthorization { .. } | WorkerFrame::BrowserAuthorization { .. }
             | WorkerFrame::BrowserSessionPreparationAuthorization { .. }) => {
                 let (authorization_id, mode, request) = match frame {
                     WorkerFrame::BrowserAuthorization {
@@ -1423,11 +1491,13 @@ async fn invoke_routed(
                             preparation,
                         },
                     ),
+                    WorkerFrame::PreviewAuthorization { authorization_id, request, .. } => (authorization_id, AuthorizationMode::Check, BrowserAuthorizationRequest::Preview(request)),
                     _ => unreachable!("matched authorization frame"),
                 };
                 let callback_cancellation = cancellation.child_token();
                 let _callback_lifetime = callback_cancellation.clone().drop_guard();
                 let mut decision: crate::AuthorizationFuture = match request {
+                    BrowserAuthorizationRequest::Preview(request) => super::preview::decide(capabilities.preview.clone(), capabilities.foreground.clone(), request, callback_cancellation.clone()),
                     BrowserAuthorizationRequest::SessionPreparation {
                         identity: observed,
                         preparation,
@@ -1459,7 +1529,7 @@ async fn invoke_routed(
                 let (following, cleanup) = tokio::select! {
                     biased;
                     frame = &mut received => {
-                        let overlap = matches!(&frame, Ok(WorkerFrame::BrowserAuthorization { .. }
+                        let overlap = matches!(&frame, Ok(WorkerFrame::PreviewAuthorization { .. } | WorkerFrame::BrowserAuthorization { .. }
                             | WorkerFrame::BrowserSessionPreparationAuthorization { .. }));
                         if overlap {
                             callbacks.report_protocol_fault(ToolError::OutcomeUnknown("desktop authorization callback overlapped its original reply".into()));
@@ -1568,3 +1638,6 @@ async fn next(
         .await
         .ok_or_else(|| ToolError::OutcomeUnknown("desktop response observation was lost".into()))?
 }
+
+#[cfg(test)]
+mod preview_tests;

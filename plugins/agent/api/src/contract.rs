@@ -584,6 +584,8 @@ pub use maka_agent_facts::executor::BackendPreference;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentModelChoice")]
 pub struct ModelChoice {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<maka_agent_facts::configuration::ModelServiceTier>,
     pub selection: BackendPreference,
     /// Previously published selections, including their implied thinking level.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1444,6 +1446,15 @@ pub struct HistoryChunk {
     pub run_id: Option<maka_agent_facts::durable::RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<maka_agent_ports::session::history::ModelPartIdentity>,
+    /// Provider citation evidence, not assistant prose.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_citation: bool,
+    /// Structured source on the first fragment, with bounded display labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<maka_agent_ports::session::history::HistoryCitation>,
+    /// Target ordinal belongs to the same model attempt as this source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation_anchor: Option<maka_agent_facts::model::CitationAnchor<u64>>,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1786,6 +1797,9 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     imported_turn: chunk.imported_turn,
                     run_id: chunk.run_id,
                     model_part: chunk.model_part,
+                    source_citation: chunk.source_citation,
+                    citation: chunk.citation,
+                    citation_anchor: chunk.citation_anchor,
                     has_references: chunk.has_references,
                     quotes: chunk.quotes,
                     final_output: chunk.final_output,
@@ -1959,6 +1973,10 @@ pub struct AttachmentImageRead {
 )]
 #[schemars(rename = "AgentAttachmentImageSource")]
 pub enum AttachmentImageSource {
+    Artifact {
+        #[schemars(length(min = 1))]
+        id: String,
+    },
     Room {
         #[schemars(length(min = 1))]
         message_id: String,
@@ -2268,6 +2286,19 @@ pub fn contract() -> Contract {
                 (
                     "watchFiles".into(),
                     method::<FileWatch, FileChange>(MethodMode::Subscription),
+                ),
+                (
+                    "saveFile".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "content".into(), maka_plugin_core::contract::text_resource_type().required(),
+                        )]),
+                        ..method::<SaveFile, SaveFileResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "resolveFileLink".into(),
+                    method::<FileLinkRead, FileReadPath>(MethodMode::Query),
                 ),
                 (
                     "readFile".into(),

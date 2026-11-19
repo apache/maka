@@ -25,6 +25,7 @@ import {
   effect,
   inputAction,
   platform,
+  reduceMotion,
   Scroll,
   signal,
   Text,
@@ -46,6 +47,7 @@ import {
 import {
   cardFamily,
   processFamily,
+  providerSearchKey,
   processResourceRef,
   toolArguments,
   toolResult,
@@ -59,6 +61,7 @@ import {
   activityTitle,
 } from './toolActivityPresentation';
 import { ToolReader } from './ToolReader';
+import { ProviderSearchCard } from './ProviderSearchCard';
 import {
   C,
   captionTextStyle,
@@ -71,7 +74,7 @@ import {
   IconButton,
   textTooltip,
 } from './ui';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, ShimmerText } from './Loading';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { Icon } from './Icon';
 import { viewRuntimeContext } from './plugins/viewContext';
@@ -440,6 +443,8 @@ function WriteFields(
   );
 }
 
+const useToolShimmer = () => platform.idiom !== 'terminal' && !reduceMotion();
+
 /** A tool whose call is still streaming in has no record to open yet. */
 export function LiveToolRow(props: { activity(): ToolActivity }) {
   const phase = () =>
@@ -456,16 +461,18 @@ export function LiveToolRow(props: { activity(): ToolActivity }) {
       foldable={false}
       terminalInset={controlStyle.paddingHorizontal}
       onPress={() => {}}
-      trailing={<Status label={phase()} kind={props.activity().phase} />}
+      trailing={
+        <If when={!useToolShimmer()}>
+          <Status label={phase()} kind={props.activity().phase} />
+        </If>
+      }
     >
-      <Text
-        style={[
-          { ...disclosureTitleStyle, color: C.secondary },
-          { numberOfLines: 1, textOverflow: 'ellipsis' },
-        ]}
+      <If
+        when={useToolShimmer()}
+        else={<Text style={{ ...disclosureTitleStyle, color: C.secondary }}>{title()}</Text>}
       >
-        {title()}
-      </Text>
+        <ShimmerText text={title()} style={disclosureTitleStyle} />
+      </If>
     </Disclosure>
   );
 }
@@ -481,6 +488,7 @@ export function ToolCard(props: {
   maxHeight(): number;
   reading?(): void;
   expand(action: { sessionId: string; key: string; value: boolean }): void;
+  openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   showOriginal(action: { sessionId: string; key: string; value: boolean }): void;
   inspect?(key: string): void;
   previewImage(image: ImagePreview): void;
@@ -505,6 +513,7 @@ export function ToolCard(props: {
   };
   const title = () => {
     const call = tool()?.call;
+    if (call?.presentation === providerSearchKey && props.expanded()) return tr('Search the web');
     return progress() === 'preparing' && !call?.presentation && !call?.title
       ? tr('Preparing tool')
       : activityTitle(call);
@@ -519,8 +528,10 @@ export function ToolCard(props: {
     const phase = props.progress?.();
     return phase === 'preparing' && tool()?.call?.dispatched ? 'running' : phase;
   };
+  const progressLabel = () =>
+    progress() === 'preparing' ? tr('Preparing tool') : tr('Running tool');
   const references = () =>
-    tool()
+    tool() && !searchFields().length
       ? (['result', 'arguments'] as const).flatMap((field) => {
           const value = reference(tool()!, field);
           const result = tool()!.result;
@@ -553,6 +564,13 @@ export function ToolCard(props: {
         })
       : [];
   const result = () => (tool() ? reference(tool()!, 'result') : null);
+  const searchFields = computed(() => {
+    const value = tool();
+    if (value?.call?.presentation !== providerSearchKey) return [];
+    const args = reference(value, 'arguments')!;
+    const output = reference(value, 'result');
+    return [{ args, output, key: JSON.stringify([args.key, output?.key]) }];
+  });
   const writeFields = computed(() => {
     const call = tool();
     if (
@@ -604,9 +622,11 @@ export function ToolCard(props: {
   return (
     <View style={{ width: '100%', minWidth: 0, gap: detailsGap }}>
       <Disclosure
-        label={tr('Toggle tool {name}', {
-          name: title(),
-        })}
+        label={
+          platform.idiom !== 'terminal' && progress() != null
+            ? `${tr('Toggle tool {name}', { name: title() })} · ${progressLabel()}`
+            : tr('Toggle tool {name}', { name: title() })
+        }
         tooltip={title()}
         icon={icon()}
         open={props.expanded()}
@@ -674,10 +694,9 @@ export function ToolCard(props: {
                 </If>
               }
             >
-              <Status
-                label={progress() === 'preparing' ? tr('Preparing tool') : tr('Running tool')}
-                kind={progress() ?? 'running'}
-              />
+              <If when={!useToolShimmer()}>
+                <Status label={progressLabel()} kind={progress() ?? 'running'} />
+              </If>
             </If>
           </View>
         }
@@ -685,19 +704,26 @@ export function ToolCard(props: {
         <View
           style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 }}
         >
-          <Text
-            style={[
-              {
-                ...captionTextStyle,
-                minWidth: 0,
-                flexShrink: 1,
-                color: props.expanded() ? C.text : C.secondary,
-              },
-              { numberOfLines: 1, textOverflow: 'ellipsis' },
-            ]}
+          <If
+            when={progress() != null && useToolShimmer()}
+            else={
+              <Text
+                style={[
+                  {
+                    ...captionTextStyle,
+                    minWidth: 0,
+                    flexShrink: 1,
+                    color: props.expanded() ? C.text : C.secondary,
+                  },
+                  { numberOfLines: 1, textOverflow: 'ellipsis' },
+                ]}
+              >
+                {title()}
+              </Text>
+            }
           >
-            {title()}
-          </Text>
+            <ShimmerText text={title()} style={captionTextStyle} />
+          </If>
           <If when={platform.idiom !== 'terminal'}>
             <Icon name={props.expanded() ? 'down' : 'right'} size={12} color={C.muted} />
           </If>
@@ -732,6 +758,19 @@ export function ToolCard(props: {
                   position={value().position}
                   image={value().image}
                   preview={props.previewImage}
+                />
+              )}
+            </Each>
+            <Each of={searchFields()} key={(fields) => fields.key}>
+              {(fields) => (
+                <ProviderSearchCard
+                  args={fields().args}
+                  output={fields().output}
+                  sessionId={props.sessionId}
+                  through={props.row().metadataThrough ?? props.through()}
+                  original={props.original}
+                  openLink={props.openLink}
+                  isError={!!tool()?.result?.isError}
                 />
               )}
             </Each>
@@ -773,7 +812,7 @@ export function ToolCard(props: {
                 )}
               </Each>
             </If>
-            <If when={!references().length && images().length === 0}>
+            <If when={!searchFields().length && !references().length && images().length === 0}>
               <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
                 {presentation()
                   ? result()

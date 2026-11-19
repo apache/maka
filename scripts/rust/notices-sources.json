@@ -247,5 +247,11 @@
   "swc_ecma_transforms_typescript@33.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
   "swc_ecma_utils@24.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
   "swc_ecma_visit@18.0.1": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
-  "swc_ts_fast_strip@36.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"]
+  "swc_ts_fast_strip@36.0.0": ["https://www.apache.org/licenses/LICENSE-2.0.txt"],
+  "libuv-sys-lite@1.48.4": [
+    {
+      "file": "scripts/rust/licenses/libuv-sys-lite-1.48.4-notice.txt",
+      "source": "https://github.com/nathanwhit/libuv-sys-lite/blob/b4e887d05625d32b63bb97842d7d978f4a7e4b17/crate/libuv-1.48.0-include/uv/tree.h ; https://github.com/libuv/libuv/blob/e9f29cb984231524e3931aa0ae2c5dae1a32884e/src/inet.c"
+    }
+  ]
 }

@@ -1788,18 +1788,7 @@ impl Headless {
         // pressable the press goes to (a paragraph's text in an editor):
         // it is moved into that view's coordinates. The touch reports it
         // in the root, as `press` reports a canvas node's center.
-        let named = match self.screen.resolve(&parsed)[..] {
-            [named] => named,
-            _ => id,
-        };
-        let page = self
-            .screen
-            .bounds_in_root(named)
-            .map(|bounds| bounds.origin + at);
-        let at = match (page, self.screen.bounds_in_root(id)) {
-            (Some(page), Some(target)) => page - target.origin,
-            _ => at,
-        };
+        let (page, at) = self.press_coordinates(&parsed, id, at);
         self.activate_window_of(id);
         let path = self.screen.touch_path(id);
         if !path.is_empty() {
@@ -1861,11 +1850,45 @@ impl Headless {
         })
     }
 
+    fn press_coordinates(
+        &self,
+        parsed: &Selector,
+        id: NodeId,
+        at: Point<Points>,
+    ) -> (Option<Point<Points>>, Point<Points>) {
+        let named = match self.screen.resolve(parsed)[..] {
+            [named] => named,
+            _ => id,
+        };
+        let page = self
+            .screen
+            .bounds_in_root(named)
+            .map(|bounds| bounds.origin + at);
+        let at = match (page, self.screen.bounds_in_root(id)) {
+            (Some(page), Some(target)) => page - target.origin,
+            _ => at,
+        };
+        (page, at)
+    }
+
     /// The step `longPress(<selector>)`: holds a finger on what `selector`
     /// names (or the nearest view around it that hears long presses or
     /// presses) for its `delayLongPress` (500 ms), as a long press does:
     /// `onPressDown`, `onLongPress`, then `onPressUp`; no `onPress` follows.
     pub fn long_press(&mut self, selector: &str) -> Result<(), String> {
+        self.long_press_position(selector, None)
+    }
+
+    /// Long-press at a point relative to the selected view, as in `press_at`.
+    pub fn long_press_at(&mut self, selector: &str, at: Point<Points>) -> Result<(), String> {
+        self.long_press_position(selector, Some(at))
+    }
+
+    fn long_press_position(
+        &mut self,
+        selector: &str,
+        at: Option<Point<Points>>,
+    ) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("longPress({selector})"));
         self.input_with(InputModality::Pointer);
@@ -1874,17 +1897,20 @@ impl Headless {
         let delay = self.screen.long_press_delay(id).unwrap_or(500.0).max(0.0);
         self.activate_window_of(id);
         let path = self.screen.touch_path(id);
+        let (page, inside) = at
+            .map(|at| self.press_coordinates(&parsed, id, at))
+            .map(|(page, inside)| (page, Some(inside)))
+            .unwrap_or_else(|| (None, self.screen.press_point(&parsed, id)));
         if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), None);
+            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), page);
         }
-        let inside = self.screen.press_point(&parsed, id);
         let payload = self.press_payload(id, inside);
         self.send(id, EventKind::PressDown, payload.clone());
         self.elapse(Duration::from_secs_f64(f64::from(delay) / 1000.0));
         self.send(id, EventKind::LongPress, payload.clone());
         self.send(id, EventKind::PressUp, payload);
         if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::End, path, None);
+            self.send_touch(id, nsh_core::TouchPhase::End, path, page);
         }
         self.done()
     }

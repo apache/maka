@@ -124,7 +124,7 @@ pub struct StepBuilder {
     parts: Vec<PartSlot>,
     accepted: Option<usize>,
     open: HashMap<String, usize>,
-    seen: HashSet<String>,
+    closed_text: HashMap<String, usize>,
     tool_inputs: HashMap<String, PendingToolInput>,
     calls: HashMap<String, (String, bool)>,
     results: HashSet<String>,
@@ -174,20 +174,41 @@ impl StepBuilder {
             return Err(invalid("event after failed or finished step"));
         }
         match event {
-            ModelEvent::Source(source) => {
+            ModelEvent::Source { source, anchor } => {
+                use super::CitationAnchor;
+                let ordinal = |id: &String| {
+                    self.open
+                        .get(id)
+                        .or_else(|| self.closed_text.get(id))
+                        .map(|&index| index as u64)
+                };
+                let anchor = anchor.and_then(|anchor| match anchor {
+                    CitationAnchor::Range { part, start, end } => Some(CitationAnchor::Range {
+                        part: ordinal(&part)?,
+                        start,
+                        end,
+                    }),
+                    CitationAnchor::BlockEnd { part } => Some(CitationAnchor::BlockEnd {
+                        part: ordinal(&part)?,
+                    }),
+                });
                 self.accepted = Some(self.parts.len());
                 self.parts
-                    .push(PartSlot::Closed(Arc::new(ModelPart::Source { source })));
+                    .push(PartSlot::Closed(Arc::new(ModelPart::Source {
+                        source,
+                        anchor,
+                    })));
             }
             ModelEvent::PartStarted {
                 id,
                 text_kind,
                 provider_options,
             } => {
-                if !self.seen.insert(id.clone()) {
+                if self.closed_text.contains_key(&id)
+                    || self.open.insert(id, self.parts.len()).is_some()
+                {
                     return Err(invalid("duplicate model part"));
                 }
-                self.open.insert(id, self.parts.len());
                 let mut options = None;
                 if let Some(value) = shared_options.or_else(|| provider_options.map(Arc::new)) {
                     append_options(&mut options, value);
@@ -233,6 +254,7 @@ impl StepBuilder {
                     append_options(options, value);
                 }
                 self.parts[index] = PartSlot::Closed(self.parts[index].snapshot());
+                self.closed_text.insert(id, index);
                 self.accepted = Some(index);
             }
             ModelEvent::ToolInputStarted {
@@ -400,6 +422,64 @@ mod tests {
     use super::super::TextKind;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn source_anchors_follow_their_part_across_interleaved_and_closed_text() {
+        use super::super::{CitationAnchor, ModelSource};
+
+        let mut builder = StepBuilder::default();
+        for id in ["first", "second"] {
+            builder
+                .push(ModelEvent::PartStarted {
+                    id: id.into(),
+                    text_kind: TextKind::Text,
+                    provider_options: None,
+                })
+                .unwrap();
+        }
+        builder
+            .push(ModelEvent::PartFinished {
+                id: "second".into(),
+                provider_options: None,
+            })
+            .unwrap();
+
+        let legacy = json!({"kind":"source", "data": {
+            "kind":"url", "id":"s", "url":"https://example.com", "title":null, "provider_options":null
+        }});
+        let source: ModelSource = serde_json::from_value(legacy["data"].clone()).unwrap();
+        for (target, expected) in [("second", Some(1)), ("first", Some(0)), ("missing", None)] {
+            let event = ModelEvent::Source {
+                source: source.clone(),
+                anchor: Some(CitationAnchor::BlockEnd {
+                    part: target.into(),
+                }),
+            };
+            builder
+                .push(serde_json::from_value(serde_json::to_value(event).unwrap()).unwrap())
+                .unwrap();
+            let (_, part) = builder.accepted_item().unwrap();
+            assert_eq!(
+                *part,
+                ModelPart::Source {
+                    source: source.clone(),
+                    anchor: expected.map(|part| CitationAnchor::BlockEnd { part }),
+                }
+            );
+        }
+        builder
+            .push(serde_json::from_value(legacy).unwrap())
+            .unwrap();
+        let (_, part) = builder.accepted_item().unwrap();
+        assert_eq!(
+            serde_json::to_value(part).unwrap(),
+            json!({"kind":"source","source":source})
+        );
+        assert_eq!(
+            *part,
+            serde_json::from_value(serde_json::to_value(part).unwrap()).unwrap()
+        );
+    }
 
     #[test]
     fn interleaved_parts_preserve_metadata_and_require_complete_streams() {

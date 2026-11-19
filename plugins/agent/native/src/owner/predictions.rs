@@ -32,11 +32,11 @@ use maka_plugin_core::operation::RecoveryRef;
 
 fn follows_current_backend(
     preference: &BackendPreference,
-    model: &maka_agent_facts::execution::ModelBinding,
-    thinking: Option<ThinkingLevel>,
+    model: &crate::model::AcceptedModel,
 ) -> bool {
-    matches!(preference, BackendPreference::Model { connection_id, model_id, thinking_level }
-        if *connection_id == model.connection_id && *model_id == model.model && *thinking_level == thinking)
+    matches!(preference, BackendPreference::Model { connection_id, model_id, service_tier, thinking_level }
+        if *connection_id == model.binding.connection_id && *model_id == model.binding.model
+            && *service_tier == model.service_tier && *thinking_level == model.thinking_level)
 }
 
 impl Owner {
@@ -215,11 +215,7 @@ impl Owner {
         if !matches!(request.state, ContextRequestState::Completed) {
             return Ok(result);
         }
-        let BackendSpec::Model {
-            descriptor,
-            binding: model,
-        } = &boundary.spec.backend
-        else {
+        let BackendSpec::Model { descriptor, .. } = &boundary.spec.backend else {
             return Ok(result);
         };
         let accepted = crate::model::AcceptedModel::from_backend(
@@ -236,7 +232,7 @@ impl Owner {
         };
         if !backend
             .as_ref()
-            .is_some_and(|backend| follows_current_backend(backend, model, accepted.thinking_level))
+            .is_some_and(|backend| follows_current_backend(backend, &accepted))
         {
             return Ok(result);
         }
@@ -319,8 +315,7 @@ impl Owner {
                 policy.revision,
                 &history,
                 &cut,
-                &source.accepted.binding,
-                source.accepted.thinking_level,
+                &source.accepted,
             )
             .await;
         match source_current {
@@ -437,8 +432,7 @@ impl Owner {
                 policy.revision,
                 &history,
                 &cut,
-                &source.accepted.binding,
-                source.accepted.thinking_level,
+                &source.accepted,
             )
             .await?
         {
@@ -448,10 +442,6 @@ impl Owner {
         Ok(result)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Freshness compares the original scope, configuration, policy revision, history cut and model binding"
-    )]
     async fn prediction_current(
         &self,
         scope: &Scope,
@@ -459,8 +449,7 @@ impl Owner {
         policy_revision: u64,
         history: &SessionHistory,
         cut: &HistoryCut,
-        model: &maka_agent_facts::execution::ModelBinding,
-        thinking: Option<ThinkingLevel>,
+        model: &crate::model::AcceptedModel,
     ) -> Result<bool, String> {
         if scope.cancellation.is_cancelled()
             || self.stop.is_cancelled()
@@ -491,7 +480,7 @@ impl Owner {
         };
         if !backend
             .as_ref()
-            .is_some_and(|backend| follows_current_backend(backend, model, thinking))
+            .is_some_and(|backend| follows_current_backend(backend, model))
         {
             return Ok(false);
         }

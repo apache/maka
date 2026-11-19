@@ -118,7 +118,7 @@ fn item(index: u64, role: HistoricalRole, part: &ExactPart) -> Result<ImportPrev
                 output.json(body)?;
                 ImportRecordKind::ToolResult
             }
-            ModelPart::Source { source } => {
+            ModelPart::Source { source, .. } => {
                 output.json(source)?;
                 ImportRecordKind::Note
             }
