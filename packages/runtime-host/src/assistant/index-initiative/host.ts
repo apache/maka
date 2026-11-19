@@ -19,6 +19,8 @@
 
 import type { AssistantModuleServices } from '../service.js';
 import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
@@ -26,6 +28,8 @@ import { initializeQuickDiscovery } from './quick.js';
 import { initializeBot } from '../bot/host.js';
 import { registerAssistant } from './assistant.js';
 import { DISCOVERY_EXCLUDED_TOOLS } from './discovery-capabilities.js';
+import { DISCOVERY_TOOLS } from '../bot/capabilities.js';
+import { classifyToolUse } from '@maka/core/permission';
 export async function initializeInitiative(
   ctx: AssistantModuleServices,
   directory: string,
@@ -57,11 +61,20 @@ export async function initializeInitiative(
   // Discovery investigates and reports; it must not hold conversation-mutating tools.
   if (!ctx.tools.filter)
     throw Error('Assistant tool filtering is required to bound discovery Sessions');
-  ctx.tools.filter((sessionId, tools) =>
-    store.get()?.discoverySession === sessionId
-      ? tools.filter((tool) => !DISCOVERY_EXCLUDED_TOOLS.has(tool.name))
-      : tools,
-  );
+  ctx.tools.filter((sessionId, tools) => {
+    if (store.get()?.discoverySession !== sessionId) return tools;
+    const native = new Set(ctx.tools.resolve().tools.map((tool) => tool.name));
+    // Same read-only rule as Plan mode: Bash, Edit, Write, subagents and untyped tools stay out.
+    return tools.filter(
+      (tool) =>
+        !DISCOVERY_EXCLUDED_TOOLS.has(tool.name) &&
+        (native.has(tool.name)
+          ? DISCOVERY_TOOLS.has(tool.name)
+          : ['read', 'web_read'].includes(
+              classifyToolUse({ toolName: tool.name, args: {}, categoryHint: tool.categoryHint }),
+            )),
+    );
+  });
   ctx.tools.register({
     name: 'DiscoveryContext',
     description:
@@ -99,6 +112,24 @@ export async function initializeInitiative(
           tasks,
         };
       });
+    },
+  });
+  // Discovery has no Write tool; this is its only output, scoped to the current heartbeat's result file.
+  ctx.tools.register({
+    name: 'DiscoveryDraft',
+    description:
+      '写入本轮探索的结果文件（心跳中给出的操作文件路径），覆盖之前的内容。只接受 notes；写入不等于已提交记事本。',
+    parameters: z.object({ notes: z.array(z.record(z.string(), z.unknown())) }),
+    categoryHint: 'file_write',
+    executionSemantics: 'exclusive_step',
+    impl: async (input: any, call: any) => {
+      const state = store.get();
+      const pending = state?.pendingDraft;
+      if (!state || call.sessionId !== state.discoverySession || pending?.phase !== 'discovery')
+        throw Error('No exploration draft is open for this Session');
+      const path = join(controller.wakeDirectory(pending.id, 'exploration'), 'operations.json');
+      writeFileSync(path, JSON.stringify({ notes: input.notes }), { mode: 0o600 });
+      return { path, notes: input.notes.length };
     },
   });
   const visible = (call: any) => {

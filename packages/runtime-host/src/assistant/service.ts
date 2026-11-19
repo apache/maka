@@ -28,6 +28,10 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import {
+  MEMORY_EXTRACT_TOOL_NAME,
+  MEMORY_REMEMBER_TOOL_NAME,
+} from '@maka/runtime/memory-extraction';
 import type { PluginAgentService } from '@maka/runtime/plugin-agent-service';
 import type { PluginLlmService } from '@maka/runtime/plugin-llm-service';
 import type { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
@@ -539,6 +543,13 @@ export class PersonalAssistantService {
   filterTools(sessionId: string, tools: readonly MakaTool[]): readonly MakaTool[] {
     if (!this.enabled) return tools;
     return this.runtime!.visibleTools(sessionId, tools);
+  }
+  /** AiSdkBackend appends its untyped memory triggers after tool resolution, so they pass the same session filter here. */
+  admitsMemoryTriggers(sessionId: string): boolean {
+    const triggers = [MEMORY_REMEMBER_TOOL_NAME, MEMORY_EXTRACT_TOOL_NAME].map(
+      (name) => ({ name }) as MakaTool,
+    );
+    return this.filterTools(sessionId, triggers).length === triggers.length;
   }
   toolCeiling(sessionId: string): readonly MakaTool[] | undefined {
     return this.enabled && this.runtime!.bot.isWorker(sessionId)

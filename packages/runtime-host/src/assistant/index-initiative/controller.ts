@@ -235,6 +235,9 @@ export class InitiativeController {
       return this.ctx.agents.resume({ sessionId });
     });
   }
+  wakeDirectory(id: string, role: 'exploration' | 'judgement') {
+    return join(this.store.directory, 'notebook-wakes', id, role);
+  }
   private async execute(agent: any, state: any) {
     this.ready();
     this.activeAgent = agent;
@@ -248,7 +251,7 @@ export class InitiativeController {
       s.pendingDraft = pending;
     });
     const operationId = `${pending.id}:${role}`;
-    const directory = join(this.store.directory, 'notebook-wakes', pending.id, role);
+    const directory = this.wakeDirectory(pending.id, role);
     const viewPath = join(directory, 'notebook.md');
     const outputPath = join(directory, 'operations.json');
     const version = createHash('sha256')
