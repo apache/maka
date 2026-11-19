@@ -338,9 +338,7 @@ impl DriverModel {
                 let provenance=ContentBlob::json(&provenance)?;
                 request.step=StepId::new();request.summary_repair_of=None;
                 if producer == view.run && view.proactive_summary != Some(summary) {
-                    request.compaction_recovery = Some(
-                        request.compaction_recovery.or(summary_request.compaction_recovery).unwrap_or(summary),
-                    );
+                    request.compaction_recovery = Some(summary_request.compaction_recovery.unwrap_or(summary));
                 }
                 request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.tool_catalog_digest=maka_agent_engine::digest(&definitions)?;request.composition.tools=definitions;request.composition.max_output_tokens=prepared.request.max_output_tokens;
                 let mut contents=vec![body,recovery,projection,provenance];
