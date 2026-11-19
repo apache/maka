@@ -852,14 +852,21 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
 
         let write = approved_round(&rig, &mut provider, id, false, "Write",
             json!({"path":"notes.md","content":"approved"}), "once").await?;
-        assert_eq!(std::fs::read_to_string(workspace.join("notes.md"))?, "approved", "{write}");
+        let notes = std::fs::read_to_string(workspace.join("notes.md"))
+            .map_err(|error| format!("read notes.md: {error}; Write result: {write}"))?;
+        assert_eq!(notes, "approved", "{write}");
 
+        // On Linux the sandbox must mount an existing target for an exact writable path.
+        let shell_file = workspace.join("shell.txt");
+        std::fs::File::create(&shell_file)?;
         let shell = approved_round(&rig, &mut provider, id, false, "Shell", json!({
             "command":"echo approved > shell.txt","login":false,
-            "additional_permissions":{"filesystem":[{"path":workspace.join("shell.txt"),"scope":"exact","access":"write"}],"network":"denied"},
+            "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
             "justification":"Record the result"
         }), "once").await?;
-        assert_eq!(std::fs::read_to_string(workspace.join("shell.txt"))?, "approved\n", "{shell}");
+        let contents = std::fs::read_to_string(&shell_file)
+            .map_err(|error| format!("read shell.txt: {error}; Shell result: {shell}"))?;
+        assert_eq!(contents, "approved\n", "{shell}");
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
     let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;

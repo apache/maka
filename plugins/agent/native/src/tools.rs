@@ -528,7 +528,9 @@ fn catalog_inner(
                     computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
                     network_ceiling: selection.input == ToolInput::Web
                         || contract == &process_contract,
-                    file_ceiling: contract == &file_contract || contract == &process_contract,
+                    // Process controls need authority already held, not authority that could be approved.
+                    file_ceiling: contract == &file_contract
+                        || (contract == &process_contract && selection.method == "execute"),
                     input_projection,
                     title_kind,
                     presentation,
