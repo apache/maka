@@ -119,6 +119,13 @@ export interface AiSdkCompactionCapabilities {
   loadHistoryCompactCheckpoint?: HistoryCompactCheckpointLoader;
   /** Produces a checkpoint value from prior state plus newly evicted RuntimeEvents. */
   summarizeHistoryCompact?: HistoryCompactSummarizer;
+  /**
+   * The portable text summarizer behind the native compactor's capacity gate
+   * (#6415). Supplied only when `summarizeHistoryCompact` is the native
+   * bundle; the planner spends it once, on a capacity rejection with no
+   * proven boundary to retreat to.
+   */
+  summarizeHistoryCompactTextFallback?: HistoryCompactSummarizer;
   /** Actual route used by the configured history compactor, for durable diagnostics. */
   historyCompactRoute?: HistoryCompactRoute;
   /** Durable recorder for accepted checkpoints; persistence precedes projection. */
