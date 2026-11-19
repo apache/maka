@@ -76,6 +76,7 @@ pub enum DiscoveryToolGroup {
     Web,
     Sessions,
     Desktop,
+    PluginManagement,
     Other,
 }
 

@@ -2576,6 +2576,7 @@ export type DiscoveryToolGroup =
   | 'web'
   | 'sessions'
   | 'desktop'
+  | 'plugin_management'
   | 'other';
 export type AgentSchedules =
   | {

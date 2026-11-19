@@ -75,6 +75,21 @@ test('editing a grant keeps exact names and categories as the catalog changes', 
   });
 });
 
+test('plugin management requires a new choice when an extension changes category', () => {
+  const preview = {
+    names: ['Configure', 'DiscoveryComplete', 'Lookup'],
+    groups: { Configure: 'plugin_management', Lookup: 'other' },
+  };
+  const oldSelection = { Configure: 'other', Lookup: 'other' };
+  assert.deepEqual(selectedDiscoveryTools(preview, oldSelection, preview.names), {
+    Lookup: 'other',
+  });
+  // A preset-only plan can already have an exact approved list.
+  assert.deepEqual(selectedDiscoveryTools(preview, undefined, ['Configure']), {
+    Configure: 'plugin_management',
+  });
+});
+
 test('discovery listing carries catalogue revision through all pages and rejects a raced snapshot', async () => {
   const first = { kind: 'page', revision: 5, tasks: [{ id: 'a' }], nextCursor: 'a' };
   const seen = [];

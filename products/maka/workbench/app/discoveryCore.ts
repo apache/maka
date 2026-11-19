@@ -54,9 +54,10 @@ export function selectedDiscoveryTools(
     Object.entries(preview.groups).filter(([name, group]) => {
       if (approved && !approved.has(name)) return false;
       const explicitNames = group && draftGroups?.get(group);
-      return explicitNames
-        ? explicitNames.has(name)
-        : !requested || (Object.hasOwn(requested, name) && requested[name] === group);
+      if (explicitNames) return explicitNames.has(name);
+      if (requested) return Object.hasOwn(requested, name) && requested[name] === group;
+      // An exact grant from a preset-only plan can include plugin management.
+      return approved !== null || group !== 'plugin_management';
     }),
   );
 }

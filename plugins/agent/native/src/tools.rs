@@ -415,6 +415,8 @@ fn catalog_inner(
                 (None, Group::Commands)
             } else if contract == &computer_contract {
                 (None, Group::Desktop)
+            } else if contract == &deployment_contract && method.mode == MethodMode::Mutation {
+                (None, Group::PluginManagement)
             } else {
                 (None, Group::Other)
             };

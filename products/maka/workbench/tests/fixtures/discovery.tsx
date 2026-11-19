@@ -59,7 +59,13 @@ mount(() => {
     const groups: Record<string, string> = { Read: 'read_files', DiscoveryMemory: 'history' };
     if (disabledModel) groups.NewReader = 'read_files';
     if (profile === 'session')
-      Object.assign(groups, { Shell: 'commands', Write: 'modify_files', WebFetch: 'web' });
+      Object.assign(groups, {
+        Shell: 'commands',
+        Write: 'modify_files',
+        WebFetch: 'web',
+        mcp__sample__lookup: 'other',
+        PluginConfigure: 'plugin_management',
+      });
     return { groups, names: ['DiscoveryComplete', ...Object.keys(groups)].sort() };
   };
   const host = {

@@ -37,6 +37,7 @@ const labels = {
   sessions: 'Discovery session tools',
   desktop: 'Discovery desktop tools',
   other: 'Discovery extension tools',
+  plugin_management: 'Discovery plugin management',
 } as const satisfies Record<NonNullable<DiscoveryToolSelection[string]>, MessageKey>;
 
 type Group = keyof typeof labels;

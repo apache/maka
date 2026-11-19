@@ -109,6 +109,11 @@ export const discoveryMessages = {
   'Discovery session tools': ['Sessions and tasks', '会话与任务管理', '對話與任務管理'],
   'Discovery desktop tools': ['Desktop controls', '桌面操作', '桌面操作'],
   'Discovery extension tools': ['Extensions and other tools', '扩展与其他工具', '擴充與其他工具'],
+  'Discovery plugin management': [
+    'Install and manage plugins',
+    '安装与管理插件',
+    '安裝與管理外掛程式',
+  ],
   'Use read-only investigation tools': ['Read-only tools', '只读工具', '唯讀工具'],
   'Use standard Session tools': ['Standard Session tools', '普通会话工具', '一般對話工具'],
   'Discovery permissions': ['Investigation permissions', '调查权限', '調查權限'],

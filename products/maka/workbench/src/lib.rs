@@ -134,6 +134,9 @@ mod tests {
         app.wait_for("label:File reading: On").unwrap();
         assert!(!app.screen().matches("label:Terminal tools: On").unwrap());
         app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("label:Install and manage plugins: Off")
+            .unwrap();
+        app.press("label:Extensions and other tools: On").unwrap();
         app.press("label:Terminal tools: On").unwrap();
         app.press("label:Conversations and memory: On").unwrap();
         app.wait_for("text:/Read and its aliases can also open existing references/")
@@ -168,7 +171,7 @@ mod tests {
         app.press("role:button[Read-only tools]").unwrap();
         app.wait_for("label:File reading: On").unwrap();
         app.press("role:button[Standard Session tools]").unwrap();
-        app.wait_for("text:3 of 5 groups selected").unwrap();
+        app.wait_for("text:3 of 7 groups selected").unwrap();
         app.type_text(
             "label:Investigation direction (optional)",
             "Review the release",
@@ -182,7 +185,7 @@ mod tests {
         app.press("role:option[Fixed interval]").unwrap();
         app.press("role:combobox[Investigation model]").unwrap();
         app.press("role:option[Replacement model]").unwrap();
-        app.wait_for("text:3 of 5 groups selected").unwrap();
+        app.wait_for("text:3 of 7 groups selected").unwrap();
         app.wait_for("role:button[Approve and save]").unwrap();
         app.press("role:button[Approve and save]").unwrap();
         app.wait_for("role:button[Close]").unwrap();
@@ -241,6 +244,20 @@ mod tests {
         app.press("role:button[Edit plan]").unwrap();
         app.press("role:button[Show selected tools]").unwrap();
         app.wait_for("text:/^DiscoveryComplete$/").unwrap();
+
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("label:Extensions and other tools: Off")
+            .unwrap();
+        app.press("label:Extensions and other tools: Off").unwrap();
+        app.press("label:Install and manage plugins: Off").unwrap();
+        app.press("role:button[Approve and save]").unwrap();
+        app.wait_for("role:button[Edit plan]").unwrap();
+        app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("label:Install and manage plugins: On")
+            .unwrap();
+        app.press("role:button[Show selected tools]").unwrap();
+        app.wait_for("text:DiscoveryComplete · PluginConfigure · mcp__sample__lookup")
+            .unwrap();
 
         app.press("role:button[Cancel]").unwrap();
         app.wait_for("role:button[New plan]").unwrap();

@@ -1171,6 +1171,8 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
         json!({"name":"OpenDocument","description":"Read a document.","input":"json","result":"image","confirmation":"preapproved","target":{"kind":"import","name":"files"},"method":"read"}),
         json!({"name":"BrowseConversations","description":"List conversations.","input":"json","result":"json","confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"sessionList"}),
         json!({"name":"SessionRead","description":"List available models.","input":"json","result":"json","confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"models"}),
+        json!({"name":"InspectSetup","description":"Read plugin settings.","result":"json","confirmation":"preapproved","target":{"kind":"import","name":"management"},"method":"readSettings"}),
+        json!({"name":"ChangeSetup","description":"Configure a plugin.","result":"json","confirmation":"preapproved","target":{"kind":"import","name":"management"},"method":"configure"}),
     ]).await;
     let read_only = f.preview(&f.effect("read_only").await, None).await;
     let eligible = read_only.as_array().unwrap();
@@ -1187,20 +1189,22 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
         )
         .await;
     assert_eq!(preview["groups"]["OpenDocument"], "read_files");
+    assert_eq!(preview["groups"]["InspectSetup"], "other");
+    assert_eq!(preview["groups"]["ChangeSetup"], "plugin_management");
     assert_eq!(preview["groups"]["DiscoveryMemory"], "history");
     assert!(preview["groups"].get("DiscoveryComplete").is_none());
     let schedule = json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000});
-    effect["selectedTools"] = json!({"OpenDocument":"commands"});
+    effect["selectedTools"] = json!({"ChangeSetup":"other"});
     let rejected = f.query("schedule",json!({"kind":"create","input":{
         "task":{"title":"Stale category","intentBody":"","schedule":schedule,"effect":effect},
-        "timezone":"UTC","misfire":"latest","approvedTools":["DiscoveryComplete","OpenDocument"]
+        "timezone":"UTC","misfire":"latest","approvedTools":["ChangeSetup","DiscoveryComplete"]
     }})).await;
     assert_eq!(
         rejected["reason"], "scheduler_discovery_tools_changed",
         "{rejected}"
     );
 
-    effect["selectedTools"] = json!({"OpenDocument":"read_files"});
+    effect["selectedTools"] = json!({"OpenDocument":"read_files","InspectSetup":"other"});
     let task = f
         .create_effect("Grouped tools", "", schedule, effect.clone())
         .await;
@@ -1213,13 +1217,13 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
         .await;
     assert_eq!(
         preview["approvedNames"],
-        json!(["DiscoveryComplete", "OpenDocument"])
+        json!(["DiscoveryComplete", "InspectSetup", "OpenDocument"])
     );
     f.change(&task, "trigger_now").await;
     let (mut worker, request) = next(&listener).await;
     assert_eq!(
         model_tool_names(&request),
-        ["DiscoveryComplete", "OpenDocument"]
+        ["DiscoveryComplete", "InspectSetup", "OpenDocument"]
     );
     let opening = request["messages"].to_string();
     assert!(
