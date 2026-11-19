@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod discovery;
+
 use std::{sync::Arc, time::Duration};
 
 use maka_agent_facts::model::ModelPart;

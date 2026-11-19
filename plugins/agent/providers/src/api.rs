@@ -83,9 +83,15 @@ impl ApiProviders {
             overrides,
             thinking_level: None,
         };
-        provider
+        let prepared = provider
             .prepare(request.clone())
             .map_err(|error| error.to_string())?;
+        if matches!(
+            prepared.protocol,
+            maka_agent_ports::model::ProviderKind::Anthropic
+        ) {
+            metadata.info.service_tiers.clear();
+        }
         metadata.thinking_levels.retain(|level| {
             request.thinking_level = Some(*level);
             provider.prepare(request.clone()).is_ok()
@@ -210,11 +216,6 @@ impl ApiProvider {
     }
 
     fn prepare(&self, request: Resolve) -> Result<Model, Error> {
-        if request.service_tier.is_some() {
-            return Err(Error::Invalid(
-                "provider does not advertise service tiers".into(),
-            ));
-        }
         let configuration = Configuration::read(&request.connection.configuration)?;
         let ModelMetadata {
             mut info,
@@ -245,7 +246,14 @@ impl ApiProvider {
         if level.is_some_and(|level| !thinking_levels.contains(&level)) {
             return Err(Error::UnsupportedThinkingLevel);
         }
-        let options = options::resolve(&selection, self.facts, &thinking_levels, level, &route)?;
+        let options = options::resolve(
+            &selection,
+            self.facts,
+            &thinking_levels,
+            level,
+            &route,
+            request.service_tier.as_deref(),
+        )?;
         let output = output::resolve(&selection, route.wire, &options)?;
         let adapter = request
             .overrides
