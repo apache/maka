@@ -597,6 +597,7 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
     // without a search field it highlights. One binding for both, so
     // opening and closing the list binds nothing again.
     listbox::bind_typeahead(
+        When::Always,
         move || {
             if open.get() {
                 !props.searchable.get()

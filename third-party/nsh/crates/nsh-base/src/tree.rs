@@ -947,6 +947,7 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
         bind("space", false, Rc::new(toggle_current));
     });
     listbox::bind_typeahead(
+        When::Always,
         move || active.get(),
         Rc::new(move |c| {
             let at = now();

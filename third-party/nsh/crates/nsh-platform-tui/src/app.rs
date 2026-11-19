@@ -1694,17 +1694,6 @@ impl AppView {
         {
             self.surface.wake.notify();
             return Handled::Yes;
-        } else if let Some(stroke) = stroke
-            && self.keyboard.has_focused_control(&self.tree)
-            && nsh_core::input::presses_focused_control(stroke.key, stroke.modifiers)
-        {
-            return self.keyboard.action(
-                crate::key_scheme::Action::Activate,
-                &mut self.tree,
-                &self.geometry,
-                &control,
-                modifiers,
-            );
         }
         // The focused view and its ancestors hear the key before the
         // terminal's defaults do; a capture of theirs takes it from them.
@@ -1723,6 +1712,18 @@ impl AppView {
             if captured {
                 return Handled::Yes;
             }
+        }
+        if let Some(stroke) = stroke
+            && self.keyboard.has_focused_control(&self.tree)
+            && nsh_core::input::presses_focused_control(stroke.key, stroke.modifiers)
+        {
+            return self.keyboard.action(
+                crate::key_scheme::Action::Activate,
+                &mut self.tree,
+                &self.geometry,
+                &control,
+                modifiers,
+            );
         }
         let mut handled = if let Some(stroke) = stroke
             && (self.handle_field_key(key, stroke, &control)

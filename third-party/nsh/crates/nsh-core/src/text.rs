@@ -1468,6 +1468,20 @@ impl ApproxPrepared {
     pub fn chars(&self) -> usize {
         self.chars
     }
+
+    fn width(&self, start: usize, end: usize) -> Points {
+        let base = Points((end - start) as f32 * self.font.0 * 0.55);
+        if self.attachments.is_empty() {
+            return base;
+        }
+        let utf16 = |k| k + self.astral.partition_point(|&i| (i as usize) < k);
+        let (start, end) = (utf16(start), utf16(end));
+        let advance = self.font * 0.55;
+        self.attachments
+            .iter()
+            .filter(|a| (start..end).contains(&(a.index as usize)))
+            .fold(base, |width, a| width + (a.width - advance))
+    }
 }
 
 impl Default for ApproxPrepared {
@@ -1486,8 +1500,8 @@ impl Default for ApproxPrepared {
 }
 
 /// A deterministic, platform-free [`TextEngine`] for headless runs and
-/// tests: every character is `0.55 × font size` wide (in the largest span's
-/// font) and lines are as tall as the spans' `lineHeight` (or `1.2 × font size`
+/// tests: a glyph is `0.55 × font size` wide (in the largest span's font),
+/// an attachment has its own width, and lines are as tall as the spans' `lineHeight` (or `1.2 × font size`
 /// by default); a text with line breaks measures as wide as its widest line and
 /// as tall as its lines (each wrapped on its own), their baseline placed with
 /// half-leading around the natural `1.2 × font size` ascent (its descent 0 when
@@ -1551,22 +1565,23 @@ impl TextEngine for ApproxTextEngine {
 
     fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points> {
         // The order of the products is kept: it decides the last bit.
-        let wrap = |chars: usize| {
-            let width = Points(chars as f32 * prepared.font.0 * 0.55);
-            match max_width {
-                Some(max) if width > max && max > Points::ZERO => (max, (width / max).ceil()),
-                _ => (width, 1.0),
-            }
+        let wrap = |width: Points| match max_width {
+            Some(max) if width > max && max > Points::ZERO => (max, (width / max).ceil()),
+            _ => (width, 1.0),
         };
         let (width, mut lines) = match prepared.breaks.is_empty() {
-            true => wrap(prepared.chars),
-            false => prepared
-                .breaks
-                .iter()
-                .fold((Points::ZERO, 0.0), |(w, n), &c| {
-                    let (lw, ln) = wrap(c);
-                    (w.max(lw), n + ln)
-                }),
+            true => wrap(prepared.width(0, prepared.chars)),
+            false => {
+                let mut start = 0;
+                prepared
+                    .breaks
+                    .iter()
+                    .fold((Points::ZERO, 0.0), |(w, n), &c| {
+                        let (lw, ln) = wrap(prepared.width(start, start + c));
+                        start += c + 1;
+                        (w.max(lw), n + ln)
+                    })
+            }
         };
         if prepared.max_lines > 0 {
             lines = lines.min(prepared.max_lines as f32);
@@ -1594,6 +1609,11 @@ impl TextEngine for ApproxTextEngine {
                 ..TextLine::default()
             },
             advance,
+            attachment_advances: prepared
+                .attachments
+                .iter()
+                .map(|a| (a.index, a.width - advance))
+                .collect(),
             chars: u32::try_from(prepared.chars).unwrap_or(u32::MAX),
             astral: prepared.astral.clone(),
         };
@@ -1603,13 +1623,7 @@ impl TextEngine for ApproxTextEngine {
             .attachments
             .iter()
             .map(|a| {
-                let (row, x) = approx_place(
-                    layout.char_at(a.index) as usize,
-                    prepared.chars,
-                    font,
-                    &prepared.breaks,
-                    size.width,
-                );
+                let (row, x) = approx_place(layout.char_at(a.index) as usize, prepared, size.width);
                 if prepared.max_lines > 0 && row >= prepared.max_lines as f32 {
                     return None;
                 }
@@ -1638,11 +1652,25 @@ impl TextEngine for ApproxTextEngine {
         let Some(l) = layout.downcast::<ApproxLayout>() else {
             return TextPosition::default();
         };
-        let k = if l.advance > Points::ZERO {
+        let k = if l.attachment_advances.is_empty() {
+            if l.advance <= Points::ZERO {
+                return TextPosition::default();
+            }
             // Clamped to `0..=chars` first: the cast cannot truncate.
             (p.x / l.advance).round().clamp(0.0, l.chars as f32) as u32
         } else {
-            0
+            let (mut lo, mut hi) = (0, l.chars);
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let left = l.x_of(l.unit_of(mid));
+                let right = l.x_of(l.unit_of(mid + 1));
+                if p.x < (left + right) * 0.5 {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            lo
         };
         TextPosition::new(l.unit_of(k), Affinity::Downstream)
     }
@@ -1679,35 +1707,30 @@ impl TextEngine for ApproxTextEngine {
 /// when the text has line breaks): its line, counted from 0, and its x. A
 /// line wraps as `measure` wraps it: at the box's width, the characters
 /// running on.
-fn approx_place(
-    k: usize,
-    chars: usize,
-    font: Points,
-    breaks: &[usize],
-    width: Points,
-) -> (f32, Points) {
-    let whole = [chars];
-    let lines: &[usize] = if breaks.is_empty() { &whole } else { breaks };
-    // The order of the products is `measure`'s: it decides the last bit.
-    let wraps = |chars: usize| {
-        let w = Points(chars as f32 * font.0 * 0.55);
-        match w > width && width > Points::ZERO {
-            true => (w / width).ceil(),
-            false => 1.0,
-        }
+fn approx_place(k: usize, prepared: &ApproxPrepared, width: Points) -> (f32, Points) {
+    let whole = [prepared.chars];
+    let lines: &[usize] = if prepared.breaks.is_empty() {
+        &whole
+    } else {
+        &prepared.breaks
     };
     let (mut row, mut start) = (0.0, 0);
     for (i, &n) in lines.iter().enumerate() {
+        let w = prepared.width(start, start + n);
+        let wraps = if w > width && width > Points::ZERO {
+            (w / width).ceil()
+        } else {
+            1.0
+        };
         if k <= start + n || i + 1 == lines.len() {
-            let x = Points(k.saturating_sub(start) as f32 * font.0 * 0.55);
-            let n_wraps = wraps(n);
-            if n_wraps <= 1.0 {
+            let x = prepared.width(start, k);
+            if wraps <= 1.0 {
                 return (row, x);
             }
-            let wrapped = (x / width).floor().min(n_wraps - 1.0);
+            let wrapped = (x / width).floor().min(wraps - 1.0);
             return (row + wrapped, x - width * wrapped);
         }
-        row += wraps(n);
+        row += wraps;
         start += n + 1;
     }
     (row, Points::ZERO)
@@ -1719,6 +1742,7 @@ struct ApproxLayout {
     line: TextLine,
     /// The width of every character.
     advance: Points,
+    attachment_advances: Vec<(u32, Points)>,
     chars: u32,
     /// The indices of the characters two UTF-16 units long, in order.
     astral: Vec<u32>,
@@ -1751,7 +1775,11 @@ impl ApproxLayout {
 
     /// The x of the caret at UTF-16 offset `o`.
     fn x_of(&self, o: u32) -> Points {
-        self.advance * self.char_at(o) as f32
+        let base = self.advance * self.char_at(o) as f32;
+        self.attachment_advances
+            .iter()
+            .filter(|(index, _)| *index < o)
+            .fold(base, |x, (_, advance)| x + *advance)
     }
 }
 

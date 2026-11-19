@@ -1032,7 +1032,7 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
     let content = computed(move || {
         inline_rv.deco_rev.get();
         let it = item.get();
-        let composition = inline_rv.composition.get();
+        let composition = inline_rv.composition.get().filter(|text| !text.is_empty());
         let has_decos = !inline_rv.decorations.borrow().is_empty();
         let start = if has_decos || composition.is_some() {
             inline_rv.doc_rev.get();

@@ -286,7 +286,16 @@ impl Geometry {
                     queries.caret(layout, text_position(b, Affinity::Downstream))
             {
                 caret.size.width = px(4.0);
-                out.push(caret);
+                let caret_right = caret.origin.x + caret.size.width;
+                if let Some(last) = out.iter_mut().rev().find(|b| {
+                    b.origin.y == caret.origin.y
+                        && b.origin.x <= caret_right
+                        && caret.origin.x <= b.origin.x + b.size.width
+                }) {
+                    *last = last.union(&caret);
+                } else {
+                    out.push(caret);
+                }
             }
         } else if from <= start && to > end {
             out.push(Bounds::new(

@@ -998,8 +998,7 @@ impl Rv {
         if let Some(held) = held {
             self.sink_edited(&held);
         }
-        self.composition
-            .set((composing && !text.is_empty()).then(|| text.to_owned()));
+        self.composition.set(composing.then(|| text.to_owned()));
         // Observers can unmount the editor, so publish the transition only
         // after its sink and composition state have reached their final values.
         if changed {

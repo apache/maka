@@ -942,13 +942,14 @@ const TYPEAHEAD_KEYS: [&str; 36] = [
     "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 ];
 
-/// Binds typeahead's keys while `active` holds, to `typed` with the
-/// character: bound once for as long as it holds (with [`When::Always`], so
-/// an open non-searchable list owns letters and digits even when pressing
-/// its trigger left responder focus in another text field), and a trigger's
-/// typeahead and its open list's (one `active`) bind nothing again as the
-/// list opens and closes.
-pub(crate) fn bind_typeahead(active: impl Fn() -> bool + 'static, typed: Rc<dyn Fn(char)>) {
+/// Binds typeahead while active. A non-searchable list can take letters
+/// even if its trigger left focus in another field; a menu with its own
+/// text field leaves typing to that field.
+pub(crate) fn bind_typeahead(
+    when: When,
+    active: impl Fn() -> bool + 'static,
+    typed: Rc<dyn Fn(char)>,
+) {
     let active = computed(active);
     effect(move || {
         if !active.get() {
@@ -959,7 +960,7 @@ pub(crate) fn bind_typeahead(active: impl Fn() -> bool + 'static, typed: Rc<dyn 
             on_key_with(
                 key,
                 KeyOptions {
-                    when: When::Always,
+                    when,
                     repeat: false,
                     ..Default::default()
                 },

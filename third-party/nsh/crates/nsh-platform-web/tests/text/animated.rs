@@ -11,7 +11,7 @@ use crate::{animation::UiAnimation, encode::Out};
 
 fn outputs(a: &mut UiAnimation) -> Vec<(u32, String, String)> {
     let mut out = Out::default();
-    a.outputs(&mut out);
+    a.outputs(&mut out, false);
     out.0
 }
 

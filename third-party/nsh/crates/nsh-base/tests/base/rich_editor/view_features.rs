@@ -193,17 +193,19 @@ fn Features(props: FeaturesProps) -> impl IntoElement {
 }
 
 fn start_features(doc: Value, editable: bool) -> Headless {
-    let schema = feature_schema();
-    let plugins = starter::plugins(&schema);
-    let doc = schema.node_from_json(&doc).unwrap();
-    let state =
-        EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins)).unwrap();
-    let session = EditorSession::new(state, NodeViews::new());
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
-        ..EngineConfig::new(Root::new::<Features>(move || FeaturesProps {
-            session: Some(session.clone()),
-            editable,
+        ..EngineConfig::new(Root::new::<Features>(move || {
+            let schema = feature_schema();
+            let plugins = starter::plugins(&schema);
+            let doc = schema.node_from_json(&doc).unwrap();
+            let state =
+                EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins))
+                    .unwrap();
+            FeaturesProps {
+                session: Some(EditorSession::new(state, NodeViews::new())),
+                editable,
+            }
         }))
     };
     config.environment.os = Os::Linux;
@@ -594,7 +596,9 @@ fn selection_boxes_are_drawn_in_task_items_and_code_blocks() {
         // block's padding), on its line, through its end.
         assert_eq!(b.origin, text_box.origin, "{text}");
         assert_eq!(b.size.height, text_box.size.height, "{text}");
-        assert!(b.size.width >= text_box.size.width, "{text}");
+        let glyph_end = text_point(&app, text, text.encode_utf16().count());
+        assert!(b.size.width >= glyph_end.x - px(1.0), "{text}");
+        assert!(b.size.width < text_box.size.width, "{text}");
     }
 }
 

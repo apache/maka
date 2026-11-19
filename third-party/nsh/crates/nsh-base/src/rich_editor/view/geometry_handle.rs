@@ -158,11 +158,13 @@ impl ViewGeometry for GeometryHandle {
 
     fn selection_rect(&self) -> Option<Bounds<Points>> {
         self.with(|local| {
-            let (from, to) = {
-                let state = local.state.borrow();
-                (state.selection().from(), state.selection().to())
-            };
+            let state = local.state.borrow();
+            let selection = state.selection();
             let geo = local.geo.borrow();
+            if selection.as_node().is_some() {
+                return super::controller::node_box(&local.tree.borrow(), &geo, selection.from());
+            }
+            let (from, to) = (selection.from(), selection.to());
             if from == to {
                 return geo.caret_rect(from, Affinity::Downstream);
             }

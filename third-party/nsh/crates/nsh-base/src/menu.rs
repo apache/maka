@@ -1629,6 +1629,7 @@ fn surface(
         });
         let typing = items.clone();
         listbox::bind_typeahead(
+            When::NotEditing,
             move || presence.mounted() && open.get(),
             Rc::new(move |c| typing.type_ahead(c)),
         );

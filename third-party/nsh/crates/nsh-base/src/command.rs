@@ -1022,6 +1022,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
         );
     });
     listbox::bind_typeahead(
+        When::Always,
         move || focused.get() && !props.searchable.get(),
         Rc::new(move |c| palette.type_ahead(c)),
     );

@@ -436,6 +436,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
     });
     lb.bind_keys(move || open.get(), choose.clone());
     listbox::bind_typeahead(
+        When::Always,
         move || open.get() && !lb.searchable.get(),
         Rc::new(move |c| lb.type_ahead(c)),
     );

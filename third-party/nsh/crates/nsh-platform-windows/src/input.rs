@@ -1804,14 +1804,11 @@ fn collect_stops(view: &NshView, out: &mut Vec<NshView>) {
         if skipped(view) {
             return false;
         }
-        let (field, disabled) = {
-            let s = view.state();
-            (
-                s.kind == ViewKind::Input,
-                s.props.accessibility.state.disabled,
-            )
-        };
-        !disabled && (field || crate::keyboard::is_stop(view))
+        if view.kind() == ViewKind::Input {
+            focusable(&view.state())
+        } else {
+            crate::keyboard::is_stop(view)
+        }
     }));
 }
 
