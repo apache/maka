@@ -100,7 +100,7 @@ impl Owner {
                 actual.spec.trigger,
                 Trigger::ContextCompact | Trigger::HistorySource
             )
-            || actual.blocks_followup()
+            || actual.blocks_continuation()
         {
             return Ok(ContinuationReadiness::Rejected(
                 ContinuationRejection::SafetyCheckFailed,
