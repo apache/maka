@@ -123,7 +123,7 @@ pub(super) struct PreparedContinuation {
     pub replay: maka_agent_facts::continuation::ReplayEvidence,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenInput {
     continuing: Option<AcceptedModel>,
@@ -142,9 +142,53 @@ struct FrozenInput {
     wire: FrozenWire,
     notifications: Vec<FrozenNotification>,
     recovered_cells: Vec<FrozenCellKnowledge>,
+    /// Inline only in records written before the text became shared content.
+    #[serde(default)]
     instructions: Option<String>,
+    #[serde(default)]
     system: Option<SystemPrompt>,
     tool_choice: ToolChoiceMode,
+    #[serde(default)]
+    instructions_text: Option<ContentRef>,
+    #[serde(default)]
+    system_text: Option<FrozenSystem>,
+}
+
+/// Wire form of [FrozenInput]: system texts are always stored as shared content refs.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedFrozenInput<'a> {
+    continuing: &'a Option<AcceptedModel>,
+    accepted: &'a AcceptedModel,
+    adapter: &'a SourceRevision,
+    item_acceptance: bool,
+    route_identity: &'a str,
+    operation: ModelOperation,
+    language: maka_agent_facts::language::Language,
+    prompt: &'a ContentRef,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    prompt_chunks: &'a Vec<ContentRef>,
+    layout: &'a preparation::FrozenPromptLayout,
+    covered_prefix: &'a Option<CoveredPrefix>,
+    normalization: &'a Option<maka_model::ProviderKind>,
+    wire: &'a FrozenWire,
+    notifications: &'a Vec<FrozenNotification>,
+    recovered_cells: &'a Vec<FrozenCellKnowledge>,
+    tool_choice: ToolChoiceMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions_text: &'a Option<ContentRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_text: &'a Option<FrozenSystem>,
+}
+
+/// Each Step repeats the same system text; storing it as content keeps one copy.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenSystem {
+    text: ContentRef,
+    policy_revision: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<SourceRevision>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -211,8 +255,134 @@ impl FrozenInput {
                 }
             }
         }
+        for reference in self.text_refs() {
+            if !refs.contains(&reference) {
+                refs.push(reference);
+            }
+        }
         refs
     }
+
+    fn text_refs(&self) -> Vec<ContentRef> {
+        let mut refs: Vec<ContentRef> = self.instructions_text.iter().cloned().collect();
+        if let Some(system) = &self.system_text
+            && !refs.contains(&system.text)
+        {
+            refs.push(system.text.clone());
+        }
+        refs
+    }
+
+    /// Serialize with the system text moved into shared content blobs.
+    fn seal(&mut self) -> Result<(ContentBlob, Vec<ContentBlob>), RunError> {
+        let (bytes, texts) = self.seal_bytes()?;
+        Ok((ContentBlob::new(bytes), texts))
+    }
+
+    fn seal_bytes(&mut self) -> Result<(Vec<u8>, Vec<ContentBlob>), RunError> {
+        let mut texts = Vec::new();
+        self.instructions_text = self
+            .instructions
+            .as_deref()
+            .map(|text| shared_text(text, &mut texts))
+            .transpose()?;
+        self.system_text = self
+            .system
+            .as_ref()
+            .map(|system| {
+                Ok::<_, RunError>(FrozenSystem {
+                    text: shared_text(&system.text, &mut texts)?,
+                    policy_revision: system.policy_revision,
+                    sources: system.sources.clone(),
+                })
+            })
+            .transpose()?;
+        let wire = SealedFrozenInput {
+            continuing: &self.continuing,
+            accepted: &self.accepted,
+            adapter: &self.adapter,
+            item_acceptance: self.item_acceptance,
+            route_identity: &self.route_identity,
+            operation: self.operation,
+            language: self.language,
+            prompt: &self.prompt,
+            prompt_chunks: &self.prompt_chunks,
+            layout: &self.layout,
+            covered_prefix: &self.covered_prefix,
+            normalization: &self.normalization,
+            wire: &self.wire,
+            notifications: &self.notifications,
+            recovered_cells: &self.recovered_cells,
+            tool_choice: self.tool_choice,
+            instructions_text: &self.instructions_text,
+            system_text: &self.system_text,
+        };
+        Ok((serde_json::to_vec(&wire).map_err(RunError::Json)?, texts))
+    }
+
+    /// Restore the system text of a sealed record from its resolved content.
+    fn hydrate(&mut self, texts: &[(ContentRef, String)]) -> Result<(), RunError> {
+        if (self.instructions_text.is_some() && self.instructions.is_some())
+            || (self.system_text.is_some() && self.system.is_some())
+        {
+            return Err(unsupported("frozen-input-manifest-schema"));
+        }
+        let text = |reference: &ContentRef| {
+            texts
+                .iter()
+                .find(|(resolved, _)| resolved == reference)
+                .map(|(_, text)| text.clone())
+                .ok_or_else(|| unsupported("frozen-input-system-text"))
+        };
+        let instructions = self.instructions_text.as_ref().map(text).transpose()?;
+        let system = self
+            .system_text
+            .as_ref()
+            .map(|system| {
+                Ok::<_, RunError>(SystemPrompt {
+                    text: text(&system.text)?,
+                    policy_revision: system.policy_revision,
+                    sources: system.sources.clone(),
+                })
+            })
+            .transpose()?;
+        if instructions.is_some() {
+            self.instructions = instructions;
+        }
+        if system.is_some() {
+            self.system = system;
+        }
+        Ok(())
+    }
+}
+
+async fn hydrate_frozen_input<F, Fut>(
+    mut frozen: FrozenInput,
+    mut load: F,
+) -> Result<FrozenInput, RunError>
+where
+    F: FnMut(ContentRef) -> Fut,
+    Fut: std::future::Future<Output = Result<String, RunError>>,
+{
+    let mut texts = Vec::new();
+    for reference in frozen.text_refs() {
+        let text = load(reference.clone()).await?;
+        texts.push((reference, text));
+    }
+    frozen.hydrate(&texts)?;
+    Ok(frozen)
+}
+
+fn shared_text(text: &str, blobs: &mut Vec<ContentBlob>) -> Result<ContentRef, RunError> {
+    let blob = ContentBlob::json(&text)?;
+    let reference = blob.reference().clone();
+    if !blobs
+        .iter()
+        .any(|existing| existing.reference() == &reference)
+    {
+        blobs.push(blob);
+    }
+    Ok(reference)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -765,7 +935,7 @@ impl DriverModel {
                     cleanup_evidence.observe(&error);
                 }
             });
-            let frozen = FrozenInput {
+            let mut frozen = FrozenInput {
                 continuing: preflight.map(|_| self.source.accepted.clone()),
                 accepted: source.accepted.clone(),
                 adapter: adapter.source().clone(),
@@ -785,8 +955,10 @@ impl DriverModel {
                 instructions: request.request.prompt.instructions().map(str::to_owned),
                 system: system.clone(),
                 tool_choice: request.request.tool_choice,
+                instructions_text: None,
+                system_text: None,
             };
-            let body = ContentBlob::json(&frozen)?;
+            let (body, texts) = frozen.seal()?;
             let recovery_contract = ContentBlob::json(&FrozenRecovery {
                 protocol: format!("{PROTOCOL}/recovery"),
                 version: VERSION,
@@ -901,6 +1073,7 @@ impl DriverModel {
                     ];
                     contents.extend(chunks);
                     contents.extend(steering_contents);
+                    contents.extend(texts);
                     contents
                 },
                 steering,
@@ -1393,7 +1566,12 @@ impl DriverModel {
         }
         super::driver::validate_tool_digest(request)?;
         let value: Value = reader.decode(run, &request.request).await?;
-        serde_json::from_value(value).map_err(|_| unsupported("frozen-input-manifest-schema"))
+        let frozen: FrozenInput = serde_json::from_value(value)
+            .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
+        hydrate_frozen_input(frozen, |reference| async move {
+            reader.decode(run, &reference).await
+        })
+        .await
     }
     async fn restore_frozen(
         &self,
@@ -2426,6 +2604,10 @@ impl DriverModel {
         }
         let frozen: FrozenInput = serde_json::from_slice(&bytes)
             .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
+        let frozen = hydrate_frozen_input(frozen, |reference| async move {
+            self.decode(run, &reference).await
+        })
+        .await?;
         let source = self.request_source(&frozen)?;
         let recovery: FrozenRecovery = self
             .protocol_data(run, &request.recovery_contract, "recovery-contract-schema")
@@ -4114,6 +4296,169 @@ mod withheld_recovery_tests {
         assert!(
             withheld_before_in(&attempts, Some(proactive), main2),
             "second main turn refusal must be blocked"
+        );
+    }
+}
+
+#[cfg(test)]
+mod frozen_text_tests {
+    use super::*;
+
+    fn minimal_inline_value(instructions: &str, system_text: &str) -> Value {
+        json!({
+            "accepted": {
+                "binding": {
+                    "connection_id": "00000000-0000-0000-0000-000000000001",
+                    "connection_slug": "fixture",
+                    "model": "fixture-model"
+                },
+                "thinking_level": null,
+                "tool_mode": "code_mode",
+                "editing_tools": "structured",
+                "public_model": {
+                    "id": "fixture-model",
+                    "displayName": "Fixture",
+                    "description": "",
+                    "contextWindow": 8192,
+                    "maxOutputTokens": 1024,
+                    "thinkingLevels": [],
+                    "structuredOutput": false,
+                    "lastUpdated": "2026-01-01",
+                    "capabilities": {
+                        "vision": false,
+                        "reasoning": false,
+                        "functionCalling": true,
+                        "imageGeneration": false
+                    },
+                    "modalities": { "input": ["text"], "output": ["text"] }
+                },
+                "provider": {
+                    "packageId": "maka.providers",
+                    "entryId": "maka.providers",
+                    "scope": "profile",
+                    "name": "fixture"
+                },
+                "route": {
+                    "adapter": "chat-completions",
+                    "protocol": { "openai_compatible": { "name": "fixture" } },
+                    "base_url": "http://127.0.0.1:1/v1"
+                },
+                "model_override": { "codeMode": true, "applyPatch": false },
+                "body_overlay": null
+            },
+            "adapter": {
+                "kind": "model_adapter",
+                "name": "chat-completions",
+                "packageId": "maka.agent.agent",
+                "entryId": "maka.agent.api",
+                "activation": "act-1",
+                "revision": "rev-1"
+            },
+            "itemAcceptance": false,
+            "routeIdentity": "sha256:0",
+            "operation": "inference",
+            "language": "en",
+            "prompt": { "digest": "sha256:1", "bytes": 2 },
+            "layout": {
+                "version": 2,
+                "message_count": 1,
+                "index_offset": 0,
+                "byte_len": 2,
+                "identity": "0",
+                "breakdown": {
+                    "system": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "user": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "assistant": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "tool": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "toolSchemas": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "counts": { "messages": 1, "media": 0, "toolCalls": 0, "toolResults": 0, "tools": 0 }
+                }
+            },
+            "coveredPrefix": null,
+            "normalization": null,
+            "wire": { "format": "chat_completions", "codec": "{}", "identity": "0" },
+            "notifications": [],
+            "recoveredCells": [],
+            "instructions": instructions,
+            "system": {
+                "text": system_text,
+                "policy_revision": 1,
+                "sources": []
+            },
+            "toolChoice": "auto"
+        })
+    }
+
+    #[tokio::test]
+    async fn shared_system_text_deduplicates_on_seal_and_supports_legacy_inline() {
+        let shared = "You are a concise coding assistant.";
+        let legacy_json = minimal_inline_value(shared, shared);
+
+        // 1. Legacy inline records remain readable without external refs.
+        let legacy: FrozenInput = serde_json::from_value(legacy_json.clone()).unwrap();
+        assert!(legacy.text_refs().is_empty());
+        let legacy = hydrate_frozen_input(legacy, |_| async {
+            panic!("legacy inline record must not decode external text refs")
+        })
+        .await
+        .unwrap();
+        assert_eq!(legacy.instructions.as_deref(), Some(shared));
+        assert_eq!(
+            legacy.system.as_ref().map(|s| s.text.as_str()),
+            Some(shared)
+        );
+
+        // 2. Identical instructions and system.text collapse into one shared content blob.
+        let mut to_seal: FrozenInput = serde_json::from_value(legacy_json).unwrap();
+        let (bytes, blobs) = to_seal.seal_bytes().unwrap();
+        assert_eq!(
+            blobs.len(),
+            1,
+            "identical texts must deduplicate to one blob"
+        );
+        let expected_ref = ContentBlob::json(&shared).unwrap().reference().clone();
+        assert_eq!(blobs[0].reference(), &expected_ref);
+        let wire: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            wire.get("instructions").is_none(),
+            "wire omits inline instructions: {wire}"
+        );
+        assert!(
+            wire.get("system").is_none(),
+            "wire omits inline system: {wire}"
+        );
+        assert_eq!(to_seal.text_refs(), vec![expected_ref.clone()]);
+        assert!(to_seal.content_refs().contains(&expected_ref));
+
+        // 3. Round-trip reload restores both texts and preserves content_refs().
+        let reloaded: FrozenInput = serde_json::from_slice(&bytes).unwrap();
+        let hydrated = hydrate_frozen_input(reloaded, |reference| {
+            let blob_ref = expected_ref.clone();
+            async move {
+                assert_eq!(reference, blob_ref);
+                Ok(shared.to_owned())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(hydrated.instructions.as_deref(), Some(shared));
+        assert_eq!(
+            hydrated.system.as_ref().map(|s| s.text.as_str()),
+            Some(shared)
+        );
+        assert_eq!(hydrated.content_refs(), to_seal.content_refs());
+
+        // 4. Records mixing inline text and external ref are rejected.
+        let mut mixed = wire;
+        mixed["instructions"] = json!(shared);
+        let mixed: FrozenInput = serde_json::from_value(mixed).unwrap();
+        let err = hydrate_frozen_input(mixed, |_| async { Ok(shared.to_owned()) })
+            .await
+            .err()
+            .expect("mixed inline and ref must fail");
+        assert!(
+            err.to_string().contains("frozen-input-manifest-schema"),
+            "{err}"
         );
     }
 }
