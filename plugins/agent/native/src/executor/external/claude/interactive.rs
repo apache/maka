@@ -157,7 +157,7 @@ pub(in crate::executor::external) async fn execute(
             let prompt = input::text(runtime::string(request, "/message")?);
             let images = request["images"].as_array().expect("canonical images");
             let update = journal.instruction_update(request["instructions"].as_str());
-            let prompt = if let Some(update) = update {
+            let input = if let Some(update) = update {
                 let bootstrap = input::text(&runtime::bootstrap_message(&update.text));
                 let sent = input::submit(
                     &mut stdin,
@@ -173,7 +173,6 @@ pub(in crate::executor::external) async fn execute(
                     &mut cursor,
                     &session,
                     &sent,
-                    0,
                     &BootstrapOutput(output.as_ref()),
                     &mut stdin,
                     &mut screen,
@@ -201,8 +200,7 @@ pub(in crate::executor::external) async fn execute(
             observe(
                 &mut cursor,
                 &session,
-                &prompt,
-                images.len(),
+                &input,
                 output.as_ref(),
                 &mut stdin,
                 &mut screen,
@@ -452,8 +450,7 @@ impl OutputSink for BootstrapOutput<'_> {
 async fn observe(
     cursor: &mut Cursor,
     session: &str,
-    prompt: &str,
-    images: usize,
+    input: &input::Submitted,
     output: &dyn OutputSink,
     io: &mut (impl tokio::io::AsyncWrite + Unpin + Send),
     screen: &mut tokio::sync::watch::Receiver<input::Screen>,
@@ -464,11 +461,10 @@ async fn observe(
         Some((journal, steering)) => (Some(journal), Some(steering)),
         None => (None, None),
     };
-    let mut deadline = Some(input_deadline(prompt));
+    let mut deadline = Some(input_deadline(&input.prompt));
     let mut turn = LiveTurn {
         session,
-        prompt,
-        images,
+        input,
         admitted: false,
         pending: Default::default(),
         assistant: false,
@@ -524,11 +520,8 @@ async fn observe(
                     .as_array()
                     .expect("canonical steering images");
                 let prompt = input::text(runtime::string(&request, "/message")?);
-                let prompt = input::send(io, screen, &prompt, images, start).await?;
-                turn.pending.push_back(SubmittedInput {
-                    prompt,
-                    images: images.len(),
-                });
+                turn.pending
+                    .push_back(input::send(io, screen, &prompt, images, start).await?);
             }
         };
         let terminal = row["type"] == "system"
@@ -547,11 +540,8 @@ async fn observe(
                 .as_array()
                 .expect("canonical steering images");
             let prompt = input::text(runtime::string(&request, "/message")?);
-            let prompt = input::send(io, screen, &prompt, images, start).await?;
-            turn.pending.push_back(SubmittedInput {
-                prompt,
-                images: images.len(),
-            });
+            turn.pending
+                .push_back(input::send(io, screen, &prompt, images, start).await?);
         }
         let pending = turn.pending.len();
         let admitted = turn.admitted;
@@ -587,23 +577,46 @@ fn input_deadline(prompt: &str) -> tokio::time::Instant {
         + runtime::SETUP_TIMEOUT
         + Duration::from_secs(prompt.len() as u64 / (32 * 1024))
 }
-struct SubmittedInput {
-    prompt: String,
-    images: usize,
-}
-fn matches_input(content: &Value, prompt: &str, images: usize) -> bool {
-    content_text(content) == prompt
-        && content.as_array().map_or(images == 0, |blocks| {
+/// Whether a transcript row's content records this input. Claude writes the image
+/// markers first and records a pasted prompt between `<pasted_content id="…">` tags.
+fn matches_input(content: &Value, input: &input::Submitted) -> bool {
+    content_text(content)
+        .strip_prefix(input.markers.as_str())
+        .is_some_and(|text| text == input.prompt || matches_pasted(text, &input.prompt))
+        && content.as_array().map_or(input.images == 0, |blocks| {
             !blocks.iter().any(|b| b["type"] == "tool_result")
-                && blocks.iter().filter(|b| b["type"] == "image").count() == images
+                && blocks.iter().filter(|b| b["type"] == "image").count() == input.images
+        })
+}
+/// Claude ends the pasted text with a newline only when it has none, so the
+/// record alone does not say whether the prompt ended with one.
+fn matches_pasted(text: &str, prompt: &str) -> bool {
+    let Some((id, body)) = text
+        .trim_start_matches('\n')
+        .strip_prefix("<pasted_content id=\"")
+        .and_then(|rest| rest.split_once("\">\n"))
+    else {
+        return false;
+    };
+    let Some(rest) = body.strip_prefix(prompt) else {
+        return false;
+    };
+    let rest = if prompt.ends_with('\n') {
+        Some(rest)
+    } else {
+        rest.strip_prefix('\n')
+    };
+    !id.is_empty()
+        && !id.contains(['"', '\n'])
+        && rest.is_some_and(|rest| {
+            rest.trim_end_matches('\n') == format!("</pasted_content id=\"{id}\">")
         })
 }
 struct LiveTurn<'a> {
     session: &'a str,
-    prompt: &'a str,
-    images: usize,
+    input: &'a input::Submitted,
     admitted: bool,
-    pending: std::collections::VecDeque<SubmittedInput>,
+    pending: std::collections::VecDeque<input::Submitted>,
     assistant: bool,
     open_message: Option<AssistantMessage>,
     final_message_id: Option<String>,
@@ -652,7 +665,7 @@ impl LiveTurn<'_> {
             if kind == "user"
                 && row
                     .pointer("/message/content")
-                    .is_some_and(|v| matches_input(v, self.prompt, self.images))
+                    .is_some_and(|v| matches_input(v, self.input))
             {
                 if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
                     return Err(Error::Invalid(
@@ -667,7 +680,7 @@ impl LiveTurn<'_> {
             && let Some(input) = self.pending.front()
             && row
                 .pointer("/message/content")
-                .is_some_and(|v| matches_input(v, &input.prompt, input.images))
+                .is_some_and(|v| matches_input(v, input))
         {
             if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
                 return Err(Error::Invalid(
@@ -888,5 +901,105 @@ impl LiveTurn<'_> {
             }));
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn submitted(markers: &str, prompt: &str, images: usize) -> input::Submitted {
+        input::Submitted {
+            markers: markers.into(),
+            prompt: prompt.into(),
+            images,
+        }
+    }
+    fn with_images(text: &str, images: usize) -> Value {
+        let mut blocks = vec![json!({"type":"text","text":text})];
+        blocks.resize(images + 1, json!({"type":"image","source":{}}));
+        Value::Array(blocks)
+    }
+
+    // Shapes recorded by Claude Code 2.1.327 and 2.1.328.
+    #[test]
+    fn input_matches_the_rows_that_record_it() {
+        let lines = "line 1\nline 2\nline 3\nline 4";
+        let pasted = |body: &str| {
+            format!("\n\n<pasted_content id=\"5748\">\n{body}</pasted_content id=\"5748\">\n")
+        };
+        for (content, input) in [
+            (json!("short"), submitted("", "short", 0)),
+            (
+                with_images("[Image #1]short", 1),
+                submitted("[Image #1]", "short", 1),
+            ),
+            (
+                json!(pasted("line 1\nline 2\nline 3\nline 4\n")),
+                submitted("", lines, 0),
+            ),
+            (
+                json!(pasted("alpha\nbeta\ngamma\n")),
+                submitted("", "alpha\nbeta\ngamma\n", 0),
+            ),
+            (
+                json!(pasted("alpha\nbeta\ngamma\n\n")),
+                submitted("", "alpha\nbeta\ngamma\n\n", 0),
+            ),
+            (
+                json!(pasted("\nline 1\nline 2\nline 3\nline 4\n")),
+                submitted("", &format!("\n{lines}"), 0),
+            ),
+            (
+                with_images(
+                    &format!("[Image #1]{}", pasted("line 1\nline 2\nline 3\nline 4\n")),
+                    1,
+                ),
+                submitted("[Image #1]", lines, 1),
+            ),
+            (
+                with_images(
+                    &format!(
+                        "[Image #3] [Image #4]{}",
+                        pasted("line 1\nline 2\nline 3\nline 4\n")
+                    ),
+                    2,
+                ),
+                submitted("[Image #3] [Image #4]", lines, 2),
+            ),
+        ] {
+            assert!(matches_input(&content, &input), "{content}");
+        }
+    }
+
+    #[test]
+    fn input_does_not_match_other_rows() {
+        let pasted =
+            "\n\n<pasted_content id=\"5748\">\nline 1\nline 2\n</pasted_content id=\"5748\">\n";
+        for (content, input) in [
+            (json!("other"), submitted("", "short", 0)),
+            (
+                json!(
+                    "\n\n<pasted_content id=\"5748\">\nline 1\nline 2\n</pasted_content id=\"9e17\">\n"
+                ),
+                submitted("", "line 1\nline 2", 0),
+            ),
+            // The record has one newline fewer than a prompt that ends with two.
+            (json!(pasted), submitted("", "line 1\nline 2\n\n", 0)),
+            (json!(pasted), submitted("", "line 1", 0)),
+            (
+                json!([{"type":"tool_result","tool_use_id":"call","content":"short"},{"type":"text","text":"short"}]),
+                submitted("", "short", 0),
+            ),
+            (
+                with_images("[Image #1]short", 2),
+                submitted("[Image #1]", "short", 1),
+            ),
+            (with_images("short", 1), submitted("[Image #1]", "short", 1)),
+            (json!("short"), submitted("", "short", 1)),
+        ] {
+            assert!(!matches_input(&content, &input), "{content}");
+        }
     }
 }
