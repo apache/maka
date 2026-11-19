@@ -99,6 +99,20 @@ struct ReplayedTail {
 }
 type ProjectedHistory = (Option<String>, ReplayedTail);
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompactionOptions {
+    prompt: Option<String>,
+    resume_model: Option<maka_agent_facts::configuration::ModelSelection>,
+}
+
+impl CompactionOptions {
+    fn native(&self, model: &maka_agent_engine::PreparedModel) -> bool {
+        // A checkpoint handed to another backend must be readable without its producer.
+        model.provider.capabilities.native_compaction == Some(true) && self.resume_model.is_none()
+    }
+}
+
 struct ProjectedStepInput<'a> {
     system: Option<SystemPrompt>,
     messages: preparation::PromptBuilder,
@@ -106,6 +120,7 @@ struct ProjectedStepInput<'a> {
     reader: HistorySource<'a>,
     previous_checkpoint_id: Option<String>,
     tail: ReplayedTail,
+    summary_options: CompactionOptions,
 }
 
 pub(super) struct PreparedContinuation {
@@ -287,13 +302,59 @@ struct ItemContinuation {
 }
 
 impl DriverModel {
+    async fn compaction_options(
+        &self,
+        reader: &HistorySource<'_>,
+        run: RunId,
+        key: Option<&ToolKey>,
+    ) -> Result<CompactionOptions, RunError> {
+        let Some(key) = key else {
+            return Ok(CompactionOptions::default());
+        };
+        let call = reader.tool_call(run, key).await?;
+        serde_json::from_value(
+            call.input
+                .as_json()
+                .cloned()
+                .ok_or_else(|| unsupported("compaction-tool-input"))?,
+        )
+        .map_err(RunError::Json)
+    }
+
+    async fn summary_instruction(
+        &self,
+        view: &RunView,
+        native: bool,
+        focus: Option<&str>,
+    ) -> Result<Option<Arc<String>>, RunError> {
+        let mut instruction = if native {
+            String::new()
+        } else {
+            match &view.spec.compaction_prompt {
+                Some(reference) => self.decode::<String>(view.run, reference).await?,
+                None => {
+                    maka_agent_facts::context::default_compaction_prompt(view.spec.language).into()
+                }
+            }
+        };
+        if let Some(focus) = focus.map(str::trim).filter(|s| !s.is_empty()) {
+            if !instruction.is_empty() {
+                instruction.push_str("\n\n");
+            }
+            instruction.push_str("For this checkpoint, prioritize retaining the following:\n");
+            instruction.push_str(focus);
+        }
+        Ok((!instruction.is_empty()).then(|| Arc::new(instruction)))
+    }
+
     async fn prepare_summary_input(
         &self,
         prompt: &mut maka_agent_engine::prepared_prompt::PreparedPrompt,
         model: &maka_agent_engine::PreparedModel,
         language: maka_agent_facts::language::Language,
+        native: bool,
     ) -> Result<(), RunError> {
-        if model.provider.capabilities.native_compaction != Some(true) {
+        if !native {
             *prompt = maka_agent_engine::context_input::fit_prepared_summary(
                 prompt,
                 maka_agent_engine::context_input::summary_budget(model.context.as_ref()),
@@ -432,6 +493,7 @@ impl DriverModel {
             source_evidence,
             reader,
             previous_checkpoint_id,
+            summary_options,
             tail:
                 ReplayedTail {
                     cells: recovered_cells,
@@ -583,8 +645,7 @@ impl DriverModel {
         } else {
             ModelPurpose::Main
         };
-        let native_compaction = purpose == ModelPurpose::Summary
-            && model.provider.capabilities.native_compaction == Some(true);
+        let native_compaction = purpose == ModelPurpose::Summary && summary_options.native(model);
         let context = model.context.as_ref();
         validate_native_compaction_producer(native_compaction, context)?;
         let settings = PromptSettings {
@@ -626,16 +687,6 @@ impl DriverModel {
             }
             rendered.push_str(section);
         }
-        let instruction = if purpose == ModelPurpose::Summary && !native_compaction {
-            Some(Arc::new(match &view.spec.compaction_prompt {
-                Some(reference) => self.decode::<String>(view.run, reference).await?,
-                None => {
-                    maka_agent_facts::context::default_compaction_prompt(view.spec.language).into()
-                }
-            }))
-        } else {
-            None
-        };
         let rendered = Arc::new(rendered);
         let mut prompt = if purpose == ModelPurpose::Summary {
             Box::pin(messages.finish()).await?
@@ -662,8 +713,9 @@ impl DriverModel {
                 .transpose()?;
             let covered_prefix = if purpose == ModelPurpose::Summary {
                 let covered = CoveredPrefix::capture(&prompt).await?;
+                let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
-                self.prepare_summary_input(&mut prompt, model, view.spec.language).await?;
+                self.prepare_summary_input(&mut prompt, model, view.spec.language, native_compaction).await?;
                 Some(covered)
             } else {
                 None
@@ -771,12 +823,13 @@ impl DriverModel {
                 Some(catalog) => driver.tool_contracts(catalog, &definitions)?,
                 None => std::collections::BTreeMap::new(),
             };
-            let compaction_request = compaction_request.filter(|key| !summary && matches!(mode,
+            let compaction_request = compaction_request.filter(|key| summary || matches!(mode,
                 Preparation::ToolContinuation { attempt } | Preparation::Notifications { attempt } | Preparation::Steering { attempt } if attempt == key.attempt
             ));
             let provenance = ContentBlob::json(&json!({
                 "inputDigest": request.input_digest,
                 "compactionRequest": compaction_request,
+                "resumeModel": summary_options.resume_model,
                 "toolContracts": tool_contracts,
                 "routeIdentity": request.route_identity,
                 "modelInputPolicy": {"vision": model.supports_vision, "imageInput": model.provider.image_input},
@@ -885,20 +938,6 @@ impl DriverModel {
         conversion: bool,
     ) -> BoxFuture<'a, Result<ProjectedStepInput<'a>, RunError>> {
         Box::pin(async move {
-            let target = ReplayTarget::new(
-                model,
-                if summary && model.provider.capabilities.native_compaction == Some(true) {
-                    ModelOperation::CodexCompaction
-                } else {
-                    ModelOperation::Inference
-                },
-            );
-
-            let target = if conversion {
-                target.converting()
-            } else {
-                target
-            };
             let mut system: Option<SystemPrompt> =
                 self.decode(view.run, &view.spec.system_prompt).await?;
             merge_input_skills(&mut system, input)?;
@@ -908,6 +947,7 @@ impl DriverModel {
             let root = history.ancestry_root(view.run).await?;
             let mut current = history.capture().await?;
             let mut summary_view = None;
+            let mut summary_request = None;
             if summary && !matches!(input, RunInput::ContextCompact { .. }) {
                 let mut revision = view.revision;
                 if let Some(step) = view.current_step {
@@ -916,6 +956,11 @@ impl DriverModel {
                         let source: RequestSource =
                             self.decode(view.run, &pending.source_capture).await?;
                         revision = source.current_revision;
+                        if !conversion {
+                            let evidence: maka_agent_facts::context::RequestContextEvidence =
+                                self.decode(view.run, &pending.provenance).await?;
+                            summary_request = evidence.compaction_request;
+                        }
                     }
                 }
                 // An automatic Summary starts from the same source as its pending
@@ -947,6 +992,23 @@ impl DriverModel {
             };
             let captured = HistorySource::live(&self.state, &source_evidence.current);
             let reader = &captured;
+            let summary_options = self
+                .compaction_options(reader, view.run, summary_request.as_ref())
+                .await?;
+            let target = ReplayTarget::new(
+                model,
+                if summary && summary_options.native(model) {
+                    ModelOperation::CodexCompaction
+                } else {
+                    ModelOperation::Inference
+                },
+            );
+
+            let target = if conversion {
+                target.converting()
+            } else {
+                target
+            };
             let mut messages = preparation::PromptBuilder::new(
                 self.preparation_io()?,
                 self.resources.clone(),
@@ -1090,11 +1152,15 @@ impl DriverModel {
                     )
                     .await?;
             }
+            if summary {
+                tail.compaction_request = summary_request;
+            }
             Ok(ProjectedStepInput {
                 system,
                 messages,
                 source_evidence,
                 reader: captured,
+                summary_options,
                 previous_checkpoint_id,
                 tail,
             })
@@ -1238,7 +1304,10 @@ impl DriverModel {
                     "history-source-requires-bound-snapshot-projection",
                 ));
             }
-            if matches!(input, RunInput::Continuation { .. }) {
+            if matches!(
+                input,
+                RunInput::Continuation { .. } | RunInput::CheckpointHandoff { .. }
+            ) {
                 append_continuation_cue(view.spec.language, messages).await?;
                 return Ok(());
             }

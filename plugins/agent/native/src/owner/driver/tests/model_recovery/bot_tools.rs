@@ -177,12 +177,12 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
         assert_eq!(preset["kind"], "saved", "{preset}");
         let mut input = json!({"presetId":preset["preset"]["id"],"title":"Preset worker",
             "labels":[],"workspace":{"kind":"directory","path":base.join("workspace")}});
-        let created = bot_call(&owner, bot_id, "create", input.clone()).await?;
+        let created = agent_call(&owner, bot_id, "create", input.clone()).await?;
         assert_eq!(created["kind"], "created", "{created}");
         let preset_session = created["session"]["id"].clone();
         input.as_object_mut().unwrap().remove("presetId");
         input["backend"] = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"preset"});
-        let ordinary = bot_call(&owner, bot_id, "create", input).await?;
+        let ordinary = agent_call(&owner, bot_id, "create", input).await?;
         assert_eq!(ordinary["kind"], "created", "{ordinary}");
         for (round, expected) in ["preset", "switched", "override", "switched", "llama3.2"].into_iter().enumerate() {
             let session = if round == 4 { &ordinary["session"]["id"] } else { &preset_session };
@@ -194,7 +194,7 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
             }
             let mut input = json!({"sessionId":session,"message":format!("Delegated review {round}")});
             if round == 2 { input["backend"] = selected("override"); }
-            let sent = bot_call(&owner, bot_id, "send", input).await?;
+            let sent = agent_call(&owner, bot_id, "send", input).await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
             let (request, reply) = observed.recv().await.ok_or("delegated request missing")?;
             assert_eq!(request["model"], expected, "{request}");
@@ -218,15 +218,20 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
     Ok(())
 }
 
-async fn bot_call(owner: &Owner, bot_id: &str, method: &str, input: Value) -> TestResult<Value> {
+pub(super) async fn agent_call(
+    owner: &Owner,
+    session: &str,
+    method: &str,
+    input: Value,
+) -> TestResult<Value> {
     let access = owner
         .runs
         .state()
         .await
         .controls
-        .get(bot_id)
+        .get(session)
         .and_then(|control| control.access.upgrade())
-        .ok_or("Bot access missing")?;
+        .ok_or("caller access missing")?;
     let target = ServiceTarget::Export {
         name: "agent".into(),
     };
@@ -245,7 +250,7 @@ async fn bot_call(owner: &Owner, bot_id: &str, method: &str, input: Value) -> Te
             method.into(),
             input,
             Uuid::new_v4(),
-            json!({"test":"bot-preset-model"}),
+            json!({"test":"agent-call"}),
             Attachments::new(),
         )?
         .await?
@@ -261,11 +266,11 @@ async fn bot_call(owner: &Owner, bot_id: &str, method: &str, input: Value) -> Te
                 },
             cleanup: OperationCleanup::Confirmed,
         } => Ok(value),
-        receipt => Err(format!("Bot call did not commit: {receipt:?}").into()),
+        receipt => Err(format!("agent call did not commit: {receipt:?}").into()),
     }
 }
 
-fn has_tool(request: &Value, name: &str) -> bool {
+pub(super) fn has_tool(request: &Value, name: &str) -> bool {
     request["tools"]
         .as_array()
         .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == name))

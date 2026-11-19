@@ -467,6 +467,7 @@ pub(super) async fn project(
                     result.push(row);
                 }
                 RunInput::Continuation { .. }
+                | RunInput::CheckpointHandoff { .. }
                 | RunInput::ContextCompact { .. }
                 | RunInput::HistorySource { .. } => {}
             }

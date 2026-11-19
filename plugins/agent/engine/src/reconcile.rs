@@ -50,6 +50,7 @@ pub(crate) enum WorkKey {
     Tool(ToolKey),
 }
 pub(crate) struct ModelLevel {
+    pub handoff: bool,
     pub input: maka_agent_facts::input::RunInput,
     pub request: Option<RequestSpec>,
     pub baseline: Option<maka_agent_facts::context::CompactedContext>,
@@ -726,7 +727,9 @@ pub(crate) fn next(
     complete_at_budget: bool,
 ) -> Action {
     let action = next_action(view, live, now, model, complete_at_budget);
-    if !matches!(action, Action::Terminate(Terminal::Completed)) {
+    let handing_off = matches!(action, Action::Compact(_) | Action::AdoptCandidate(_))
+        && model.is_some_and(|m| m.handoff);
+    if !(handing_off || matches!(action, Action::Terminate(Terminal::Completed))) {
         return action;
     }
     if live

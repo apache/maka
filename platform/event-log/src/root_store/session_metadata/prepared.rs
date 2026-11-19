@@ -36,6 +36,44 @@ impl RootStore {
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
         S: Statement,
     {
+        let statement = self
+            .session_metadata_statement(id, expected, update, writer, statement)
+            .await?;
+        Ok((statement.change.record.clone(), writer.prepare(statement)))
+    }
+
+    pub async fn write_session_metadata_with<T, F, S>(
+        &self,
+        id: &str,
+        expected: u64,
+        update: F,
+        writer: &DataWriter,
+        statement: S,
+    ) -> Result<S::Output, StoreError>
+    where
+        T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
+        F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
+        S: Statement,
+    {
+        let statement = self
+            .session_metadata_statement(id, expected, update, writer, statement)
+            .await?;
+        writer.write(statement).await
+    }
+
+    async fn session_metadata_statement<T, F, S>(
+        &self,
+        id: &str,
+        expected: u64,
+        update: F,
+        writer: &DataWriter,
+        statement: S,
+    ) -> Result<SessionMetadataChange<T, S>, StoreError>
+    where
+        T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
+        F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
+        S: Statement,
+    {
         if !self.data_writer()?.same_root(writer) {
             return Err(StoreError::InvalidTransition(
                 "foreign Root data writer".into(),
@@ -43,13 +81,11 @@ impl RootStore {
         }
         let selected = self.session(id).await?;
         let (custody, change) = selected.metadata_change(id, expected, update).await?;
-        let record = change.record.clone();
-        let mutation = writer.prepare(SessionMetadataChange {
+        Ok(SessionMetadataChange {
             change,
             statement,
             custody: Arc::new(custody),
-        });
-        Ok((record, mutation))
+        })
     }
 }
 struct SessionMetadataChange<T, S> {

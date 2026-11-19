@@ -158,6 +158,7 @@ impl Owner {
                     task_id: schedule_id.clone(),
                 },
                 Trigger::Message { .. }
+                | Trigger::CheckpointHandoff { .. }
                 | Trigger::Continuation { .. }
                 | Trigger::ContextCompact => BackgroundKind::Interactive,
             },
@@ -221,7 +222,7 @@ impl Owner {
             .map(|definition| definition.name.as_str())
             .collect();
         let catalog = live_tools.excluding(&excluded);
-        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP, super::compaction::TOOL]
+        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP]
             .into_iter()
             .chain(discovery::VISIBLE_TOOLS.iter().copied())
             .filter(|name| catalog.contains(name))

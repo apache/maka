@@ -279,6 +279,22 @@ impl QueueStore {
     ) -> Result<MessageResolution, StoreError> {
         self.data.query(Resolve(session, message)).await
     }
+    pub async fn message_work(
+        &self,
+        session: String,
+        message: String,
+        cursor: Option<(RunId, u64)>,
+        limit: u32,
+    ) -> Result<(MessageResolution, Option<crate::store::RunObservation>), StoreError> {
+        self.data
+            .query(MessageWork {
+                session,
+                message,
+                cursor,
+                limit,
+            })
+            .await
+    }
     pub async fn content(
         &self,
         session: String,
@@ -464,6 +480,32 @@ impl Query for Resolve {
     type Output = MessageResolution;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::resolve(c, &self.0, &self.1)
+    }
+}
+struct MessageWork {
+    session: String,
+    message: String,
+    cursor: Option<(RunId, u64)>,
+    limit: u32,
+}
+impl Query for MessageWork {
+    type Output = (MessageResolution, Option<crate::store::RunObservation>);
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let resolution = sql::resolve(c, &self.session, &self.message)?;
+        let work = match resolution {
+            MessageResolution::Delivered { run, .. }
+                if self.cursor.is_none_or(|(id, _)| id == run) =>
+            {
+                crate::sql::work(
+                    c,
+                    run,
+                    self.cursor.map_or(0, |(_, offset)| offset),
+                    self.limit,
+                )?
+            }
+            _ => None,
+        };
+        Ok((resolution, work))
     }
 }
 struct ReadContent(String, RequestId, ContentRef);

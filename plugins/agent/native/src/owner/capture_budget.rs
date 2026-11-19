@@ -188,6 +188,7 @@ impl Owner {
                     spec.trigger,
                     Trigger::Message { .. }
                         | Trigger::Continuation { .. }
+                        | Trigger::CheckpointHandoff { .. }
                         | Trigger::ContextCompact
                 ) =>
             {

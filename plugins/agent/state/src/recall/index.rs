@@ -209,6 +209,7 @@ fn project(
                     insert(c, spec, row)?;
                 }
                 RunInput::Continuation { .. }
+                | RunInput::CheckpointHandoff { .. }
                 | RunInput::ContextCompact { .. }
                 | RunInput::HistorySource { .. } => {}
             }

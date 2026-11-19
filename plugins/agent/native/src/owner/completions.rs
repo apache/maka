@@ -420,12 +420,23 @@ impl Owner {
                             .ok_or("agent_completion_run_missing")?;
                         match (&state.terminal, &state.attention) {
                             (Some(terminal), _) => {
-                                let mut snippet = self
+                                // The worker may have handed off since the batch read its resolution.
+                                let (latest, work) = self
                                     .durable
-                                    .work(run, 0, 4096)
+                                    .queue()
+                                    .message_work(
+                                        entry.session_id.clone(),
+                                        entry.message_id.clone(),
+                                        Some((run, 0)),
+                                        4096,
+                                    )
                                     .await
-                                    .ok()
-                                    .flatten()
+                                    .map_err(|error| error.to_string())?;
+                                if !matches!(latest, MessageResolution::Delivered { run: current, .. } if current == run)
+                                {
+                                    return Ok(());
+                                }
+                                let mut snippet = work
                                     .filter(|w| {
                                         w.view.spec.session_id == entry.session_id
                                             && !w.answer.text.trim().is_empty()
