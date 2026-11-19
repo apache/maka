@@ -65,6 +65,9 @@ export function SessionRail(props: SessionRailStoryProps) {
     onSelectSession: props.onSelectSession ?? (() => undefined),
     rowActions: props.rowActions,
     projectActions: props.projectActions,
+    moveDropGroupKeys: props.moveDropGroupKeys,
+    moveTargets: props.moveTargets,
+    onDropProjectFolders: props.onDropProjectFolders,
   };
   const chrome: SessionRailChrome = {
     collapsed: props.collapsed ?? false,

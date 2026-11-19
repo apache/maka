@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
 import { SessionRail, type SessionRailStoryProps } from './session-rail-harness.js';
@@ -552,6 +552,9 @@ export const PinnedAndRecentSections: Story = {
   },
 };
 
+const registerDroppedFolders = fn();
+const moveDroppedSession = fn();
+
 // Real path: group-by-project — collapsible project rows, sessions on the
 // project row's left edge so both titles and hover fills share one x, worktree
 // mark + project actions, with local, remote and WSL execution locations.
@@ -668,6 +671,12 @@ export const ProjectGroups: Story = {
               onRelink: noop,
             },
           })}
+          onDropProjectFolders={registerDroppedFolders}
+          rowActions={{ ...rowActions, onMoveToProject: moveDroppedSession }}
+          moveDropGroupKeys={new Set([`project:${maka.id}`])}
+          moveTargets={(sessionId) => sessionId === 'proj-loose'
+            ? [{ groupKey: `project:${maka.id}`, projectId: maka.id, name: maka.name }]
+            : []}
         />
       </StoryFrame>
     );
@@ -679,6 +688,40 @@ export const ProjectGroups: Story = {
       '[data-project-id="project:project-maka"]',
     );
     if (!projectRow) throw new Error('project row is missing');
+    // Native capture must block external drops before the task row's handler;
+    // Linkedom dispatches these phases in a different order.
+    registerDroppedFolders.mockClear();
+    moveDroppedSession.mockClear();
+    const source = canvasElement.querySelector<HTMLElement>('[data-session-id="proj-loose"]');
+    if (!source) throw new Error('draggable task is missing');
+    const drag = (type: string, dataTransfer: DataTransfer, target = projectRow) => {
+      const event = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer });
+      target.dispatchEvent(event);
+      return event;
+    };
+    const session = new DataTransfer();
+    drag('dragstart', session, source);
+    try {
+      for (const type of ['text/plain', 'text/uri-list']) {
+        const text = new DataTransfer();
+        text.setData(type, 'https://example.com/');
+        expect(drag('dragover', text).defaultPrevented).toBe(true);
+        expect(drag('drop', text).defaultPrevented).toBe(true);
+      }
+      expect(registerDroppedFolders).not.toHaveBeenCalled();
+      expect(moveDroppedSession).not.toHaveBeenCalled();
+      const folder = new File([], 'new-project');
+      const files = new DataTransfer();
+      files.items.add(folder);
+      drag('drop', files);
+      expect(registerDroppedFolders.mock.calls).toEqual([[[folder]]]);
+      expect(moveDroppedSession).not.toHaveBeenCalled();
+      drag('drop', session);
+      expect(moveDroppedSession.mock.calls).toEqual([['proj-loose', 'project-maka']]);
+      expect(registerDroppedFolders).toHaveBeenCalledTimes(1);
+    } finally {
+      drag('dragend', session, source);
+    }
     const navigation = projectRow.querySelector<HTMLElement>(
       'button[aria-controls]:not([aria-haspopup="menu"])',
     );

@@ -211,6 +211,56 @@ afterEach(() => {
   cleanupFakeDom();
 });
 
+it('adds a folder batch locally with one error, archived recovery, and a shared lock without changing the remote draft', async () => {
+  const { root } = installReactRenderer();
+  const errors: unknown[] = [];
+  const calls: string[] = [];
+  const confirmation = deferred<boolean>();
+  const services = createFakeTaskEntryServices({ catalog: {
+    getCatalog: async () => ({ defaultProfileId: 'remote', hosts: [readyHost(), readyRemoteHost('remote-host')] }),
+    addDroppedProject: async (host, file) => {
+      assert.deepEqual(host, { profileId: 'local', hostId: 'host-local' });
+      calls.push(file.name);
+      if (file.name === 'notes.txt') return { ok: false, reason: 'not-directory' };
+      if (file.name === 'archived') return { ok: false, reason: 'archived', projectId: 'existing' };
+      if (file.name === 'unreadable') throw new Error('ENOENT');
+      return { ok: true, project: project(file.name) };
+    },
+    restoreProject: async (host, id) => {
+      calls.push(`restore:${host.profileId}:${id}`);
+      return { ok: true, project: { ...project(id), name: 'Existing name' } };
+    },
+    renameProject: async () => { assert.fail('Restoring must preserve the original name'); },
+  } });
+  await act(async () => renderController(root, services, errors, async () => {
+    calls.push('confirm');
+    return confirmation.promise;
+  }));
+  const { target, draftKey } = controller().selectors;
+  assert.equal(target?.profileId, 'remote');
+  assert.equal(controller().selectors.canDropProjectFolders, true);
+  let batch: Promise<void>;
+  await act(async () => {
+    batch = controller().commands.addDroppedProjectFolders(
+      ['notes.txt', 'archived', 'unreadable', 'last'].map((name) => new File([], name)),
+    );
+    await controller().commands.addDroppedProjectFolders([new File([], 'concurrent')]);
+    controller().commands.addProject();
+  });
+  assert.equal(controller().host.directoryHost, undefined, 'Picker shares the batch lock');
+  assert.equal(controller().selectors.canDropProjectFolders, false);
+  await act(async () => { confirmation.resolve(true); await batch; });
+  assert.equal(controller().selectors.canDropProjectFolders, true);
+  assert.deepEqual(calls, ['notes.txt', 'archived', 'confirm', 'restore:local:existing', 'unreadable', 'last']);
+  assert.deepEqual([controller().selectors.target, controller().selectors.draftKey], [target, draftKey]);
+  const copy = getShellCopy('en').projectActions;
+  assert.deepEqual(errors, [{
+    title: copy.projectUpdateFailedTitle,
+    description: `notes.txt: ${copy.dropDirectoriesOnly}\nunreadable: ${copy.readPathFailedFallback}`,
+    profileId: 'local',
+  }]);
+});
+
 describe('Session workspace archived-project recovery', () => {
   it('confirms use for this Session, restores original identity, then relocates without selecting a new-task Project', async () => {
     const harness = await sessionRecoveryHarness({
@@ -590,10 +640,12 @@ describe('useTaskEntryController', () => {
     });
     assert.equal(addCalls, 1);
     assert.equal(controller().selectors.workspacePicker.pending, true);
+    assert.equal(controller().selectors.canDropProjectFolders, false);
 
     await act(async () => added.resolve({ ok: true, project: project('project-b') }));
     assert.equal(controller().selectors.target?.projectId, 'project-b');
     assert.equal(controller().selectors.workspacePicker.pending, false);
+    assert.equal(controller().selectors.canDropProjectFolders, true);
   });
 
   it('prompts to restore an archived Project and selects it through the Desktop adapter after confirmation', async () => {
