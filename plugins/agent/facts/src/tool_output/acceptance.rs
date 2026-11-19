@@ -218,6 +218,7 @@ pub enum CellFinalEvidence {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AcceptedToolResult {
+    ProviderOutcomeUnknown,
     RecoveredCell {
         cell: crate::cells::CellId,
         evidence: CellFinalEvidence,

@@ -21,11 +21,13 @@ use super::{
     DriverModel, Fact, FrozenCellKnowledge, HistorySource, ModelPurpose, RunError, RunView,
 };
 use maka_agent_facts::cells::{CellEvent, CellId, CellView};
-use maka_agent_facts::durable::{AcceptedResult, FactId, ModelAttemptId, RunId, StepId};
+use maka_agent_facts::durable::{AcceptedResult, FactId, ModelAttemptId, RunId, StepId, ToolKey};
+use maka_agent_facts::model::ModelPart;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(super) struct RecordedInputs {
+    pub unfinished_provider_calls: BTreeSet<ToolKey>,
     pub cells: BTreeMap<CellId, FrozenCellKnowledge>,
     pub steering: BTreeSet<(RunId, String)>,
     pub notifications: BTreeSet<(RunId, FactId)>,
@@ -55,6 +57,26 @@ impl DriverModel {
                 }
                 after = fact.revision;
                 match &fact.fact {
+                    Fact::ModelObserved {
+                        attempt,
+                        part: ModelPart::ToolCall { call },
+                        ..
+                    } if call.provider_executed => {
+                        original.unfinished_provider_calls.insert(ToolKey {
+                            attempt: *attempt,
+                            call: call.id.clone(),
+                        });
+                    }
+                    Fact::ModelObserved {
+                        attempt,
+                        part: ModelPart::ToolResult { id, .. },
+                        ..
+                    } => {
+                        original.unfinished_provider_calls.remove(&ToolKey {
+                            attempt: *attempt,
+                            call: id.clone(),
+                        });
+                    }
                     Fact::Cell { event } => {
                         let cell = event.cell();
                         if recovered.contains_key(&cell) || original.cells.contains_key(&cell) {

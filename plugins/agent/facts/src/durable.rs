@@ -285,6 +285,7 @@ impl ToolDecision {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AcceptedResult {
+    ProviderOutcomeUnknown,
     CellRecovered { cell: crate::cells::CellId },
     Succeeded,
     Failed,
@@ -377,6 +378,9 @@ pub enum Terminal {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AttemptRecovery {
+    ContinueFromHistory {
+        not_before: Option<UnixMillis>,
+    },
     CodexCompactionFallback,
     ContextOverflow {
         observed_output: bool,

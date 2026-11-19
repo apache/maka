@@ -640,6 +640,9 @@ impl DriverModel {
                 ))
             })
             .await?;
+        if matches!(mode, Preparation::ResumeFromHistory) {
+            append_continuation_cue(view.spec.language, &mut messages).await?;
+        }
         let purpose = if summary {
             ModelPurpose::Summary
         } else {
@@ -2229,6 +2232,9 @@ impl DriverModel {
                     ToolOutput::Json(output)
                 }
             }
+            AcceptedToolResult::ProviderOutcomeUnknown => {
+                ToolOutput::ErrorText("Provider tool outcome unknown".into())
+            }
             AcceptedToolResult::Rejected { diagnostic } => ToolOutput::ErrorText(diagnostic),
             AcceptedToolResult::RiskAdjudicated { blocker, decision } => match decision {
                 RiskDecision::RecordExternalObservation { evidence } => {
@@ -3720,6 +3726,16 @@ fn ensure_no_unknown_provider_effect(
     attempt: ModelAttemptId,
     parts: &[maka_agent_facts::model::ModelPart],
 ) -> Result<(), RunError> {
+    match missing_provider_result(parts) {
+        Some(call) => Err(RunError::from(BlockerKind::ProviderEffectUnknown {
+            attempt,
+            call: call.to_owned(),
+        })),
+        None => Ok(()),
+    }
+}
+
+fn missing_provider_result(parts: &[maka_agent_facts::model::ModelPart]) -> Option<&str> {
     use maka_agent_facts::model::ModelPart;
     let results: std::collections::BTreeSet<_> = parts
         .iter()
@@ -3733,13 +3749,10 @@ fn ensure_no_unknown_provider_effect(
             && call.provider_executed
             && !results.contains(call.id.as_str())
         {
-            return Err(RunError::from(BlockerKind::ProviderEffectUnknown {
-                attempt,
-                call: call.id.clone(),
-            }));
+            return Some(&call.id);
         }
     }
-    Ok(())
+    None
 }
 
 fn recovery_for_failure(
@@ -3788,8 +3801,16 @@ fn recovery_for_failure(
             contents: vec![],
         });
     }
+    if missing_provider_result(parts).is_some()
+        || (failure.reason() == maka_agent_facts::model::error::ProviderFailureReason::TimedOut
+            && (parts.is_empty() || !failure.retained_output_safe()))
+    {
+        return Ok(RecoveryEvidence {
+            recovery: AttemptRecovery::ContinueFromHistory { not_before },
+            contents: vec![],
+        });
+    }
     if !parts.is_empty() && failure.retained_output_safe() {
-        ensure_no_unknown_provider_effect(attempt, parts)?;
         let proof = ContentBlob::json(&PrefixProof {
             run,
             attempt,

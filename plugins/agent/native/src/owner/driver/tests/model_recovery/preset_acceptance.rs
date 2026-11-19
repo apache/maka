@@ -163,6 +163,94 @@ fn text_messages(request: &Value) -> String {
         .join("\n")
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_provider_search_continues_without_replaying_the_call() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    rig.model_idle_timeout = Some(Duration::from_millis(600));
+    let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+    let mut boot = bootstrap_deployment(rig.directory.path(), format!("http://{}/v1", listener.local_addr()?), true, |cfg| {
+        cfg["tools"] = json!([{"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},
+            "method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}]);
+    }).await?;
+    boot.replay = true;
+    attach(&mut rig, &boot).await?;
+    let (requests, mut received) = tokio::sync::mpsc::channel(4);
+    let stop = CancellationToken::new();
+    let wire = tokio::spawn(serve_replay(
+        listener,
+        Arc::default(),
+        requests,
+        stop.clone(),
+        FirstResponse::StartSearch,
+    ));
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &boot.base_url, false).await?;
+        let session = create(client, rig.directory.path(), &model, None).await?;
+        let id = &session["id"];
+        let sent = call(
+            client,
+            "agent",
+            "send",
+            json!({"sessionId":id,"message":"Check once, then continue."}),
+        )
+        .await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let target = json!({"kind":"message","messageId":sent["messageId"]});
+        let work = loop {
+            let work = call(
+                client,
+                "agent",
+                "work",
+                json!({"sessionId":id,"target":target}),
+            )
+            .await?;
+            match work["execution"]["state"]["kind"].as_str() {
+                Some("completed" | "cancelled" | "failed") => break work,
+                _ => tokio::time::sleep(Duration::from_millis(30)).await,
+            }
+        };
+        let first = received
+            .try_recv()
+            .map_err(|e| format!("original request missing ({e}): {work}"))?;
+        let first: Value = serde_json::from_slice(&first)?;
+        assert!(
+            first["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["type"] == "web_search"),
+            "{first}"
+        );
+        assert_eq!(work["execution"]["state"]["kind"], "completed", "{work}");
+        let next: Value = serde_json::from_slice(&received.try_recv()?)?;
+        assert!(next.get("previous_response_id").is_none(), "{next}");
+        let input = next["input"].as_array().unwrap();
+        assert!(
+            input
+                .iter()
+                .any(|item| item["content"].to_string().contains("ws_original")
+                    && item["content"].to_string().contains("outcome is unknown")),
+            "{next}"
+        );
+        assert!(!input.iter().any(|item| matches!(
+            item["type"].as_str(),
+            Some("web_search_call" | "function_call_output")
+        )));
+        assert!(received.try_recv().is_err());
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    stop.cancel();
+    wire.await??;
+    assert!(rig.finish().await.is_empty());
+    match outcome {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 #[test]
 fn truncated_cell_image_terminates_the_run() -> TestResult<()> {
     tokio::runtime::Builder::new_multi_thread()

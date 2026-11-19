@@ -1090,10 +1090,12 @@ impl Engine {
                         .await?;
                     }
                     Action::ChargeRetry(attempt, phase) => {
-                        // Frozen retries alone consume the durable retry budget; reattach never does.
                         let delay = 250_i64.saturating_mul(1_i64 << view.retries_for(phase).min(8));
                         let provider_due = match &view.attempts[&attempt].recovery {
-                            Some(AttemptRecovery::FrozenRetrySafe { not_before }) => *not_before,
+                            Some(
+                                AttemptRecovery::FrozenRetrySafe { not_before }
+                                | AttemptRecovery::ContinueFromHistory { not_before },
+                            ) => *not_before,
                             _ => None,
                         };
                         let due_at = UnixMillis(now.0.saturating_add(delay))
@@ -1105,9 +1107,15 @@ impl Engine {
                                 attempt,
                                 phase,
                                 due_at,
-                                diagnostic:
+                                diagnostic: if matches!(
+                                    view.attempts[&attempt].recovery,
+                                    Some(AttemptRecovery::ContinueFromHistory { .. })
+                                ) {
+                                    "continue from recorded history after provider interruption"
+                                } else {
                                     "adapter proved frozen retry safe with no semantic progress"
-                                        .into(),
+                                }
+                                .into(),
                             }],
                             vec![],
                             now,
@@ -2292,6 +2300,8 @@ fn accepted_content(
                 cell: *cell,
                 evidence,
             }
+        } else if *outcome == AcceptedResult::ProviderOutcomeUnknown {
+            AcceptedToolResult::ProviderOutcomeUnknown
         } else if let Some(original) = tool.local_returned.as_ref().filter(|local| {
             local.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
         }) {
