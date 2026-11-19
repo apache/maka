@@ -63,6 +63,15 @@ impl Handler for Agent {
                 encode(history::read(&owner, context.scope(), decode(input)?).await?)
             });
         }
+        if method == "sessionRead" {
+            return json_reply(async move {
+                encode(
+                    owner
+                        .session_read_tool(decode(input)?, context.scope())
+                        .await?,
+                )
+            });
+        }
         if method == "send" {
             return Box::pin(async move {
                 let input: Send = decode(input).map_err(HandlerError::from)?;
@@ -304,11 +313,6 @@ impl Handler for Agent {
                 "sessionList" => encode(
                     owner
                         .session_list_tool(decode(input)?, context.scope())
-                        .await?,
-                ),
-                "sessionRead" => encode(
-                    owner
-                        .session_read_tool(decode(input)?, context.scope())
                         .await?,
                 ),
                 "list" => encode(catalog_page(&owner, &decode(input)?).await?),
