@@ -58,6 +58,10 @@ const sent = fn();
 function PasteHarness(): React.ReactElement {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 420, padding: 24 }}>
+      {/* Full-width frame: without it the row-flex harness shrink-wraps the
+          composer form to its padding and the card's min(800px, 100%) width
+          collapses to zero — the same frame SkillDraftHarness already uses. */}
+      <div style={{ width: '100%' }}>
       <Composer
         draftKey="new-task:story"
         draftPersistence={{ read: () => undefined, write: (_key, value) => draftWrites(value) }}
@@ -68,6 +72,7 @@ function PasteHarness(): React.ReactElement {
         }}
         onStop={() => {}}
       />
+      </div>
     </div>
   );
 }
@@ -132,6 +137,10 @@ export const PasteIsItsOwnUndoStep: Story = {
     // An empty stack stays empty rather than reaching past the composer.
     document.execCommand('undo');
     await expect(draftText(composer)).toBe('');
+    // Regression for #5909: the row-flex harness used to shrink-wrap the
+    // composer form to its padding, collapsing the card to zero width.
+    const card = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx');
+    await expect(card?.getBoundingClientRect().width ?? 0).toBeGreaterThan(100);
   },
 };
 
