@@ -131,10 +131,27 @@ mod tests {
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("text:/sample-command-code/").unwrap();
         app.wait_for("text:/isolated.sample/").unwrap();
-        app.wait_for("text:/Investigation permissions.*Read-only tools/")
-            .unwrap();
+        app.wait_for("label:File reading: On").unwrap();
+        assert!(!app.screen().matches("label:Terminal tools: On").unwrap());
         app.press("role:button[Standard Session tools]").unwrap();
-        app.wait_for("text:Read · Shell").unwrap();
+        app.wait_for("label:Install and manage plugins: Off")
+            .unwrap();
+        app.press("label:Extensions and other tools: On").unwrap();
+        app.press("label:Terminal tools: On").unwrap();
+        app.press("label:Conversations and memory: On").unwrap();
+        app.wait_for("text:/Read and its aliases can also open existing references/")
+            .unwrap();
+        app.press("label:File reading: On").unwrap();
+        app.wait_for("label:File reading: Off").unwrap();
+        assert!(
+            !app.screen()
+                .matches("text:/Read and its aliases can also open existing references/")
+                .unwrap()
+        );
+        app.press("label:File reading: Off").unwrap();
+        app.press("role:button[Show selected tools]").unwrap();
+        app.wait_for("text:DiscoveryComplete · Read · WebFetch · Write")
+            .unwrap();
         app.press("role:button[Approve and enable]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("text:/Next check.*15:59:58/").unwrap();
@@ -146,17 +163,34 @@ mod tests {
         app.press_key("mod+shift+r").unwrap();
         app.wait_for("text:Needs renewed approval").unwrap();
         app.press("role:button[Review permissions]").unwrap();
-        app.wait_for("text:Read · Shell").unwrap();
+        app.wait_for("label:Terminal tools: Off").unwrap();
         app.press("role:button[Approve and resume]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
-        app.press("role:button[Fixed interval]").unwrap();
+        app.press("role:button[Read-only tools]").unwrap();
+        app.wait_for("label:File reading: On").unwrap();
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("text:3 of 7 groups selected").unwrap();
+        app.type_text(
+            "label:Investigation direction (optional)",
+            "Review the release",
+        )
+        .unwrap();
+        app.clear("label:Interval (minutes)").unwrap();
+        app.wait_for("text:Enter a positive whole number of minutes.")
+            .unwrap();
+        app.type_text("label:Interval (minutes)", "45").unwrap();
+        app.press("role:combobox[Check schedule]").unwrap();
+        app.press("role:option[Fixed interval]").unwrap();
+        app.press("role:combobox[Investigation model]").unwrap();
+        app.press("role:option[Replacement model]").unwrap();
+        app.wait_for("text:3 of 7 groups selected").unwrap();
         app.wait_for("role:button[Approve and save]").unwrap();
         app.press("role:button[Approve and save]").unwrap();
         app.wait_for("role:button[Close]").unwrap();
         app.press("role:button[Close]").unwrap();
-        app.wait_for("text:Action update fixed 1800").unwrap();
+        app.wait_for("text:Action update fixed 2700 replacement Review the release DiscoveryComplete · Read · WebFetch · Write").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
@@ -188,6 +222,47 @@ mod tests {
         app.wait_for("text:Delete this plan?").unwrap();
         app.press("role:button[Delete] >> nth=1").unwrap();
         app.wait_for("role:button[Approve and enable]").unwrap();
+    }
+
+    #[test]
+    fn discovery_draft_preserves_group_choices_when_switching_tool_presets() {
+        let mut app = headless_fixture(
+            "tests/fixtures/discovery.tsx",
+            Size::new(px(1100.0), px(900.0)),
+            false,
+        );
+        app.wait_for("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.press("label:Conversations and memory: On").unwrap();
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("label:Terminal tools: On").unwrap();
+        app.press("label:File reading: On").unwrap();
+        app.press("role:button[Read-only tools]").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+
+        app.wait_for("role:button[Edit plan]").unwrap();
+        app.press("role:button[Edit plan]").unwrap();
+        app.press("role:button[Show selected tools]").unwrap();
+        app.wait_for("text:/^DiscoveryComplete$/").unwrap();
+
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("label:Extensions and other tools: Off")
+            .unwrap();
+        app.press("label:Extensions and other tools: Off").unwrap();
+        app.press("label:Install and manage plugins: Off").unwrap();
+        app.press("role:button[Approve and save]").unwrap();
+        app.wait_for("role:button[Edit plan]").unwrap();
+        app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("label:Install and manage plugins: On")
+            .unwrap();
+        app.press("role:button[Show selected tools]").unwrap();
+        app.wait_for("text:DiscoveryComplete · PluginConfigure · mcp__sample__lookup")
+            .unwrap();
+
+        app.press("role:button[Cancel]").unwrap();
+        app.wait_for("role:button[New plan]").unwrap();
+        app.press("role:button[New plan]").unwrap();
+        app.wait_for("text:2 of 2 groups selected").unwrap();
     }
 
     #[test]
@@ -226,21 +301,35 @@ mod tests {
         app.wait_for("role:button[Resume]").unwrap();
         app.press_key("mod+shift+m").unwrap();
         app.press("role:button[Resume]").unwrap();
-        app.wait_for("role:button[Change model]").unwrap();
-        app.press("role:button[Change model]").unwrap();
-        app.wait_for("text:Opened models").unwrap();
-        app.press("role:button[Proactive discovery]").unwrap();
-        app.wait_for("role:button[View background follow-ups]")
+        app.wait_for("role:combobox[Investigation model]").unwrap();
+        app.press("role:combobox[Investigation model]").unwrap();
+        app.press("role:option[Replacement model]").unwrap();
+        app.wait_for("label:File reading: Partially enabled (1/2)")
             .unwrap();
-        app.press("role:button[View background follow-ups]")
-            .unwrap();
-        app.wait_for("role:button[Resume]").unwrap();
-        app.press("role:button[Resume]").unwrap();
-        app.wait_for("role:button[Approve and resume]").unwrap();
         app.press("role:button[Approve and resume]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.press("role:button[Close]").unwrap();
-        app.wait_for("text:Action approved replacement").unwrap();
+        app.wait_for("text:Action approved replacement DiscoveryComplete · DiscoveryMemory · Read")
+            .unwrap();
+
+        // A previously revoked preset can lack both an active grant and a saved selection.
+        app.press_key("mod+shift+b").unwrap();
+        app.press_key("mod+shift+r").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[View background follow-ups]")
+            .unwrap();
+        app.wait_for("role:button[Review permissions]").unwrap();
+        app.press("role:button[Review permissions]").unwrap();
+        app.wait_for("text:Submit investigation results only")
+            .unwrap();
+        app.press("role:button[Standard Session tools]").unwrap();
+        app.wait_for("label:File reading: Off").unwrap();
+        app.press("label:File reading: Off").unwrap();
+        app.press("role:button[Approve and resume]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.wait_for("text:Action approved replacement DiscoveryComplete · NewReader · Read")
+            .unwrap();
     }
 
     #[test]
@@ -374,6 +463,47 @@ mod tests {
             .unwrap();
         app.wait_for("text:The original tool source could not be verified.")
             .unwrap();
+    }
+
+    #[test]
+    fn inline_dictation_cancels_or_inserts_at_the_original_caret() {
+        let mut app = fixture("inline-dictation.tsx");
+        app.wait_for("label:Microphone").unwrap();
+        let bounds = |app: &nsh_testing::Headless, selector: &str| {
+            let screen = app.screen();
+            let id = screen.id(selector).unwrap();
+            screen
+                .layout_nodes()
+                .into_iter()
+                .find(|n| n.id == id)
+                .unwrap()
+                .bounds
+        };
+        let plus = bounds(&app, "label:Add to message").center();
+        app.press("label:Microphone").unwrap();
+        app.wait_for("text:Recording").unwrap();
+        app.press("label:Cancel dictation").unwrap();
+        app.wait_for("text:周五开会").unwrap();
+        app.press("label:Microphone").unwrap();
+        app.wait_for("label:Finish and transcribe").unwrap();
+        assert_eq!(bounds(&app, "id:recording-dot").center(), plus);
+        let cancel = bounds(&app, "label:Cancel dictation").origin;
+        let status = bounds(&app, "text:Recording").origin;
+        app.press("label:Finish and transcribe").unwrap();
+        app.wait_for("text:Transcribing…").unwrap();
+        assert_eq!(bounds(&app, "label:Transcribing…").center(), plus);
+        assert_eq!(bounds(&app, "label:Cancel dictation").origin, cancel);
+        assert_eq!(bounds(&app, "text:Transcribing…").origin, status);
+        app.press("label:Release transcription").unwrap();
+        app.wait_for("text:Transcription failed").unwrap();
+        app.press("label:Retry transcription").unwrap();
+        app.wait_for("text:周五下午开会").unwrap();
+        app.wait_for("text:Unsent").unwrap();
+        app.press("label:Microphone").unwrap();
+        app.wait_for("label:Transcribe and send").unwrap();
+        app.press("label:Transcribe and send").unwrap();
+        app.wait_for("text:Sent: 周五下午下午开会").unwrap();
+        app.wait_for("label:Microphone").unwrap();
     }
 
     #[test]

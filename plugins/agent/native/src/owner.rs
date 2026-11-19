@@ -252,7 +252,6 @@ pub(crate) struct Owner {
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
-    discovery_reads: Vec<String>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
     pub(super) executors: crate::executor::Executors,
@@ -334,7 +333,7 @@ impl Owner {
                 .await
                 .map_err(|_| "agent_model_process_capture_worker_failed")?
                 .map_err(|_| "agent_model_process_capture_failed")?;
-        let mut additional = Vec::new();
+        let mut additional = vec![compaction::tool()];
         let mut internal_bindings = BTreeMap::new();
         if !jsonschema_valid(&input) {
             return Err("agent_configuration_invalid".into());
@@ -501,7 +500,6 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
-            discovery_reads,
         } = match prepared_tools {
             Ok(tools) => tools,
             Err(error) => {
@@ -598,7 +596,6 @@ impl Owner {
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
-            discovery_reads,
             editing_tools,
             skills,
             executors,
@@ -1260,12 +1257,17 @@ impl Owner {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        Ok(self.select_catalog_tools(
+        let selected = self.select_catalog_tools(
             &catalog.tools,
             Some(session),
             basis.allowed_tools.as_deref(),
             editing,
-        ))
+        );
+        Ok(if basis.model.is_some() {
+            selected
+        } else {
+            selected.excluding(&[compaction::TOOL])
+        })
     }
     fn select_catalog_tools(
         &self,

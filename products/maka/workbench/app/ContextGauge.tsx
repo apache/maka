@@ -19,6 +19,7 @@
 
 import { Canvas, View } from 'nsh';
 import type { ComposerContextUsage } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { composerToolbar } from './composerToolbar';
 import { tr } from './locale';
 import { C, textTooltip } from './ui';
 
@@ -34,13 +35,17 @@ export function contextUsageText(usage: ComposerContextUsage): string {
     : `${context} · ${tr('{speed} tok/s', { speed: usage.outputTokensPerSecond.toFixed(1) })}`;
 }
 
-// A ring for how much of the model's context the conversation uses, shown
-// from 70% in warning and from 90% in danger; the numbers are in its tooltip.
+// A ring for how much of the model's context the conversation uses; the
+// numbers are in its tooltip. Visibility follows Settings › General › Composer.
 export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
   const share = () => Math.min(1, props.usage().tokens / props.usage().window);
-  const color = () => (share() >= 0.9 ? C.danger : C.warning);
+  const visible = () => {
+    const mode = composerToolbar.contextUsage();
+    return mode === 'always' || (mode === 'high' && share() >= 0.7);
+  };
+  const color = () => (share() >= 0.9 ? C.danger : share() >= 0.7 ? C.warning : C.muted);
   return (
-    <If when={share() >= 0.7}>
+    <If when={visible()}>
       <View
         role="progressbar"
         accessibilityValue={{ min: 0, max: 100, now: share() * 100 }}

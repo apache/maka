@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { dictationPreferences as dictation } from './dictationPreferences';
 import { Image, inputAction, platform, signal, Text, View } from 'nsh';
 import { Button, Menu, MenuItem, Slider } from 'nsh/base';
 import type {
@@ -30,6 +31,8 @@ import {
   type GeneralAction,
   type GeneralSettingsOwner,
 } from './generalSettingsState.ts';
+import { ComposerToolbarSettings } from './ComposerToolbarSettings';
+import { composerToolbar } from './composerToolbar';
 import { UiScaleSettings } from './UiScaleSettings';
 import { PredictionSettings } from './PredictionSettings';
 import { uiScale } from './uiScale';
@@ -79,7 +82,7 @@ const avatarChoices = [
   { avatar: 'amber', label: 'Amber avatar' },
 ] satisfies { avatar: Avatar | null; label: MessageKey }[];
 
-export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
+export function GeneralSettings(props: { owner: GeneralSettingsOwner; addConnection: () => void }) {
   const owner = props.owner;
   return (
     <If
@@ -92,6 +95,8 @@ export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
           if (request.kind === 'root') return <GeneralRoot owner={owner} request={request} />;
           if (request.kind === 'globalInstructions')
             return <GlobalInstructionsEditor owner={owner} request={request} />;
+          if (request.kind === 'dictation')
+            return <DictationSettings addConnection={props.addConnection} />;
           if (request.kind === 'predictions')
             return <PredictionSettings owner={owner} request={request} />;
           return <PreferenceEditor owner={owner} request={request} />;
@@ -105,6 +110,11 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
   const owner = props.owner;
   const request = props.request;
   const facts = owner.facts;
+  if (platform.os === 'macos' && platform.idiom !== 'terminal')
+    void dictation
+      .initialize()
+      .then(() => (dictation.enabled() ? dictation.refresh() : undefined))
+      .catch((e) => dictation.error.set(String(e)));
   const toggle = (kind: 'instructions' | 'titles' | 'predictions') =>
     inputAction(owner.toggle, { request, kind });
   const open = (kind: 'personalization' | 'compaction' | 'shell' | 'predictions') =>
@@ -140,6 +150,9 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           />
         </If>
       </SettingsSection>
+      <If when={composerToolbar.supported}>
+        <ComposerToolbarSettings />
+      </If>
       <If
         when={facts()}
         else={
@@ -149,6 +162,14 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
         }
       >
         <SettingsSection title={tr('Conversations')}>
+          <If when={platform.os === 'macos' && platform.idiom !== 'terminal'}>
+            <SettingsRow
+              label={tr('Dictation')}
+              description={dictation.description()}
+              opens
+              onPress={inputAction(owner.open, { request, kind: 'dictation' as const })}
+            />
+          </If>
           <SettingsSwitch
             label={tr('Message predictions')}
             description={tr('Suggest your next message from the conversation.')}
@@ -232,6 +253,63 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           />
         </If>
       </SettingsSection>
+    </SettingsBody>
+  );
+}
+
+function DictationSettings(props: { addConnection(): void }) {
+  if (dictation.enabled()) void dictation.refresh().catch((e) => dictation.error.set(String(e)));
+  return (
+    <SettingsBody>
+      <SettingsSection>
+        <SettingsSwitch
+          label={tr('Enable dictation')}
+          description={tr('Show the microphone in the message composer.')}
+          checked={dictation.enabled()}
+          disabled={dictation.busy()}
+          onPress={() => void dictation.save('enabled', String(!dictation.enabled()))}
+        />
+      </SettingsSection>
+      <If when={dictation.enabled()}>
+        <SettingsSection note={tr('Dictation uses the API key from this connection.')}>
+          <SettingsRow
+            label={tr('Transcription service')}
+            trailing={<Text style={{ ...bodyTextStyle, color: C.secondary }}>DeepSeek</Text>}
+          />
+          <If
+            when={dictation.connections().length > 0}
+            else={
+              <SettingsRow
+                label={tr('Add a DeepSeek connection')}
+                description={dictation.useLegacy() ? tr('Saved dictation key') : undefined}
+                opens
+                onPress={props.addConnection}
+              />
+            }
+          >
+            <SettingsSelect
+              label={tr('Model connection')}
+              value={
+                dictation.current()?.basis.connectionId ?? (dictation.useLegacy() ? 'legacy' : '')
+              }
+              choices={[
+                ...dictation
+                  .connections()
+                  .map((c) => ({ value: c.basis.connectionId, title: c.name })),
+                ...(dictation.legacy()
+                  ? [{ value: 'legacy', title: tr('Saved dictation key') }]
+                  : []),
+              ]}
+              placeholder={tr('Choose a model connection')}
+              disabled={dictation.busy()}
+              change={(value) => void dictation.save('connection', value)}
+            />
+          </If>
+        </SettingsSection>
+      </If>
+      <If when={!!dictation.error()}>
+        <Text style={{ color: C.danger }}>{dictation.error()}</Text>
+      </If>
     </SettingsBody>
   );
 }

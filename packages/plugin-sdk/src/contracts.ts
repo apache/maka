@@ -38652,6 +38652,14 @@ export const contracts: {
                         description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
                       },
+                      selectedTools: {
+                        description:
+                          'Optional exact tool choices and the categories shown to the user.\nThe profile and the current Session ceiling still apply.',
+                        type: ['object', 'null'],
+                        additionalProperties: {
+                          $ref: '#/$defs/DiscoveryToolGroup',
+                        },
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model', 'workerTools'],
@@ -38842,6 +38850,22 @@ export const contracts: {
               DiscoveryWorkerTools: {
                 type: 'string',
                 enum: ['read_only', 'session'],
+              },
+              DiscoveryToolGroup: {
+                description:
+                  'The category is derived from the bound service, even for renamed tools.',
+                type: 'string',
+                enum: [
+                  'read_files',
+                  'modify_files',
+                  'history',
+                  'commands',
+                  'web',
+                  'sessions',
+                  'desktop',
+                  'plugin_management',
+                  'other',
+                ],
               },
               Misfire: {
                 type: 'string',
@@ -39091,6 +39115,14 @@ export const contracts: {
                         description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
                       },
+                      selectedTools: {
+                        description:
+                          'Optional exact tool choices and the categories shown to the user.\nThe profile and the current Session ceiling still apply.',
+                        type: ['object', 'null'],
+                        additionalProperties: {
+                          $ref: '#/$defs/DiscoveryToolGroup',
+                        },
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model', 'workerTools'],
@@ -39282,6 +39314,22 @@ export const contracts: {
                 type: 'string',
                 enum: ['read_only', 'session'],
               },
+              DiscoveryToolGroup: {
+                description:
+                  'The category is derived from the bound service, even for renamed tools.',
+                type: 'string',
+                enum: [
+                  'read_files',
+                  'modify_files',
+                  'history',
+                  'commands',
+                  'web',
+                  'sessions',
+                  'desktop',
+                  'plugin_management',
+                  'other',
+                ],
+              },
             },
           },
           output: {
@@ -39296,14 +39344,30 @@ export const contracts: {
                     const: 'discovery_tools',
                   },
                   names: {
+                    description:
+                      'All names available in this profile, including the required return tool.',
                     type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  groups: {
+                    description: 'Selectable names classified by their current binding.',
+                    type: 'object',
+                    additionalProperties: {
+                      $ref: '#/$defs/DiscoveryToolGroup',
+                    },
+                  },
+                  approvedNames: {
+                    description: 'Previously approved names for this plan and profile, if any.',
+                    type: ['array', 'null'],
                     items: {
                       type: 'string',
                     },
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'names'],
+                required: ['kind', 'names', 'groups'],
               },
               {
                 type: 'object',
@@ -39369,6 +39433,22 @@ export const contracts: {
               },
             ],
             $defs: {
+              DiscoveryToolGroup: {
+                description:
+                  'The category is derived from the bound service, even for renamed tools.',
+                type: 'string',
+                enum: [
+                  'read_files',
+                  'modify_files',
+                  'history',
+                  'commands',
+                  'web',
+                  'sessions',
+                  'desktop',
+                  'plugin_management',
+                  'other',
+                ],
+              },
               AgentScheduledSummary: {
                 type: 'object',
                 properties: {
@@ -39785,6 +39865,14 @@ export const contracts: {
                       workerTools: {
                         description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                      selectedTools: {
+                        description:
+                          'Optional exact tool choices and the categories shown to the user.\nThe profile and the current Session ceiling still apply.',
+                        type: ['object', 'null'],
+                        additionalProperties: {
+                          $ref: '#/$defs/DiscoveryToolGroup',
+                        },
                       },
                     },
                     additionalProperties: false,
@@ -53608,6 +53696,14 @@ export const contracts: {
                         description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
                       },
+                      selectedTools: {
+                        description:
+                          'Optional exact tool choices and the categories shown to the user.\nThe profile and the current Session ceiling still apply.',
+                        type: ['object', 'null'],
+                        additionalProperties: {
+                          $ref: '#/$defs/DiscoveryToolGroup',
+                        },
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'target', 'model', 'workerTools'],
@@ -53799,6 +53895,22 @@ export const contracts: {
                 type: 'string',
                 enum: ['read_only', 'session'],
               },
+              DiscoveryToolGroup: {
+                description:
+                  'The category is derived from the bound service, even for renamed tools.',
+                type: 'string',
+                enum: [
+                  'read_files',
+                  'modify_files',
+                  'history',
+                  'commands',
+                  'web',
+                  'sessions',
+                  'desktop',
+                  'plugin_management',
+                  'other',
+                ],
+              },
             },
           },
           output: {
@@ -53813,14 +53925,30 @@ export const contracts: {
                     const: 'discovery_tools',
                   },
                   names: {
+                    description:
+                      'All names available in this profile, including the required return tool.',
                     type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  groups: {
+                    description: 'Selectable names classified by their current binding.',
+                    type: 'object',
+                    additionalProperties: {
+                      $ref: '#/$defs/DiscoveryToolGroup',
+                    },
+                  },
+                  approvedNames: {
+                    description: 'Previously approved names for this plan and profile, if any.',
+                    type: ['array', 'null'],
                     items: {
                       type: 'string',
                     },
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'names'],
+                required: ['kind', 'names', 'groups'],
               },
               {
                 type: 'object',
@@ -53886,6 +54014,22 @@ export const contracts: {
               },
             ],
             $defs: {
+              DiscoveryToolGroup: {
+                description:
+                  'The category is derived from the bound service, even for renamed tools.',
+                type: 'string',
+                enum: [
+                  'read_files',
+                  'modify_files',
+                  'history',
+                  'commands',
+                  'web',
+                  'sessions',
+                  'desktop',
+                  'plugin_management',
+                  'other',
+                ],
+              },
               AgentScheduledSummary: {
                 type: 'object',
                 properties: {
@@ -54302,6 +54446,14 @@ export const contracts: {
                       workerTools: {
                         description: 'Tool and permission profile requested for this plan.',
                         $ref: '#/$defs/DiscoveryWorkerTools',
+                      },
+                      selectedTools: {
+                        description:
+                          'Optional exact tool choices and the categories shown to the user.\nThe profile and the current Session ceiling still apply.',
+                        type: ['object', 'null'],
+                        additionalProperties: {
+                          $ref: '#/$defs/DiscoveryToolGroup',
+                        },
                       },
                     },
                     additionalProperties: false,
@@ -67330,6 +67482,53 @@ export const contracts: {
           },
           resources: {},
         },
+        dictationConnections: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsPreferencesRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Array_of_DictationConnection',
+            type: 'array',
+            items: {
+              $ref: '#/$defs/DictationConnection',
+            },
+            $defs: {
+              DictationConnection: {
+                type: 'object',
+                properties: {
+                  basis: {
+                    $ref: '#/$defs/ConnectionVersionBasis',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                required: ['basis', 'name'],
+              },
+              ConnectionVersionBasis: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision'],
+              },
+            },
+          },
+          resources: {},
+        },
         models: {
           mode: 'query',
           input: {
@@ -69746,6 +69945,48 @@ export const contracts: {
                 required: ['connectionId', 'modelId'],
               },
             },
+          },
+          resources: {},
+        },
+        transcribeDictation: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DictationInput',
+            type: 'object',
+            properties: {
+              connection: {
+                $ref: '#/$defs/ConnectionVersionBasis',
+              },
+              audio: {
+                type: 'string',
+                maxLength: 5400000,
+              },
+            },
+            additionalProperties: false,
+            required: ['connection', 'audio'],
+            $defs: {
+              ConnectionVersionBasis: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'string',
+            type: 'string',
           },
           resources: {},
         },

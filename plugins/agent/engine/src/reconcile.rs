@@ -50,6 +50,7 @@ pub(crate) enum WorkKey {
     Tool(ToolKey),
 }
 pub(crate) struct ModelLevel {
+    pub handoff: bool,
     pub input: maka_agent_facts::input::RunInput,
     pub request: Option<RequestSpec>,
     pub baseline: Option<maka_agent_facts::context::CompactedContext>,
@@ -726,7 +727,9 @@ pub(crate) fn next(
     complete_at_budget: bool,
 ) -> Action {
     let action = next_action(view, live, now, model, complete_at_budget);
-    if !matches!(action, Action::Terminate(Terminal::Completed)) {
+    let handing_off = matches!(action, Action::Compact(_) | Action::AdoptCandidate(_))
+        && model.is_some_and(|m| m.handoff);
+    if !(handing_off || matches!(action, Action::Terminate(Terminal::Completed))) {
         return action;
     }
     if live
@@ -859,6 +862,9 @@ fn next_action(
         if tool.accepted.is_some() {
             continue;
         }
+        if view.provider_outcome_unknown(tool) {
+            return Action::Accept(tool.key.clone(), AcceptedResult::ProviderOutcomeUnknown);
+        }
         // A live callback owns the result, even after its Cell finishes.
         if let Some(cell) = recovered_cell(view, tool)
             && !live.work.contains(&WorkKey::Tool(tool.key.clone()))
@@ -960,7 +966,10 @@ fn next_action(
             if view.cancelled_by_risk {
                 continue;
             }
-            let reason = if tool.call.provider_executed && tool.provider_result.is_none() {
+            let reason = if tool.call.provider_executed
+                && tool.provider_result.is_none()
+                && tool.accepted.is_none()
+            {
                 Some(BlockerKind::ProviderEffectUnknown {
                     attempt: tool.key.attempt,
                     call: tool.key.call.clone(),
@@ -1128,23 +1137,6 @@ fn next_action(
             continue;
         }
         if tool.call.provider_executed {
-            if view
-                .attempts
-                .get(&tool.key.attempt)
-                .is_some_and(|attempt| attempt.closed.is_some() || attempt.interrupted.is_some())
-            {
-                let reason = BlockerKind::ProviderEffectUnknown {
-                    attempt: tool.key.attempt,
-                    call: tool.key.call.clone(),
-                };
-                if !view
-                    .blockers
-                    .values()
-                    .any(|blocker| blocker.reason == reason && active(blocker))
-                {
-                    return Action::Block(reason);
-                }
-            }
             continue;
         }
         if tool.admitted {
@@ -1578,7 +1570,25 @@ fn next_action(
                 })
             }
         }
-        Some(AttemptRecovery::FrozenRetrySafe { .. }) if !attempt.semantic => {
+        Some(
+            AttemptRecovery::FrozenRetrySafe { .. } | AttemptRecovery::ContinueFromHistory { .. },
+        ) => {
+            let resume = matches!(
+                attempt.recovery,
+                Some(AttemptRecovery::ContinueFromHistory { .. })
+            );
+            if resume
+                && model.is_some_and(|m| {
+                    m.request.as_ref().is_some_and(|r| {
+                        r.accounting.purpose == maka_agent_facts::context::ModelPurpose::Summary
+                    })
+                })
+            {
+                return Action::Terminate(Terminal::Failed);
+            }
+            if !resume && attempt.semantic {
+                return Action::Terminate(Terminal::Failed);
+            }
             if attempt.retry.is_none() {
                 let phase = if model.is_some_and(|model| {
                     model.request.as_ref().is_some_and(|request| {
@@ -1594,7 +1604,7 @@ fn next_action(
                     + u64::from(phase == maka_agent_facts::model::retry_transport::RetryTransportPhase::Fallback);
                 return if u64::from(view.retries_for(phase)) < limit {
                     Action::ChargeRetry(id, phase)
-                } else if phase == maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary
+                } else if !resume && phase == maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary
                     && model.is_some_and(|model| {
                         model.request.as_ref().is_some_and(|request| request.accounting.purpose == maka_agent_facts::context::ModelPurpose::Main)
                             && model.fallback_available
@@ -1619,6 +1629,8 @@ fn next_action(
                 && attempt.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
             {
                 wait(view, WaitReason::Model { attempt: id }, None, now)
+            } else if resume {
+                Action::Prepare(Preparation::ResumeFromHistory)
             } else {
                 Action::Attempt(attempt.step)
             }

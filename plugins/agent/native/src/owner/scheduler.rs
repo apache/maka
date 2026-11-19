@@ -274,6 +274,14 @@ impl Scheduler {
     }
 }
 impl Owner {
+    fn discovery_tool_groups(&self, names: &[String]) -> DiscoveryToolSelection {
+        names
+            .iter()
+            .filter(|name| name.as_str() != super::discovery::COMPLETE)
+            .map(|name| (name.clone(), self.discovery_tool_group(name)))
+            .collect()
+    }
+
     pub fn schedule_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.scheduler.changed.subscribe()
     }
@@ -285,6 +293,7 @@ impl Owner {
                 model,
                 thinking_level,
                 worker_tools,
+                ..
             } = effect
             else {
                 return Err("scheduler_discovery_plan_required".into());
@@ -315,9 +324,24 @@ impl Owner {
                 )
                 .await?;
             let tools = self
-                .discovery_tool_grant(&basis, &target, worker_tools)
+                .discovery_tool_grant(&basis, &target, worker_tools, None)
                 .await?;
-            return Ok(Schedules::DiscoveryTools { names: tools.names });
+            let groups = self.discovery_tool_groups(&tools.names);
+            let approved_names = saved.and_then(|saved| match saved.plan.authorization {
+                Some(Approval::Discovery {
+                    approval, tools, ..
+                }) if approval.target.session_id == target.session_id
+                    && tools.profile == worker_tools =>
+                {
+                    Some(tools.names)
+                }
+                _ => None,
+            });
+            return Ok(Schedules::DiscoveryTools {
+                names: tools.names,
+                groups,
+                approved_names,
+            });
         }
         let _gate = scheduler.gate.lock().await;
         let catalog = scheduler.load().await?;
@@ -502,7 +526,9 @@ impl Owner {
                     Some(expected) if expected != tools.names.as_slice() => {
                         return Err("scheduler_discovery_tools_changed".into());
                     }
-                    None if tools.profile == DiscoveryWorkerTools::Session => {
+                    None if tools.profile == DiscoveryWorkerTools::Session
+                        || plan.task.effect.selected_discovery_tools().is_some() =>
+                    {
                         return Err("scheduler_discovery_tools_confirmation_required".into());
                     }
                     _ => {}

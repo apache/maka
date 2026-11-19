@@ -144,11 +144,15 @@ impl DriverModel {
         {
             return Err(unsupported("summary-source-adapter-changed"));
         }
+        let evidence: maka_agent_facts::context::RequestContextEvidence =
+            reader.decode(view.run, &request.provenance).await?;
+        let options = self
+            .compaction_options(&reader, view.run, evidence.compaction_request.as_ref())
+            .await?;
         let original_prompt = self
             .restore_frozen(&reader, view.run, &request, &frozen)
             .await?;
-        let native_compaction =
-            !repair && model.provider.capabilities.native_compaction == Some(true);
+        let native_compaction = !repair && options.native(&model);
         let context = model.context.as_ref();
         let operation = if native_compaction {
             ModelOperation::CodexCompaction
@@ -198,6 +202,7 @@ impl DriverModel {
                     Err(close) => preparation::preparation_cleanup_error(error, close),
                 });
             }
+            if !repair { return builder.finish().await; }
             preparation::prepare_prompt(
                 builder, &settings, &self.cancellation,
                 frozen.instructions.clone().map(Arc::new), ModelPurpose::Main, None,
@@ -219,23 +224,17 @@ impl DriverModel {
         };
         let result: Result<PreparedStep, RunError> = async {
             if !repair {
-                let instruction = if native_compaction {
-                    None
-                } else {
-                    Some(Arc::new(match &view.spec.compaction_prompt {
-                        Some(reference) => self.decode::<String>(view.run, reference).await?,
-                        None => {
-                            maka_agent_facts::context::default_compaction_prompt(view.spec.language)
-                                .into()
-                        }
-                    }))
-                };
+                let instruction = self
+                    .summary_instruction(view, native_compaction, options.prompt.as_deref())
+                    .await?;
                 prompt
                     .initialize_overlays(
                         frozen.instructions.clone().map(Arc::new),
                         true,
                         instruction,
                     )
+                    .await?;
+                self.prepare_summary_input(&mut prompt, &model, frozen.language, native_compaction)
                     .await?;
             }
             let settings = PromptSettings {
@@ -272,23 +271,6 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            if !repair && !native_compaction {
-                prompt = maka_agent_engine::context_input::fit_prepared_summary(
-                    &prompt,
-                    maka_agent_engine::context_input::summary_budget(context),
-                    frozen.language,
-                    &self.cancellation,
-                )
-                .await?;
-                preparation::prepare_wire(
-                    &settings,
-                    &mut prompt,
-                    &request.composition.tools,
-                    output,
-                    &self.cancellation,
-                )
-                .await?;
-            }
             let prepared = preparation::prepare_request(
                 &settings,
                 prompt.clone(),
@@ -324,6 +306,9 @@ impl DriverModel {
             let fields = provenance
                 .as_object_mut()
                 .ok_or_else(|| unsupported("frozen-summary-provenance"))?;
+            if let Some(model) = &options.resume_model {
+                fields.insert("resumeModel".into(), json!(model));
+            }
             fields.insert("inputDigest".into(), json!(prepared.input_digest));
             fields.insert("routeIdentity".into(), json!(prepared.route_identity));
             fields.insert("breakdown".into(), json!(prepared.context_breakdown));

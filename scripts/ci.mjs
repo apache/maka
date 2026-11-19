@@ -63,7 +63,7 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
   if (baseline !== null && ['push', 'pull_request'].includes(event)) {
     await command('git', ['fetch', '--no-tags', '--depth=1', 'origin', baseline], { cwd: root });
   }
-  let changes =
+  const changes =
     baseline === null
       ? null
       : (
@@ -75,8 +75,8 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
         )
           .split('\0')
           .filter(Boolean);
-  // Branch pushes retain full coverage; only documentation-only pushes skip work.
-  if (event === 'push' && changes?.some((path) => !documentation(path))) changes = null;
+  // Branch pushes retain full root coverage; vendored workspaces run only when touched.
+  const fullRoot = event === 'push' && Boolean(changes?.some((path) => !documentation(path)));
   const metadata = {};
   if (changes && !changes.some(sharedInput) && changes.some((path) => !documentation(path))) {
     for (const [workspace, manifest] of Object.entries(manifests)) {
@@ -97,7 +97,7 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
       );
     }
   }
-  return createPlan({ root, changes, metadata, revision, baseline });
+  return createPlan({ root, changes, metadata, revision, baseline, fullRoot });
 }
 
 async function main(args) {
@@ -126,8 +126,7 @@ async function main(args) {
   if (action === 'run') {
     const [id, ...extra] = rest;
     if (!suites[id]) throw new Error(`Unknown suite: ${id}`);
-    const worker = workers.find((entry) => entry.suites.includes(id));
-    const run = executor(root, worker);
+    const run = executor(root);
     await run.prepare(id, suites[id].filter ?? 'all()', extra);
     await run.verify(id, suites[id].filter ?? 'all()', extra);
     return;
@@ -177,7 +176,8 @@ async function main(args) {
     const worker = selected.workers.find((entry) => entry.id === rest[0]);
     if (!worker) throw new Error(`Worker not selected: ${rest[0]}`);
     const run = executor(root, worker);
-    await runSuites(worker.suites, (id) => run[action](id, selected.suites[id].filter));
+    if (action === 'prepare') await run.prepareWorker(worker.suites, selected.suites);
+    else await runSuites(worker.suites, (id) => run.verify(id, selected.suites[id].filter));
     return;
   }
   throw new Error('Usage: ci.mjs plan|run|check|prepare|verify|archive|replay|gate');

@@ -43,28 +43,27 @@ pub(crate) fn index_fact(
     }
     let historical = matches!(spec.backend, BackendSpec::Historical {});
     let owner = serde_json::to_string(&spec.owner)?;
-    c.execute("INSERT INTO agent_catalog_sessions(owner,session,last_sequence,terminal_sequence) VALUES(?,?,?,?) ON CONFLICT(owner,session) DO UPDATE SET last_sequence=max(last_sequence,excluded.last_sequence),terminal_sequence=max(terminal_sequence,excluded.terminal_sequence)",
-        params![owner,spec.session_id,sequence,if !historical && matches!(fact.fact,Fact::RunTerminated{..}) { sequence } else { 0 }])?;
-    let admission: i64 = c.query_row(
-        "SELECT sequence FROM agent_facts WHERE run=? AND revision=1",
-        [fact.run.to_string()],
-        |r| r.get(0),
-    )?;
+    c.prepare_cached("INSERT INTO agent_catalog_sessions(owner,session,last_sequence,terminal_sequence) VALUES(?,?,?,?) ON CONFLICT(owner,session) DO UPDATE SET last_sequence=max(last_sequence,excluded.last_sequence),terminal_sequence=max(terminal_sequence,excluded.terminal_sequence)")?
+        .execute(params![owner, spec.session_id, sequence, if !historical && matches!(fact.fact, Fact::RunTerminated { .. }) { sequence } else { 0 }])?;
+    let admission: i64 = c
+        .prepare_cached("SELECT sequence FROM agent_facts WHERE run=? AND revision=1")?
+        .query_row([fact.run.to_string()], |r| r.get(0))?;
     if admission <= 0 {
         return Err(invalid("invalid catalog Run admission sequence"));
     }
-    c.execute("INSERT INTO agent_catalog_runs(run,owner,session,admission_sequence) VALUES(?,?,?,?) ON CONFLICT(run) DO NOTHING",params![fact.run.to_string(),owner,spec.session_id,admission])?;
+    c.prepare_cached("INSERT INTO agent_catalog_runs(run,owner,session,admission_sequence) VALUES(?,?,?,?) ON CONFLICT(run) DO NOTHING")?
+        .execute(params![fact.run.to_string(), owner, spec.session_id, admission])?;
     if !historical && matches!(fact.fact, Fact::RunTerminated { .. }) {
-        c.execute(
-            "UPDATE agent_catalog_runs SET terminal_sequence=? WHERE run=?",
-            params![sequence, fact.run.to_string()],
-        )?;
+        c.prepare_cached("UPDATE agent_catalog_runs SET terminal_sequence=? WHERE run=?")?
+            .execute(params![sequence, fact.run.to_string()])?;
     } else if !historical && fact.fact.is_late() {
-        c.execute("UPDATE agent_catalog_runs SET late_sequence=max(late_sequence,?) WHERE run=? AND terminal_sequence>0 AND terminal_sequence<?",params![sequence,fact.run.to_string(),sequence])?;
+        c.prepare_cached("UPDATE agent_catalog_runs SET late_sequence=max(late_sequence,?) WHERE run=? AND terminal_sequence>0 AND terminal_sequence<?")?
+            .execute(params![sequence, fact.run.to_string(), sequence])?;
     }
     let message = fact_message(spec, fact);
     if let Some((message, preview)) = message {
-        c.execute("INSERT INTO agent_catalog_messages(owner,session,sequence,message,at,preview) VALUES(?,?,?,?,?,?) ON CONFLICT(owner,session,sequence) DO NOTHING",params![owner,spec.session_id,sequence,message,fact.at.0,preview])?;
+        c.prepare_cached("INSERT INTO agent_catalog_messages(owner,session,sequence,message,at,preview) VALUES(?,?,?,?,?,?) ON CONFLICT(owner,session,sequence) DO NOTHING")?
+            .execute(params![owner, spec.session_id, sequence, message, fact.at.0, preview])?;
     }
     Ok(())
 }
@@ -164,8 +163,17 @@ pub(crate) fn run_status(view: &RunView, late_sequence: u64) -> RunStatus {
 
 pub(crate) fn index_run(c: &Connection, view: &RunView) -> Result<(), StoreError> {
     let (blocked, unknown, cleanup) = run_flags(view);
-    let changed = c.execute("UPDATE agent_catalog_runs SET live=?,terminal=?,stopped=?,blocked=?,unknown_effects=?,cleanup_pending=? WHERE run=?",
-        params![view.terminal.is_none(),view.terminal.as_ref().map(serde_json::to_string).transpose()?,view.stopped,blocked,unknown,cleanup,view.run.to_string()])?;
+    let changed = c
+        .prepare_cached("UPDATE agent_catalog_runs SET live=?,terminal=?,stopped=?,blocked=?,unknown_effects=?,cleanup_pending=? WHERE run=?")?
+        .execute(params![
+            view.terminal.is_none(),
+            view.terminal.as_ref().map(serde_json::to_string).transpose()?,
+            view.stopped,
+            blocked,
+            unknown,
+            cleanup,
+            view.run.to_string()
+        ])?;
     if changed != 1 {
         return Err(invalid(
             "catalog Run fact index is absent; rebuild required",

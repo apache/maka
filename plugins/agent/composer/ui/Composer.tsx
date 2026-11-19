@@ -51,13 +51,25 @@ import {
   menuRowHoverStyle,
   menuRowStyle,
   toolbarControlStyle,
+  composerIconSlot,
 } from '../../../../products/maka/workbench/app/ui';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
+import {
+  composerToolbar,
+  NARROW_COMPOSER_TOOLBAR_WIDTH,
+  ToolbarCompactProvider,
+  type ComposerToolbarSlot,
+} from '../../../../products/maka/workbench/app/composerToolbar';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
 import { DraftQuotes } from './DraftQuotes';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
+import { dictationPreferences } from '../../../../products/maka/workbench/app/dictationPreferences';
+import {
+  attachDictation,
+  DictationBar,
+} from '../../../../products/maka/workbench/app/InlineDictation';
 import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
 import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
@@ -70,6 +82,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     commands: props.commands,
     active: props.active,
   });
+  const dictation = signal<ReturnType<typeof attachDictation> | null>(null);
+  if (platform.os === 'macos' && platform.idiom !== 'terminal')
+    void dictationPreferences.initialize();
+  effect(() => {
+    const target = dictation();
+    if (!dictationPreferences.enabled() && target && target.phase() !== 'idle') target.cancel();
+  });
+  const listening = () => !!dictation() && dictation()!.phase() !== 'idle';
   const predictionEditor = signal<{ owner: ComposerSession; node: ComposerEditor } | null>(null);
   const suggestedMessage = () => {
     const owner = props.session();
@@ -230,6 +250,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
+  const toolbarWidth = signal(0);
+  const narrowToolbar = () =>
+    platform.idiom !== 'terminal' &&
+    toolbarWidth() > 0 &&
+    toolbarWidth() < NARROW_COMPOSER_TOOLBAR_WIDTH;
   const toggleAttachments = () => {
     const owner = props.session();
     if (owner && owner.editable())
@@ -276,6 +301,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       return current.node.bindKey('ctrl+c', completion.clearDraft, { fallback: true });
   });
   const escapeComposer = () => {
+    if (listening()) {
+      dictation()?.cancel();
+      return;
+    }
     if (completion.composing()) return;
     const suggestion = suggestedMessage();
     if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
@@ -612,6 +641,38 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               const path = signal('');
               const editor = signal<ComposerEditor | null>(null);
               const selection = signal({ start: 0, end: 0 });
+              if (platform.os === 'macos' && platform.idiom !== 'terminal' && (owner || local)) {
+                const target = attachDictation(owner?.sessionId ?? local!.id, {
+                  editor,
+                  selection,
+                  draft: () => (owner ?? local!).draft(),
+                  active: props.active,
+                  send: (text, previous) => {
+                    const target = owner ?? local!;
+                    if (!props.active() || (props.session() ?? pending()) !== target) return;
+                    // The native editor can acknowledge replacement before its change event arrives.
+                    if (target.draft() === previous) target.changeDraft(text);
+                    if (target.draft() !== text || sendDisabled()) return;
+                    if (owner) {
+                      completion.send({
+                        owner: owner.sessionId,
+                        text,
+                        backend: owner.backend(),
+                        attachments: owner.attachments.ids(),
+                        quotes: owner.quotes(),
+                        delivery: 'steer',
+                      });
+                    } else if (local) completion.submitPending(local, text, local.confirmation());
+                  },
+                  error: (reason) =>
+                    owner ? owner.attachments.reportError(reason) : local!.reportError(reason),
+                });
+                dictation.set(target);
+                cleanup(() => {
+                  target.detach();
+                  if (dictation() === target) dictation.set(null);
+                });
+              }
               const paste = local
                 ? createComposerPaste({
                     owner: pending,
@@ -792,16 +853,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                               ? () => paste?.blur(local)
                               : undefined
                         }
-                        onSelectionChange={
-                          owner
-                            ? (event) => completion.selection(owner, event)
-                            : local
-                              ? (event) => {
-                                  selection.set({ ...event });
-                                  completion.selection(local, event);
-                                }
-                              : undefined
-                        }
+                        onSelectionChange={(event) => {
+                          selection.set({ ...event });
+                          const target = owner ?? local;
+                          if (target) completion.selection(target, event);
+                        }}
                         onCaretMove={
                           owner
                             ? (event) => completion.caret(owner, event)
@@ -812,6 +868,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         onSubmit={
                           owner
                             ? (event) => {
+                                if (listening()) return;
                                 const suggestion = suggestedMessage();
                                 if (suggestion && event.text === '')
                                   acceptSuggestedMessage({
@@ -822,7 +879,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                                 else completion.submit(owner, event);
                               }
                             : local
-                              ? (event) => completion.submitPending(local, event.text)
+                              ? (event) => {
+                                  if (!listening()) completion.submitPending(local, event.text);
+                                }
                               : undefined
                         }
                         placeholder={
@@ -884,169 +943,249 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               );
             }}
           </Each>
-          <View
-            style={[
-              {
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: platform.idiom === 'terminal' ? 8 : 4,
-              },
-              { pointerEvents: 'box-none' },
-            ]}
-          >
-            <Button
-              ref={completion.addButton}
-              onPress={inputAction(completion.toggleAdd, {
-                owner: props.session()?.sessionId ?? pending()?.id ?? null,
-              })}
-              accessibilityLabel={tr('Add to message')}
-              tooltip={textTooltip(() => tr('Add to message'))}
-              disabled={
-                completion.composing() ||
-                (pending() ? pending()!.sending() : !props.session()?.editable())
+          <ToolbarCompactProvider value={narrowToolbar}>
+            <View
+              onLayout={
+                platform.idiom === 'terminal'
+                  ? undefined
+                  : ({ bounds }) => toolbarWidth.set(bounds.size.width)
               }
-              style={{
-                width: 32,
-                height: 32,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 16,
-              }}
-              hoverStyle={{ backgroundColor: C.line }}
-              focusStyle={{ backgroundColor: C.line }}
-              activeStyle={{ backgroundColor: C.surface }}
-            >
-              <Icon name="plus" color={C.secondary} />
-            </Button>
-            <If when={!externalAgent()}>
-              <SessionPermissionsSelect
-                owner={props.session()?.permissions ?? null}
-                pending={pending()?.permissions ?? null}
-              />
-            </If>
-            {/* After the sandbox, so leaving the start pane moves neither. */}
-            <If when={platform.idiom !== 'terminal' && hero()}>{workspaceControl()}</If>
-            <If
-              when={
-                platform.idiom !== 'terminal' &&
-                !hero() &&
-                props.openFiles !== undefined &&
-                Boolean(props.session()?.workspace())
-              }
-            >
-              <Button
-                accessibilityLabel={tr('Browse workspace files')}
-                tooltip={textTooltip(
-                  () => props.session()?.workspace() || tr('Browse workspace files'),
-                )}
-                ref={props.filesOpener ? (node) => props.filesOpener!(node) : undefined}
-                onPress={props.openFiles!}
-                style={{
-                  ...toolbarControlStyle,
+              style={[
+                {
                   flexDirection: 'row',
                   alignItems: 'center',
-                  maxWidth: 200,
-                  minWidth: 0,
-                  flexShrink: 1,
-                  gap: 4,
-                }}
-                hoverStyle={{ backgroundColor: C.line }}
-                focusStyle={{ backgroundColor: C.line }}
-                activeStyle={{ backgroundColor: C.surface }}
-              >
-                <Icon name="folder" color={C.muted} />
-                <Text
-                  style={[
-                    { ...captionTextStyle, color: C.secondary, flexShrink: 1, minWidth: 0 },
-                    { numberOfLines: 1 },
-                  ]}
+                  gap: platform.idiom === 'terminal' ? 8 : 4,
+                },
+                { pointerEvents: 'box-none' },
+              ]}
+            >
+              <If when={listening()}>
+                <DictationBar state={dictation()!} />
+              </If>
+              <If when={!listening()}>
+                <Button
+                  ref={completion.addButton}
+                  onPress={inputAction(completion.toggleAdd, {
+                    owner: props.session()?.sessionId ?? pending()?.id ?? null,
+                  })}
+                  accessibilityLabel={tr('Add to message')}
+                  tooltip={textTooltip(() => tr('Add to message'))}
+                  disabled={
+                    completion.composing() ||
+                    (pending() ? pending()!.sending() : !props.session()?.editable())
+                  }
+                  style={{ ...composerIconSlot, borderRadius: 16, flexShrink: 0 }}
+                  hoverStyle={{ backgroundColor: C.line }}
+                  focusStyle={{ backgroundColor: C.line }}
+                  activeStyle={{ backgroundColor: C.surface }}
                 >
-                  {workspaceLabel()}
-                </Text>
-              </Button>
-            </If>
-            <If when={props.session() !== null || pending() !== null}>
-              <View
-                style={[
-                  platform.idiom === 'terminal'
-                    ? { flex: 1, minWidth: 0 }
-                    : {
-                        flex: 1,
-                        minWidth: 0,
-                        flexDirection: 'row',
-                        justifyContent: 'flex-end',
-                        alignItems: 'center',
-                        gap: 4,
-                      },
-                  { pointerEvents: 'box-none' },
-                ]}
-              >
-                {/* The desktop shows context use beside the model; the terminal
-                    keeps it in the line under the composer. */}
-                <If when={platform.idiom !== 'terminal' && props.session()?.contextUsage?.()}>
-                  <ContextGauge usage={() => props.session()!.contextUsage!()!} />
+                  <Icon name="plus" color={C.secondary} />
+                </Button>
+                <If when={platform.idiom === 'terminal'}>
+                  <If when={!externalAgent()}>
+                    <SessionPermissionsSelect
+                      owner={props.session()?.permissions ?? null}
+                      pending={pending()?.permissions ?? null}
+                    />
+                  </If>
+                  <If when={props.session() !== null || pending() !== null}>
+                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'box-none' }]}>
+                      {props.models}
+                    </View>
+                  </If>
+                  <If when={props.session() === null && pending() === null}>
+                    <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
+                  </If>
                 </If>
-                {props.models}
-              </View>
-            </If>
-            <If when={props.session() === null && pending() === null}>
-              <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
-            </If>
-            <If when={running() && hasContent()} else={primaryButton()}>
-              <ContextMenu
-                offset={8}
-                margin={8}
-                popupStyle={floatingStyle()}
-                trigger={primaryButton()}
-              >
-                <Each
-                  of={running() && hasContent() ? [props.session()!] : []}
-                  key={(owner) => owner.sessionId}
-                >
-                  {(owner) => (
-                    <>
-                      <MenuItem
-                        accessibilityLabel={tr('Add to queue')}
-                        disabled={sendDisabled() || completion.isCommand()}
-                        onSelect={inputAction(completion.send, {
-                          owner: owner().sessionId,
-                          text: owner().draft(),
-                          backend: owner().backend(),
-                          attachments: owner().attachments.ids(),
-                          quotes: owner().quotes(),
-                          delivery: 'queue' as const,
-                        })}
-                        style={menuRowStyle()}
-                        hoverStyle={menuRowHoverStyle()}
-                        focusStyle={menuRowHoverStyle()}
-                      >
-                        <Icon name="queue" color={C.secondary} />
-                        <Text style={{ ...captionTextStyle, color: C.text }}>
-                          {tr('Add to queue')}
-                        </Text>
-                      </MenuItem>
-                      <MenuItem
-                        accessibilityLabel={
-                          owner().stopping() ? tr('Stopping…') : tr('Stop response')
-                        }
-                        disabled={owner().stopping()}
-                        onSelect={inputAction(owner().stop, owner().run())}
-                        style={menuRowStyle()}
-                        hoverStyle={menuRowHoverStyle()}
-                        focusStyle={menuRowHoverStyle()}
-                      >
-                        <Icon name="stop" color={C.secondary} />
-                        <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
-                          {tr('Stop response')}
-                        </Text>
-                        <Text style={{ ...menuDetailTextStyle, color: C.muted }}>Esc</Text>
-                      </MenuItem>
-                    </>
-                  )}
-                </Each>
-              </ContextMenu>
-            </If>
-          </View>
+                <If when={platform.idiom !== 'terminal'}>
+                  <Each<ComposerToolbarSlot>
+                    of={composerToolbar.layout()}
+                    key={(slot: ComposerToolbarSlot) => slot}
+                  >
+                    {(item) => {
+                      const slot = item();
+                      if (slot === 'spacer') {
+                        return (
+                          <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]} />
+                        );
+                      }
+                      if (slot === 'permissions') {
+                        return (
+                          <If when={!externalAgent()}>
+                            <SessionPermissionsSelect
+                              owner={props.session()?.permissions ?? null}
+                              pending={pending()?.permissions ?? null}
+                            />
+                          </If>
+                        );
+                      }
+                      if (slot === 'workspace') {
+                        return (
+                          <>
+                            <If when={hero()}>{workspaceControl()}</If>
+                            <If
+                              when={
+                                !hero() &&
+                                props.openFiles !== undefined &&
+                                Boolean(props.session()?.workspace())
+                              }
+                            >
+                              <Button
+                                accessibilityLabel={tr('Browse workspace files')}
+                                tooltip={textTooltip(
+                                  () =>
+                                    props.session()?.workspace() || tr('Browse workspace files'),
+                                )}
+                                ref={
+                                  props.filesOpener ? (node) => props.filesOpener!(node) : undefined
+                                }
+                                onPress={props.openFiles!}
+                                style={{
+                                  ...toolbarControlStyle,
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  maxWidth: narrowToolbar() ? 32 : 200,
+                                  minWidth: 0,
+                                  flexShrink: narrowToolbar() ? 0 : 1,
+                                  gap: 4,
+                                }}
+                                hoverStyle={{ backgroundColor: C.line }}
+                                focusStyle={{ backgroundColor: C.line }}
+                                activeStyle={{ backgroundColor: C.surface }}
+                              >
+                                <Icon name="folder" color={C.muted} />
+                                <If when={!narrowToolbar()}>
+                                  <Text
+                                    style={[
+                                      {
+                                        ...captionTextStyle,
+                                        color: C.secondary,
+                                        flexShrink: 1,
+                                        minWidth: 0,
+                                      },
+                                      { numberOfLines: 1 },
+                                    ]}
+                                  >
+                                    {workspaceLabel()}
+                                  </Text>
+                                </If>
+                              </Button>
+                            </If>
+                          </>
+                        );
+                      }
+                      if (slot === 'usage') {
+                        return (
+                          <If
+                            when={
+                              props.usageLimits !== undefined &&
+                              (props.session() !== null || pending() !== null)
+                            }
+                          >
+                            {props.usageLimits}
+                          </If>
+                        );
+                      }
+                      if (slot === 'context') {
+                        return (
+                          <If when={props.session()?.contextUsage?.()}>
+                            <ContextGauge usage={() => props.session()!.contextUsage!()!} />
+                          </If>
+                        );
+                      }
+                      return (
+                        <If when={props.session() !== null || pending() !== null}>
+                          <View
+                            style={[
+                              {
+                                minWidth: 0,
+                                flexShrink: 1,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                              },
+                              { pointerEvents: 'box-none' },
+                            ]}
+                          >
+                            {props.models}
+                          </View>
+                        </If>
+                      );
+                    }}
+                  </Each>
+                </If>
+                <If when={dictation() !== null && dictationPreferences.enabled()}>
+                  <Button
+                    accessibilityLabel={tr('Dictate a message')}
+                    tooltip={textTooltip(() => tr('Dictate a message'))}
+                    disabled={
+                      completion.composing() ||
+                      (pending() ? pending()!.sending() : !props.session()?.editable())
+                    }
+                    onPress={() => void dictation()?.start()}
+                    style={{ ...composerIconSlot, borderRadius: 16, flexShrink: 0 }}
+                    hoverStyle={{ backgroundColor: C.line }}
+                    focusStyle={{ backgroundColor: C.line }}
+                  >
+                    <Icon name="mic" color={C.secondary} />
+                  </Button>
+                </If>
+                <If when={running() && hasContent()} else={primaryButton()}>
+                  <ContextMenu
+                    offset={8}
+                    margin={8}
+                    popupStyle={floatingStyle()}
+                    trigger={primaryButton()}
+                  >
+                    <Each
+                      of={running() && hasContent() ? [props.session()!] : []}
+                      key={(owner) => owner.sessionId}
+                    >
+                      {(owner) => (
+                        <>
+                          <MenuItem
+                            accessibilityLabel={tr('Add to queue')}
+                            disabled={sendDisabled() || completion.isCommand()}
+                            onSelect={inputAction(completion.send, {
+                              owner: owner().sessionId,
+                              text: owner().draft(),
+                              backend: owner().backend(),
+                              attachments: owner().attachments.ids(),
+                              quotes: owner().quotes(),
+                              delivery: 'queue' as const,
+                            })}
+                            style={menuRowStyle()}
+                            hoverStyle={menuRowHoverStyle()}
+                            focusStyle={menuRowHoverStyle()}
+                          >
+                            <Icon name="queue" color={C.secondary} />
+                            <Text style={{ ...captionTextStyle, color: C.text }}>
+                              {tr('Add to queue')}
+                            </Text>
+                          </MenuItem>
+                          <MenuItem
+                            accessibilityLabel={
+                              owner().stopping() ? tr('Stopping…') : tr('Stop response')
+                            }
+                            disabled={owner().stopping()}
+                            onSelect={inputAction(owner().stop, owner().run())}
+                            style={menuRowStyle()}
+                            hoverStyle={menuRowHoverStyle()}
+                            focusStyle={menuRowHoverStyle()}
+                          >
+                            <Icon name="stop" color={C.secondary} />
+                            <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+                              {tr('Stop response')}
+                            </Text>
+                            <Text style={{ ...menuDetailTextStyle, color: C.muted }}>Esc</Text>
+                          </MenuItem>
+                        </>
+                      )}
+                    </Each>
+                  </ContextMenu>
+                </If>
+              </If>
+            </View>
+          </ToolbarCompactProvider>
           <If when={fileDragging()}>
             <FileDropHint radius={cardRadius()} />
           </If>

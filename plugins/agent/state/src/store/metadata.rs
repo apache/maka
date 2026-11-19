@@ -262,7 +262,10 @@ impl Query for LatestMessageBackend {
                 return Err(invalid("catalog Run belongs to another session"));
             }
             if matches!(spec.origin, RunOrigin::Local)
-                && matches!(spec.trigger, Trigger::Message { .. })
+                && matches!(
+                    spec.trigger,
+                    Trigger::Message { .. } | Trigger::CheckpointHandoff { .. }
+                )
             {
                 let backend = serde_json::from_str(&row.get::<_, String>(5)?)?;
                 return Ok(Some((run_id(row.get(0)?)?, backend)));

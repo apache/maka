@@ -289,7 +289,7 @@ impl EventLog {
             Err(error) => return Err(StoreError::Io(error)),
         };
         let options = match purpose {
-            OpenPurpose::Execution => OpenOptions::file(&path).create(true),
+            OpenPurpose::Execution => OpenOptions::file(&path).create(true).worker_pool(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
         let catalog = catalog.to_vec();

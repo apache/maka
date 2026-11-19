@@ -28,7 +28,9 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod catalog;
-use catalog::{catalog_page, catalog_revision};
+use catalog::{
+    CATALOG_REFRESH_MIN_INTERVAL, catalog_page, catalog_revision, wait_for_catalog_refresh,
+};
 pub(crate) use catalog::{summary, summary_for};
 
 mod delivery;
@@ -55,6 +57,12 @@ impl Handler for Agent {
         context: Context,
     ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
+        // Poll nested history readers outside the combined RPC dispatch frame.
+        if method == "history" {
+            return json_reply(async move {
+                encode(history::read(&owner, context.scope(), decode(input)?).await?)
+            });
+        }
         if method == "send" {
             return Box::pin(async move {
                 let input: Send = decode(input).map_err(HandlerError::from)?;
@@ -318,6 +326,7 @@ impl Handler for Agent {
                         } else {
                             false
                         };
+                        let mut retry_immediately = false;
                         if !unchanged || physical_changed {
                             match catalog_page(&owner, &input).await {
                                 Ok(page) => {
@@ -341,16 +350,23 @@ impl Handler for Agent {
                                         && matches!(
                                             input.position,
                                             SessionPosition::Start | SessionPosition::At { .. }
-                                        ) => {}
+                                        ) =>
+                                {
+                                    retry_immediately = true;
+                                }
                                 Err(error) => return Err(error),
                             }
                         }
-                        tokio::select! {
-                            biased;
-                            _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
-                            result = changes.changed() => result.map_err(|_| "agent_observation_closed")?,
-                            result = physical.changed() => { result.map_err(|_| "agent_observation_closed")?; physical_changed = true; },
-                        }
+                        let throttle_until = (!retry_immediately)
+                            .then(|| tokio::time::Instant::now() + CATALOG_REFRESH_MIN_INTERVAL);
+                        wait_for_catalog_refresh(
+                            &mut changes,
+                            &mut physical,
+                            &mut physical_changed,
+                            &context.scope().cancellation,
+                            throttle_until,
+                        )
+                        .await?;
                     }
                 }
                 "sessionMcp" => owner.session_mcp(decode(input)?, context).await,
@@ -783,7 +799,6 @@ impl Handler for Agent {
                 "observe" => {
                     encode(history::observation(&owner, context.scope(), decode(input)?).await?)
                 }
-                "history" => encode(history::read(&owner, context.scope(), decode(input)?).await?),
                 "historyLandmarks" => {
                     encode(history::landmarks(&owner, context.scope(), decode(input)?).await?)
                 }
@@ -923,11 +938,13 @@ impl Handler for Agent {
                 _ => Err("agent_method_unavailable".into()),
             }
         };
-        Box::pin(async move {
-            let result: std::result::Result<Value, String> = result.await;
-            result.map(HandlerValue::Json).map_err(handler_error)
-        })
+        json_reply(result)
     }
+}
+fn json_reply(
+    reply: impl Future<Output = Result<Value, String>> + std::marker::Send + 'static,
+) -> BoxFuture<'static, HandlerResult> {
+    Box::pin(async move { reply.await.map(HandlerValue::Json).map_err(handler_error) })
 }
 fn decode<T: DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|_| "agent_input_invalid".into())

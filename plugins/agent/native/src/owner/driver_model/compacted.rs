@@ -333,6 +333,7 @@ impl DriverModel {
                 let fields=provenance.as_object_mut().ok_or_else(||unsupported("frozen-main-provenance"))?;
                 fields.insert("modelInputPolicy".into(), json!({"vision": model.supports_vision, "imageInput": model.provider.image_input}));
                 fields.insert("toolContracts".into(), json!(tool_contracts));
+                fields.remove("compactionRequest");
                 fields.insert("inputDigest".into(),json!(prepared.input_digest));fields.insert("routeIdentity".into(),json!(prepared.route_identity));fields.insert("breakdown".into(),json!(prepared.context_breakdown));fields.insert("estimatedInputTokens".into(),json!(prepared.estimated_input_tokens));fields.insert("previousCheckpointId".into(),json!(checkpoint));
                 let provenance=ContentBlob::json(&provenance)?;
                 request.step=StepId::new();request.summary_repair_of=None;

@@ -372,6 +372,15 @@ impl RunView {
         self.cells.get(&self.original_cell_id(tool)?)
     }
 
+    pub fn provider_outcome_unknown(&self, tool: &Tool) -> bool {
+        tool.call.provider_executed
+            && tool.provider_result.is_none()
+            && self
+                .attempts
+                .get(&tool.key.attempt)
+                .is_some_and(|attempt| attempt.closed.is_some() || attempt.interrupted.is_some())
+    }
+
     pub(crate) fn tool_unsettled(&self, tool: &Tool) -> bool {
         tool_unsettled(tool)
             && self
@@ -519,7 +528,21 @@ impl RunView {
                 .external
                 .as_ref()
                 .is_some_and(|task| task.cleanup == OperationCleanup::Confirmed);
+        let sealed_provider_call =
+            |tool: &Tool| self.terminal.is_some() && tool.call.provider_executed;
         self.recovery_failures().any(|reason| {
+            // A sealed provider stream cannot deliver a receipt on a subsequent turn.
+            if let BlockerKind::ProviderEffectUnknown { attempt, call } = reason
+                && self
+                    .tools
+                    .get(&tool_key(&ToolKey {
+                        attempt: *attempt,
+                        call: call.clone(),
+                    }))
+                    .is_some_and(sealed_provider_call)
+            {
+                return false;
+            }
             if let BlockerKind::OperationUnknown { tool, reference } = reason {
                 return !self.tools.get(&tool_key(tool)).is_some_and(|tool| {
                     tool.original.as_ref() == Some(reference) && ignore_unknown(tool)
@@ -548,11 +571,9 @@ impl RunView {
                     | BlockerKind::ExternalPublicationUnavailable { .. }
                     | BlockerKind::ExternalPublicationItem { .. }
             )
-        }) || self
-            .tools
-            .values()
-            .any(|tool| !ignore_unknown(tool) && self.tool_unsettled(tool))
-            || self.attempts.values().any(attempt_unsettled)
+        }) || self.tools.values().any(|tool| {
+            !ignore_unknown(tool) && !sealed_provider_call(tool) && self.tool_unsettled(tool)
+        }) || self.attempts.values().any(attempt_unsettled)
             || self.cells.values().any(|cell| cell.has_unsettled_effects())
             || self.external.as_ref().is_some_and(|task| {
                 task.admitted
@@ -985,13 +1006,15 @@ impl RunView {
                         require(
                             matches!(
                                 failed.recovery,
-                                Some(AttemptRecovery::ProjectPrefixSafe { .. })
-                                    | Some(AttemptRecovery::CodexCompactionFallback)
+                                Some(
+                                    AttemptRecovery::ContinueFromHistory { .. }
+                                        | AttemptRecovery::ProjectPrefixSafe { .. }
+                                ) | Some(AttemptRecovery::CodexCompactionFallback)
                                     | Some(AttemptRecovery::ContextOverflow {
                                         observed_output: false
                                     })
                             ) && (failed.closed.is_some() || failed.interrupted.is_some()),
-                            "new recovery step requires safe prefix, native compaction fallback, no-output context overflow or explicit human adjudication",
+                            "new recovery step requires an interrupted or closed attempt with a recorded recovery plan",
                         )?;
                         require(
                             self.tools.values().all(|tool| tool.accepted.is_some()),
@@ -1006,6 +1029,18 @@ impl RunView {
                             require(
                                 !failed.semantic && !failed.has_tools,
                                 "no-output context overflow contradicts recorded model output",
+                            )?;
+                        }
+                        if matches!(
+                            failed.recovery,
+                            Some(AttemptRecovery::ContinueFromHistory { .. })
+                        ) {
+                            require(
+                                failed
+                                    .retry
+                                    .as_ref()
+                                    .is_some_and(|retry| recorded.at >= retry.due_at),
+                                "continuation must wait for its scheduled retry",
                             )?;
                         }
                         if let Some(AttemptRecovery::ProjectPrefixSafe {
@@ -1705,6 +1740,7 @@ impl RunView {
                     }
                 } else {
                     let valid = match outcome {
+                        AcceptedResult::ProviderOutcomeUnknown => self.provider_outcome_unknown(current),
                         AcceptedResult::Succeeded => {
                             local.is_some_and(|returned| !returned.is_error)
                                 || (current.host_returned.as_ref().is_some_and(|returned|!returned.is_error) && current.receipt.as_ref().is_some_and(|receipt|matches!(receipt,Receipt::Recorded{outcome,..} if known(outcome))))
@@ -1994,7 +2030,12 @@ impl RunView {
                     self.retry_pending == Some(*attempt),
                     "retry does not belong to the pending failed attempt",
                 )?;
-                self.retry_safe()?;
+                if !matches!(
+                    current.recovery,
+                    Some(AttemptRecovery::ContinueFromHistory { .. })
+                ) {
+                    self.retry_safe()?;
+                }
                 require(
                     *phase == RetryTransportPhase::Primary
                         || self.retry_phase == RetryTransportPhase::Fallback,
@@ -2018,9 +2059,14 @@ impl RunView {
                             + u64::from(*phase == RetryTransportPhase::Fallback),
                     "original transport phase retry budget exhausted",
                 )?;
-                if let Some(AttemptRecovery::FrozenRetrySafe {
-                    not_before: Some(not_before),
-                }) = &current.recovery
+                if let Some(
+                    AttemptRecovery::FrozenRetrySafe {
+                        not_before: Some(not_before),
+                    }
+                    | AttemptRecovery::ContinueFromHistory {
+                        not_before: Some(not_before),
+                    },
+                ) = &current.recovery
                 {
                     require(
                         *due_at >= *not_before,
@@ -2700,7 +2746,12 @@ fn tool_unsettled(tool: &Tool) -> bool {
     original_effect_unknown(tool)
         || cleanup
         || unknown_admission
-        || (tool.call.provider_executed && tool.provider_result.is_none())
+        || (tool.call.provider_executed
+            && tool.provider_result.is_none()
+            && !tool
+                .accepted
+                .as_ref()
+                .is_some_and(|result| result.outcome == AcceptedResult::ProviderOutcomeUnknown))
 }
 pub(crate) fn tool_pending(tool: &Tool) -> bool {
     tool.accepted.is_none() || tool_unsettled(tool)

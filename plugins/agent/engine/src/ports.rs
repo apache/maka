@@ -32,6 +32,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub enum Preparation {
     Initial,
+    ResumeFromHistory,
     CodexFallback {
         attempt: ModelAttemptId,
     },
@@ -138,17 +139,23 @@ pub trait DriverPorts: Send + Sync {
     ) -> Result<serde_json::Value, RunError> {
         Ok(serde_json::json!({"request": request.request}))
     }
+    fn handoff_checkpoint<'a>(
+        &'a self,
+        view: &'a RunView,
+        baseline: ContentBlob,
+        target: maka_agent_facts::configuration::ModelSelection,
+    ) -> BoxFuture<'a, Result<(), RunError>>;
     fn external(&self) -> Option<Arc<dyn ExternalPorts>>;
     fn cells(&self) -> Option<Arc<dyn CellPorts>>;
     fn publication(&self) -> Option<Arc<dyn ExternalPublicationPorts>>;
     fn now(&self) -> UnixMillis;
     /// Keep semantic preparation, compression and manual-continuation integrity
     /// checks here. Return exact frozen adapter bytes and complete provenance.
-    fn prepare_step<'a>(
-        &'a self,
-        view: &'a RunView,
+    fn prepare_step(
+        self: Arc<Self>,
+        view: RunView,
         preparation: Preparation,
-    ) -> BoxFuture<'a, Result<PreparedStep, RunError>>;
+    ) -> BoxFuture<'static, Result<PreparedStep, RunError>>;
     /// Pure protocol assessment of original frozen input and canonical progress.
     /// Returning a proof never starts a generation or selects the next action.
     fn assess_recovery<'a>(

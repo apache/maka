@@ -458,6 +458,7 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
+    DiscoverComputer,
     ResetComputer,
     DeniedComputerEvaluation,
     Baseline,
@@ -615,11 +616,31 @@ impl Model {
             return sse(json!({"content":"auxiliary complete"}), "stop");
         }
         let tools = body["tools"].as_array().unwrap();
-        for name in ["cua_repl", "cua_reset"] {
-            assert!(
-                tools.iter().any(|tool| tool["function"]["name"] == name),
-                "Code Mode with tool discovery must advertise {name} as a direct tool"
-            );
+        if self.step == Step::DiscoverComputer && self.pending.is_empty() {
+            let search = tools
+                .iter()
+                .find(|tool| tool["function"]["name"] == "tool_search")
+                .expect("Code Mode with tool discovery must advertise top-level tool_search");
+            let inventory = search["function"]["description"]
+                .as_str()
+                .unwrap_or_default();
+            for name in ["cua_repl", "cua_reset"] {
+                assert!(
+                    !tools.iter().any(|tool| tool["function"]["name"] == name),
+                    "Code Mode with tool discovery must defer {name} until searched"
+                );
+                assert!(
+                    inventory.contains(name),
+                    "Code Mode tool_search inventory must list {name}: {inventory}"
+                );
+            }
+        } else {
+            for name in ["cua_repl", "cua_reset"] {
+                assert!(
+                    tools.iter().any(|tool| tool["function"]["name"] == name),
+                    "Code Mode with tool discovery must advertise {name} as a direct tool after discovery"
+                );
+            }
         }
         for (name, field) in [("exec", "code"), ("wait", "cell_id")] {
             let tool = tools
@@ -677,8 +698,11 @@ impl Model {
             self.step = Step::Report;
             return self.wait(self.draft.clone().unwrap());
         }
-        if self.step == Step::ResetComputer && self.pending.is_empty() {
-            return self.tool("cua_reset", json!({}));
+        if self.step == Step::DiscoverComputer && self.pending.is_empty() {
+            return self.tool(
+                "tool_search",
+                json!({"query": "cua_repl cua_reset", "limit": 2}),
+            );
         }
         assert_ne!(
             self.step,
@@ -689,6 +713,17 @@ impl Model {
             .iter()
             .find(|message| message["role"] == "tool" && message["tool_call_id"] == self.pending)
             .expect("actual result of the exact previous call");
+        if self.step == Step::DiscoverComputer {
+            let activated = output["content"].to_string();
+            for name in ["cua_repl", "cua_reset"] {
+                assert!(
+                    activated.contains(name),
+                    "tool_search must activate {name}: {output}"
+                );
+            }
+            self.step = Step::ResetComputer;
+            return self.tool("cua_reset", json!({}));
+        }
         if self.step == Step::ResetComputer {
             assert!(
                 output["content"]
@@ -1656,7 +1691,7 @@ async fn cold_root(language: CodeLanguage) {
         draft_code,
         read_code,
         nonce,
-        step: Step::ResetComputer,
+        step: Step::DiscoverComputer,
         serial: 0,
         pending: String::new(),
         baseline: None,

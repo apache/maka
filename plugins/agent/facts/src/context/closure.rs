@@ -94,9 +94,27 @@ impl SummaryResult {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestContextEvidence {
+    pub resume_model: Option<crate::configuration::ModelSelection>,
+    pub compaction_request: Option<crate::durable::ToolKey>,
     pub codex_preflight: Option<super::CodexPreflight>,
     pub estimated_input_tokens: u64,
     pub breakdown: PreparedContextBreakdown,
     pub model_context: Option<ModelRequestContext>,
     pub previous_checkpoint_id: Option<String>,
+}
+
+impl RequestContextEvidence {
+    pub fn same_compaction_input(&self, other: &Self) -> bool {
+        self.previous_checkpoint_id == other.previous_checkpoint_id
+            && self.compaction_request == other.compaction_request
+    }
+
+    pub fn needs_compaction(&self) -> bool {
+        self.compaction_request.is_some()
+            || self
+                .model_context
+                .as_ref()
+                .and_then(|context| context.declared_window)
+                .is_some_and(|limit| self.estimated_input_tokens >= limit)
+    }
 }

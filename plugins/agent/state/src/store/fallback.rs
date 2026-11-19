@@ -429,12 +429,7 @@ pub(crate) fn validate_resume(
     }
     if valid_summary(c, view.run, &current.request, summary)? {
         let provenance = context(c, view.run, &original.request.provenance)?;
-        if provenance
-            .model_context
-            .as_ref()
-            .and_then(|context| context.declared_window)
-            .is_some_and(|window| provenance.estimated_input_tokens >= window)
-        {
+        if provenance.needs_compaction() {
             return Err(invalid(
                 "successful Summary at its frozen adoption threshold must be adopted before Main continuation",
             ));
@@ -714,12 +709,7 @@ pub(crate) fn deferred_summary(
             ));
         }
         let provenance = context(c, view.run, &current.request.provenance)?;
-        if !provenance
-            .model_context
-            .as_ref()
-            .and_then(|model| model.declared_window)
-            .is_some_and(|window| provenance.estimated_input_tokens >= window)
-        {
+        if !provenance.needs_compaction() {
             return Err(invalid(
                 "deferred compaction has not reached its original frozen adoption threshold",
             ));

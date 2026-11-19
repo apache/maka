@@ -109,13 +109,10 @@ pub(super) fn historical_backend(spec: &RunSpec) -> Result<bool, StoreError> {
     Ok(matches!(spec.backend, BackendSpec::Historical {}))
 }
 fn admission_sequence(c: &Connection, run: RunId) -> Result<u64, StoreError> {
-    c.query_row(
-        "SELECT sequence FROM agent_facts WHERE run=? AND revision=1",
-        [run.to_string()],
-        |r| read_u64(r, 0),
-    )
-    .optional()?
-    .ok_or_else(|| invalid("Run admission fact missing"))
+    c.prepare_cached("SELECT sequence FROM agent_facts WHERE run=? AND revision=1")?
+        .query_row([run.to_string()], |r| read_u64(r, 0))
+        .optional()?
+        .ok_or_else(|| invalid("Run admission fact missing"))
 }
 pub(super) fn decode_record(version: u32, bytes: &[u8]) -> Result<RecordedFact, StoreError> {
     let fact: RecordedFact = serde_json::from_slice(bytes)?;
@@ -441,11 +438,8 @@ fn attempt_scope(
     attempt: ModelAttemptId,
 ) -> Result<HistoryScope, StoreError> {
     let step: String = c
-        .query_row(
-            "SELECT step FROM agent_attempt_ids WHERE run=? AND attempt=?",
-            params![run.to_string(), attempt.to_string()],
-            |r| r.get(0),
-        )
+        .prepare_cached("SELECT step FROM agent_attempt_ids WHERE run=? AND attempt=?")?
+        .query_row(params![run.to_string(), attempt.to_string()], |r| r.get(0))
         .optional()?
         .ok_or_else(|| invalid("history attempt has no original Step"))?;
     Ok(HistoryScope {
@@ -538,7 +532,11 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
 /// Called after canonical insertion and immutable Step/attempt registration in
 /// the same transaction. Only index data is written; no new semantic fact.
 pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
-    let (sequence,owner,session,digest,kind):(u64,String,String,String,String)=c.query_row("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(b.payload,'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?",params![record.id.to_string(),record.run.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+    let (sequence, owner, session, digest, kind): (u64, String, String, String, String) = c
+        .prepare_cached("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(b.payload,'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?
+        .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
+            Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
     type IndexedHistoryRow = (
         String,
         String,
@@ -548,11 +546,20 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         Option<String>,
         Option<String>,
     );
-    let existing: Option<IndexedHistoryRow> = c.query_row(
-        "SELECT owner,session,run,fact_id,admission_sequence,step,attempt FROM agent_session_history WHERE sequence=?",
-        [bind_u64(sequence)?],
-        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,read_u64(r,4)?,r.get(5)?,r.get(6)?)),
-    ).optional()?;
+    let existing: Option<IndexedHistoryRow> = c
+        .prepare_cached("SELECT owner,session,run,fact_id,admission_sequence,step,attempt FROM agent_session_history WHERE sequence=?")?
+        .query_row([bind_u64(sequence)?], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                read_u64(r, 4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        })
+        .optional()?;
     if let Some((cached_owner, cached_session, run, fact, admission, step, attempt)) = existing {
         if cached_owner != owner || cached_session != session {
             return Err(invalid(
@@ -573,14 +580,17 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         return Ok(());
     }
     let owner_value: RunOwner = serde_json::from_str(&owner)?;
-    let previous:Option<(u64,String)>=c.query_row("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? ORDER BY sequence DESC LIMIT 1",params![owner,session],|r|Ok((read_u64(r,0)?,r.get(1)?))).optional()?;
+    let previous: Option<(u64, String)> = c
+        .prepare_cached("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? ORDER BY sequence DESC LIMIT 1")?
+        .query_row(params![owner, session], |r| Ok((read_u64(r, 0)?, r.get(1)?)))
+        .optional()?;
     let previous = match previous {
         Some((prior, digest)) if prior < sequence => digest,
         Some(_) => return Err(invalid("history index requires canonical commit order")),
         None => {
-            let earlier: bool = c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_run_specs s JOIN agent_facts f ON f.run=s.run WHERE s.owner=? AND s.session=? AND f.sequence<? LIMIT 1)",
-                params![owner, session, bind_u64(sequence)?], |row| row.get(0))?;
+            let earlier: bool = c
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_run_specs s JOIN agent_facts f ON f.run=s.run WHERE s.owner=? AND s.session=? AND f.sequence<? LIMIT 1)")?
+                .query_row(params![owner, session, bind_u64(sequence)?], |row| row.get(0))?;
             if earlier {
                 return Err(invalid(
                     "session history prefix index missing; explicit rebuild required",
@@ -610,30 +620,34 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
     } else {
         false
     };
-    c.execute(
+    c.prepare_cached(
         "INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,step,attempt,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source,historical) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        params![
-            owner,
-            session,
-            bind_u64(sequence)?,
-            record.run.to_string(),
-            bind_u64(admission_sequence(c, record.run)?)?,
-            scope.step.map(|v| v.to_string()),
-            scope.attempt.map(|v| v.to_string()),
-            kind,
-            prefix,
-            locator.as_ref().map(|value| value.0.as_str()),
-            locator.as_ref().is_some_and(|value| value.1),
-            false,
-            record.id.to_string(),
-            result_source(&record.fact),
-            historical,
-        ],
-    )?;
+    )?
+    .execute(params![
+        owner,
+        session,
+        bind_u64(sequence)?,
+        record.run.to_string(),
+        bind_u64(admission_sequence(c, record.run)?)?,
+        scope.step.map(|v| v.to_string()),
+        scope.attempt.map(|v| v.to_string()),
+        kind,
+        prefix,
+        locator.as_ref().map(|value| value.0.as_str()),
+        locator.as_ref().is_some_and(|value| value.1),
+        false,
+        record.id.to_string(),
+        result_source(&record.fact),
+        historical,
+    ])?;
     Ok(())
 }
 pub(crate) fn index_retained(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
-    let (sequence,owner,session):(u64,String,String)=c.query_row("SELECT h.sequence,h.owner,h.session FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence WHERE f.id=? AND h.run=?",params![record.id.to_string(),record.run.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?)))?;
+    let (sequence, owner, session): (u64, String, String) = c
+        .prepare_cached("SELECT h.sequence,h.owner,h.session FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence WHERE f.id=? AND h.run=?")?
+        .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
+            Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?))
+        })?;
     index_refs(
         c,
         &serde_json::from_str(&owner)?,

@@ -23,6 +23,7 @@ use crate::{
 };
 use maka_agent_facts::{
     accounting::Outcome,
+    configuration::ModelSelection,
     context::{
         CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint,
         ModelClosureProtocol, ModelOperation, ModelPurpose, NativeCheckpoint,
@@ -43,6 +44,9 @@ struct FrozenRouteEvidence {
 }
 
 fn compaction_timing(evidence: &RequestContextEvidence) -> (bool, bool) {
+    if evidence.compaction_request.is_some() {
+        return (true, true);
+    }
     let threshold = evidence
         .model_context
         .as_ref()
@@ -51,7 +55,7 @@ fn compaction_timing(evidence: &RequestContextEvidence) -> (bool, bool) {
     match threshold {
         Some(threshold) => (
             u128::from(evidence.estimated_input_tokens) * 100 >= u128::from(threshold) * 85,
-            evidence.estimated_input_tokens >= threshold,
+            evidence.needs_compaction(),
         ),
         None => (false, false),
     }
@@ -87,6 +91,7 @@ impl Engine {
             ),
             None => None,
         };
+        let mut handoff = context.as_ref().is_some_and(|p| p.resume_model.is_some());
         let mut compaction = CompactionLevel::None;
         if let (Some(request), Some(provenance)) = (&request, &context) {
             if request.accounting.purpose == ModelPurpose::Summary {
@@ -137,6 +142,7 @@ impl Engine {
                         })
                     });
                 let (prepare, adopt) = if first_main
+                    && !matches!(view.spec.trigger, Trigger::CheckpointHandoff { .. })
                     && provenance
                         .model_context
                         .as_ref()
@@ -164,8 +170,7 @@ impl Engine {
                         "request-provenance-schema",
                     )
                     .await?;
-                    has_proactive_summary = provenance.previous_checkpoint_id
-                        == summary_provenance.previous_checkpoint_id;
+                    has_proactive_summary = provenance.same_compaction_input(&summary_provenance);
                     can_prepare = (original.closed.is_some() || original.interrupted.is_some())
                         && (original.admission.is_none()
                             || original.cleanup
@@ -175,6 +180,7 @@ impl Engine {
                     });
                     proactive_baseline |= already_adopted;
                     if has_proactive_summary {
+                        handoff = summary_provenance.resume_model.is_some();
                         if original.closed.is_none() && original.interrupted.is_none() {
                             compaction = CompactionLevel::Pending {
                                 attempt: summary,
@@ -219,9 +225,10 @@ impl Engine {
                             "request-provenance-schema",
                         )
                         .await?;
-                        if previous.previous_checkpoint_id == provenance.previous_checkpoint_id
+                        if previous.same_compaction_input(provenance)
                             && usable_summary(&original, &previous)?
                         {
+                            handoff = previous.resume_model.is_some();
                             compaction = if adopted_origin.is_some() {
                                 CompactionLevel::Adopted {
                                     summary: origin.attempt,
@@ -249,15 +256,14 @@ impl Engine {
                             "request-provenance-schema",
                         )
                         .await?;
-                        if usable_summary(&original, &summary_provenance)? {
+                        if provenance.same_compaction_input(&summary_provenance)
+                            && usable_summary(&original, &summary_provenance)?
+                        {
+                            handoff = summary_provenance.resume_model.is_some();
                             if baseline.as_ref().is_some_and(|baseline| {
                                 baseline.checkpoint.summary_step_id == original.step
                             }) {
-                                if provenance.previous_checkpoint_id
-                                    == summary_provenance.previous_checkpoint_id
-                                {
-                                    compaction = CompactionLevel::Adopted { summary };
-                                }
+                                compaction = CompactionLevel::Adopted { summary };
                             } else {
                                 compaction = CompactionLevel::Candidate {
                                     origin: SummaryOrigin {
@@ -289,6 +295,7 @@ impl Engine {
             }
         }
         Ok(ModelLevel {
+            handoff,
             codex: context
                 .as_ref()
                 .and_then(|c| c.model_context.as_ref())
@@ -436,7 +443,7 @@ impl Engine {
         )
         .await?
         .as_ref()
-        .map(ContentBlob::json)
+        .map(|(material, _)| ContentBlob::json(material))
         .transpose()
         .map_err(Into::into)
     }
@@ -445,7 +452,7 @@ impl Engine {
         &self,
         view: &RunView,
         origin: SummaryOrigin,
-    ) -> Result<Option<CompactedContext>, RunError> {
+    ) -> Result<Option<(CompactedContext, Option<ModelSelection>)>, RunError> {
         let original = self.store.model_attempt(origin.run, origin.attempt).await?;
         if let Some(reference) = &view.baseline {
             let baseline: CompactedContext =
@@ -588,7 +595,7 @@ impl Engine {
             native,
         };
         compacted.validate().map_err(unsupported)?;
-        Ok(Some(compacted))
+        Ok(Some((compacted, provenance.resume_model)))
     }
 }
 

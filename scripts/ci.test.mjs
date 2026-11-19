@@ -40,8 +40,9 @@ test('manual worker validation runs its suites without claiming full CI coverage
     ['native-windows'],
   );
   assert.equal(plan.workers[0].runner, 'windows-latest');
-  assert.equal(plan.suites['windows-nsh'].filter, 'all()');
+  assert.equal(plan.suites['windows-shell'].filter, suites['windows-shell'].filter);
   assert.equal(plan.suites.desktop.filter, suites.desktop.filter);
+  assert.equal(plan.suites['windows-nsh'], undefined);
   assert.equal(plan.suites.root, undefined);
   assert.equal(plan.suites['macos-nsh'], undefined);
   assert.throws(
@@ -143,7 +144,9 @@ test('an embedded product Markdown change selects its actual runtime consumers',
     assert.equal(plan.full, false);
     assert.ok(plan.suites.root);
     assert.ok(plan.suites.desktop);
-    assert.equal(plan.suites.root.filter, 'all()');
+    assert.match(plan.suites.root.filter, /package\(=maka-cli\)/);
+    assert.match(plan.suites.root.filter, /package\(=maka-skills-native\)/);
+    assert.doesNotMatch(plan.suites.root.filter, /package\(=maka-agent-native\)/);
     assert.match(plan.suites.root.reason, /runtime inputs/);
   }
 });
@@ -192,8 +195,9 @@ test('the embedded external protocol fixture cannot be classified as documentati
     baseline: 'base',
   });
   assert.equal(plan.full, false);
-  assert.equal(plan.suites.root.filter, 'all()');
+  assert.equal(plan.suites.root.filter, 'package(=maka-cli)');
   assert.ok(plan.suites.desktop);
+  assert.ok(plan.suites['macos-agent-execution']);
   assert.match(plan.suites.root.reason, /external_codex_cli/);
 });
 
@@ -206,17 +210,31 @@ test('a shared input plans the maintained platform jobs rather than silently nar
     baseline: 'base',
   });
   assert.equal(plan.full, true);
-  for (const id of ['native-ubuntu', 'native-macos', 'native-windows']) {
-    assert.ok(plan.workers.some((worker) => worker.id === id));
+  for (const id of [
+    'linux-checks',
+    'nsh',
+    'macos-nsh',
+    'windows-nsh',
+    'native-macos',
+    'native-windows',
+  ]) {
+    assert.ok(
+      plan.workers.some((worker) => worker.id === id),
+      id,
+    );
   }
 });
 
-test('macOS recovery cases stay in a required worker with the complete workspace feature union', () => {
+test('macOS recovery cases run in parallel with desktop on a cache-sharing worker', () => {
   const plan = full();
-  const worker = plan.workers.find((worker) => worker.id === 'native-macos');
+  const worker = plan.workers.find((worker) => worker.id === 'native-macos-agent');
   assert.ok(worker.suites.includes('macos-agent-execution'));
-  assert.ok(!worker.suites.includes('macos-terminal'));
-  assert.deepEqual(suites['macos-agent-execution'].cargoArgs, suites.root.cargoArgs);
+  assert.equal(worker.cacheRole, 'native-macos');
+  assert.equal(worker.saveCache, false);
+  const desktopWorker = plan.workers.find((worker) => worker.id === 'native-macos');
+  assert.ok(!desktopWorker.suites.includes('macos-agent-execution'));
+  assert.ok(!desktopWorker.suites.includes('macos-nsh'));
+  assert.ok(!suites['macos-agent-execution'].cargoArgs.includes('--workspace'));
   for (const name of [
     'mainline_reopen',
     'journal_recovery',
@@ -224,6 +242,7 @@ test('macOS recovery cases stay in a required worker with the complete workspace
     'external_jobs',
     'producer_reopen',
   ]) {
+    assert.ok(suites['macos-agent-execution'].cargoArgs.includes(name));
     assert.ok(
       plan.suites['macos-agent-execution'].filter.includes('binary_id(=maka-cli::' + name + ')'),
     );
@@ -281,18 +300,26 @@ test('Windows process and account-guard regressions are selected from their actu
     assert.ok(worker.suites.includes('windows-shell'));
     assert.match(plan.suites['windows-shell'].filter, /binary_id\(=maka-process::integration\)/);
     assert.match(plan.suites['windows-shell'].filter, /sandbox::windows::guards::tests::/);
-    assert.deepEqual(suites['windows-shell'].cargoArgs, suites.root.cargoArgs);
+    assert.ok(!suites['windows-shell'].cargoArgs.includes('--workspace'));
+    for (const pkg of ['maka-process', 'maka-settings-native', 'maka-host-runtime']) {
+      assert.ok(suites['windows-shell'].cargoArgs.includes(pkg));
+    }
   }
 });
 
-test('Desktop archives build the Host and worker metadata with the workspace feature union', () => {
+test('Desktop regressions compile only the native-desktop CLI test target with default features', () => {
   const plan = full();
-  assert.equal(plan.suites.desktop.filter, 'test(terminal::desktop_new_session)');
-  assert.ok(suites.desktop.cargoArgs.includes('--workspace'));
+  assert.equal(
+    plan.suites.desktop.filter,
+    'binary_id(=maka-cli::native-desktop) & test(terminal::desktop_new_session)',
+  );
+  assert.ok(!suites.desktop.cargoArgs.includes('--workspace'));
   assert.ok(!suites.desktop.cargoArgs.includes('--no-default-features'));
+  assert.ok(suites.desktop.cargoArgs.includes('maka-cli'));
+  assert.ok(suites.desktop.cargoArgs.includes('native-desktop'));
   assert.equal(
     suites.desktop.cargoArgs[suites.desktop.cargoArgs.indexOf('--features') + 1],
-    'maka-cli/desktop-tests',
+    'desktop-tests',
   );
 });
 
@@ -300,10 +327,25 @@ test('native pixel and desktop regressions run only on their native OS workers',
   const plan = createPlan({ root, revision: 'head' });
   for (const id of ['desktop', 'pixels']) {
     assert.deepEqual(
-      plan.workers.filter((worker) => worker.suites.includes(id)).map((worker) => worker.runner),
+      [
+        ...new Set(
+          plan.workers
+            .filter((worker) => worker.suites.includes(id))
+            .map((worker) => worker.runner),
+        ),
+      ],
       ['macos-latest', 'windows-latest'],
     );
   }
+  const winDesktopWorkers = plan.workers.filter(
+    (worker) => worker.runner === 'windows-latest' && worker.suites.includes('desktop'),
+  );
+  assert.deepEqual(
+    winDesktopWorkers.map((worker) => worker.desktopPartition),
+    ['count:1/2', 'count:2/2'],
+  );
+  assert.equal(winDesktopWorkers[1].cacheRole, 'native-windows');
+  assert.equal(winDesktopWorkers[1].saveCache, false);
   assert.deepEqual(
     plan.workers
       .filter((worker) => worker.suites.includes('linux-nsh'))
@@ -362,8 +404,13 @@ test('non-archived native regressions fail empty selections and GTK runs under X
       'nextest',
       'run',
       '--locked',
-      '-p',
+      '--workspace',
+      '--bin',
       'maka-desktop-shell',
+      '--test',
+      'open_directly',
+      '-E',
+      'package(=maka-desktop-shell)',
       '--no-tests=fail',
       '--no-fail-fast',
       '--run-ignored=all',
@@ -374,7 +421,19 @@ test('non-archived native regressions fail empty selections and GTK runs under X
   await exec.prepare('linux-desktop');
   assert.deepEqual(calls.at(-1), {
     exe: 'cargo',
-    args: ['nextest', 'run', '--locked', '-p', 'maka-desktop-shell', '--no-run'],
+    args: [
+      'nextest',
+      'run',
+      '--locked',
+      '--workspace',
+      '--bin',
+      'maka-desktop-shell',
+      '--test',
+      'open_directly',
+      '-E',
+      'package(=maka-desktop-shell)',
+      '--no-run',
+    ],
   });
   const beforeMac = calls.length;
   await exec.prepare('macos-nsh');
@@ -647,8 +706,19 @@ test('CI setup installs release tools and stages V8 archives via GitHub API with
       process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum',
     );
     assert.deepEqual(readFileSync(expectedV8Path), v8Bytes);
+    const buildObjDir = join(targetDir, 'debug', 'build', 'gn_out', 'obj');
+    const buildLibPath = join(
+      buildObjDir,
+      process.platform === 'win32' ? 'rusty_v8.lib' : 'librusty_v8.a',
+    );
+    const buildSumPath = join(
+      buildObjDir,
+      process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum',
+    );
     assert.deepEqual(readFileSync(expectedLibPath), v8Archive);
     assert.equal(readFileSync(expectedSumPath, 'utf8'), expectedV8Url);
+    assert.deepEqual(readFileSync(buildLibPath), v8Archive);
+    assert.equal(readFileSync(buildSumPath, 'utf8'), expectedV8Url);
     assert.match(
       readFileSync(join(targetDir, 'CACHEDIR.TAG'), 'utf8'),
       /^Signature: 8a477f597d28d172789f06886806bc55\n/u,
@@ -673,12 +743,27 @@ test('CI setup installs release tools and stages V8 archives via GitHub API with
   }
 });
 
-test('Linux keeps Computer Use and the display-backed NSH desktop regressions', () => {
-  const worker = full().workers.find((worker) => worker.id === 'native-ubuntu');
+test('Linux consolidates root verification workers and reuses the root compiler cache read-only', () => {
+  const plan = full();
+  const worker = plan.workers.find((worker) => worker.id === 'linux-checks');
   assert.deepEqual(suites['linux-desktop'].packages, ['maka-desktop-shell']);
-  assert.deepEqual(worker.suites, ['native', 'linux-desktop']);
+  assert.deepEqual(worker.suites, [
+    'contracts',
+    'product',
+    'native-build',
+    'native',
+    'linux-desktop',
+    'bridge',
+  ]);
   assert.equal(worker.dependencies, 'headless');
   assert.equal(worker.javascript, true);
+  assert.equal(worker.cacheRole, 'root');
+  assert.equal(worker.saveCache, false);
+  for (const entry of plan.workers) {
+    assert.equal(typeof entry.saveCache, 'boolean', entry.id);
+  }
+  const nshWorker = plan.workers.find((worker) => worker.id === 'nsh');
+  assert.deepEqual(nshWorker.suites, ['nsh', 'linux-nsh']);
 });
 
 test('Linux platform and embedded icon inputs reach the display-backed desktop consumer', () => {
@@ -718,10 +803,168 @@ test('Linux platform and embedded icon inputs reach the display-backed desktop c
     });
     assert.equal(plan.full, false, path);
     assert.ok(plan.suites['linux-desktop'], path);
-    const worker = plan.workers.find(({ id }) => id === 'native-ubuntu');
+    const worker = plan.workers.find(({ id }) => id === 'linux-checks');
     assert.ok(worker.suites.includes('linux-desktop'), path);
     assert.equal(worker.dependencies, 'headless');
     assert.equal(worker.javascript, true);
+  }
+});
+
+test('frontend workbench edits stay scoped to UI/product consumers and skip unrelated backend/vendored suites', () => {
+  const packages = [
+    ['maka-workbench', 'products/maka/workbench'],
+    ['maka-cli', 'products/maka/cli'],
+    ['maka-agent-native', 'plugins/agent/native'],
+    ['maka-terminal-shell', 'products/maka/terminal-shell'],
+    ['maka-desktop-shell', 'products/maka/desktop-shell'],
+  ].map(([name, directory]) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, directory, 'Cargo.toml'),
+  }));
+  const plan = createPlan({
+    root,
+    revision: 'head',
+    baseline: 'base',
+    changes: ['products/maka/workbench/app/Conversation.tsx'],
+    metadata: {
+      root: {
+        packages,
+        workspace_members: packages.map((pkg) => pkg.id),
+        resolve: {
+          nodes: [
+            { id: 'maka-workbench', deps: [] },
+            { id: 'maka-cli', deps: [{ pkg: 'maka-workbench' }] },
+            { id: 'maka-terminal-shell', deps: [{ pkg: 'maka-workbench' }] },
+            { id: 'maka-desktop-shell', deps: [{ pkg: 'maka-workbench' }] },
+            { id: 'maka-agent-native', deps: [] },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(plan.full, false);
+  assert.ok(plan.suites.contracts);
+  assert.ok(plan.suites.product);
+  assert.ok(plan.suites.desktop);
+  assert.match(plan.suites.root.filter, /package\(=maka-cli\)/);
+  assert.doesNotMatch(plan.suites.root.filter, /package\(=maka-agent-native\)/);
+  assert.equal(plan.suites.bridge, undefined);
+  assert.equal(plan.suites['macos-agent-execution'], undefined);
+  assert.equal(plan.suites['windows-skills'], undefined);
+  assert.equal(plan.suites.nsh, undefined);
+  assert.equal(plan.suites.termina, undefined);
+});
+
+test('branch push with fullRoot keeps full root coverage while skipping untouched vendored workspaces', () => {
+  const packages = [
+    ['maka-agent-native', 'plugins/agent/native'],
+    ['maka-cli', 'products/maka/cli'],
+  ].map(([name, directory]) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, directory, 'Cargo.toml'),
+  }));
+  const plan = createPlan({
+    root,
+    revision: 'head',
+    baseline: 'base',
+    fullRoot: true,
+    changes: ['plugins/agent/native/src/owner.rs'],
+    metadata: {
+      root: {
+        packages,
+        workspace_members: packages.map((pkg) => pkg.id),
+        resolve: {
+          nodes: [
+            { id: 'maka-agent-native', deps: [] },
+            { id: 'maka-cli', deps: [{ pkg: 'maka-agent-native' }] },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(plan.full, false);
+  assert.equal(plan.suites.root.filter, 'all()');
+  assert.ok(plan.workers.some((w) => w.id === 'linux-checks'));
+  assert.ok(plan.workers.some((w) => w.id === 'native-macos'));
+  assert.ok(plan.workers.some((w) => w.id === 'native-windows'));
+  assert.ok(!plan.workers.some((w) => w.id === 'nsh'));
+  assert.ok(!plan.workers.some((w) => w.id === 'macos-nsh'));
+  assert.ok(!plan.workers.some((w) => w.id === 'windows-nsh'));
+  assert.ok(!plan.workers.some((w) => w.id === 'termina'));
+});
+
+test('scoped native workers compile once with one unified Cargo feature scope', async () => {
+  const plan = full();
+  const worker = plan.workers.find((entry) => entry.id === 'native-macos');
+  const helperDir = mkdtempSync(join(tmpdir(), 'maka-ci-scope-helpers-'));
+  try {
+    const makaBin = join(helperDir, 'maka');
+    const pyBin = join(helperDir, 'maka-python-worker');
+    writeFileSync(makaBin, '');
+    writeFileSync(pyBin, '');
+    const calls = [];
+    const exec = executor(root, worker, {
+      run: async (exe, args) => {
+        calls.push({ exe, args });
+        if (args[0] === 'build' && args.includes('--message-format=json-render-diagnostics')) {
+          return [
+            JSON.stringify({
+              reason: 'compiler-artifact',
+              target: { name: 'maka', kind: ['bin'] },
+              profile: { test: false },
+              executable: makaBin,
+            }),
+            JSON.stringify({
+              reason: 'compiler-artifact',
+              target: { name: 'maka-python-worker', kind: ['bin'] },
+              profile: { test: false },
+              executable: pyBin,
+            }),
+          ].join('\n');
+        }
+        return '';
+      },
+    });
+    await exec.prepareWorker(worker.suites, plan.suites);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], {
+      exe: 'cargo',
+      args: [
+        'nextest',
+        'run',
+        ...worker.cargoScope,
+        '--lib',
+        '--bin',
+        'maka',
+        '--bin',
+        'maka-desktop-shell',
+        '--test',
+        'open_directly',
+        '--test',
+        'native-desktop',
+        '--test',
+        'native-pixels',
+        '--no-run',
+      ],
+    });
+    assert.deepEqual(calls[1], {
+      exe: 'cargo',
+      args: [
+        'build',
+        ...worker.cargoScope,
+        '--bin',
+        'maka',
+        '--bin',
+        'maka-python-worker',
+        '--message-format=json-render-diagnostics',
+      ],
+    });
+  } finally {
+    rmSync(helperDir, { recursive: true, force: true });
   }
 });
 

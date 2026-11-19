@@ -186,6 +186,14 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+export const composerIconSlot = {
+  width: 32,
+  height: 32,
+  flexShrink: 0,
+  alignItems: 'center',
+  justifyContent: 'center',
+} as const;
+
 export const toolbarControlStyle = {
   ...controlStyle,
   paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,

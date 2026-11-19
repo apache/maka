@@ -137,37 +137,40 @@ impl Owner {
     pub async fn work(&self, input: WorkRead) -> Result<Work, String> {
         use maka_agent_state::queue::MessageResolution;
         self.session(&input.session_id).await?;
-        let (run, shared) = match input.target {
-            WorkTarget::Run { run_id } => (run_id, false),
+        let cursor = input.cursor.map(|cursor| (cursor.run_id, cursor.offset));
+        let (run, shared, observed) = match input.target {
+            WorkTarget::Run { run_id } => {
+                if cursor.is_some_and(|(run, _)| run != run_id) {
+                    return Ok(Work::Changed);
+                }
+                let work = self
+                    .durable
+                    .work(run_id, cursor.map_or(0, |(_, offset)| offset), 8192)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (run_id, false, work)
+            }
             WorkTarget::Message { message_id } => {
-                match self
+                let (resolution, work) = self
                     .durable
                     .queue()
-                    .resolve_message(input.session_id.clone(), message_id)
+                    .message_work(input.session_id.clone(), message_id, cursor, 8192)
                     .await
-                    .map_err(|error| error.to_string())?
-                {
+                    .map_err(|error| error.to_string())?;
+                match resolution {
                     MessageResolution::Missing => return Ok(Work::Missing),
                     MessageResolution::Pending => return Ok(Work::Pending),
                     MessageResolution::Cancelled => return Ok(Work::Cancelled),
-                    MessageResolution::Delivered { run, shared } => (run, shared),
+                    MessageResolution::Delivered { run, .. }
+                        if cursor.is_some_and(|(id, _)| id != run) =>
+                    {
+                        return Ok(Work::Changed);
+                    }
+                    MessageResolution::Delivered { run, shared } => (run, shared, work),
                 }
             }
         };
-        if input
-            .cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.run_id != run)
-        {
-            return Ok(Work::Changed);
-        }
-        let offset = input.cursor.as_ref().map_or(0, |cursor| cursor.offset);
-        let Some(observed) = self
-            .durable
-            .work(run, offset, 8192)
-            .await
-            .map_err(|error| error.to_string())?
-        else {
+        let Some(observed) = observed else {
             return Ok(Work::Missing);
         };
         if observed.view.spec.session_id != input.session_id

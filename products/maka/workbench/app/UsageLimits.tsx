@@ -18,6 +18,7 @@
  */
 
 import { cleanup, effect, lifecycle, platform, signal, Text, untracked, View } from 'nsh';
+import { usageSeverity } from './composerUsageSummary';
 import { currentLocale, tr } from './locale';
 import { watchUsageLimits, type UsageReading, type UsageResult } from './usageLimitsReading';
 import { C, captionTextStyle } from './ui';
@@ -39,13 +40,13 @@ function usageWindow(seconds: number) {
   });
 }
 
-type Limit = Extract<UsageResult, { kind: 'ready' }>['limits'][number];
+export type UsageLimit = Extract<UsageResult, { kind: 'ready' }>['limits'][number];
 
-function usageNumber(value: number) {
+export function usageNumber(value: number) {
   return new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 2 }).format(value);
 }
 
-function usageLabel(limit: Limit) {
+export function usageLabel(limit: UsageLimit) {
   if (limit.kind === 'balance') return limit.label ?? tr('Balance');
   if (limit.kind === 'unlimited') return limit.label ?? tr('Usage limit');
   const period =
@@ -57,7 +58,7 @@ function usageLabel(limit: Limit) {
   return [limit.label, period].filter(Boolean).join(' · ') || tr('Usage limit');
 }
 
-function usageValue(limit: Limit) {
+export function usageValue(limit: UsageLimit) {
   if (limit.kind === 'balance')
     return [usageNumber(limit.amount), limit.unit].filter(Boolean).join(' ');
   if (limit.kind === 'unlimited') return tr('Unlimited');
@@ -114,7 +115,16 @@ export function UsageLimits(props: { query: () => Promise<UsageResult>; revision
       <If when={message()}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>{message()}</Text>
       </If>
-      <Each of={limits()}>
+      <UsageLimitsList limits={limits} />
+    </View>
+  );
+}
+
+export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaining?: boolean }) {
+  const terminal = platform.idiom === 'terminal';
+  return (
+    <View style={{ gap: terminal ? 0 : 8 }}>
+      <Each of={props.limits()}>
         {(entry) => {
           const reset = () => {
             const limit = entry();
@@ -134,10 +144,25 @@ export function UsageLimits(props: { query: () => Promise<UsageResult>; revision
             const limit = entry();
             return limit.kind === 'window' ? limit.usedPercent : null;
           };
+          const remaining = () => {
+            const value = used();
+            return value === null ? null : Math.max(0, Math.min(100, Math.round(100 - value)));
+          };
+          const summary = () => {
+            const limit = entry();
+            if (props.showRemaining && limit.kind === 'window') {
+              return tr('{percent}% remaining', { percent: usageNumber(remaining() ?? 0) });
+            }
+            return usageValue(limit);
+          };
+          const barColor = () => {
+            const tone = usageSeverity(used() ?? 0);
+            return tone === 'danger' ? C.danger : tone === 'warning' ? C.warning : C.accent;
+          };
           return (
             <View style={{ gap: terminal ? 0 : 3 }}>
               <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                {usageLabel(entry())} · {usageValue(entry())}
+                {usageLabel(entry())} · {summary()}
               </Text>
               <If when={!terminal && used() !== null}>
                 <View style={{ height: 3, borderRadius: 2, backgroundColor: C.line }}>
@@ -146,7 +171,7 @@ export function UsageLimits(props: { query: () => Promise<UsageResult>; revision
                       width: `${Math.min(100, used() ?? 0)}%`,
                       height: 3,
                       borderRadius: 2,
-                      backgroundColor: (used() ?? 0) >= 100 ? C.warning : C.accent,
+                      backgroundColor: barColor(),
                     }}
                   />
                 </View>

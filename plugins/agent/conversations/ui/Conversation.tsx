@@ -115,6 +115,7 @@ import {
   historyTurnKey,
   historyChunkKey,
   historyRowKey,
+  historyRowThrough,
   rootEventSequence,
   historyFollowPosition,
   historyFollowTail,
@@ -1557,9 +1558,12 @@ export function Conversation(props: ConversationProps) {
     });
     if (!trajectorySideBySide()) pendingTrajectoryAnchor = key;
     const window = historyWindow();
-    const position = currentRow(rowId)?.position;
-    if (window?.view === 'chat' && position) {
-      void resetHistory({ kind: 'row', position, field: 'body' }, window.through)
+    const row = currentRow(rowId);
+    if (window?.view === 'chat' && row?.position) {
+      void resetHistory(
+        { kind: 'row', position: row.position, field: 'body' },
+        historyRowThrough(row, window.through),
+      )
         .then((opened) => {
           if (opened && reading() === 'trajectory') jumpTrajectoryEntry(key);
         })
@@ -1904,7 +1908,7 @@ export function Conversation(props: ConversationProps) {
     const existing = workPages.get(rowId);
     const through =
       !existing || existing.task
-        ? Math.max(row.metadataThrough ?? 0, owner.through)
+        ? historyRowThrough(row, owner.through)
         : (row.metadataThrough ?? owner.through);
     loadPages(
       rowId,
@@ -2066,10 +2070,16 @@ export function Conversation(props: ConversationProps) {
             return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
           });
           executorTextChanges.clear();
+          const windowStart =
+            currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
+          const snap = overlay.snapshot();
+          const initial = historyFollowPosition(tail, snap.rows, snap.closedStarts, windowStart);
+          const coveredFrom =
+            initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
+          const chunks: AgentHistoryChunk[] = [];
           // A native message can keep streaming after another row has taken the tail.
           for (const row of changedRows) {
             let position = historyFollowPosition(row, []);
-            const chunks: AgentHistoryChunk[] = [];
             for (;;) {
               const page = await history(fence, position);
               if (!ownsWindow(owner.identity)) return;
@@ -2081,16 +2091,8 @@ export function Conversation(props: ConversationProps) {
               if (page.after === null || matching.length !== page.chunks.length) break;
               position = { kind: 'after', cursor: page.after };
             }
-            publishHistory(chunks, fence);
           }
-          const windowStart =
-            currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
-          const snap = overlay.snapshot();
-          const initial = historyFollowPosition(tail, snap.rows, snap.closedStarts, windowStart);
-          const coveredFrom =
-            initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
           let position = initial;
-          const chunks: AgentHistoryChunk[] = [];
           for (;;) {
             const page = await history(fence, position, owner.view);
             if (!ownsWindow(owner.identity)) return;
@@ -2098,9 +2100,10 @@ export function Conversation(props: ConversationProps) {
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
           }
-          publishHistory(chunks, fence, false, coveredFrom, windowStart);
-          const current = historyWindow()!;
-          historyWindow.set({ ...current, through: fence, after: null });
+          batch(() => {
+            historyWindow.set({ ...historyWindow()!, through: fence, after: null });
+            publishHistory(chunks, fence, false, coveredFrom, windowStart);
+          });
         }
         const last = rows().at(-1);
         if (refresh !== null && last?.position) {
@@ -3698,7 +3701,9 @@ export function Conversation(props: ConversationProps) {
               field: row.field === 'thinking' ? 'thinking' : 'body',
             }
           : { kind: 'tail' };
-      void resetHistory(position, window.through, undefined, () => reading() === mode, desired)
+      const through =
+        position.kind === 'row' && row ? historyRowThrough(row, window.through) : window.through;
+      void resetHistory(position, through, undefined, () => reading() === mode, desired)
         .then((opened) => {
           if (!opened || reading() !== mode) return;
           if (position.kind === 'tail') resumeHistoryFollowing();

@@ -685,506 +685,571 @@ impl Engine {
                 }
             }
             let idle = matches!(action, Action::Idle);
-            match action {
-                action @ (Action::PrepareExternal(_)
-                | Action::StartExternal(_)
-                | Action::ObserveExternal(_, _)) => {
-                    self.launch_external(&claim, &view, &ports, &mut live, &mut work, action)
-                        .await?;
-                }
-                Action::ObserveCell(cell) => {
-                    self.launch_cell(&claim, &view, &ports, &mut live, &mut work, cell)
-                        .await?;
-                }
-                action @ (Action::PreparePublication(_)
-                | Action::ValidatePublication(_)
-                | Action::LookupPublication(_)
-                | Action::ObservePublication(_, _)
-                | Action::AbandonPublication(_)) => {
-                    self.launch_publication(
-                        &claim,
-                        &view,
-                        ports.clone(),
-                        &mut live,
-                        &mut work,
-                        action,
-                        now,
-                    )
-                    .await?;
-                }
-                action @ (Action::Compact(_) | Action::AdoptCandidate(_)) => {
-                    let (origin, candidate) = match action {
-                        Action::AdoptCandidate(origin) => (origin, Some(origin)),
-                        Action::Compact(attempt) => (SummaryOrigin { run, attempt }, None),
-                        _ => unreachable!(),
-                    };
-                    let material = match self.compaction_checkpoint(&view, origin).await {
-                        Ok(Some(material)) => material,
-                        Ok(None) => continue,
-                        Err(RunError::CompactionFailed(diagnostic)) => {
-                            self.publish(
-                                Some(&claim),
-                                &view,
-                                termination_facts(&view, Terminal::Failed, Some(diagnostic)),
-                                vec![],
-                                now,
-                            )
-                            .await?;
-                            continue;
-                        }
-                        Err(error) => {
-                            self.port_failure(&claim, &view, error, now).await?;
-                            continue;
-                        }
-                    };
-                    let baseline = ContentBlob::json(&material)?;
-                    let fact = Fact::ContextCompacted {
-                        baseline: baseline.reference().clone(),
-                    };
-                    if material.checkpoint.mode == CheckpointMode::Standalone
-                        || material
-                            .native
-                            .as_ref()
-                            .is_some_and(|native| native.continuation.is_some())
+            if idle {
+                let observing_cell = live.work.iter().any(|key| matches!(key, WorkKey::Cell(_)));
+                if !observing_cell && (work.is_empty() || live.only_cleanup(&view)) {
+                    if retiring {
+                        return Ok(DriverExit::Retired { run });
+                    }
+                    if let Some(request) = view.stop_request
+                        && view.stop_assessed != Some(request)
                     {
-                        self.publish(Some(&claim), &view, vec![fact], vec![baseline], now)
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::StopAssessed { request }],
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    return Ok(exit(&view));
+                }
+            } else if Box::pin(async {
+                match action {
+                    action @ (Action::PrepareExternal(_)
+                    | Action::StartExternal(_)
+                    | Action::ObserveExternal(_, _)) => {
+                        self.launch_external(&claim, &view, &ports, &mut live, &mut work, action)
                             .await?;
-                    } else {
-                        let checkpoint = Change::new(fact, now);
-                        let preparation =
-                            Preparation::AdoptCompaction(Box::new(CompactionAdoption {
-                                origin,
-                                checkpoint: checkpoint.id,
-                                baseline: baseline.reference().clone(),
-                                material,
-                            }));
-                        let compaction = Box::new(CompactionCommit {
-                            checkpoint,
-                            baseline,
-                            candidate,
-                        });
+                    }
+                    Action::ObserveCell(cell) => {
+                        self.launch_cell(&claim, &view, &ports, &mut live, &mut work, cell)
+                            .await?;
+                    }
+                    action @ (Action::PreparePublication(_)
+                    | Action::ValidatePublication(_)
+                    | Action::LookupPublication(_)
+                    | Action::ObservePublication(_, _)
+                    | Action::AbandonPublication(_)) => {
+                        self.launch_publication(
+                            &claim,
+                            &view,
+                            ports.clone(),
+                            &mut live,
+                            &mut work,
+                            action,
+                            now,
+                        )
+                        .await?;
+                    }
+                    action @ (Action::Compact(_) | Action::AdoptCandidate(_)) => {
+                        let (origin, candidate) = match action {
+                            Action::AdoptCandidate(origin) => (origin, Some(origin)),
+                            Action::Compact(attempt) => (SummaryOrigin { run, attempt }, None),
+                            _ => unreachable!(),
+                        };
+                        let (material, target) = match self
+                            .compaction_checkpoint(&view, origin)
+                            .await
+                        {
+                            Ok(Some(material)) => material,
+                            Ok(None) => return Ok::<_, RunError>(true),
+                            Err(RunError::CompactionFailed(diagnostic)) => {
+                                self.publish(
+                                    Some(&claim),
+                                    &view,
+                                    termination_facts(&view, Terminal::Failed, Some(diagnostic)),
+                                    vec![],
+                                    now,
+                                )
+                                .await?;
+                                return Ok(true);
+                            }
+                            Err(error) => {
+                                self.port_failure(&claim, &view, error, now).await?;
+                                return Ok(true);
+                            }
+                        };
+                        let baseline = ContentBlob::json(&material)?;
+                        if let Some(target) = target {
+                            match ports
+                                .handoff_checkpoint(&view, baseline.clone(), target)
+                                .await
+                            {
+                                Ok(()) => (),
+                                Err(
+                                    error @ (RunError::ModelUnavailable
+                                    | RunError::AuthenticationRequired
+                                    | RunError::InvalidInput(_)),
+                                ) => {
+                                    let mut facts = vec![Fact::ContextCompacted {
+                                        baseline: baseline.reference().clone(),
+                                    }];
+                                    facts.extend(termination_facts(
+                                        &view,
+                                        Terminal::Failed,
+                                        Some(format!(
+                                            "Could not switch to the requested model: {error}"
+                                        )),
+                                    ));
+                                    self.publish(Some(&claim), &view, facts, vec![baseline], now)
+                                        .await?;
+                                }
+                                Err(RunError::Store(error))
+                                    if matches!(
+                                        error.underlying(),
+                                        StoreError::RevisionConflict { .. }
+                                            | StoreError::SessionRevisionConflict { .. }
+                                    ) =>
+                                {
+                                    ()
+                                }
+                                Err(error) => return Err(error),
+                            }
+                            return Ok(true);
+                        }
+                        let fact = Fact::ContextCompacted {
+                            baseline: baseline.reference().clone(),
+                        };
+                        if material.checkpoint.mode == CheckpointMode::Standalone
+                            || material
+                                .native
+                                .as_ref()
+                                .is_some_and(|native| native.continuation.is_some())
+                        {
+                            self.publish(Some(&claim), &view, vec![fact], vec![baseline], now)
+                                .await?;
+                        } else {
+                            let checkpoint = Change::new(fact, now);
+                            let preparation =
+                                Preparation::AdoptCompaction(Box::new(CompactionAdoption {
+                                    origin,
+                                    checkpoint: checkpoint.id,
+                                    baseline: baseline.reference().clone(),
+                                    material,
+                                }));
+                            let compaction = Box::new(CompactionCommit {
+                                checkpoint,
+                                baseline,
+                                candidate,
+                            });
+                            live.work.insert(WorkKey::Prepare);
+                            let ports = ports.clone();
+                            let snapshot = view.clone();
+                            let control = snapshot.control_version;
+                            work.push(
+                                async move {
+                                    Completion::Prepared {
+                                        control,
+                                        compaction: Some(compaction),
+                                        result: ports.prepare_step(snapshot, preparation).await,
+                                    }
+                                }
+                                .boxed(),
+                            );
+                        }
+                    }
+                    Action::AcceptCellFinal(cell) => {
+                        self.accept_cell_final(&claim, &view, cell, ports.now())
+                            .await?;
+                    }
+                    Action::ReportCellInterruption(cell) => {
+                        self.report_cell_interruption(&claim, &view, cell, ports.now())
+                            .await?;
+                    }
+                    Action::Prepare(preparation) => {
                         live.work.insert(WorkKey::Prepare);
                         let ports = ports.clone();
                         let snapshot = view.clone();
+                        let control = snapshot.control_version;
                         work.push(
                             async move {
                                 Completion::Prepared {
-                                    control: snapshot.control_version,
-                                    compaction: Some(compaction),
-                                    result: ports.prepare_step(&snapshot, preparation).await,
+                                    control,
+                                    compaction: None,
+                                    result: ports.prepare_step(snapshot, preparation).await,
                                 }
                             }
                             .boxed(),
                         );
                     }
-                }
-                Action::AcceptCellFinal(cell) => {
-                    self.accept_cell_final(&claim, &view, cell, ports.now())
-                        .await?;
-                }
-                Action::ReportCellInterruption(cell) => {
-                    self.report_cell_interruption(&claim, &view, cell, ports.now())
-                        .await?;
-                }
-                Action::Prepare(preparation) => {
-                    live.work.insert(WorkKey::Prepare);
-                    let ports = ports.clone();
-                    let snapshot = view.clone();
-                    work.push(
-                        async move {
-                            Completion::Prepared {
-                                control: snapshot.control_version,
-                                compaction: None,
-                                result: ports.prepare_step(&snapshot, preparation).await,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::PrepareProactiveSummary => {
-                    live.work.insert(WorkKey::PrepareProactiveSummary);
-                    let ports = ports.clone();
-                    let snapshot = view.clone();
-                    work.push(
-                        async move {
-                            Completion::ProactiveSummaryPrepared {
-                                control: snapshot.control_version,
-                                result: ports.prepare_step(&snapshot, Preparation::Summary).await,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::Attempt(step) => {
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        vec![Fact::ModelAttemptPrepared {
-                            attempt: ModelAttemptId::new(),
-                            step,
-                        }],
-                        vec![],
-                        now,
-                    )
-                    .await?;
-                }
-                Action::Assess(attempt) => {
-                    let request = self
-                        .store
-                        .request(run, view.attempts[&attempt].step)
-                        .await?;
-                    live.work.insert(WorkKey::Assess(attempt));
-                    let ports = ports.clone();
-                    let snapshot = view.clone();
-                    work.push(
-                        async move {
-                            Completion::Assessed {
-                                attempt,
-                                basis: Head::from(&snapshot),
-                                result: ports.assess_recovery(&snapshot, attempt, request).await,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::Start(attempt) => {
-                    let request = self
-                        .store
-                        .request(run, view.attempts[&attempt].step)
-                        .await?;
-                    let bytes = self.store.content(run, request.request.clone()).await?;
-                    let upstream = ports.model_admission(run, attempt, &request)?;
-                    // This commit is the model admission's Stop/control linearization point.
-                    if self
-                        .publish(
-                            Some(&claim),
-                            &view,
-                            vec![Fact::ModelAttemptAdmitted { attempt, upstream }],
-                            vec![],
-                            now,
-                        )
-                        .await?
-                    {
-                        live.work.insert(WorkKey::Model(attempt));
+                    Action::PrepareProactiveSummary => {
+                        live.work.insert(WorkKey::PrepareProactiveSummary);
                         let ports = ports.clone();
-                        let witness = ModelWitness::new(self.store.clone(), claim.clone(), attempt);
+                        let snapshot = view.clone();
+                        let control = snapshot.control_version;
                         work.push(
                             async move {
-                                Completion::Connected {
-                                    attempt,
+                                Completion::ProactiveSummaryPrepared {
+                                    control,
                                     result: ports
-                                        .start_model(run, attempt, request, bytes, witness)
+                                        .prepare_step(snapshot, Preparation::Summary)
                                         .await,
                                 }
                             }
                             .boxed(),
                         );
                     }
-                }
-                Action::ObserveModel(attempt, descriptor) => {
-                    live.work.insert(WorkKey::Model(attempt));
-                    live.models_observed.insert(attempt);
-                    let ports = ports.clone();
-                    let after = view.attempts[&attempt].observed;
-                    let witness = ModelWitness::new(self.store.clone(), claim.clone(), attempt);
-                    work.push(
-                        async move {
-                            Completion::Connected {
-                                attempt,
-                                result: ports
-                                    .observe_model(run, attempt, descriptor, after, witness)
-                                    .await,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::Interrupt(attempt, diagnostic) => {
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        vec![Fact::ModelInterrupted {
-                            attempt,
-                            diagnostic,
-                        }],
-                        vec![],
-                        now,
-                    )
-                    .await?;
-                }
-                Action::CancelModel(attempt) => {
-                    live.models_cancelled.insert(attempt);
-                    live.work.insert(WorkKey::CancelModel(attempt));
-                    let ports = ports.clone();
-                    work.push(
-                        async move {
-                            Completion::ModelCancelled {
-                                attempt,
-                                result: ports.cancel_model(run, attempt).await,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::Decide(key) => {
-                    live.work.insert(WorkKey::Tool(key.clone()));
-                    let ports = ports.clone();
-                    let snapshot = view.clone();
-                    work.push(
-                        async move {
-                            let result = ports
-                                .decide_tool(&snapshot, &snapshot.tools[&tool_key(&key)])
-                                .await;
-                            Completion::Decided {
-                                key,
-                                control: snapshot.control_version,
-                                result,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::Lookup(key) => {
-                    live.looked_up.insert(key.clone());
-                    live.work.insert(WorkKey::Tool(key.clone()));
-                    let ports = ports.clone();
-                    let control = view.control_version;
-                    work.push(
-                        async move {
-                            let result = ports.lookup_original(run, key.clone()).await;
-                            Completion::Looked {
-                                key,
-                                control,
-                                result,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::Observe(key) => {
-                    live.work.insert(WorkKey::Tool(key.clone()));
-                    live.observed.insert(key.clone());
-                    let ports = ports.clone();
-                    let reference = view.tools[&tool_key(&key)]
-                        .original
-                        .clone()
-                        .expect("observe has original");
-                    work.push(
-                        async move {
-                            Completion::Observed {
-                                key,
-                                result: ports.observe_operation(reference).await,
-                            }
-                        }
-                        .boxed(),
-                    );
-                }
-                Action::Reject(tool, rejection) => {
-                    let display = view.tools[&tool_key(&tool)]
-                        .decision
-                        .as_ref()
-                        .map(|decision| decision.display().clone())
-                        .unwrap_or_default();
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        vec![Fact::ToolDecided {
-                            tool,
-                            decision: ToolDecision::Rejected { rejection, display },
-                        }],
-                        vec![],
-                        now,
-                    )
-                    .await?;
-                }
-                Action::Accept(key, outcome) => {
-                    let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
-                    self.publish(Some(&claim), &view, facts, vec![result], now)
-                        .await?;
-                }
-                Action::SelectTransport(attempt, phase) => {
-                    if let Err(error) = ports
-                        .validate_transport_selection(&view, attempt, phase)
-                        .await
-                    {
-                        self.port_failure(&claim, &view, error, now).await?;
-                        continue;
-                    }
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        vec![Fact::ModelTransportSelected { attempt, phase }],
-                        vec![],
-                        now,
-                    )
-                    .await?;
-                }
-                Action::ChargeRetry(attempt, phase) => {
-                    // Frozen retries alone consume the durable retry budget; reattach never does.
-                    let delay = 250_i64.saturating_mul(1_i64 << view.retries_for(phase).min(8));
-                    let provider_due = match &view.attempts[&attempt].recovery {
-                        Some(AttemptRecovery::FrozenRetrySafe { not_before }) => *not_before,
-                        _ => None,
-                    };
-                    let due_at =
-                        UnixMillis(now.0.saturating_add(delay)).max(provider_due.unwrap_or(now));
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        vec![Fact::RetryCharged {
-                            attempt,
-                            phase,
-                            due_at,
-                            diagnostic:
-                                "adapter proved frozen retry safe with no semantic progress".into(),
-                        }],
-                        vec![],
-                        now,
-                    )
-                    .await?;
-                }
-                Action::Block(reason) => {
-                    if work.is_empty()
-                        && let Some(request) = view.stop_request
-                        && view.stop_assessed != Some(request)
-                    {
-                        let mut facts = vec![];
-                        if !view.blockers.values().any(|b| {
-                            b.reason == reason && b.decision.is_none() && b.resolved_by.is_none()
-                        }) {
-                            facts.push(Fact::Blocked {
-                                blocker: BlockerId::new(),
-                                reason,
-                            });
-                        }
-                        facts.push(Fact::StopAssessed { request });
-                        self.publish(Some(&claim), &view, facts, vec![], now)
-                            .await?;
-                    } else {
-                        self.block(&claim, &view, reason, now).await?;
-                    }
-                }
-                Action::Wait(reason, due_at) => {
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        vec![Fact::WaitRegistered {
-                            wait: WaitId::new(),
-                            reason,
-                            due_at,
-                        }],
-                        vec![],
-                        now,
-                    )
-                    .await?;
-                }
-                Action::CancelWait(wait) => {
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        vec![Fact::WaitCancelled {
-                            wait,
-                            diagnostic: "Run admission fence closed".into(),
-                        }],
-                        vec![],
-                        now,
-                    )
-                    .await?;
-                }
-                Action::Satisfy(wait) => {
-                    let evidence = ContentBlob::json(
-                        &serde_json::json!({"run":run,"revision":view.revision,"at":now}),
-                    )?;
-                    if self
-                        .publish(
+                    Action::Attempt(step) => {
+                        self.publish(
                             Some(&claim),
                             &view,
-                            vec![Fact::WaitSatisfied {
-                                wait,
-                                evidence: evidence.reference().clone(),
+                            vec![Fact::ModelAttemptPrepared {
+                                attempt: ModelAttemptId::new(),
+                                step,
                             }],
-                            vec![evidence],
+                            vec![],
                             now,
                         )
-                        .await?
-                    {
-                        match &view.waits[&wait].reason {
-                            WaitReason::Operation { tool } => {
-                                live.observed.remove(tool);
-                            }
-                            WaitReason::External { .. } => {
-                                live.external_observed = false;
-                            }
-                            WaitReason::Model { attempt } => {
-                                live.models_observed.remove(attempt);
-                            }
-                            _ => {}
-                        }
+                        .await?;
                     }
-                }
-                Action::Terminate(terminal) => {
-                    let diagnostic = view
-                        .external
-                        .as_ref()
-                        .and_then(|task| task.closed.as_ref())
-                        .filter(|closed| {
-                            terminal == Terminal::Failed && closed.outcome == Terminal::Failed
-                        })
-                        .and_then(|closed| closed.diagnostic.clone())
-                        .or_else(|| {
-                            if terminal == Terminal::Failed {
-                                live.preparation_failure.clone()
-                            } else {
-                                None
+                    Action::Assess(attempt) => {
+                        let request = self
+                            .store
+                            .request(run, view.attempts[&attempt].step)
+                            .await?;
+                        live.work.insert(WorkKey::Assess(attempt));
+                        let ports = ports.clone();
+                        let snapshot = view.clone();
+                        work.push(
+                            async move {
+                                Completion::Assessed {
+                                    attempt,
+                                    basis: Head::from(&snapshot),
+                                    result: ports
+                                        .assess_recovery(&snapshot, attempt, request)
+                                        .await,
+                                }
                             }
-                        });
-                    let checkpoint =
-                        if matches!(terminal, Terminal::Completed | Terminal::Cancelled) {
-                            self.checkpoint_for_next_run(&view).await?
-                        } else {
-                            None
-                        };
-                    let mut facts = termination_facts(&view, terminal, diagnostic);
-                    if let Some(content) = &checkpoint {
-                        facts.insert(
-                            0,
-                            Fact::ContextCompacted {
-                                baseline: content.reference().clone(),
-                            },
+                            .boxed(),
                         );
                     }
-                    self.publish(
-                        Some(&claim),
-                        &view,
-                        facts,
-                        checkpoint.into_iter().collect(),
-                        now,
-                    )
-                    .await?;
-                }
-                Action::Idle => {
-                    let observing_cell =
-                        live.work.iter().any(|key| matches!(key, WorkKey::Cell(_)));
-                    if !observing_cell && (work.is_empty() || live.only_cleanup(&view)) {
-                        if retiring {
-                            return Ok(DriverExit::Retired { run });
-                        }
-                        if let Some(request) = view.stop_request
-                            && view.stop_assessed != Some(request)
-                        {
-                            self.publish(
+                    Action::Start(attempt) => {
+                        let request = self
+                            .store
+                            .request(run, view.attempts[&attempt].step)
+                            .await?;
+                        let bytes = self.store.content(run, request.request.clone()).await?;
+                        let upstream = ports.model_admission(run, attempt, &request)?;
+                        // This commit is the model admission's Stop/control linearization point.
+                        if self
+                            .publish(
                                 Some(&claim),
                                 &view,
-                                vec![Fact::StopAssessed { request }],
+                                vec![Fact::ModelAttemptAdmitted { attempt, upstream }],
                                 vec![],
                                 now,
                             )
-                            .await?;
-                            continue;
+                            .await?
+                        {
+                            live.work.insert(WorkKey::Model(attempt));
+                            let ports = ports.clone();
+                            let witness =
+                                ModelWitness::new(self.store.clone(), claim.clone(), attempt);
+                            work.push(
+                                async move {
+                                    Completion::Connected {
+                                        attempt,
+                                        result: ports
+                                            .start_model(run, attempt, request, bytes, witness)
+                                            .await,
+                                    }
+                                }
+                                .boxed(),
+                            );
                         }
-                        return Ok(exit(&view));
                     }
+                    Action::ObserveModel(attempt, descriptor) => {
+                        live.work.insert(WorkKey::Model(attempt));
+                        live.models_observed.insert(attempt);
+                        let ports = ports.clone();
+                        let after = view.attempts[&attempt].observed;
+                        let witness = ModelWitness::new(self.store.clone(), claim.clone(), attempt);
+                        work.push(
+                            async move {
+                                Completion::Connected {
+                                    attempt,
+                                    result: ports
+                                        .observe_model(run, attempt, descriptor, after, witness)
+                                        .await,
+                                }
+                            }
+                            .boxed(),
+                        );
+                    }
+                    Action::Interrupt(attempt, diagnostic) => {
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::ModelInterrupted {
+                                attempt,
+                                diagnostic,
+                            }],
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                    }
+                    Action::CancelModel(attempt) => {
+                        live.models_cancelled.insert(attempt);
+                        live.work.insert(WorkKey::CancelModel(attempt));
+                        let ports = ports.clone();
+                        work.push(
+                            async move {
+                                Completion::ModelCancelled {
+                                    attempt,
+                                    result: ports.cancel_model(run, attempt).await,
+                                }
+                            }
+                            .boxed(),
+                        );
+                    }
+                    Action::Decide(key) => {
+                        live.work.insert(WorkKey::Tool(key.clone()));
+                        let ports = ports.clone();
+                        let snapshot = view.clone();
+                        work.push(
+                            async move {
+                                let result = ports
+                                    .decide_tool(&snapshot, &snapshot.tools[&tool_key(&key)])
+                                    .await;
+                                Completion::Decided {
+                                    key,
+                                    control: snapshot.control_version,
+                                    result,
+                                }
+                            }
+                            .boxed(),
+                        );
+                    }
+                    Action::Lookup(key) => {
+                        live.looked_up.insert(key.clone());
+                        live.work.insert(WorkKey::Tool(key.clone()));
+                        let ports = ports.clone();
+                        let control = view.control_version;
+                        work.push(
+                            async move {
+                                let result = ports.lookup_original(run, key.clone()).await;
+                                Completion::Looked {
+                                    key,
+                                    control,
+                                    result,
+                                }
+                            }
+                            .boxed(),
+                        );
+                    }
+                    Action::Observe(key) => {
+                        live.work.insert(WorkKey::Tool(key.clone()));
+                        live.observed.insert(key.clone());
+                        let ports = ports.clone();
+                        let reference = view.tools[&tool_key(&key)]
+                            .original
+                            .clone()
+                            .expect("observe has original");
+                        work.push(
+                            async move {
+                                Completion::Observed {
+                                    key,
+                                    result: ports.observe_operation(reference).await,
+                                }
+                            }
+                            .boxed(),
+                        );
+                    }
+                    Action::Reject(tool, rejection) => {
+                        let display = view.tools[&tool_key(&tool)]
+                            .decision
+                            .as_ref()
+                            .map(|decision| decision.display().clone())
+                            .unwrap_or_default();
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::ToolDecided {
+                                tool,
+                                decision: ToolDecision::Rejected { rejection, display },
+                            }],
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                    }
+                    Action::Accept(key, outcome) => {
+                        let (facts, result) = self.tool_acceptance(&view, key, outcome).await?;
+                        self.publish(Some(&claim), &view, facts, vec![result], now)
+                            .await?;
+                    }
+                    Action::SelectTransport(attempt, phase) => {
+                        if let Err(error) = ports
+                            .validate_transport_selection(&view, attempt, phase)
+                            .await
+                        {
+                            self.port_failure(&claim, &view, error, now).await?;
+                            return Ok(true);
+                        }
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::ModelTransportSelected { attempt, phase }],
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                    }
+                    Action::ChargeRetry(attempt, phase) => {
+                        let delay = 250_i64.saturating_mul(1_i64 << view.retries_for(phase).min(8));
+                        let provider_due = match &view.attempts[&attempt].recovery {
+                            Some(
+                                AttemptRecovery::FrozenRetrySafe { not_before }
+                                | AttemptRecovery::ContinueFromHistory { not_before },
+                            ) => *not_before,
+                            _ => None,
+                        };
+                        let due_at = UnixMillis(now.0.saturating_add(delay))
+                            .max(provider_due.unwrap_or(now));
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::RetryCharged {
+                                attempt,
+                                phase,
+                                due_at,
+                                diagnostic: if matches!(
+                                    view.attempts[&attempt].recovery,
+                                    Some(AttemptRecovery::ContinueFromHistory { .. })
+                                ) {
+                                    "continue from recorded history after provider interruption"
+                                } else {
+                                    "adapter proved frozen retry safe with no semantic progress"
+                                }
+                                .into(),
+                            }],
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                    }
+                    Action::Block(reason) => {
+                        if work.is_empty()
+                            && let Some(request) = view.stop_request
+                            && view.stop_assessed != Some(request)
+                        {
+                            let mut facts = vec![];
+                            if !view.blockers.values().any(|b| {
+                                b.reason == reason
+                                    && b.decision.is_none()
+                                    && b.resolved_by.is_none()
+                            }) {
+                                facts.push(Fact::Blocked {
+                                    blocker: BlockerId::new(),
+                                    reason,
+                                });
+                            }
+                            facts.push(Fact::StopAssessed { request });
+                            self.publish(Some(&claim), &view, facts, vec![], now)
+                                .await?;
+                        } else {
+                            self.block(&claim, &view, reason, now).await?;
+                        }
+                    }
+                    Action::Wait(reason, due_at) => {
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::WaitRegistered {
+                                wait: WaitId::new(),
+                                reason,
+                                due_at,
+                            }],
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                    }
+                    Action::CancelWait(wait) => {
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            vec![Fact::WaitCancelled {
+                                wait,
+                                diagnostic: "Run admission fence closed".into(),
+                            }],
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                    }
+                    Action::Satisfy(wait) => {
+                        let evidence = ContentBlob::json(
+                            &serde_json::json!({"run":run,"revision":view.revision,"at":now}),
+                        )?;
+                        if self
+                            .publish(
+                                Some(&claim),
+                                &view,
+                                vec![Fact::WaitSatisfied {
+                                    wait,
+                                    evidence: evidence.reference().clone(),
+                                }],
+                                vec![evidence],
+                                now,
+                            )
+                            .await?
+                        {
+                            match &view.waits[&wait].reason {
+                                WaitReason::Operation { tool } => {
+                                    live.observed.remove(tool);
+                                }
+                                WaitReason::External { .. } => {
+                                    live.external_observed = false;
+                                }
+                                WaitReason::Model { attempt } => {
+                                    live.models_observed.remove(attempt);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Action::Terminate(terminal) => {
+                        let diagnostic = view
+                            .external
+                            .as_ref()
+                            .and_then(|task| task.closed.as_ref())
+                            .filter(|closed| {
+                                terminal == Terminal::Failed && closed.outcome == Terminal::Failed
+                            })
+                            .and_then(|closed| closed.diagnostic.clone())
+                            .or_else(|| {
+                                if terminal == Terminal::Failed {
+                                    live.preparation_failure.clone()
+                                } else {
+                                    None
+                                }
+                            });
+                        let checkpoint =
+                            if matches!(terminal, Terminal::Completed | Terminal::Cancelled) {
+                                self.checkpoint_for_next_run(&view).await?
+                            } else {
+                                None
+                            };
+                        let mut facts = termination_facts(&view, terminal, diagnostic);
+                        if let Some(content) = &checkpoint {
+                            facts.insert(
+                                0,
+                                Fact::ContextCompacted {
+                                    baseline: content.reference().clone(),
+                                },
+                            );
+                        }
+                        self.publish(
+                            Some(&claim),
+                            &view,
+                            facts,
+                            checkpoint.into_iter().collect(),
+                            now,
+                        )
+                        .await?;
+                    }
+                    Action::Idle => unreachable!("Idle handled before dispatch"),
                 }
+                Ok(false)
+            })
+            .await?
+            {
+                continue;
             }
             // Poll once with the driver's waker so children can wake it even
             // while it is awaiting the next frontier read.
@@ -1220,14 +1285,14 @@ impl Engine {
                 None
             };
             if let Some(completion) = completion {
-                self.complete(
+                Box::pin(self.complete(
                     &claim,
                     &ports,
                     &mut live,
                     &mut work,
                     completion,
                     cancellation.is_cancelled(),
-                )
+                ))
                 .await?;
             }
         }
@@ -2235,6 +2300,8 @@ fn accepted_content(
                 cell: *cell,
                 evidence,
             }
+        } else if *outcome == AcceptedResult::ProviderOutcomeUnknown {
+            AcceptedToolResult::ProviderOutcomeUnknown
         } else if let Some(original) = tool.local_returned.as_ref().filter(|local| {
             local.settlement != maka_agent_facts::tool_call::ToolSettlement::Unknown
         }) {

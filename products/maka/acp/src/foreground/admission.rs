@@ -44,16 +44,11 @@ impl Foreground {
             return Err("Prompt cancelled before admission".into());
         }
         let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"delivery":"steer","message":content.text,"attachments":content.attachments,"backend":{"kind":"model","connectionId":model.connection_id,"modelId":model.model_id,"thinkingLevel":preferences.thinking}}), Attachments::new()).await?;
-        let (target, message_id) = match result {
+        let (started, message_id) = match result {
             SendResult::Started {
                 run_id, message_id, ..
-            } => (WorkTarget::Run { run_id }, message_id),
-            SendResult::Queued { message_id, .. } => (
-                WorkTarget::Message {
-                    message_id: message_id.clone(),
-                },
-                message_id,
-            ),
+            } => (Some(run_id), message_id),
+            SendResult::Queued { message_id, .. } => (None, message_id),
             SendResult::Rejected { .. } | SendResult::NotYourWorker { .. } => {
                 return Err("Host rejected Agent input".into());
             }
@@ -66,7 +61,7 @@ impl Foreground {
             peer,
             session,
             active,
-            target,
+            message_id: message_id.clone(),
             work: WorkObservation::Pending,
             projection: Projection::default(),
             capabilities,
@@ -78,13 +73,9 @@ impl Foreground {
         };
         let result = async {
             foreground.refresh().await?;
-            if matches!(foreground.target, WorkTarget::Message { .. }) {
+            let Some(run) = started else {
                 return Ok(message_id);
-            }
-            let execution = foreground
-                .work
-                .execution()
-                .ok_or("Accepted Run has no execution receipt")?;
+            };
             foreground.user = history::read(
                 &foreground.client,
                 &foreground.session.id,
@@ -96,7 +87,7 @@ impl Foreground {
             .filter(|chunk| {
                 chunk.role == maka_agent_ports::session::history::Role::User
                     && chunk.message_id.as_deref() == Some(message_id.as_str())
-                    && chunk.run_id == Some(execution.run_id)
+                    && chunk.run_id == Some(run)
             })
             .collect();
             foreground

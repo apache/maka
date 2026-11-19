@@ -467,6 +467,7 @@ pub(super) async fn project(
                     result.push(row);
                 }
                 RunInput::Continuation { .. }
+                | RunInput::CheckpointHandoff { .. }
                 | RunInput::ContextCompact { .. }
                 | RunInput::HistorySource { .. } => {}
             }
@@ -748,7 +749,9 @@ pub(super) async fn project(
                 AcceptedResult::Succeeded => ToolSettlement::Returned,
                 AcceptedResult::Failed => ToolSettlement::Failed,
                 AcceptedResult::Rejected => ToolSettlement::Rejected,
-                AcceptedResult::RiskAdjudicated { .. } => ToolSettlement::Unknown,
+                AcceptedResult::ProviderOutcomeUnknown | AcceptedResult::RiskAdjudicated { .. } => {
+                    ToolSettlement::Unknown
+                }
                 AcceptedResult::CellRecovered { cell } => {
                     if let std::collections::btree_map::Entry::Vacant(e) =
                         views.entry(item.recorded.run)

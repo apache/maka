@@ -38,9 +38,7 @@
 
 Open **Proactive discovery** in the Bot header. Leave the direction blank for broad exploration, or enter a topic for focused checks. New interval plans wait 30 minutes after each run finishes. The editor also offers a fixed interval, manual checks, and pause or resume controls.
 
-Choose **Read-only tools** or **Standard Session tools** as a preset. Adjust file reads, history, writes, terminal commands, and web access as needed, then approve them together. **View tool details** lists the concrete tools. The worker stays within the approved workspace and network permissions.
-
-**Files to exclude** starts empty. Add a folder, file, or suffix to protect it from future investigations and automatic follow-ups. The Host applies these rules to file access. On Linux and Windows, a suffix rule makes terminal commands unavailable during investigations. Access to copies in conversation history follows the history permission.
+Choose **Read-only tools** or **Standard Session tools**, then select the tool groups shown below the preset. To let a new investigation install, replace or configure plugins, select **Install and manage plugins** separately. You can change the investigation model in the same form. **Show selected tools** lists their exact names. The terminal, desktop and extension tools you approve operate under the existing workspace and network permissions.
 
 Use **View investigation** to open the original worker conversation. Select and quote text from a Bot reply to attach feedback to its investigation.
 
